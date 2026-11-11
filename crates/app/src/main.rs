@@ -4,9 +4,47 @@ use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_kit::component::WindowExt;
+use gpui_kit::component::{Theme, WindowExt};
 use gpui_kit::*;
 use jade_core::Vault;
+
+/// IBM Plex — the typeface Zed itself uses — bundled under the SIL Open Font
+/// License (OFL 1.1, see `assets/fonts/*/LICENSE.txt`), which explicitly
+/// permits embedding/redistributing it with an application.
+const IBM_PLEX_SANS: &str = "IBM Plex Sans";
+const IBM_PLEX_MONO: &str = "IBM Plex Mono";
+
+fn install_fonts(cx: &mut App) {
+    use std::borrow::Cow;
+
+    cx.text_system()
+        .add_fonts(vec![
+            Cow::Borrowed(
+                include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Regular.ttf").as_slice(),
+            ),
+            Cow::Borrowed(
+                include_bytes!("../assets/fonts/ibm-plex-sans/IBMPlexSans-Italic.ttf").as_slice(),
+            ),
+            Cow::Borrowed(
+                include_bytes!("../assets/fonts/ibm-plex-mono/IBMPlexMono-Regular.ttf").as_slice(),
+            ),
+            Cow::Borrowed(
+                include_bytes!("../assets/fonts/ibm-plex-mono/IBMPlexMono-Italic.ttf").as_slice(),
+            ),
+            Cow::Borrowed(
+                include_bytes!("../assets/fonts/ibm-plex-mono/IBMPlexMono-Bold.ttf").as_slice(),
+            ),
+            Cow::Borrowed(
+                include_bytes!("../assets/fonts/ibm-plex-mono/IBMPlexMono-BoldItalic.ttf")
+                    .as_slice(),
+            ),
+        ])
+        .expect("failed to load bundled IBM Plex fonts");
+
+    let theme = Theme::global_mut(cx);
+    theme.font_family = IBM_PLEX_SANS.into();
+    theme.mono_font_family = IBM_PLEX_MONO.into();
+}
 
 actions!(jade, [RenameNote, DeleteNote]);
 
@@ -521,6 +559,7 @@ fn main() {
 
     gpui_kit::application().run(move |cx| {
         gpui_kit::init(cx);
+        install_fonts(cx);
         cx.bind_keys([
             KeyBinding::new("f2", RenameNote, Some("NoteList")),
             KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
