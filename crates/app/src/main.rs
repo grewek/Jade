@@ -5,12 +5,12 @@ mod text_editor;
 
 use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogFooter;
-use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
-use gpui_kit::component::text::TextView;
 use gpui_kit::component::{Theme, WindowExt};
 use gpui_kit::*;
 use jade_core::Vault;
+use text_editor::{Editor, EditorEvent};
 
 /// IBM Plex — the typeface Zed itself uses — bundled under the SIL Open Font
 /// License (OFL 1.1, see `assets/fonts/*/LICENSE.txt`), which explicitly
@@ -62,18 +62,13 @@ enum SidebarTab {
 struct JadeApp {
     vault: Vault,
     selected_id: Option<String>,
-    /// The open note's content, split into Live-Preview blocks (paragraphs,
-    /// headings, ... — see `markdown_blocks`). Re-segmented whenever a note is
-    /// opened or a block is deactivated; left alone (only arithmetically
-    /// shifted, via `markdown_blocks::shift_after_edit`) while typing inside
-    /// the active block, so typing itself never re-parses the whole note.
-    blocks: Vec<markdown_blocks::Block>,
-    /// Index into `blocks` of the block currently shown as raw, editable text
-    /// (`active_editor`); every other block is shown rendered. `None` means
-    /// the whole note is rendered — nothing has been clicked into yet.
-    active_block: Option<usize>,
-    active_editor: Option<Entity<TextareaState>>,
-    _active_editor_subscription: Option<Subscription>,
+    /// The currently open note's editor, if a note is selected — Jade's own
+    /// custom-built `text_editor::Editor` (see `CLAUDE.md`'s "Custom editor"
+    /// section), not `gpui-component`'s `Textarea`. One continuous editor for
+    /// the whole note; Live Preview (Phase 2) will change how it renders
+    /// per-block internally rather than swapping between separate widgets.
+    editor: Option<Entity<Editor>>,
+    _editor_subscription: Option<Subscription>,
     error: Option<String>,
     sidebar_focus: FocusHandle,
     collapsed_folders: std::collections::HashSet<String>,
@@ -109,10 +104,8 @@ impl JadeApp {
         Self {
             vault,
             selected_id: None,
-            blocks: Vec::new(),
-            active_block: None,
-            active_editor: None,
-            _active_editor_subscription: None,
+            editor: None,
+            _editor_subscription: None,
             error,
             sidebar_focus,
             collapsed_folders: Default::default(),
@@ -124,116 +117,52 @@ impl JadeApp {
     }
 
     fn open_note(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        // Flush the outgoing note's active block ourselves: its `InputEvent::Change`
-        // autosave can still be pending (GPUI dispatches it on a delay), and without
-        // this, switching notes right after typing drops whatever hasn't flushed yet.
-        self.flush_active_block(cx);
+        // Flush the outgoing note ourselves before swapping `self.editor` out: an
+        // `EditorEvent::Changed` from the last keystroke could still be queued, and
+        // without this, switching notes right after typing would drop it.
+        self.flush_editor(cx);
 
         let Some(note) = self.vault.note(&id) else {
             return;
         };
-        self.blocks = markdown_blocks::segment_blocks(&note.content);
-        self.selected_id = Some(id);
-
-        // An empty note has nothing rendered to click on, so there'd otherwise be
-        // no way to start typing in it at all — activate its one (empty) block
-        // immediately instead of waiting for a click that can't happen.
-        if self.blocks.len() == 1 && self.blocks[0].range.is_empty() {
-            self.activate_block(0, window, cx);
-        }
-        cx.notify();
-    }
-
-    /// Writes the active block's (if any) current text back into the open note's
-    /// content, re-segments `blocks` from the result, and clears which block is
-    /// active. Call before anything that would make the active editor's content
-    /// stale to keep editing against: switching notes or blocks, or renaming the
-    /// open note's folder.
-    fn flush_active_block(&mut self, cx: &mut Context<Self>) {
-        let (Some(index), Some(editor)) = (self.active_block.take(), self.active_editor.take())
-        else {
-            return;
-        };
-        self._active_editor_subscription = None;
-
-        let Some(note_id) = self.selected_id.clone() else {
-            return;
-        };
-        let Some(note) = self.vault.note(&note_id) else {
-            return;
-        };
-        let Some(block) = self.blocks.get(index) else {
-            return;
-        };
-
-        let new_text = editor.read(cx).value().to_string();
-        let mut content = note.content.clone();
-        content.replace_range(block.range.clone(), &new_text);
-        let _ = self.vault.update_note_content(&note_id, content.clone());
-        self.blocks = markdown_blocks::segment_blocks(&content);
-    }
-
-    /// Switches `blocks[index]` from rendered to editable, flushing whatever
-    /// block was active before it (if a different one). No-op if it's already
-    /// the active block.
-    fn activate_block(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if self.active_block == Some(index) {
-            return;
-        }
-        self.flush_active_block(cx);
-
-        let Some(note_id) = self.selected_id.clone() else {
-            return;
-        };
-        let Some(note) = self.vault.note(&note_id) else {
-            return;
-        };
-        let Some(block) = self.blocks.get(index) else {
-            return;
-        };
-        let text = block.text(&note.content).to_string();
-
-        // `TextareaState` defaults to a fixed 1-row height; the old whole-document
-        // editor never needed more since it filled the pane via `.flex_1()`
-        // instead, which would be wrong here (it'd steal space from blocks
-        // sharing the same list) — `auto_grow` sizes to the block's own line
-        // count instead, up to a generous cap well past any realistic block.
-        let editor =
-            cx.new(|cx| TextareaState::new(window, cx).default_value(text).auto_grow(1, 500));
-        let subscription = cx.subscribe(&editor, |this, editor, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.autosave_active_block(&editor, cx);
+        let text = note.content.clone();
+        let editor = cx.new(|cx| Editor::new(text, cx));
+        let subscription = cx.subscribe(&editor, |this, _editor, event, cx| {
+            if matches!(event, EditorEvent::Changed) {
+                this.autosave_editor(cx);
             }
         });
         editor.read(cx).focus_handle(cx).focus(window, cx);
 
-        self.active_block = Some(index);
-        self.active_editor = Some(editor);
-        self._active_editor_subscription = Some(subscription);
+        self.selected_id = Some(id);
+        self.editor = Some(editor);
+        self._editor_subscription = Some(subscription);
         cx.notify();
     }
 
-    /// Splices the active block's current text into the open note's saved
-    /// content (using its *pre-edit* byte range) and persists it, then shifts
-    /// `blocks` to match — an O(blocks after the active one) arithmetic fixup,
-    /// not a re-parse of the whole note. See `markdown_blocks::shift_after_edit`.
-    fn autosave_active_block(&mut self, editor: &Entity<TextareaState>, cx: &mut Context<Self>) {
-        let (Some(index), Some(note_id)) = (self.active_block, self.selected_id.clone()) else {
+    /// Writes the open editor's (if any) current text back into the vault and
+    /// drops it. Call before anything that would make the editor's content
+    /// stale to keep editing against: switching notes, or renaming the open
+    /// note's folder.
+    fn flush_editor(&mut self, cx: &mut Context<Self>) {
+        let (Some(editor), Some(note_id)) = (self.editor.take(), self.selected_id.clone()) else {
             return;
         };
-        let Some(note) = self.vault.note(&note_id) else {
-            return;
-        };
-        let Some(block) = self.blocks.get(index) else {
-            return;
-        };
+        self._editor_subscription = None;
+        let text = editor.read(cx).buffer().text().to_string();
+        let _ = self.vault.update_note_content(&note_id, text);
+    }
 
-        let new_text = editor.read(cx).value().to_string();
-        let mut content = note.content.clone();
-        content.replace_range(block.range.clone(), &new_text);
-        let _ = self.vault.update_note_content(&note_id, content);
-
-        markdown_blocks::shift_after_edit(&mut self.blocks, index, new_text.len());
+    /// Persists the open editor's current text to the vault on every
+    /// `EditorEvent::Changed`, and re-renders so e.g. the backlinks panel
+    /// reflects newly-typed wikilinks live, not just on the next note switch.
+    fn autosave_editor(&mut self, cx: &mut Context<Self>) {
+        let (Some(editor), Some(note_id)) = (self.editor.clone(), self.selected_id.clone())
+        else {
+            return;
+        };
+        let text = editor.read(cx).buffer().text().to_string();
+        let _ = self.vault.update_note_content(&note_id, text);
         cx.notify();
     }
 
@@ -258,9 +187,9 @@ impl JadeApp {
 
     fn rename_note(&mut self, id: &str, new_title: &str, window: &mut Window, cx: &mut Context<Self>) {
         // Flush first: renaming moves the note to a new id, so a flush keyed on
-        // its *old* id (which the active block's edits are still relative to)
-        // has to happen before that, not after.
-        self.flush_active_block(cx);
+        // its *old* id (which the editor's edits are still relative to) has to
+        // happen before that, not after.
+        self.flush_editor(cx);
 
         let Ok(new_id) = self.vault.rename_note(id, new_title) else {
             return;
@@ -275,19 +204,17 @@ impl JadeApp {
     fn delete_note(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.vault.delete_note(id).is_ok() && self.selected_id.as_deref() == Some(id) {
             self.selected_id = None;
-            self.blocks = Vec::new();
-            self.active_block = None;
-            self.active_editor = None;
-            self._active_editor_subscription = None;
+            self.editor = None;
+            self._editor_subscription = None;
         }
         cx.notify();
     }
 
     fn rename_folder(&mut self, id: &str, new_name: &str, window: &mut Window, cx: &mut Context<Self>) {
-        // Flush the open note's active block first (same reasoning as `open_note`'s
-        // own flush): renaming the folder moves it to a new id, so a flush keyed on
-        // its *old* id must happen before that, not after.
-        self.flush_active_block(cx);
+        // Flush the open note first (same reasoning as `open_note`'s own flush):
+        // renaming the folder moves it to a new id, so a flush keyed on its *old*
+        // id must happen before that, not after.
+        self.flush_editor(cx);
 
         let Ok(new_id) = self.vault.rename_folder(id, new_name) else {
             return;
@@ -314,10 +241,8 @@ impl JadeApp {
             self.collapsed_folders.retain(|f| f != id && !f.starts_with(&prefix));
             if self.selected_id.as_deref().is_some_and(|sel| sel.starts_with(&prefix)) {
                 self.selected_id = None;
-                self.blocks = Vec::new();
-                self.active_block = None;
-                self.active_editor = None;
-                self._active_editor_subscription = None;
+                self.editor = None;
+                self._editor_subscription = None;
             }
         }
         cx.notify();
@@ -791,53 +716,6 @@ impl JadeApp {
         panel.into_any_element()
     }
 
-    /// Renders the open note's `blocks`: the active one (if any) as an
-    /// editable `Textarea`, every other one rendered via `TextView::markdown`
-    /// and clickable to become the active one.
-    fn render_note_blocks(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let Some(note) = self.selected_id.as_ref().and_then(|id| self.vault.note(id)) else {
-            return Vec::new();
-        };
-        let content = note.content.clone();
-
-        let mut rows = Vec::with_capacity(self.blocks.len());
-        for (index, block) in self.blocks.iter().enumerate() {
-            if self.active_block == Some(index) {
-                if let Some(editor) = &self.active_editor {
-                    // `Textarea` defaults to a bordered/backgrounded input-box look
-                    // (`.bordered(true)`/`.appearance(true)`) — fine for the old
-                    // whole-document editor, but it makes the active block visibly
-                    // pop out as its own boxed input against the border-less
-                    // `TextView`-rendered blocks around it, breaking the illusion of
-                    // one continuous document. Strip that chrome so only *which*
-                    // block is active differs (plain text vs. editable), not how it
-                    // looks.
-                    rows.push(
-                        Textarea::new(editor)
-                            .w_full()
-                            .appearance(false)
-                            .bordered(false)
-                            .into_any_element(),
-                    );
-                }
-                continue;
-            }
-
-            let text = block.text(&content).to_string();
-            rows.push(
-                div()
-                    .id(format!("block-{index}"))
-                    .test_support()
-                    .cursor_pointer()
-                    .child(TextView::markdown(format!("block-{index}-rendered"), text).selectable(false))
-                    .on_click(cx.listener(move |this, _event, window, cx| {
-                        this.activate_block(index, window, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        rows
-    }
 }
 
 impl Render for JadeApp {
@@ -955,21 +833,18 @@ impl Render for JadeApp {
                 }
             }
 
-            let blocks = div()
-                .id("note-blocks")
-                .flex()
-                .flex_col()
-                .gap_2()
+            let editor_pane = div()
+                .id("note-editor-pane")
                 .flex_1()
                 .overflow_y_scroll()
-                .children(self.render_note_blocks(cx));
+                .children(self.editor.clone());
 
             div()
                 .flex()
                 .flex_col()
                 .size_full()
                 .p_4()
-                .child(blocks)
+                .child(editor_pane)
                 .child(backlinks_panel)
                 .into_any_element()
         } else {
@@ -1087,16 +962,16 @@ mod tests {
             window.click("new-note", cx);
             window.render_frame(cx);
 
-            // A brand-new note is empty, so its one (empty) block auto-activates —
-            // no block click needed before it can be typed into.
-            let editor = app.read(cx).active_editor.clone().expect("editor should be open");
+            // A brand-new note opens with its own editor ready immediately — no
+            // click needed before it can be typed into.
+            let editor = app.read(cx).editor.clone().expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("Linking to [[Note A]].", cx);
             window.render_frame(cx);
 
-            // Switch notes immediately after typing, with no time for GPUI's
-            // own (delayed) `InputEvent::Change` autosave to have fired yet —
+            // Switch notes immediately after typing, with no time for the
+            // editor's own `EditorEvent::Changed` autosave to have fired yet —
             // `open_note` must flush the outgoing note's text itself.
             window.click("Note A", cx);
             window.render_frame(cx);
@@ -1143,10 +1018,10 @@ mod tests {
         assert!(!dir.path().join("Untitled.md").exists());
 
         // Type a link to Note A into the renamed note, then jump straight to Note A.
-        // "Hello" is still empty, so its one block is already auto-activated.
+        // "Hello" already has its editor open, ready to type into.
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            let editor = app.read(cx).active_editor.clone().expect("editor should be open");
+            let editor = app.read(cx).editor.clone().expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("Linking to [[Note A]].", cx);
@@ -1166,11 +1041,7 @@ mod tests {
             window.render_frame(cx);
             window.click("Note A", cx);
             window.render_frame(cx);
-            // Note A has existing content, so nothing auto-activates it — click its
-            // one rendered block to switch it into edit mode first.
-            window.click("block-0", cx);
-            window.render_frame(cx);
-            let editor = app.read(cx).active_editor.clone().expect("editor should be open");
+            let editor = app.read(cx).editor.clone().expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input(" Also linking to [[Hello]].", cx);
@@ -1203,7 +1074,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn editing_in_the_textarea_autosaves_to_disk(cx: &mut TestAppContext) {
+    fn editing_in_the_editor_autosaves_to_disk(cx: &mut TestAppContext) {
         let dir = temp_vault();
         std::fs::write(dir.path().join("Note.md"), "old content").unwrap();
 
@@ -1212,10 +1083,8 @@ mod tests {
             window.render_frame(cx);
             window.click("Note", cx);
             window.render_frame(cx);
-            window.click("block-0", cx);
-            window.render_frame(cx);
 
-            let editor = app.read(cx).active_editor.clone().expect("editor should be open");
+            let editor = app.read(cx).editor.clone().expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("appended ", cx);
@@ -1229,7 +1098,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn opening_a_note_renders_its_blocks_until_one_is_clicked(cx: &mut TestAppContext) {
+    fn opening_a_note_shows_its_editor_immediately(cx: &mut TestAppContext) {
         let dir = temp_vault();
         std::fs::write(dir.path().join("Note.md"), "First paragraph.\n\nSecond paragraph.").unwrap();
 
@@ -1240,58 +1109,18 @@ mod tests {
         })
         .unwrap();
 
-        let (active_block, has_editor) =
-            app.read_with(cx, |app, _| (app.active_block, app.active_editor.is_some()));
-        assert_eq!(active_block, None, "nothing should be active until a block is clicked");
-        assert!(!has_editor);
+        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        assert!(has_editor, "the editor should be ready for input as soon as a note is opened");
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.try_find("block-0").is_some(), "the first block should be rendered");
-            assert!(window.try_find("block-1").is_some(), "the second block should be rendered");
-            window.click("block-1", cx);
+            assert!(window.try_find("editor").is_some(), "the editor should be rendered");
         })
         .unwrap();
-
-        let (active_block, has_editor) =
-            app.read_with(cx, |app, _| (app.active_block, app.active_editor.is_some()));
-        assert_eq!(active_block, Some(1));
-        assert!(has_editor);
     }
 
     #[gpui_kit::test]
-    fn switching_the_active_block_flushes_and_keeps_the_other_blocks_intact(cx: &mut TestAppContext) {
-        let dir = temp_vault();
-        std::fs::write(dir.path().join("Note.md"), "First paragraph.\n\nSecond paragraph.").unwrap();
-
-        let (window, app) = open_app(cx, dir.path().to_path_buf());
-        cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            window.click("Note", cx);
-            window.render_frame(cx);
-            window.click("block-0", cx);
-        })
-        .unwrap();
-
-        let editor = app.read_with(cx, |app, _| app.active_editor.clone()).expect("first block should be active");
-        cx.update_window(window, |_, window, cx| {
-            editor.read(cx).focus_handle(cx).focus(window, cx);
-            window.render_frame(cx);
-            window.press("end", cx);
-            window.input(" EDITED", cx);
-            window.render_frame(cx);
-            // Switching blocks without any explicit "done editing" step must still
-            // flush block 0's edit before block 1 becomes active.
-            window.click("block-1", cx);
-        })
-        .unwrap();
-
-        let on_disk = std::fs::read_to_string(dir.path().join("Note.md")).unwrap();
-        assert_eq!(on_disk, "First paragraph. EDITED\n\nSecond paragraph.");
-    }
-
-    #[gpui_kit::test]
-    fn an_empty_note_auto_activates_its_one_block(cx: &mut TestAppContext) {
+    fn a_new_note_opens_with_an_editor_ready_for_input(cx: &mut TestAppContext) {
         let dir = temp_vault();
 
         let (window, app) = open_app(cx, dir.path().to_path_buf());
@@ -1301,8 +1130,8 @@ mod tests {
         })
         .unwrap();
 
-        let active_block = app.read_with(cx, |app, _| app.active_block);
-        assert_eq!(active_block, Some(0), "an empty note has nothing to click, so it must self-activate");
+        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        assert!(has_editor, "a brand-new note has nothing to click, so its editor must be ready right away");
     }
 
     #[gpui_kit::test]
@@ -1405,10 +1234,8 @@ mod tests {
                 window.render_frame(cx);
                 window.click("Note", cx);
                 window.render_frame(cx);
-                window.click("block-0", cx);
-                window.render_frame(cx);
 
-                let editor = app.read(cx).active_editor.clone().expect("editor should be open");
+                let editor = app.read(cx).editor.clone().expect("editor should be open");
                 editor.read(cx).focus_handle(cx).focus(window, cx);
                 window.render_frame(cx);
                 window.press("backspace", cx);
@@ -1631,8 +1458,8 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Mathematics/Algebra".to_string()));
-        let has_content_loaded = app.read_with(cx, |app, _| !app.blocks.is_empty());
-        assert!(has_content_loaded, "the note should still be open after its folder was renamed");
+        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        assert!(has_editor, "the note should still be open after its folder was renamed");
     }
 
     #[gpui_kit::test]
@@ -1739,8 +1566,8 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, None);
-        let has_content_loaded = app.read_with(cx, |app, _| !app.blocks.is_empty());
-        assert!(!has_content_loaded);
+        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        assert!(!has_editor);
     }
 
     #[gpui_kit::test]

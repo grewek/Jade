@@ -87,7 +87,7 @@ impl EntityInputHandler for Editor {
         }
         self.buffer.insert(text);
         self.marked_range = None;
-        cx.notify();
+        self.notify_changed(cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -125,7 +125,7 @@ impl EntityInputHandler for Editor {
             }
             None => self.buffer.set_cursor(marked_end, false),
         }
-        cx.notify();
+        self.notify_changed(cx);
     }
 
     fn bounds_for_range(

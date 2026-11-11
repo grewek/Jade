@@ -3,6 +3,17 @@ use gpui_kit::*;
 use super::element::render_editor;
 use super::EditorBuffer;
 
+/// Emitted whenever a buffer-mutating operation changes the text (typing,
+/// IME commit, paste, cut, undo/redo) — not for cursor-only movement or
+/// selection changes. `JadeApp` subscribes to this the same way it would to
+/// `InputEvent::Change` on a `gpui-component` input, to autosave the open
+/// note and refresh anything (e.g. the backlinks panel) that depends on its
+/// live content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorEvent {
+    Changed,
+}
+
 /// The entity backing one editor view — owns the buffer and the focus handle
 /// its element paints a cursor against and attaches mouse/keyboard handlers to.
 pub struct Editor {
@@ -36,6 +47,15 @@ impl Editor {
 
     pub fn buffer_mut(&mut self) -> &mut EditorBuffer {
         &mut self.buffer
+    }
+
+    /// For call sites (here and in `input_handler.rs`) where the buffer's
+    /// text itself just changed, not merely its cursor/selection — emits
+    /// `EditorEvent::Changed` in addition to the `cx.notify()` every mutation
+    /// needs anyway.
+    pub(super) fn notify_changed(&self, cx: &mut Context<Self>) {
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
     }
 
     /// Navigation/editing keys only (arrows, Home/End, Backspace/Delete,
@@ -74,21 +94,21 @@ impl Editor {
                 "x" => {
                     if let Some(text) = self.buffer.cut() {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
-                        cx.notify();
+                        self.notify_changed(cx);
                     }
                     return;
                 }
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                         self.buffer.insert(&text);
-                        cx.notify();
+                        self.notify_changed(cx);
                     }
                     return;
                 }
                 "z" => {
                     let changed = if shift { self.buffer.redo() } else { self.buffer.undo() };
                     if changed {
-                        cx.notify();
+                        self.notify_changed(cx);
                     }
                     return;
                 }
@@ -96,6 +116,7 @@ impl Editor {
             }
         }
 
+        let mutates = matches!(keystroke.key.as_str(), "backspace" | "delete" | "enter");
         match keystroke.key.as_str() {
             "left" => self.buffer.move_left(shift),
             "right" => self.buffer.move_right(shift),
@@ -108,9 +129,15 @@ impl Editor {
             "enter" => self.buffer.insert("\n"),
             _ => return,
         }
-        cx.notify();
+        if mutates {
+            self.notify_changed(cx);
+        } else {
+            cx.notify();
+        }
     }
 }
+
+impl EventEmitter<EditorEvent> for Editor {}
 
 impl Focusable for Editor {
     fn focus_handle(&self, _cx: &App) -> FocusHandle {
