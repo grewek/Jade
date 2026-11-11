@@ -167,6 +167,32 @@ impl EditorBuffer {
         self.set_cursor(target, extend);
     }
 
+    /// Moves to the start of the previous word: skips any whitespace directly
+    /// to the left, then the run of word/punctuation chars before that — so
+    /// from the middle of a word it lands at that word's start, and from
+    /// right after a word (e.g. on the trailing space) it does too, matching
+    /// the usual Ctrl/Cmd+Left behavior in other editors.
+    pub fn move_word_left(&mut self, extend: bool) {
+        if !extend && let Some(range) = self.selection() {
+            self.set_cursor(range.start, false);
+            return;
+        }
+        let target = word_boundary_backward(&self.text, self.cursor);
+        self.set_cursor(target, extend);
+    }
+
+    /// Moves to the end of the current word (if the cursor is inside one), or
+    /// past any whitespace and to the end of the next word otherwise — the
+    /// mirror of `move_word_left`, matching Ctrl/Cmd+Right.
+    pub fn move_word_right(&mut self, extend: bool) {
+        if !extend && let Some(range) = self.selection() {
+            self.set_cursor(range.end, false);
+            return;
+        }
+        let target = word_boundary_forward(&self.text, self.cursor);
+        self.set_cursor(target, extend);
+    }
+
     /// Moves up one line, keeping the cursor's current column (in chars from
     /// the line start) where the target line is long enough, else clamping to
     /// its end — and remembering that column (see `preferred_column`) so a
@@ -304,6 +330,79 @@ fn next_char_boundary(text: &str, pos: usize) -> usize {
         i += 1;
     }
     i
+}
+
+#[derive(PartialEq, Eq)]
+enum CharClass {
+    Whitespace,
+    Word,
+    Punctuation,
+}
+
+fn char_class(c: char) -> CharClass {
+    if c.is_whitespace() {
+        CharClass::Whitespace
+    } else if c.is_alphanumeric() || c == '_' {
+        CharClass::Word
+    } else {
+        CharClass::Punctuation
+    }
+}
+
+/// `pos` moved left past any whitespace directly before it, then past the
+/// run of same-class (word or punctuation) chars before that — i.e. to the
+/// start of whatever's immediately to the left, skipping separating
+/// whitespace first.
+fn word_boundary_backward(text: &str, pos: usize) -> usize {
+    let mut offset = pos;
+    loop {
+        if offset == 0 {
+            return offset;
+        }
+        let prev = prev_char_boundary(text, offset);
+        let c = text[prev..offset].chars().next().unwrap();
+        if char_class(c) != CharClass::Whitespace {
+            break;
+        }
+        offset = prev;
+    }
+    let prev = prev_char_boundary(text, offset);
+    let class = char_class(text[prev..offset].chars().next().unwrap());
+    loop {
+        if offset == 0 {
+            break;
+        }
+        let prev = prev_char_boundary(text, offset);
+        let c = text[prev..offset].chars().next().unwrap();
+        if char_class(c) != class {
+            break;
+        }
+        offset = prev;
+    }
+    offset
+}
+
+/// The mirror of `word_boundary_backward`: `pos` moved right past any
+/// whitespace directly after it, then past the run of same-class chars after
+/// that.
+fn word_boundary_forward(text: &str, pos: usize) -> usize {
+    let mut offset = pos;
+    loop {
+        let Some(c) = text[offset..].chars().next() else { return offset };
+        if char_class(c) != CharClass::Whitespace {
+            break;
+        }
+        offset = next_char_boundary(text, offset);
+    }
+    let class = char_class(text[offset..].chars().next().unwrap());
+    loop {
+        let Some(c) = text[offset..].chars().next() else { break };
+        if char_class(c) != class {
+            break;
+        }
+        offset = next_char_boundary(text, offset);
+    }
+    offset
 }
 
 /// The byte offset of the start of the line containing `pos`.
@@ -595,5 +694,85 @@ mod tests {
         assert!(buf.undo());
         assert_eq!(buf.text(), "hello world");
         assert_eq!(buf.selection(), Some(0..6));
+    }
+
+    #[test]
+    fn move_word_right_from_mid_word_stops_at_the_word_end() {
+        let mut buf = EditorBuffer::new("hello world");
+        buf.set_cursor(2, false); // inside "hello"
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor(), 5, "should stop at the end of the current word, not jump past it");
+    }
+
+    #[test]
+    fn move_word_right_from_a_word_end_skips_whitespace_to_the_next_words_end() {
+        let mut buf = EditorBuffer::new("hello world");
+        buf.set_cursor(5, false); // right after "hello", before the space
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor(), 11, "should skip the space and land at the end of \"world\"");
+    }
+
+    #[test]
+    fn move_word_left_from_mid_word_stops_at_the_word_start() {
+        let mut buf = EditorBuffer::new("hello world");
+        buf.set_cursor(9, false); // inside "world"
+        buf.move_word_left(false);
+        assert_eq!(buf.cursor(), 6, "should stop at the start of \"world\"");
+    }
+
+    #[test]
+    fn move_word_left_from_right_after_a_word_stays_at_that_words_start() {
+        let mut buf = EditorBuffer::new("hello world");
+        buf.set_cursor(5, false); // right after "hello"
+        buf.move_word_left(false);
+        assert_eq!(buf.cursor(), 0, "should land at the start of \"hello\", not skip past it");
+    }
+
+    #[test]
+    fn repeated_word_moves_walk_through_every_word_in_a_sentence() {
+        let mut buf = EditorBuffer::new("the quick fox");
+        buf.set_cursor(0, false);
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor(), 3, "end of \"the\"");
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor(), 9, "end of \"quick\"");
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor(), 13, "end of \"fox\", the last word");
+        buf.move_word_left(false);
+        assert_eq!(buf.cursor(), 10, "start of \"fox\"");
+        buf.move_word_left(false);
+        assert_eq!(buf.cursor(), 4, "start of \"quick\"");
+        buf.move_word_left(false);
+        assert_eq!(buf.cursor(), 0, "start of \"the\"");
+    }
+
+    #[test]
+    fn word_moves_treat_punctuation_as_its_own_word() {
+        let mut buf = EditorBuffer::new("foo, bar");
+        buf.set_cursor(0, false);
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor(), 3, "stops at the end of \"foo\", before the comma");
+        buf.move_word_right(false);
+        assert_eq!(buf.cursor(), 4, "the comma is its own punctuation word");
+    }
+
+    #[test]
+    fn shift_ctrl_word_right_extends_a_selection() {
+        let mut buf = EditorBuffer::new("hello world");
+        buf.set_cursor(0, false);
+        buf.move_word_right(true);
+        assert_eq!(buf.selection(), Some(0..5));
+        buf.move_word_right(true);
+        assert_eq!(buf.selection(), Some(0..11));
+    }
+
+    #[test]
+    fn ctrl_word_left_without_shift_collapses_a_selection_to_its_start() {
+        let mut buf = EditorBuffer::new("hello world");
+        buf.set_cursor(2, false);
+        buf.set_cursor(9, true);
+        buf.move_word_left(false);
+        assert_eq!(buf.cursor(), 2, "should collapse to the selection's start, like plain Left does");
+        assert!(!buf.has_selection());
     }
 }

@@ -576,4 +576,46 @@ mod tests {
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
         assert_eq!(text, "^", "committing the composition must replace the preview, not duplicate it");
     }
+
+    #[gpui_kit::test]
+    fn ctrl_right_jumps_to_the_end_of_the_current_word(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+            window.press("ctrl-right", cx);
+        })
+        .unwrap();
+
+        let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+        assert_eq!(cursor, 5, "ctrl-right should stop at the end of \"hello\"");
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_left_jumps_to_the_start_of_the_current_word(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(9, false));
+            window.press("ctrl-left", cx);
+        })
+        .unwrap();
+
+        let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+        assert_eq!(cursor, 6, "ctrl-left should stop at the start of \"world\"");
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_shift_right_extends_the_selection_by_a_word(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+            window.press("ctrl-shift-right", cx);
+        })
+        .unwrap();
+
+        let selection = editor.read_with(cx, |editor, _| editor.buffer().selection());
+        assert_eq!(selection, Some(0..5), "ctrl-shift-right should select through the end of \"hello\"");
+    }
 }

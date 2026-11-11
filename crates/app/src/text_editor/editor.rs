@@ -59,7 +59,8 @@ impl Editor {
     }
 
     /// Navigation/editing keys only (arrows, Home/End, Backspace/Delete,
-    /// Enter, Ctrl/Cmd+A/C/X/V/Z, Ctrl/Cmd+Shift+Z) — plain character typing goes through
+    /// Enter, Ctrl/Cmd+A/C/X/V/Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Left/Right for
+    /// word-wise movement/selection) — plain character typing goes through
     /// `EntityInputHandler::replace_text_in_range` instead (`input_handler.rs`,
     /// wired via `window.handle_input` during paint), GPUI's platform text
     /// input path, which also handles real IME composition. An earlier
@@ -110,6 +111,16 @@ impl Editor {
                     if changed {
                         self.notify_changed(cx);
                     }
+                    return;
+                }
+                "left" => {
+                    self.buffer.move_word_left(shift);
+                    cx.notify();
+                    return;
+                }
+                "right" => {
+                    self.buffer.move_word_right(shift);
+                    cx.notify();
                     return;
                 }
                 _ => {}
