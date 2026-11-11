@@ -48,6 +48,13 @@ fn install_fonts(cx: &mut App) {
 
 actions!(jade, [RenameNote, DeleteNote]);
 
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+enum SidebarTab {
+    #[default]
+    Vault,
+    Search,
+}
+
 struct JadeApp {
     vault: Vault,
     selected_id: Option<String>,
@@ -56,6 +63,10 @@ struct JadeApp {
     error: Option<String>,
     sidebar_focus: FocusHandle,
     collapsed_folders: std::collections::HashSet<String>,
+    sidebar_tab: SidebarTab,
+    search_input: Entity<InputState>,
+    search_query: String,
+    _search_subscription: Subscription,
 }
 
 /// The direct parent folder id of a note/folder id, or `None` at the vault root.
@@ -64,27 +75,38 @@ fn parent_of(id: &str) -> Option<&str> {
 }
 
 impl JadeApp {
-    fn new(vault_path: PathBuf, cx: &mut Context<Self>) -> Self {
+    fn new(vault_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar_focus = cx.focus_handle();
-        match Vault::open(&vault_path) {
-            Ok(vault) => Self {
-                vault,
-                selected_id: None,
-                editor: None,
-                _editor_subscription: None,
-                error: None,
-                sidebar_focus,
-                collapsed_folders: Default::default(),
-            },
-            Err(err) => Self {
-                vault: Vault { root: vault_path, notes: Default::default(), folders: Default::default() },
-                selected_id: None,
-                editor: None,
-                _editor_subscription: None,
-                error: Some(err.to_string()),
-                sidebar_focus,
-                collapsed_folders: Default::default(),
-            },
+
+        let search_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search notes..."));
+        let search_subscription = cx.subscribe(&search_input, |this, input, event, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.search_query = input.read(cx).value().to_string();
+                cx.notify();
+            }
+        });
+
+        let (vault, error) = match Vault::open(&vault_path) {
+            Ok(vault) => (vault, None),
+            Err(err) => (
+                Vault { root: vault_path, notes: Default::default(), folders: Default::default() },
+                Some(err.to_string()),
+            ),
+        };
+
+        Self {
+            vault,
+            selected_id: None,
+            editor: None,
+            _editor_subscription: None,
+            error,
+            sidebar_focus,
+            collapsed_folders: Default::default(),
+            sidebar_tab: SidebarTab::default(),
+            search_input,
+            search_query: String::new(),
+            _search_subscription: search_subscription,
         }
     }
 
@@ -437,11 +459,147 @@ impl JadeApp {
         })
         .into_any_element()
     }
+
+    fn render_sidebar_tab_button(
+        &self,
+        tab: SidebarTab,
+        label: &str,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let is_active = self.sidebar_tab == tab;
+        let id = match tab {
+            SidebarTab::Vault => "sidebar-tab-vault",
+            SidebarTab::Search => "sidebar-tab-search",
+        };
+
+        let mut item = div()
+            .id(id)
+            .test_support()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .cursor_pointer()
+            .child(label.to_string());
+        if is_active {
+            item = item.bg(rgb(0xd0d0f0)).font_weight(FontWeight::BOLD);
+        }
+        item.on_click(cx.listener(move |this, _event, _window, cx| {
+            this.sidebar_tab = tab;
+            cx.notify();
+        }))
+        .into_any_element()
+    }
+
+    /// The "Search" sidebar tab: a live-filtered list of notes matching the
+    /// query, by title or content substring (via `Vault::search`).
+    fn render_search_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+        let mut panel = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .child(Input::new(&self.search_input).id("search-input"));
+
+        let query = self.search_query.trim();
+        if query.is_empty() {
+            panel = panel.child(
+                div()
+                    .text_color(rgb(0x888888))
+                    .child("Type to search notes by title or content."),
+            );
+        } else {
+            let mut results: Vec<(String, String)> = self
+                .vault
+                .search(query)
+                .into_iter()
+                .map(|note| (note.id.clone(), note.title.clone()))
+                .collect();
+            results.sort_by(|a, b| a.1.cmp(&b.1));
+
+            panel = panel.child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(format!("Results ({})", results.len())),
+            );
+            if results.is_empty() {
+                panel = panel
+                    .child(div().text_color(rgb(0x888888)).child("No matching notes."));
+            } else {
+                for (id, title) in results {
+                    let target_id = id.clone();
+                    panel = panel.child(
+                        div()
+                            .id(format!("search-result-{id}"))
+                            .test_support()
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(|style| style.bg(rgb(0xe8e8f8)))
+                            .child(title)
+                            .on_click(cx.listener(move |this, _event, window, cx| {
+                                this.open_note(target_id.clone(), window, cx);
+                            })),
+                    );
+                }
+            }
+        }
+        panel.into_any_element()
+    }
 }
 
 impl Render for JadeApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let tree_rows = self.render_tree_level(None, 0, cx);
+        let tab_bar = div()
+            .flex()
+            .flex_row()
+            .gap_1()
+            .mb_2()
+            .child(self.render_sidebar_tab_button(SidebarTab::Vault, "Vault", cx))
+            .child(self.render_sidebar_tab_button(SidebarTab::Search, "Search", cx));
+
+        // The "NoteList" key context (and its F2/Backspace bindings) is scoped to
+        // just the vault tree, not the whole sidebar — otherwise Backspace while
+        // typing in the search input above would delete the selected note instead
+        // of erasing a character.
+        let sidebar_content: AnyElement = match self.sidebar_tab {
+            SidebarTab::Vault => {
+                let tree_rows = self.render_tree_level(None, 0, cx);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .key_context("NoteList")
+                    .track_focus(&self.sidebar_focus)
+                    .on_action(cx.listener(Self::rename_selected))
+                    .on_action(cx.listener(Self::delete_selected))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_1()
+                            .child(
+                                Button::new("new-note")
+                                    .label("New note")
+                                    .on_click(cx.listener(|this, _event, window, cx| {
+                                        this.create_note(None, window, cx);
+                                    })),
+                            )
+                            .child(
+                                Button::new("new-folder")
+                                    .label("New folder")
+                                    .on_click(cx.listener(|_this, _event, window, cx| {
+                                        let app_entity = cx.entity();
+                                        JadeApp::open_create_folder_dialog(
+                                            None, app_entity, window, cx,
+                                        );
+                                    })),
+                            ),
+                    )
+                    .children(tree_rows)
+                    .into_any_element()
+            }
+            SidebarTab::Search => self.render_search_panel(cx),
+        };
 
         let sidebar = div()
             .flex()
@@ -450,32 +608,8 @@ impl Render for JadeApp {
             .w(px(220.))
             .p_2()
             .border_r_1()
-            .key_context("NoteList")
-            .track_focus(&self.sidebar_focus)
-            .on_action(cx.listener(Self::rename_selected))
-            .on_action(cx.listener(Self::delete_selected))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .gap_1()
-                    .child(
-                        Button::new("new-note")
-                            .label("New note")
-                            .on_click(cx.listener(|this, _event, window, cx| {
-                                this.create_note(None, window, cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("new-folder")
-                            .label("New folder")
-                            .on_click(cx.listener(|_this, _event, window, cx| {
-                                let app_entity = cx.entity();
-                                JadeApp::open_create_folder_dialog(None, app_entity, window, cx);
-                            })),
-                    ),
-            )
-            .children(tree_rows);
+            .child(tab_bar)
+            .child(sidebar_content);
 
         let content: AnyElement = if let Some(err) = &self.error {
             div().p_4().child(format!("Could not open vault: {err}")).into_any_element()
@@ -564,8 +698,8 @@ fn main() {
             KeyBinding::new("f2", RenameNote, Some("NoteList")),
             KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
         ]);
-        gpui_kit::open_window(WindowOptions::default(), cx, move |_, cx| {
-            cx.new(|cx| JadeApp::new(vault_path.clone(), cx))
+        gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+            cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
         })
         .expect("failed to open window");
     });
@@ -583,15 +717,10 @@ mod tests {
         AnyWindowHandle, AppContext, Entity, Focusable, KeyBinding, TestAppContext, WindowOptions,
     };
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use tempfile::{TempDir, tempdir};
 
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    fn temp_vault() -> PathBuf {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("jade_app_test_{}_{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_vault() -> TempDir {
+        tempdir().unwrap()
     }
 
     fn open_app(cx: &mut TestAppContext, vault_path: PathBuf) -> (AnyWindowHandle, Entity<JadeApp>) {
@@ -601,8 +730,8 @@ mod tests {
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
             ]);
-            gpui_kit::open_window(WindowOptions::default(), cx, move |_, cx| {
-                cx.new(|cx| JadeApp::new(vault_path.clone(), cx))
+            gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+                cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
             })
             .expect("open test window")
         })
@@ -611,10 +740,10 @@ mod tests {
     #[gpui_kit::test]
     fn clicking_sidebar_note_opens_it(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note A.md"), "Links to [[Note B]].").unwrap();
-        std::fs::write(dir.join("Note B.md"), "No outgoing links.").unwrap();
+        std::fs::write(dir.path().join("Note A.md"), "Links to [[Note B]].").unwrap();
+        std::fs::write(dir.path().join("Note B.md"), "No outgoing links.").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("Note B", cx);
@@ -623,17 +752,15 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Note B".to_string()));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn clicking_backlink_navigates_to_source_note(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note A.md"), "Links to [[Note B]].").unwrap();
-        std::fs::write(dir.join("Note B.md"), "No outgoing links.").unwrap();
+        std::fs::write(dir.path().join("Note A.md"), "Links to [[Note B]].").unwrap();
+        std::fs::write(dir.path().join("Note B.md"), "No outgoing links.").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("Note B", cx);
@@ -644,16 +771,14 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Note A".to_string()));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn linking_a_new_note_to_an_existing_note_shows_up_as_its_backlink(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note A.md"), "existing note").unwrap();
+        std::fs::write(dir.path().join("Note A.md"), "existing note").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("new-note", cx);
@@ -676,16 +801,14 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Untitled".to_string()));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn renamed_note_still_links_correctly_in_both_directions(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note A.md"), "existing note").unwrap();
+        std::fs::write(dir.path().join("Note A.md"), "existing note").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
 
         // New note -> rename "Untitled" to "Hello" via the F2 dialog.
         cx.update_window(window, |_, window, cx| {
@@ -711,8 +834,8 @@ mod tests {
 
         let renamed_id = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(renamed_id, Some("Hello".to_string()), "rename should have taken effect");
-        assert!(dir.join("Hello.md").exists());
-        assert!(!dir.join("Untitled.md").exists());
+        assert!(dir.path().join("Hello.md").exists());
+        assert!(!dir.path().join("Untitled.md").exists());
 
         // Type a link to Note A into the renamed note, then jump straight to Note A.
         cx.update_window(window, |_, window, cx| {
@@ -751,15 +874,13 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Note A".to_string()), "Hello -> Note A backlink should navigate back");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn new_note_button_creates_and_opens_a_note(cx: &mut TestAppContext) {
         let dir = temp_vault();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("new-note", cx);
@@ -768,17 +889,15 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Untitled".to_string()));
-        assert!(dir.join("Untitled.md").exists());
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(dir.path().join("Untitled.md").exists());
     }
 
     #[gpui_kit::test]
     fn editing_in_the_textarea_autosaves_to_disk(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note.md"), "old content").unwrap();
+        std::fs::write(dir.path().join("Note.md"), "old content").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("Note", cx);
@@ -791,20 +910,18 @@ mod tests {
         })
         .unwrap();
 
-        let on_disk = std::fs::read_to_string(dir.join("Note.md")).unwrap();
+        let on_disk = std::fs::read_to_string(dir.path().join("Note.md")).unwrap();
         assert_ne!(on_disk, "old content");
         assert!(on_disk.contains("appended"));
         assert!(on_disk.contains("old content"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn f2_hotkey_opens_rename_dialog_for_selected_note(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note.md"), "content").unwrap();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
 
-        let (window, _app) = open_app(cx, dir.clone());
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("Note", cx);
@@ -822,16 +939,14 @@ mod tests {
             .unwrap();
 
         assert!(dialog_open);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn pressing_enter_in_the_rename_dialog_confirms_it(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note.md"), "content").unwrap();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("Note", cx);
@@ -858,20 +973,18 @@ mod tests {
             cx.update_window(window, |_, window, cx| window.has_active_dialog(cx)).unwrap();
         assert!(!dialog_still_open, "Enter should have closed the dialog");
 
-        assert!(!dir.join("Note.md").exists());
-        assert!(dir.join("Renamed.md").exists());
+        assert!(!dir.path().join("Note.md").exists());
+        assert!(dir.path().join("Renamed.md").exists());
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Renamed".to_string()));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn backspace_hotkey_deletes_selected_note(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note.md"), "content").unwrap();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("Note", cx);
@@ -889,17 +1002,15 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, None);
-        assert!(!dir.join("Note.md").exists());
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(!dir.path().join("Note.md").exists());
     }
 
     #[gpui_kit::test]
     fn backspace_in_the_editor_does_not_delete_the_note(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note.md"), "content").unwrap();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         let dialog_open = cx
             .update_window(window, |_, window, cx| {
                 window.render_frame(cx);
@@ -916,20 +1027,18 @@ mod tests {
             .unwrap();
 
         assert!(!dialog_open);
-        assert!(dir.join("Note.md").exists());
+        assert!(dir.path().join("Note.md").exists());
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Note".to_string()));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn context_menu_delete_removes_the_right_clicked_note(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note A.md"), "a").unwrap();
-        std::fs::write(dir.join("Note B.md"), "b").unwrap();
+        std::fs::write(dir.path().join("Note A.md"), "a").unwrap();
+        std::fs::write(dir.path().join("Note B.md"), "b").unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("Note B", cx);
@@ -952,19 +1061,17 @@ mod tests {
         })
         .unwrap();
 
-        assert!(!dir.join("Note A.md").exists());
-        assert!(dir.join("Note B.md").exists());
+        assert!(!dir.path().join("Note A.md").exists());
+        assert!(dir.path().join("Note B.md").exists());
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Note B".to_string()));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn creating_a_folder_via_the_button_shows_it_in_the_sidebar(cx: &mut TestAppContext) {
         let dir = temp_vault();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.click("new-folder", cx);
@@ -982,23 +1089,21 @@ mod tests {
 
         let has_folder = app.read_with(cx, |app, _| app.vault.folders.contains("Math"));
         assert!(has_folder, "vault should record the new folder");
-        assert!(dir.join("Math").is_dir());
+        assert!(dir.path().join("Math").is_dir());
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("folder-Math").is_some());
         })
         .unwrap();
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn folder_context_menu_creates_a_nested_note(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::create_dir_all(dir.join("Math")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.right_click("folder-Math", cx);
@@ -1014,17 +1119,15 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Math/Untitled".to_string()));
-        assert!(dir.join("Math").join("Untitled.md").exists());
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(dir.path().join("Math").join("Untitled.md").exists());
     }
 
     #[gpui_kit::test]
     fn folder_context_menu_creates_a_nested_subfolder(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::create_dir_all(dir.join("Math")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
 
-        let (window, app) = open_app(cx, dir.clone());
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             window.right_click("folder-Math", cx);
@@ -1049,18 +1152,16 @@ mod tests {
 
         let has_subfolder = app.read_with(cx, |app, _| app.vault.folders.contains("Math/Algebra"));
         assert!(has_subfolder);
-        assert!(dir.join("Math").join("Algebra").is_dir());
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(dir.path().join("Math").join("Algebra").is_dir());
     }
 
     #[gpui_kit::test]
     fn clicking_a_folder_collapses_and_expands_its_children(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::create_dir_all(dir.join("Math")).unwrap();
-        std::fs::write(dir.join("Math").join("Algebra.md"), "content").unwrap();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+        std::fs::write(dir.path().join("Math").join("Algebra.md"), "content").unwrap();
 
-        let (window, _app) = open_app(cx, dir.clone());
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
 
         let visible_before = cx
             .update_window(window, |_, window, cx| {
@@ -1095,18 +1196,16 @@ mod tests {
             })
             .unwrap();
         assert!(visible_after_expand, "note should reappear once folder is expanded again");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[gpui_kit::test]
     fn notes_in_a_subfolder_are_indented_further_than_top_level_notes(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.join("Top Level.md"), "content").unwrap();
-        std::fs::create_dir_all(dir.join("Math")).unwrap();
-        std::fs::write(dir.join("Math").join("Algebra.md"), "content").unwrap();
+        std::fs::write(dir.path().join("Top Level.md"), "content").unwrap();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+        std::fs::write(dir.path().join("Math").join("Algebra.md"), "content").unwrap();
 
-        let (window, _app) = open_app(cx, dir.clone());
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
 
         let (top_level_x, folder_x, nested_note_x) = cx
             .update_window(window, |_, window, cx| {
@@ -1127,7 +1226,70 @@ mod tests {
             nested_note_x > top_level_x,
             "a note inside a folder should be indented further right than a top-level note (got {nested_note_x:?} vs {top_level_x:?})"
         );
+    }
 
-        std::fs::remove_dir_all(&dir).ok();
+    #[gpui_kit::test]
+    fn search_tab_filters_notes_by_title_and_content(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Apples.md"), "a fruit").unwrap();
+        std::fs::write(dir.path().join("Carrots.md"), "a vegetable, tasty with apples").unwrap();
+        std::fs::write(dir.path().join("Oranges.md"), "a different fruit").unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("sidebar-tab-search", cx);
+            window.render_frame(cx);
+            window.click("search-input", cx);
+            window.input("apple", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("search-result-Apples").is_some());
+            assert!(window.try_find("search-result-Carrots").is_some());
+            assert!(window.try_find("search-result-Oranges").is_none());
+            window.click("search-result-Carrots", cx);
+        })
+        .unwrap();
+
+        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        assert_eq!(selected, Some("Carrots".to_string()));
+    }
+
+    #[gpui_kit::test]
+    fn backspace_while_typing_in_search_does_not_delete_the_selected_note(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note", cx);
+            window.render_frame(cx);
+            window.click("sidebar-tab-search", cx);
+            window.render_frame(cx);
+            window.click("search-input", cx);
+            window.input("x", cx);
+            window.press("backspace", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        let dialog_open = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.has_active_dialog(cx)
+            })
+            .unwrap();
+        assert!(!dialog_open, "backspace in the search input must not open the delete dialog");
+
+        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        assert_eq!(selected, Some("Note".to_string()));
+        assert!(dir.path().join("Note.md").exists());
     }
 }

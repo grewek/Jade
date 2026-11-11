@@ -9,3 +9,4 @@ jade-core = { path = "../core" }
 
 [dev-dependencies]
 gpui-kit = { version = "0.7", features = ["test-support"] }
+tempfile = "3.27.0"
