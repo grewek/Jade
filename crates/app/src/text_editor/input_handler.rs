@@ -78,13 +78,25 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(range_utf16) = range_utf16 {
-            let buffer_text = self.buffer.text();
-            let start = utf16_to_utf8(buffer_text, range_utf16.start);
-            let end = utf16_to_utf8(buffer_text, range_utf16.end);
-            self.buffer.set_cursor(start, false);
-            self.buffer.set_cursor(end, true);
-        }
+        // `range_utf16` is `None` for, among other cases, committing an IME
+        // composition (e.g. a dead-key preview like `^` or `` ` ``) — which
+        // must replace whatever's still marked, not insert next to it. Mirror
+        // `replace_and_mark_text_in_range`'s own fallback chain (explicit
+        // range, else the marked range, else the current selection/cursor):
+        // using only the current selection/cursor here left the marked
+        // preview character in the buffer and inserted the committed text
+        // right after it, duplicating the symbol once the composition ended
+        // (e.g. on the next keystroke, like pressing space).
+        let buffer_text = self.buffer.text().to_string();
+        let replace_range = range_utf16
+            .map(|r| utf16_to_utf8(&buffer_text, r.start)..utf16_to_utf8(&buffer_text, r.end))
+            .or_else(|| self.marked_range.clone())
+            .unwrap_or_else(|| {
+                let cursor = self.buffer.cursor();
+                self.buffer.selection().unwrap_or(cursor..cursor)
+            });
+        self.buffer.set_cursor(replace_range.start, false);
+        self.buffer.set_cursor(replace_range.end, true);
         self.buffer.insert(text);
         self.marked_range = None;
         self.notify_changed(cx);

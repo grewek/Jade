@@ -255,7 +255,10 @@ fn paint_lines(
 mod tests {
     use super::super::Editor;
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{AnyWindowHandle, AppContext, Entity, Pixels, Point, TestAppContext, WindowOptions, point, px};
+    use gpui_kit::{
+        AnyWindowHandle, AppContext, Entity, EntityInputHandler, Pixels, Point, TestAppContext,
+        WindowOptions, point, px,
+    };
 
     fn open_editor(cx: &mut TestAppContext, text: &'static str) -> (AnyWindowHandle, Entity<Editor>) {
         cx.update(gpui_kit::init);
@@ -539,5 +542,38 @@ mod tests {
         .unwrap();
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
         assert_eq!(text, "hellohello", "ctrl-shift-z should redo the paste");
+    }
+
+    #[gpui_kit::test]
+    fn committing_a_non_combining_ime_composition_does_not_duplicate_the_marked_character(
+        cx: &mut TestAppContext,
+    ) {
+        // Reproduces a real dead-key sequence (e.g. "^" or "`" on layouts where
+        // they're dead keys): the platform IME first shows a provisional marked
+        // preview via `replace_and_mark_text_in_range`, then — once the next
+        // keystroke doesn't combine with it (e.g. pressing space) — commits via
+        // `replace_text_in_range` with `range_utf16: None`. That commit must
+        // replace the marked preview, not insert next to it.
+        let (window, editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            editor.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, "^", None, window, cx);
+            });
+        })
+        .unwrap();
+
+        let marked_preview = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(marked_preview, "^", "the dead-key preview should appear immediately");
+
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_text_in_range(None, "^", window, cx);
+            });
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "^", "committing the composition must replace the preview, not duplicate it");
     }
 }
