@@ -23,7 +23,7 @@ pub(super) fn render_editor(
     editor: &Editor,
     editor_entity: Entity<Editor>,
     window: &mut Window,
-    _cx: &mut Context<Editor>,
+    cx: &mut Context<Editor>,
 ) -> impl IntoElement {
     // Read straight from `editor` (the `&mut self` `Editor::render` already
     // has), not `editor_entity.read(cx)` — this function runs *as* that
@@ -51,6 +51,7 @@ pub(super) fn render_editor(
         .w_full()
         .h(line_height * line_count as f32)
         .track_focus(&focus_handle)
+        .on_key_down(cx.listener(Editor::handle_key_down))
         .child(
             canvas(
                 move |_, _, _| {},
@@ -354,5 +355,98 @@ mod tests {
             selection.end - selection.start >= "hello world".len() / 2,
             "dragging nearly the whole width should select most of the text, got {selection:?}"
         );
+    }
+
+    /// Clicks the editor to focus it, placing the cursor wherever the click
+    /// lands — a specific position isn't needed since every test below moves
+    /// it explicitly afterward (Home/End/select-all) before asserting.
+    fn focus_editor(window: &mut gpui_kit::Window, cx: &mut gpui_kit::App) {
+        window.render_frame(cx);
+        window.click("editor", cx);
+    }
+
+    #[gpui_kit::test]
+    fn typing_inserts_text_at_the_cursor(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.input("hello", cx);
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hello");
+    }
+
+    #[gpui_kit::test]
+    fn backspace_deletes_the_previous_character(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("end", cx);
+            window.press("backspace", cx);
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hell");
+    }
+
+    #[gpui_kit::test]
+    fn home_and_shift_right_select_from_the_line_start(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("end", cx);
+            window.press("home", cx);
+            window.press("shift-right", cx);
+            window.press("shift-right", cx);
+        })
+        .unwrap();
+
+        let selection = editor.read_with(cx, |editor, _| editor.buffer().selection());
+        assert_eq!(selection, Some(0..2));
+    }
+
+    #[gpui_kit::test]
+    fn enter_inserts_a_newline(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("end", cx);
+            window.press("enter", cx);
+            window.input("world", cx);
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hello\nworld");
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_a_selects_everything(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("ctrl-a", cx);
+        })
+        .unwrap();
+
+        let selection = editor.read_with(cx, |editor, _| editor.buffer().selection());
+        assert_eq!(selection, Some(0.."hello world".len()));
+    }
+
+    #[gpui_kit::test]
+    fn typing_replaces_an_active_selection(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("ctrl-a", cx);
+            window.input("x", cx);
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "x");
     }
 }
