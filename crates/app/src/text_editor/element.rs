@@ -494,4 +494,50 @@ mod tests {
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
         assert_eq!(text, "hello world", "pasting should bring the cut text back");
     }
+
+    #[gpui_kit::test]
+    fn ctrl_z_undoes_the_last_keystrokes_edit(cx: &mut TestAppContext) {
+        // `window.input` dispatches one character per keystroke, and each
+        // character arrives through `EntityInputHandler::replace_text_in_range`
+        // as its own `buffer.insert` call — so, per this editor's documented
+        // "basic" (non-coalescing) undo, one ctrl-z only undoes the single
+        // last-typed character, not the whole burst of typing.
+        let (window, editor) = open_editor(cx, "hello");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("end", cx);
+            window.input(" world", cx);
+            window.press("ctrl-z", cx);
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hello worl", "ctrl-z should undo only the last-typed character");
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_z_then_ctrl_shift_z_round_trips_a_pasted_insert(cx: &mut TestAppContext) {
+        // Pasted text arrives in one `buffer.insert` call, so (unlike typing,
+        // see the test above) it's a single undo/redo step.
+        let (window, editor) = open_editor(cx, "hello");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("end", cx);
+            window.press("ctrl-a", cx);
+            window.press("ctrl-c", cx);
+            window.press("end", cx);
+            window.press("ctrl-v", cx);
+            window.press("ctrl-z", cx);
+        })
+        .unwrap();
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hello", "ctrl-z should undo the whole pasted insert in one step");
+
+        cx.update_window(window, |_, window, cx| {
+            window.press("ctrl-shift-z", cx);
+        })
+        .unwrap();
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hellohello", "ctrl-shift-z should redo the paste");
+    }
 }

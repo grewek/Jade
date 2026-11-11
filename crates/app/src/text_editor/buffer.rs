@@ -31,11 +31,31 @@ pub struct EditorBuffer {
     /// every other operation (even just moving left/right) since those make
     /// a new column the deliberate one.
     preferred_column: Option<usize>,
+    /// One snapshot per text-modifying operation (not per cursor movement),
+    /// each taken *before* that operation applied — "basic" linear undo, not
+    /// a real editor's coalescing of a whole burst of typing into one step;
+    /// a deliberate Phase 1 scope cut.
+    undo_stack: Vec<Snapshot>,
+    redo_stack: Vec<Snapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Snapshot {
+    text: String,
+    cursor: usize,
+    anchor: Option<usize>,
 }
 
 impl EditorBuffer {
     pub fn new(text: impl Into<String>) -> Self {
-        Self { text: text.into(), cursor: 0, anchor: None, preferred_column: None }
+        Self {
+            text: text.into(),
+            cursor: 0,
+            anchor: None,
+            preferred_column: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+        }
     }
 
     pub fn text(&self) -> &str {
@@ -87,6 +107,7 @@ impl EditorBuffer {
     /// Replaces the selection (if any) with `s`, else inserts it at the cursor.
     /// The cursor ends up right after the inserted text.
     pub fn insert(&mut self, s: &str) {
+        self.push_undo();
         self.preferred_column = None;
         let range = self.selection().unwrap_or(self.cursor..self.cursor);
         self.text.replace_range(range.clone(), s);
@@ -121,6 +142,7 @@ impl EditorBuffer {
     }
 
     fn delete_range(&mut self, range: Range<usize>) {
+        self.push_undo();
         self.preferred_column = None;
         self.text.replace_range(range.clone(), "");
         self.cursor = range.start;
@@ -214,6 +236,43 @@ impl EditorBuffer {
     /// Returns the selected text without modifying the buffer.
     pub fn copy(&self) -> Option<String> {
         self.selection().map(|range| self.text[range].to_string())
+    }
+
+    fn snapshot(&self) -> Snapshot {
+        Snapshot { text: self.text.clone(), cursor: self.cursor, anchor: self.anchor }
+    }
+
+    /// Records the state *before* a text-modifying operation, so `undo` can
+    /// return to it, and clears `redo_stack` — making a fresh edit after an
+    /// undo abandon the redone-away future, same as every other editor.
+    fn push_undo(&mut self) {
+        self.undo_stack.push(self.snapshot());
+        self.redo_stack.clear();
+    }
+
+    fn restore(&mut self, snapshot: Snapshot) {
+        self.text = snapshot.text;
+        self.cursor = snapshot.cursor;
+        self.anchor = snapshot.anchor;
+        self.preferred_column = None;
+    }
+
+    /// Undoes the most recent text-modifying operation, if any. Returns
+    /// whether there was one to undo.
+    pub fn undo(&mut self) -> bool {
+        let Some(snapshot) = self.undo_stack.pop() else { return false };
+        self.redo_stack.push(self.snapshot());
+        self.restore(snapshot);
+        true
+    }
+
+    /// Reapplies the most recently undone operation, if any. Returns whether
+    /// there was one to redo.
+    pub fn redo(&mut self) -> bool {
+        let Some(snapshot) = self.redo_stack.pop() else { return false };
+        self.undo_stack.push(self.snapshot());
+        self.restore(snapshot);
+        true
     }
 }
 
@@ -469,5 +528,72 @@ mod tests {
         let mut buf = EditorBuffer::new("a\u{00e9}b");
         buf.set_cursor(2, false); // byte 2 is inside é (bytes 1..3)
         assert_eq!(buf.cursor(), 1);
+    }
+
+    #[test]
+    fn undo_restores_text_and_cursor_from_before_an_insert() {
+        let mut buf = EditorBuffer::new("hello");
+        buf.set_cursor(5, false);
+        buf.insert(" world");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "hello");
+        assert_eq!(buf.cursor(), 5);
+    }
+
+    #[test]
+    fn redo_reapplies_an_undone_edit() {
+        let mut buf = EditorBuffer::new("hello");
+        buf.set_cursor(5, false);
+        buf.insert(" world");
+        buf.undo();
+        assert!(buf.redo());
+        assert_eq!(buf.text(), "hello world");
+        assert_eq!(buf.cursor(), 11);
+    }
+
+    #[test]
+    fn multiple_undos_walk_back_through_history_in_order() {
+        let mut buf = EditorBuffer::new("");
+        buf.insert("a");
+        buf.insert("b");
+        buf.insert("c");
+        assert_eq!(buf.text(), "abc");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "ab");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "a");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "");
+        assert!(!buf.undo(), "nothing left to undo");
+    }
+
+    #[test]
+    fn undo_with_an_empty_history_is_a_no_op() {
+        let mut buf = EditorBuffer::new("hello");
+        assert!(!buf.undo());
+        assert_eq!(buf.text(), "hello");
+    }
+
+    #[test]
+    fn a_new_edit_after_an_undo_clears_the_redo_stack() {
+        let mut buf = EditorBuffer::new("");
+        buf.insert("a");
+        buf.insert("b");
+        buf.undo();
+        buf.insert("c");
+        assert_eq!(buf.text(), "ac");
+        assert!(!buf.redo(), "redo history was abandoned by the new edit");
+    }
+
+    #[test]
+    fn undo_also_restores_a_deleted_selection() {
+        let mut buf = EditorBuffer::new("hello world");
+        buf.set_cursor(0, false);
+        buf.set_cursor(6, true);
+        buf.delete_backward();
+        assert_eq!(buf.text(), "world");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "hello world");
+        assert_eq!(buf.selection(), Some(0..6));
     }
 }

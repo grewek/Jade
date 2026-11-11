@@ -39,7 +39,7 @@ impl Editor {
     }
 
     /// Navigation/editing keys only (arrows, Home/End, Backspace/Delete,
-    /// Enter, Ctrl/Cmd+A/C/X/V) — plain character typing goes through
+    /// Enter, Ctrl/Cmd+A/C/X/V/Z, Ctrl/Cmd+Shift+Z) — plain character typing goes through
     /// `EntityInputHandler::replace_text_in_range` instead (`input_handler.rs`,
     /// wired via `window.handle_input` during paint), GPUI's platform text
     /// input path, which also handles real IME composition. An earlier
@@ -81,6 +81,13 @@ impl Editor {
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
                         self.buffer.insert(&text);
+                        cx.notify();
+                    }
+                    return;
+                }
+                "z" => {
+                    let changed = if shift { self.buffer.redo() } else { self.buffer.undo() };
+                    if changed {
                         cx.notify();
                     }
                     return;
