@@ -180,6 +180,47 @@ impl JadeApp {
         cx.notify();
     }
 
+    fn rename_folder(&mut self, id: &str, new_name: &str, window: &mut Window, cx: &mut Context<Self>) {
+        // Flush the open note's latest text ourselves first (same reasoning as
+        // `open_note`'s own flush): renaming the folder moves it to a new id, so a
+        // flush keyed on its *old* id must happen before that, not after.
+        if let (Some(note_id), Some(editor)) = (self.selected_id.clone(), self.editor.clone()) {
+            let text = editor.read(cx).value().to_string();
+            let _ = self.vault.update_note_content(&note_id, text);
+        }
+
+        let Ok(new_id) = self.vault.rename_folder(id, new_name) else {
+            return;
+        };
+
+        if self.collapsed_folders.remove(id) {
+            self.collapsed_folders.insert(new_id.clone());
+        }
+
+        let prefix = format!("{id}/");
+        let moved_selection = self
+            .selected_id
+            .clone()
+            .and_then(|selected| selected.strip_prefix(&prefix).map(str::to_string));
+        match moved_selection {
+            Some(rest) => self.open_note(format!("{new_id}/{rest}"), window, cx),
+            None => cx.notify(),
+        }
+    }
+
+    fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
+        if self.vault.delete_folder(id).is_ok() {
+            let prefix = format!("{id}/");
+            self.collapsed_folders.retain(|f| f != id && !f.starts_with(&prefix));
+            if self.selected_id.as_deref().is_some_and(|sel| sel.starts_with(&prefix)) {
+                self.selected_id = None;
+                self.editor = None;
+                self._editor_subscription = None;
+            }
+        }
+        cx.notify();
+    }
+
     fn rename_selected(&mut self, _: &RenameNote, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.selected_id.clone() {
             let title = self.vault.note(&id).map(|n| n.title.clone()).unwrap_or_default();
@@ -264,6 +305,83 @@ impl JadeApp {
                 .on_ok(move |_, _window, cx| {
                     app.update(cx, |app, cx| {
                         app.delete_note(&id, cx);
+                    });
+                    true
+                })
+        });
+    }
+
+    fn commit_rename_folder(id: &str, input: &Entity<InputState>, app: &Entity<Self>, window: &mut Window, cx: &mut App) {
+        let new_name = input.read(cx).value().to_string();
+        app.update(cx, |app, cx| {
+            app.rename_folder(id, &new_name, window, cx);
+        });
+    }
+
+    fn open_rename_folder_dialog(
+        id: String,
+        current_name: String,
+        app: Entity<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let input = cx.new(|cx| InputState::new(window, cx).default_value(current_name));
+        window.open_dialog(cx, move |dialog, _window, _cx| {
+            let input = input.clone();
+            let app = app.clone();
+            let id = id.clone();
+            dialog
+                .title("Rename folder")
+                .child(Input::new(&input).id("rename-folder-input"))
+                // See the comment on the note rename dialog's `on_ok` for why this is
+                // needed in addition to the footer button: it's what Enter dispatches to.
+                .on_ok({
+                    let input = input.clone();
+                    let app = app.clone();
+                    let id = id.clone();
+                    move |_, window, cx| {
+                        Self::commit_rename_folder(&id, &input, &app, window, cx);
+                        true
+                    }
+                })
+                .footer(
+                    DialogFooter::new()
+                        .child(
+                            Button::new("cancel-rename-folder")
+                                .label("Cancel")
+                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                        )
+                        .child(Button::new("confirm-rename-folder").label("Rename").on_click(
+                            move |_, window, cx| {
+                                Self::commit_rename_folder(&id, &input, &app, window, cx);
+                                window.close_dialog(cx);
+                            },
+                        )),
+                )
+        });
+    }
+
+    fn open_delete_folder_dialog(
+        id: String,
+        name: String,
+        app: Entity<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        window.open_alert_dialog(cx, move |alert, _window, _cx| {
+            let app = app.clone();
+            let id = id.clone();
+            alert
+                .confirm()
+                .title("Delete folder")
+                .description(format!(
+                    "Delete \"{name}\" and everything inside it? This can't be undone."
+                ))
+                .ok_text("Delete")
+                .ok_variant(ButtonVariant::Danger)
+                .on_ok(move |_, _window, cx| {
+                    app.update(cx, |app, cx| {
+                        app.delete_folder(&id, cx);
                     });
                     true
                 })
@@ -366,6 +484,7 @@ impl JadeApp {
         let disclosure = if collapsed { "\u{25b8}" } else { "\u{25be}" };
         let toggle_id = folder_id.to_string();
         let menu_parent = folder_id.to_string();
+        let menu_name = name.to_string();
         let app_entity = cx.entity();
 
         div()
@@ -385,6 +504,12 @@ impl JadeApp {
                 let note_parent = menu_parent.clone();
                 let folder_entity = app_entity.clone();
                 let folder_parent = menu_parent.clone();
+                let rename_entity = app_entity.clone();
+                let rename_id = menu_parent.clone();
+                let rename_name = menu_name.clone();
+                let delete_entity = app_entity.clone();
+                let delete_id = menu_parent.clone();
+                let delete_name = menu_name.clone();
                 menu.item(PopupMenuItem::new("New note").on_click(move |_, window, cx| {
                     note_entity.update(cx, |app, cx| {
                         app.create_note(Some(&note_parent), window, cx);
@@ -394,6 +519,24 @@ impl JadeApp {
                     JadeApp::open_create_folder_dialog(
                         Some(folder_parent.clone()),
                         folder_entity.clone(),
+                        window,
+                        cx,
+                    );
+                }))
+                .item(PopupMenuItem::new("Rename").on_click(move |_, window, cx| {
+                    JadeApp::open_rename_folder_dialog(
+                        rename_id.clone(),
+                        rename_name.clone(),
+                        rename_entity.clone(),
+                        window,
+                        cx,
+                    );
+                }))
+                .item(PopupMenuItem::new("Delete").on_click(move |_, window, cx| {
+                    JadeApp::open_delete_folder_dialog(
+                        delete_id.clone(),
+                        delete_name.clone(),
+                        delete_entity.clone(),
                         window,
                         cx,
                     );
@@ -1153,6 +1296,203 @@ mod tests {
         let has_subfolder = app.read_with(cx, |app, _| app.vault.folders.contains("Math/Algebra"));
         assert!(has_subfolder);
         assert!(dir.path().join("Math").join("Algebra").is_dir());
+    }
+
+    #[gpui_kit::test]
+    fn folder_context_menu_rename_moves_dir_and_nested_note(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+        std::fs::write(dir.path().join("Math").join("Algebra.md"), "x + y").unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click("folder-Math", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("popup-menu").within("items").click(2usize, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("rename-folder-input", cx);
+            window.press("end", cx);
+            for _ in 0.."Math".len() {
+                window.press("backspace", cx);
+            }
+            window.input("Mathematics", cx);
+            window.click("confirm-rename-folder", cx);
+        })
+        .unwrap();
+
+        assert!(!dir.path().join("Math").exists());
+        assert!(dir.path().join("Mathematics").join("Algebra.md").exists());
+        let has_folder = app.read_with(cx, |app, _| app.vault.folders.contains("Mathematics"));
+        assert!(has_folder);
+        let has_note = app.read_with(cx, |app, _| app.vault.note("Mathematics/Algebra").is_some());
+        assert!(has_note);
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("folder-Mathematics").is_some());
+            assert!(window.try_find("Mathematics/Algebra").is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn renaming_a_folder_reloads_its_currently_open_nested_note(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+        std::fs::write(dir.path().join("Math").join("Algebra.md"), "content").unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Math/Algebra", cx);
+            window.render_frame(cx);
+            window.right_click("folder-Math", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("popup-menu").within("items").click(2usize, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("rename-folder-input", cx);
+            window.press("end", cx);
+            for _ in 0.."Math".len() {
+                window.press("backspace", cx);
+            }
+            window.input("Mathematics", cx);
+            window.click("confirm-rename-folder", cx);
+        })
+        .unwrap();
+
+        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        assert_eq!(selected, Some("Mathematics/Algebra".to_string()));
+        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        assert!(has_editor, "the note should still be open after its folder was renamed");
+    }
+
+    #[gpui_kit::test]
+    fn pressing_enter_in_the_rename_folder_dialog_confirms_it(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click("folder-Math", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("popup-menu").within("items").click(2usize, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("rename-folder-input", cx);
+            window.press("end", cx);
+            for _ in 0.."Math".len() {
+                window.press("backspace", cx);
+            }
+            window.input("Science", cx);
+            // No click on "confirm-rename-folder" — Enter alone must commit the rename.
+            window.press("enter", cx);
+        })
+        .unwrap();
+
+        let dialog_still_open =
+            cx.update_window(window, |_, window, cx| window.has_active_dialog(cx)).unwrap();
+        assert!(!dialog_still_open, "Enter should have closed the dialog");
+        assert!(dir.path().join("Science").is_dir());
+    }
+
+    #[gpui_kit::test]
+    fn folder_context_menu_delete_removes_dir_and_contents(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+        std::fs::write(dir.path().join("Math").join("Algebra.md"), "content").unwrap();
+        std::fs::write(dir.path().join("Other.md"), "untouched").unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click("folder-Math", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("popup-menu").within("items").click(3usize, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("ok", cx);
+        })
+        .unwrap();
+
+        assert!(!dir.path().join("Math").exists());
+        assert!(dir.path().join("Other.md").exists());
+        let has_folder = app.read_with(cx, |app, _| app.vault.folders.contains("Math"));
+        assert!(!has_folder);
+    }
+
+    #[gpui_kit::test]
+    fn deleting_a_folder_clears_selection_if_its_open_note_was_inside(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+        std::fs::write(dir.path().join("Math").join("Algebra.md"), "content").unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Math/Algebra", cx);
+            window.render_frame(cx);
+            window.right_click("folder-Math", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("popup-menu").within("items").click(3usize, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("ok", cx);
+        })
+        .unwrap();
+
+        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        assert_eq!(selected, None);
+        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        assert!(!has_editor);
     }
 
     #[gpui_kit::test]
