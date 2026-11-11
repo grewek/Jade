@@ -6,6 +6,7 @@
 mod buffer;
 mod editor;
 mod element;
+mod input_handler;
 
 pub use buffer::EditorBuffer;
 pub use editor::Editor;

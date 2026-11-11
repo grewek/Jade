@@ -1,0 +1,232 @@
+use std::ops::Range;
+
+use gpui_kit::*;
+
+use super::Editor;
+
+/// The byte offset in `text` after `utf16_offset` UTF-16 code units.
+///
+/// GPUI's platform text input protocol (`EntityInputHandler`) speaks UTF-16
+/// offsets, since that's the common denominator for the underlying OS APIs
+/// (both macOS's and Windows' text input services are UTF-16-native)
+/// regardless of this buffer being UTF-8 internally — every method on this
+/// trait needs a conversion at the boundary.
+pub(super) fn utf16_to_utf8(text: &str, utf16_offset: usize) -> usize {
+    let mut utf16_count = 0;
+    for (byte_index, ch) in text.char_indices() {
+        if utf16_count >= utf16_offset {
+            return byte_index;
+        }
+        utf16_count += ch.len_utf16();
+    }
+    text.len()
+}
+
+/// The UTF-16 offset of `byte_offset` into `text` — the inverse of
+/// [`utf16_to_utf8`].
+pub(super) fn utf8_to_utf16(text: &str, byte_offset: usize) -> usize {
+    text[..byte_offset].chars().map(char::len_utf16).sum()
+}
+
+impl EntityInputHandler for Editor {
+    fn text_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        adjusted_range: &mut Option<Range<usize>>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<String> {
+        let text = self.buffer.text();
+        let start = utf16_to_utf8(text, range_utf16.start).min(text.len());
+        let end = utf16_to_utf8(text, range_utf16.end).min(text.len());
+        let (start, end) = (start.min(end), start.max(end));
+        *adjusted_range = Some(utf8_to_utf16(text, start)..utf8_to_utf16(text, end));
+        Some(text[start..end].to_string())
+    }
+
+    fn selected_text_range(
+        &mut self,
+        _ignore_disabled_input: bool,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<UTF16Selection> {
+        let text = self.buffer.text();
+        let cursor = self.buffer.cursor();
+        let selection = self.buffer.selection().unwrap_or(cursor..cursor);
+        Some(UTF16Selection {
+            range: utf8_to_utf16(text, selection.start)..utf8_to_utf16(text, selection.end),
+            // Not tracked — `EditorBuffer::selection()` only exposes the
+            // normalized (start <= end) range, not which side the actual
+            // cursor is on. Phase 1 simplification; affects only the rare
+            // IME/text-service that cares which end the caret is at.
+            reversed: false,
+        })
+    }
+
+    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Range<usize>> {
+        self.marked_range.clone()
+    }
+
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.marked_range = None;
+    }
+
+    fn replace_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        text: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(range_utf16) = range_utf16 {
+            let buffer_text = self.buffer.text();
+            let start = utf16_to_utf8(buffer_text, range_utf16.start);
+            let end = utf16_to_utf8(buffer_text, range_utf16.end);
+            self.buffer.set_cursor(start, false);
+            self.buffer.set_cursor(end, true);
+        }
+        self.buffer.insert(text);
+        self.marked_range = None;
+        cx.notify();
+    }
+
+    fn replace_and_mark_text_in_range(
+        &mut self,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        new_selected_range: Option<Range<usize>>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let buffer_text = self.buffer.text().to_string();
+        let replace_range = range_utf16
+            .map(|r| utf16_to_utf8(&buffer_text, r.start)..utf16_to_utf8(&buffer_text, r.end))
+            .or_else(|| self.marked_range.clone())
+            .unwrap_or_else(|| {
+                let cursor = self.buffer.cursor();
+                self.buffer.selection().unwrap_or(cursor..cursor)
+            });
+
+        self.buffer.set_cursor(replace_range.start, false);
+        self.buffer.set_cursor(replace_range.end, true);
+        self.buffer.insert(new_text);
+
+        let marked_start = replace_range.start;
+        let marked_end = marked_start + new_text.len();
+        self.marked_range = Some(marked_start..marked_end);
+
+        match new_selected_range {
+            // `sel` is UTF-16-relative to the start of `new_text`, not the document.
+            Some(sel) => {
+                let start = marked_start + utf16_to_utf8(new_text, sel.start);
+                let end = marked_start + utf16_to_utf8(new_text, sel.end);
+                self.buffer.set_cursor(start, false);
+                self.buffer.set_cursor(end, true);
+            }
+            None => self.buffer.set_cursor(marked_end, false),
+        }
+        cx.notify();
+    }
+
+    fn bounds_for_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        element_bounds: Bounds<Pixels>,
+        window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Bounds<Pixels>> {
+        let text = self.buffer.text().to_string();
+        let byte_offset = utf16_to_utf8(&text, range_utf16.start);
+        let line_height = window.line_height();
+        let text_style = window.text_style();
+        let font = text_style.font();
+        let font_size = text_style.font_size.to_pixels(window.rem_size());
+
+        let mut line_start = 0usize;
+        for (i, line_text) in text.split('\n').enumerate() {
+            let line_end = line_start + line_text.len();
+            if byte_offset <= line_end {
+                let run = TextRun {
+                    len: line_text.len(),
+                    font,
+                    color: text_style.color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                };
+                let shaped = window.text_system().shape_line(line_text.to_string().into(), font_size, &[run], None);
+                let x = shaped.x_for_index(byte_offset - line_start);
+                let origin = element_bounds.origin + point(x, line_height * i as f32);
+                return Some(Bounds { origin, size: size(px(1.), line_height) });
+            }
+            line_start = line_end + 1;
+        }
+        None
+    }
+
+    fn character_index_for_point(
+        &mut self,
+        _point: Point<Pixels>,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<usize> {
+        // Would need this element's current screen bounds, which (unlike
+        // `bounds_for_range`) this method isn't passed — mouse-driven cursor
+        // placement already goes through `offset_for_position` in
+        // `element.rs` instead, where `canvas`'s paint closure has `bounds`
+        // directly in scope. This only affects secondary OS text-service
+        // affordances (e.g. a right-click "Look Up"), not typing or IME
+        // composition, so returning "unsupported" is an acceptable Phase 1
+        // gap rather than plumbing a persisted-bounds field just for it.
+        None
+    }
+
+    fn set_selected_text_range(&mut self, range_utf16: Range<usize>, _window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.buffer.text();
+        let start = utf16_to_utf8(text, range_utf16.start);
+        let end = utf16_to_utf8(text, range_utf16.end);
+        self.buffer.set_cursor(start, false);
+        self.buffer.set_cursor(end, true);
+        cx.notify();
+    }
+}
+
+// Deliberately not `use super::*` here: the production code above uses
+// `use gpui_kit::*;`, which (with `test-support` enabled) also re-exports
+// GPUI's `test` attribute macro — importing it transitively into this module
+// would shadow the plain `#[test]` these pure-logic tests use and make it
+// recurse infinitely (the same project-wide gotcha noted in `main.rs`).
+#[cfg(test)]
+mod tests {
+    use super::{utf16_to_utf8, utf8_to_utf16};
+
+    #[test]
+    fn utf16_offsets_round_trip_through_ascii() {
+        let text = "hello world";
+        for byte_offset in [0, 1, 5, 11] {
+            let utf16 = utf8_to_utf16(text, byte_offset);
+            assert_eq!(utf16, byte_offset, "ASCII is 1 UTF-16 unit per byte");
+            assert_eq!(utf16_to_utf8(text, utf16), byte_offset);
+        }
+    }
+
+    #[test]
+    fn utf16_offsets_account_for_multi_byte_and_surrogate_pair_chars() {
+        // é is 2 UTF-8 bytes but 1 UTF-16 unit; 😀 is 4 UTF-8 bytes but a
+        // UTF-16 *surrogate pair* (2 units) — the case plain byte-counting
+        // would get wrong.
+        let text = "a\u{00e9}\u{1f600}b"; // "a", "é", "😀", "b"
+        // byte offsets: a=0..1, é=1..3, 😀=3..7, b=7..8
+        assert_eq!(utf8_to_utf16(text, 0), 0);
+        assert_eq!(utf8_to_utf16(text, 1), 1); // after "a": 1 UTF-16 unit
+        assert_eq!(utf8_to_utf16(text, 3), 2); // after "é": +1 UTF-16 unit
+        assert_eq!(utf8_to_utf16(text, 7), 4); // after 😀: +2 UTF-16 units (surrogate pair)
+        assert_eq!(utf8_to_utf16(text, 8), 5); // after "b": +1
+
+        assert_eq!(utf16_to_utf8(text, 0), 0);
+        assert_eq!(utf16_to_utf8(text, 1), 1);
+        assert_eq!(utf16_to_utf8(text, 2), 3);
+        assert_eq!(utf16_to_utf8(text, 4), 7);
+        assert_eq!(utf16_to_utf8(text, 5), 8);
+    }
+}

@@ -80,6 +80,13 @@ pub(super) fn render_editor(
                         focus_handle.clone(),
                         window,
                     );
+
+                    // Only registers while `focus_handle` is actually focused
+                    // (checked internally by `handle_input`) — installs this
+                    // editor as the platform's text input target so typing
+                    // and IME composition reach `input_handler.rs` instead of
+                    // (or before falling through to) `.on_key_down`.
+                    window.handle_input(&focus_handle, ElementInputHandler::new(bounds, editor_entity.clone()), cx);
                 },
             )
             .size_full(),

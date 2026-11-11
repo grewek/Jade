@@ -6,18 +6,28 @@ use super::EditorBuffer;
 /// The entity backing one editor view — owns the buffer and the focus handle
 /// its element paints a cursor against and attaches mouse/keyboard handlers to.
 pub struct Editor {
-    buffer: EditorBuffer,
+    pub(super) buffer: EditorBuffer,
     pub(super) focus_handle: FocusHandle,
     /// Whether the left mouse button is currently held down after a press
     /// that started inside this editor, so a subsequent `MouseMoveEvent`
     /// should extend the selection rather than being ignored. Cleared on
     /// `MouseUpEvent` regardless of where the button is released.
     pub(super) is_dragging: bool,
+    /// The byte range of text currently under IME composition (e.g. pinyin
+    /// not yet confirmed into hanzi), if any — see `input_handler.rs`. Not
+    /// yet rendered with the underline real IME composition conventionally
+    /// gets; a Phase 1 cosmetic gap, not a functional one.
+    pub(super) marked_range: Option<std::ops::Range<usize>>,
 }
 
 impl Editor {
     pub fn new(text: impl Into<String>, cx: &mut Context<Self>) -> Self {
-        Self { buffer: EditorBuffer::new(text), focus_handle: cx.focus_handle(), is_dragging: false }
+        Self {
+            buffer: EditorBuffer::new(text),
+            focus_handle: cx.focus_handle(),
+            is_dragging: false,
+            marked_range: None,
+        }
     }
 
     pub fn buffer(&self) -> &EditorBuffer {
@@ -28,22 +38,17 @@ impl Editor {
         &mut self.buffer
     }
 
-    /// Navigation/editing keys (arrows, Home/End, Backspace/Delete, Enter,
-    /// Ctrl/Cmd+A), plus — for keys that aren't one of those — plain
-    /// character typing via `keystroke.key_char` when no significant
-    /// modifier is held.
-    ///
-    /// This is a Phase 1 simplification, not the final input path: real text
-    /// input (proper IME composition, non-Latin scripts) is a later Phase 1
-    /// step (`EntityInputHandler`, wired through `window.handle_input`) that
-    /// supersedes the plain-typing half of this once it lands — the
-    /// navigation/editing-key half stays as-is either way, since those
-    /// aren't something IME composition is involved in.
+    /// Navigation/editing keys only (arrows, Home/End, Backspace/Delete,
+    /// Enter, Ctrl/Cmd+A) — plain character typing goes through
+    /// `EntityInputHandler::replace_text_in_range` instead (`input_handler.rs`,
+    /// wired via `window.handle_input` during paint), GPUI's platform text
+    /// input path, which also handles real IME composition. An earlier
+    /// version of this method had a `keystroke.key_char` fallback for typing
+    /// before that existed; removed once it did, rather than kept as a
+    /// second path for the same keystrokes to arrive through.
     pub(super) fn handle_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let shift = keystroke.modifiers.shift;
-        let no_significant_modifier =
-            !keystroke.modifiers.control && !keystroke.modifiers.platform && !keystroke.modifiers.function;
 
         if (keystroke.modifiers.control || keystroke.modifiers.platform) && keystroke.key == "a" {
             self.buffer.select_all();
@@ -61,13 +66,7 @@ impl Editor {
             "backspace" => self.buffer.delete_backward(),
             "delete" => self.buffer.delete_forward(),
             "enter" => self.buffer.insert("\n"),
-            _ => {
-                let Some(text) = (no_significant_modifier).then_some(keystroke.key_char.as_deref()).flatten()
-                else {
-                    return;
-                };
-                self.buffer.insert(text);
-            }
+            _ => return,
         }
         cx.notify();
     }
