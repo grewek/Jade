@@ -1,8 +1,6 @@
-use std::collections::HashMap;
-use std::path::PathBuf;
-
 use criterion::{Criterion, criterion_group, criterion_main};
-use jade_core::{Note, Vault, extract_wikilinks};
+use jade_core::{Vault, extract_wikilinks};
+use tempfile::TempDir;
 
 /// A typical note is ~500-2000 words; a worst-case one (e.g. an imported
 /// book chapter or meeting-notes dump) is ~20k words. Headings every 40
@@ -23,21 +21,19 @@ fn synthetic_note(word_count: usize, link_every: usize) -> String {
     text
 }
 
-fn vault_with_notes(count: usize, words_per_note: usize) -> Vault {
-    let mut notes = HashMap::new();
+/// Goes through the real `create_note`/`update_note_content` API (backed by a
+/// real temp directory) rather than constructing `Vault`'s fields directly, so
+/// this also exercises the real incremental wikilink-cache updates, not just a
+/// hand-assembled fixture. The `TempDir` must stay alive as long as `Vault`
+/// does, even though nothing here re-reads from disk after setup.
+fn vault_with_notes(count: usize, words_per_note: usize) -> (TempDir, Vault) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut vault = Vault::open(dir.path()).unwrap();
     for i in 0..count {
-        let id = format!("Note {i}");
-        notes.insert(
-            id.clone(),
-            Note {
-                id: id.clone(),
-                path: PathBuf::from(format!("{id}.md")),
-                title: id,
-                content: synthetic_note(words_per_note, 20),
-            },
-        );
+        let id = vault.create_note(&format!("Note {i}"), None).unwrap();
+        vault.update_note_content(&id, synthetic_note(words_per_note, 20)).unwrap();
     }
-    Vault { root: PathBuf::from("."), notes, folders: Default::default() }
+    (dir, vault)
 }
 
 const SIZES: &[(&str, usize)] = &[("typical", 1_500), ("worst_case", 20_000)];
@@ -57,7 +53,7 @@ fn bench_extract_wikilinks(c: &mut Criterion) {
 fn bench_backlinks(c: &mut Criterion) {
     let mut group = c.benchmark_group("Vault::backlinks");
     for &(label, words) in SIZES {
-        let vault = vault_with_notes(200, words);
+        let (_dir, vault) = vault_with_notes(200, words);
         group.bench_function(label, |b| b.iter(|| vault.backlinks()));
     }
     group.finish();
@@ -66,7 +62,7 @@ fn bench_backlinks(c: &mut Criterion) {
 fn bench_search(c: &mut Criterion) {
     let mut group = c.benchmark_group("Vault::search");
     for &(label, words) in SIZES {
-        let vault = vault_with_notes(200, words);
+        let (_dir, vault) = vault_with_notes(200, words);
         group.bench_function(label, |b| b.iter(|| vault.search("word")));
     }
     group.finish();

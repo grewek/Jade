@@ -89,10 +89,7 @@ impl JadeApp {
 
         let (vault, error) = match Vault::open(&vault_path) {
             Ok(vault) => (vault, None),
-            Err(err) => (
-                Vault { root: vault_path, notes: Default::default(), folders: Default::default() },
-                Some(err.to_string()),
-            ),
+            Err(err) => (Vault::empty(vault_path), Some(err.to_string())),
         };
 
         Self {

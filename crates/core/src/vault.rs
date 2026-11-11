@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::links::extract_wikilinks;
+use crate::links::{WikiLink, extract_wikilinks};
 use crate::note::{Note, relative_id, relative_path_id};
 
 pub struct Vault {
@@ -9,6 +9,11 @@ pub struct Vault {
     pub notes: HashMap<String, Note>,
     /// Folder ids (relative paths, `/`-separated), including empty folders.
     pub folders: HashSet<String>,
+    /// Each note's extracted wikilinks, cached and kept in sync with `notes` on
+    /// every mutation. Without this, `backlinks()` re-parses every note's content
+    /// on every call — including ones that haven't changed since the last call,
+    /// which it's called on on every keystroke (the live backlinks panel).
+    wikilinks: HashMap<String, Vec<WikiLink>>,
 }
 
 impl Vault {
@@ -17,7 +22,21 @@ impl Vault {
         let mut notes = HashMap::new();
         let mut folders = HashSet::new();
         collect_entries(&root, &root, &mut notes, &mut folders)?;
-        Ok(Self { root, notes, folders })
+        let wikilinks = notes
+            .values()
+            .map(|note| (note.id.clone(), extract_wikilinks(&note.content)))
+            .collect();
+        Ok(Self { root, notes, folders, wikilinks })
+    }
+
+    /// A vault with no notes or folders yet, e.g. as a fallback when `open` fails.
+    pub fn empty(root: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.into(),
+            notes: HashMap::new(),
+            folders: HashSet::new(),
+            wikilinks: HashMap::new(),
+        }
     }
 
     pub fn note(&self, id: &str) -> Option<&Note> {
@@ -48,6 +67,7 @@ impl Vault {
         std::fs::write(&path, "")?;
         let note = Note::load(&self.root, path)?;
         let id = note.id.clone();
+        self.wikilinks.insert(id.clone(), extract_wikilinks(&note.content));
         self.notes.insert(id.clone(), note);
         Ok(id)
     }
@@ -81,7 +101,10 @@ impl Vault {
     pub fn update_note_content(&mut self, id: &str, content: String) -> std::io::Result<()> {
         let note = self.notes.get_mut(id).ok_or_else(|| not_found(id))?;
         note.content = content;
-        note.save()
+        let links = extract_wikilinks(&note.content);
+        note.save()?;
+        self.wikilinks.insert(id.to_string(), links);
+        Ok(())
     }
 
     /// Renames a note's underlying file (keeping it in the same folder) and returns its new id.
@@ -108,6 +131,11 @@ impl Vault {
         let note = Note::load(&self.root, new_path)?;
         let new_id = note.id.clone();
         self.notes.insert(new_id.clone(), note);
+        // Content is unchanged by a rename, so move the cached links to the new
+        // key instead of re-parsing.
+        if let Some(links) = self.wikilinks.remove(id) {
+            self.wikilinks.insert(new_id.clone(), links);
+        }
         Ok(new_id)
     }
 
@@ -116,6 +144,7 @@ impl Vault {
         let path = self.notes.get(id).ok_or_else(|| not_found(id))?.path.clone();
         std::fs::remove_file(&path)?;
         self.notes.remove(id);
+        self.wikilinks.remove(id);
         Ok(())
     }
 
@@ -150,10 +179,19 @@ impl Vault {
         let old_prefix = format!("{id}/");
         self.folders.retain(|f| f != id && !f.starts_with(&old_prefix));
         self.notes.retain(|note_id, _| !note_id.starts_with(&old_prefix));
+        self.wikilinks.retain(|note_id, _| !note_id.starts_with(&old_prefix));
 
         let new_id = relative_path_id(&self.root, &new_path);
         self.folders.insert(new_id.clone());
         collect_entries(&self.root, &new_path, &mut self.notes, &mut self.folders)?;
+        // Content is unchanged by a move, but re-extracting (rather than remapping
+        // the old prefix to the new one key by key) is simpler for arbitrarily
+        // nested children — this only runs on a user-initiated folder rename, not
+        // on every keystroke, so it doesn't need to be as tight as `backlinks()`.
+        let new_prefix = format!("{new_id}/");
+        for note in self.notes.values().filter(|n| n.id.starts_with(&new_prefix)) {
+            self.wikilinks.insert(note.id.clone(), extract_wikilinks(&note.content));
+        }
         Ok(new_id)
     }
 
@@ -169,6 +207,7 @@ impl Vault {
         let prefix = format!("{id}/");
         self.folders.retain(|f| f != id && !f.starts_with(&prefix));
         self.notes.retain(|note_id, _| !note_id.starts_with(&prefix));
+        self.wikilinks.retain(|note_id, _| !note_id.starts_with(&prefix));
         Ok(())
     }
 
@@ -180,10 +219,13 @@ impl Vault {
         // `benches/vault_operations.rs` for just how far that scaled.
         let index = self.title_index();
         let mut backlinks: HashMap<String, Vec<String>> = HashMap::new();
-        for note in self.notes.values() {
-            for link in extract_wikilinks(&note.content) {
+        // Reads the cached `wikilinks` map instead of re-running `extract_wikilinks`
+        // on every note's content here — that cache is what turns this from a full
+        // re-parse of the whole vault into a cheap read on every keystroke.
+        for (note_id, links) in &self.wikilinks {
+            for link in links {
                 if let Some(target_id) = self.resolve(&link.target, &index) {
-                    backlinks.entry(target_id).or_default().push(note.id.clone());
+                    backlinks.entry(target_id).or_default().push(note_id.clone());
                 }
             }
         }
@@ -267,6 +309,50 @@ mod tests {
         let backlinks = vault.backlinks();
         let b_backlinks = backlinks.get("Note B").expect("Note B should have backlinks");
         assert_eq!(b_backlinks, &vec!["Note A".to_string()]);
+    }
+
+    /// Regression test for the wikilink cache `backlinks()` reads from: a note
+    /// that gains a link *after* the vault was opened must still show up, not
+    /// just links present at `Vault::open` time.
+    #[test]
+    fn backlinks_reflect_edits_made_after_the_vault_was_opened() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "no links yet").unwrap();
+        std::fs::write(dir.path().join("Note B.md"), "unrelated").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
+        assert!(!vault.backlinks().contains_key("Note B"));
+
+        vault
+            .update_note_content("Note A", "Links to [[Note B]] now.".to_string())
+            .unwrap();
+
+        let backlinks = vault.backlinks();
+        assert_eq!(backlinks.get("Note B"), Some(&vec!["Note A".to_string()]));
+    }
+
+    #[test]
+    fn backlinks_still_resolve_after_the_linking_note_is_renamed() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Target.md"), "content").unwrap();
+        std::fs::write(dir.path().join("Source.md"), "Links to [[Target]].").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
+
+        let new_id = vault.rename_note("Source", "Renamed Source").unwrap();
+
+        let backlinks = vault.backlinks();
+        assert_eq!(backlinks.get("Target"), Some(&vec![new_id]));
+    }
+
+    #[test]
+    fn deleted_notes_no_longer_appear_in_backlinks() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Target.md"), "content").unwrap();
+        std::fs::write(dir.path().join("Source.md"), "Links to [[Target]].").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
+
+        vault.delete_note("Source").unwrap();
+
+        assert!(!vault.backlinks().contains_key("Target"));
     }
 
     #[test]
@@ -414,6 +500,20 @@ mod tests {
         assert!(vault.folders.contains("Mathematics/Geometry"));
         assert!(vault.note("Math/Algebra").is_none());
         assert_eq!(vault.note("Mathematics/Algebra").unwrap().content, "x + y");
+    }
+
+    #[test]
+    fn backlinks_still_resolve_after_the_linking_notes_folder_is_renamed() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Target.md"), "content").unwrap();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+        std::fs::write(dir.path().join("Math").join("Source.md"), "Links to [[Target]].").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
+
+        vault.rename_folder("Math", "Mathematics").unwrap();
+
+        let backlinks = vault.backlinks();
+        assert_eq!(backlinks.get("Target"), Some(&vec!["Mathematics/Source".to_string()]));
     }
 
     #[test]
