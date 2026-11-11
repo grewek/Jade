@@ -797,7 +797,21 @@ impl JadeApp {
         for (index, block) in self.blocks.iter().enumerate() {
             if self.active_block == Some(index) {
                 if let Some(editor) = &self.active_editor {
-                    rows.push(Textarea::new(editor).w_full().into_any_element());
+                    // `Textarea` defaults to a bordered/backgrounded input-box look
+                    // (`.bordered(true)`/`.appearance(true)`) — fine for the old
+                    // whole-document editor, but it makes the active block visibly
+                    // pop out as its own boxed input against the border-less
+                    // `TextView`-rendered blocks around it, breaking the illusion of
+                    // one continuous document. Strip that chrome so only *which*
+                    // block is active differs (plain text vs. editable), not how it
+                    // looks.
+                    rows.push(
+                        Textarea::new(editor)
+                            .w_full()
+                            .appearance(false)
+                            .bordered(false)
+                            .into_any_element(),
+                    );
                 }
                 continue;
             }
