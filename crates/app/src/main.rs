@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 
 mod markdown_blocks;
+mod text_editor;
 
 use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::dialog::DialogFooter;
