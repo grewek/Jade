@@ -9,19 +9,28 @@ const SELECTION_HIGHLIGHT: Hsla = Hsla { h: 0.6, s: 0.9, l: 0.6, a: 0.35 };
 
 /// Renders `editor`'s buffer: each `\n`-delimited line shaped and painted, a
 /// selection highlight rect behind any selected text, and (while focused) a
-/// thin cursor caret. No mouse/keyboard wiring yet — `canvas`'s own prepaint
-/// closure is a no-op; that lands in later Phase 1 steps.
+/// thin cursor caret. Also registers mouse handling for the current frame
+/// (click to place the cursor, drag to select) — keyboard input is the next
+/// Phase 1 step.
 ///
 /// Composed from plain `div()` + `canvas()` rather than a hand-implemented
-/// `gpui::Element` — the outer `div` gets sizing, focus, and (later) mouse/key
-/// handling for free from the exact same builder methods already used
-/// throughout `main.rs`; `canvas` only needs to own the actual text/cursor
-/// painting.
+/// `gpui::Element` — the outer `div` gets sizing and focus for free from the
+/// exact same builder methods already used throughout `main.rs`; `canvas`
+/// only needs to own the actual text/cursor painting and (since it has
+/// `bounds` in scope precisely when painting, unlike an event registered
+/// outside of paint) the mouse hit-testing math.
 pub(super) fn render_editor(
     editor: &Editor,
+    editor_entity: Entity<Editor>,
     window: &mut Window,
     _cx: &mut Context<Editor>,
 ) -> impl IntoElement {
+    // Read straight from `editor` (the `&mut self` `Editor::render` already
+    // has), not `editor_entity.read(cx)` — this function runs *as* that
+    // entity's own render, so reading through the entity handle here panics
+    // ("cannot read while already being updated"). `editor_entity` is only
+    // for the mouse closures below, which run later, once rendering has
+    // finished and reading/updating the entity is safe again.
     let buffer = editor.buffer();
     let text = buffer.text().to_string();
     let cursor = buffer.cursor();
@@ -59,10 +68,125 @@ pub(super) fn render_editor(
                         window,
                         cx,
                     );
+
+                    register_mouse_handling(
+                        editor_entity.clone(),
+                        text.clone(),
+                        bounds,
+                        line_height,
+                        font.clone(),
+                        font_size,
+                        focus_handle.clone(),
+                        window,
+                    );
                 },
             )
             .size_full(),
         )
+}
+
+/// Registers this frame's mouse listeners: press to focus and place the
+/// cursor (collapsing any selection), drag (move while the button that
+/// pressed inside these bounds is still down) to extend it, release to stop
+/// dragging. `window.on_mouse_event` listeners last one frame each — this
+/// runs on every paint, same as the painting itself.
+#[allow(clippy::too_many_arguments)]
+fn register_mouse_handling(
+    editor_entity: Entity<Editor>,
+    text: String,
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    font: Font,
+    font_size: Pixels,
+    focus_handle: FocusHandle,
+    window: &mut Window,
+) {
+    window.on_mouse_event({
+        let editor_entity = editor_entity.clone();
+        let text = text.clone();
+        let font = font.clone();
+        move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble
+                || event.button != MouseButton::Left
+                || !bounds.contains(&event.position)
+            {
+                return;
+            }
+            let offset = offset_for_position(&text, event.position, bounds, line_height, &font, font_size, window);
+            editor_entity.update(cx, |editor, cx| {
+                editor.buffer_mut().set_cursor(offset, false);
+                editor.is_dragging = true;
+                cx.notify();
+            });
+            focus_handle.focus(window, cx);
+        }
+    });
+
+    window.on_mouse_event({
+        let editor_entity = editor_entity.clone();
+        move |event: &MouseMoveEvent, phase, window, cx| {
+            if phase != DispatchPhase::Bubble || !editor_entity.read(cx).is_dragging {
+                return;
+            }
+            let offset = offset_for_position(&text, event.position, bounds, line_height, &font, font_size, window);
+            editor_entity.update(cx, |editor, cx| {
+                editor.buffer_mut().set_cursor(offset, true);
+                cx.notify();
+            });
+        }
+    });
+
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+        if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
+            return;
+        }
+        editor_entity.update(cx, |editor, cx| {
+            if editor.is_dragging {
+                editor.is_dragging = false;
+                cx.notify();
+            }
+        });
+    });
+}
+
+/// The byte offset closest to `position` (window coordinates): the line
+/// implied by its `y`, then the closest char boundary on that line to its
+/// `x`, via `LineLayout::closest_index_for_x` (through `ShapedLine`'s
+/// `Deref`). Reshapes the target line rather than reusing a shaped line from
+/// painting — cheap for one line, and avoids persisting shaped lines across
+/// frames just for this.
+fn offset_for_position(
+    text: &str,
+    position: Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> usize {
+    let relative_y = (position.y - bounds.origin.y).max(px(0.));
+    let target_line = (relative_y / line_height) as usize;
+
+    let mut line_start = 0usize;
+    for (i, line_text) in text.split('\n').enumerate() {
+        let line_end = line_start + line_text.len();
+        if i == target_line {
+            let run = TextRun {
+                len: line_text.len(),
+                font: font.clone(),
+                color: Hsla::default(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let shaped = window.text_system().shape_line(line_text.to_string().into(), font_size, &[run], None);
+            let relative_x = (position.x - bounds.origin.x).max(px(0.));
+            return line_start + shaped.closest_index_for_x(relative_x);
+        }
+        line_start = line_end + 1;
+    }
+    // Past the last line (clicked below all the text): land at the very end.
+    text.len()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -123,7 +247,7 @@ fn paint_lines(
 mod tests {
     use super::super::Editor;
     use gpui_kit::test::TestWindowExt;
-    use gpui_kit::{AnyWindowHandle, AppContext, Entity, TestAppContext, WindowOptions};
+    use gpui_kit::{AnyWindowHandle, AppContext, Entity, Pixels, Point, TestAppContext, WindowOptions, point, px};
 
     fn open_editor(cx: &mut TestAppContext, text: &'static str) -> (AnyWindowHandle, Entity<Editor>) {
         cx.update(gpui_kit::init);
@@ -180,5 +304,55 @@ mod tests {
             assert!(window.try_find("editor").is_some());
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_focuses_the_editor_and_places_the_cursor_near_the_click(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // Near the left edge, not exactly at x=0 — target_position's own
+            // click-at-center default would otherwise land mid-string.
+            window.click_at("editor", point(px(1.), px(1.)), cx);
+        })
+        .unwrap();
+
+        let focused = cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.find("editor").focused()
+        }).unwrap();
+        assert_eq!(focused, Some(true), "clicking the editor should focus it");
+
+        let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+        assert!(cursor <= 2, "clicking near the start should place the cursor near byte 0, got {cursor}");
+    }
+
+    #[gpui_kit::test]
+    fn dragging_selects_a_range_of_text(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+
+        let bounds = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("editor").bounds()
+            })
+            .unwrap();
+        let from: Point<Pixels> = bounds.origin + point(px(1.), px(1.));
+        let to: Point<Pixels> = bounds.origin + point(bounds.size.width - px(1.), px(1.));
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.drag(from, to, cx);
+        })
+        .unwrap();
+
+        let selection = editor.read_with(cx, |editor, _| editor.buffer().selection());
+        let selection = selection.expect("dragging across the text should select some of it");
+        assert!(selection.start < selection.end);
+        assert!(
+            selection.end - selection.start >= "hello world".len() / 2,
+            "dragging nearly the whole width should select most of the text, got {selection:?}"
+        );
     }
 }
