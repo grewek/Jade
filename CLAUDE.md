@@ -48,6 +48,12 @@ Edition 2024, built with Rust 1.93 / Cargo 1.93 (stable toolchain version; actua
 
 As more modules land, keep this section current (module boundaries, key types, how core and app interact) rather than leaving it as a skeleton description.
 
+## Backlog
+
+Deliberately deferred follow-ups — don't pick these up without checking in first, they're parked on purpose:
+
+- **`Vault::backlinks()` still rebuilds its whole target→sources map from scratch on every call** (O(total links in the vault), not O(1)), even after the `title_index`/wikilink-cache fixes. A further step would be maintaining that map incrementally (diff a note's old vs. new links on edit; also needs to account for `resolve()`'s targets shifting when *other* notes are renamed). Not done because even the worst-case measured cost (16.9ms on a 200-note × 20k-word synthetic vault) is already comfortably under the ~100ms human-perceptible-lag threshold — real complexity for a return past the point of mattering, for now.
+
 ## Commands
 
 Workspace-wide:
