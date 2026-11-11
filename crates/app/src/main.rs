@@ -192,7 +192,13 @@ impl JadeApp {
         };
         let text = block.text(&note.content).to_string();
 
-        let editor = cx.new(|cx| TextareaState::new(window, cx).default_value(text));
+        // `TextareaState` defaults to a fixed 1-row height; the old whole-document
+        // editor never needed more since it filled the pane via `.flex_1()`
+        // instead, which would be wrong here (it'd steal space from blocks
+        // sharing the same list) — `auto_grow` sizes to the block's own line
+        // count instead, up to a generous cap well past any realistic block.
+        let editor =
+            cx.new(|cx| TextareaState::new(window, cx).default_value(text).auto_grow(1, 500));
         let subscription = cx.subscribe(&editor, |this, editor, event, cx| {
             if matches!(event, InputEvent::Change) {
                 this.autosave_active_block(&editor, cx);
