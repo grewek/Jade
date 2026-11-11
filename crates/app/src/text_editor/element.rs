@@ -456,4 +456,42 @@ mod tests {
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
         assert_eq!(text, "x");
     }
+
+    #[gpui_kit::test]
+    fn copy_then_paste_duplicates_the_selection(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("ctrl-a", cx);
+            window.press("ctrl-c", cx);
+            window.press("end", cx);
+            window.input(" ", cx);
+            window.press("ctrl-v", cx);
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hello world hello world");
+    }
+
+    #[gpui_kit::test]
+    fn cut_removes_the_selection_and_copies_it(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello world");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("ctrl-a", cx);
+            window.press("ctrl-x", cx);
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "", "cut should remove the selected text");
+
+        cx.update_window(window, |_, window, cx| {
+            window.press("ctrl-v", cx);
+        })
+        .unwrap();
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hello world", "pasting should bring the cut text back");
+    }
 }

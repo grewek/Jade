@@ -39,21 +39,54 @@ impl Editor {
     }
 
     /// Navigation/editing keys only (arrows, Home/End, Backspace/Delete,
-    /// Enter, Ctrl/Cmd+A) — plain character typing goes through
+    /// Enter, Ctrl/Cmd+A/C/X/V) — plain character typing goes through
     /// `EntityInputHandler::replace_text_in_range` instead (`input_handler.rs`,
     /// wired via `window.handle_input` during paint), GPUI's platform text
     /// input path, which also handles real IME composition. An earlier
     /// version of this method had a `keystroke.key_char` fallback for typing
     /// before that existed; removed once it did, rather than kept as a
     /// second path for the same keystrokes to arrive through.
+    ///
+    /// Copy/cut/paste are handled explicitly here (reading/writing
+    /// `cx.read_from_clipboard`/`write_to_clipboard` directly) rather than
+    /// relying on `EntityInputHandler::paste`'s default — that path is the
+    /// platform's own Services-menu/drag-drop paste plumbing on some
+    /// platforms, not guaranteed to fire for a plain Ctrl/Cmd+V keystroke, so
+    /// explicit is the more predictable choice here.
     pub(super) fn handle_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let shift = keystroke.modifiers.shift;
+        let command = keystroke.modifiers.control || keystroke.modifiers.platform;
 
-        if (keystroke.modifiers.control || keystroke.modifiers.platform) && keystroke.key == "a" {
-            self.buffer.select_all();
-            cx.notify();
-            return;
+        if command {
+            match keystroke.key.as_str() {
+                "a" => {
+                    self.buffer.select_all();
+                    cx.notify();
+                    return;
+                }
+                "c" => {
+                    if let Some(text) = self.buffer.copy() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                    }
+                    return;
+                }
+                "x" => {
+                    if let Some(text) = self.buffer.cut() {
+                        cx.write_to_clipboard(ClipboardItem::new_string(text));
+                        cx.notify();
+                    }
+                    return;
+                }
+                "v" => {
+                    if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        self.buffer.insert(&text);
+                        cx.notify();
+                    }
+                    return;
+                }
+                _ => {}
+            }
         }
 
         match keystroke.key.as_str() {
