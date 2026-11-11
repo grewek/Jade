@@ -173,10 +173,16 @@ impl Vault {
     }
 
     pub fn backlinks(&self) -> HashMap<String, Vec<String>> {
+        // Built once per call rather than scanned per wikilink — `resolve`'s
+        // fallback used to walk every note for every unresolved link, making this
+        // effectively O(notes² × links) on vaults where most links don't match an
+        // id exactly (title lookups, case differences). See the benchmark in
+        // `benches/vault_operations.rs` for just how far that scaled.
+        let index = self.title_index();
         let mut backlinks: HashMap<String, Vec<String>> = HashMap::new();
         for note in self.notes.values() {
             for link in extract_wikilinks(&note.content) {
-                if let Some(target_id) = self.resolve(&link.target) {
+                if let Some(target_id) = self.resolve(&link.target, &index) {
                     backlinks.entry(target_id).or_default().push(note.id.clone());
                 }
             }
@@ -184,14 +190,22 @@ impl Vault {
         backlinks
     }
 
-    fn resolve(&self, target: &str) -> Option<String> {
+    /// Maps each note's lowercased title and id to its id, for `resolve`'s
+    /// case-insensitive fallback.
+    fn title_index(&self) -> HashMap<String, String> {
+        let mut index = HashMap::with_capacity(self.notes.len() * 2);
+        for note in self.notes.values() {
+            index.entry(note.title.to_lowercase()).or_insert_with(|| note.id.clone());
+            index.entry(note.id.to_lowercase()).or_insert_with(|| note.id.clone());
+        }
+        index
+    }
+
+    fn resolve(&self, target: &str, index: &HashMap<String, String>) -> Option<String> {
         if self.notes.contains_key(target) {
             return Some(target.to_string());
         }
-        self.notes
-            .values()
-            .find(|n| n.title.eq_ignore_ascii_case(target) || n.id.eq_ignore_ascii_case(target))
-            .map(|n| n.id.clone())
+        index.get(&target.to_lowercase()).cloned()
     }
 
     pub fn search(&self, query: &str) -> Vec<&Note> {
