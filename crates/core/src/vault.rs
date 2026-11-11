@@ -178,188 +178,161 @@ fn collect_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use tempfile::{TempDir, tempdir};
 
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    fn temp_vault() -> PathBuf {
-        let id = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("jade_core_test_{}_{}", std::process::id(), id));
-        std::fs::create_dir_all(&dir).unwrap();
-        dir
+    fn temp_vault() -> TempDir {
+        tempdir().unwrap()
     }
 
     #[test]
     fn loads_notes_and_resolves_backlinks() {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note A.md"), "Links to [[Note B]].").unwrap();
-        std::fs::write(dir.join("Note B.md"), "No outgoing links here.").unwrap();
+        std::fs::write(dir.path().join("Note A.md"), "Links to [[Note B]].").unwrap();
+        std::fs::write(dir.path().join("Note B.md"), "No outgoing links here.").unwrap();
 
-        let vault = Vault::open(&dir).unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
         assert_eq!(vault.notes.len(), 2);
 
         let backlinks = vault.backlinks();
         let b_backlinks = backlinks.get("Note B").expect("Note B should have backlinks");
         assert_eq!(b_backlinks, &vec!["Note A".to_string()]);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn create_note_writes_file_and_dedupes_titles() {
         let dir = temp_vault();
-        let mut vault = Vault::open(&dir).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
 
         let id1 = vault.create_note("Untitled", None).unwrap();
         assert_eq!(id1, "Untitled");
-        assert!(dir.join("Untitled.md").exists());
+        assert!(dir.path().join("Untitled.md").exists());
 
         let id2 = vault.create_note("Untitled", None).unwrap();
         assert_eq!(id2, "Untitled 1");
-        assert!(dir.join("Untitled 1.md").exists());
+        assert!(dir.path().join("Untitled 1.md").exists());
 
         assert_eq!(vault.notes.len(), 2);
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn create_folder_creates_dir_and_dedupes_names() {
         let dir = temp_vault();
-        let mut vault = Vault::open(&dir).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
 
         let id1 = vault.create_folder("Math", None).unwrap();
         assert_eq!(id1, "Math");
-        assert!(dir.join("Math").is_dir());
+        assert!(dir.path().join("Math").is_dir());
         assert!(vault.folders.contains("Math"));
 
         let id2 = vault.create_folder("Math", None).unwrap();
         assert_eq!(id2, "Math 1");
-        assert!(dir.join("Math 1").is_dir());
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(dir.path().join("Math 1").is_dir());
     }
 
     #[test]
     fn create_note_inside_folder_nests_under_it() {
         let dir = temp_vault();
-        let mut vault = Vault::open(&dir).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         vault.create_folder("Math", None).unwrap();
 
         let id = vault.create_note("Algebra", Some("Math")).unwrap();
 
         assert_eq!(id, "Math/Algebra");
-        assert!(dir.join("Math").join("Algebra.md").exists());
+        assert!(dir.path().join("Math").join("Algebra.md").exists());
         assert_eq!(vault.note("Math/Algebra").unwrap().title, "Algebra");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn create_folder_inside_folder_nests_under_it() {
         let dir = temp_vault();
-        let mut vault = Vault::open(&dir).unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
         vault.create_folder("Math", None).unwrap();
 
         let id = vault.create_folder("Algebra", Some("Math")).unwrap();
 
         assert_eq!(id, "Math/Algebra");
-        assert!(dir.join("Math").join("Algebra").is_dir());
+        assert!(dir.path().join("Math").join("Algebra").is_dir());
         assert!(vault.folders.contains("Math/Algebra"));
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn open_discovers_nested_folders_and_notes() {
         let dir = temp_vault();
-        std::fs::create_dir_all(dir.join("Math")).unwrap();
-        std::fs::write(dir.join("Math").join("Algebra.md"), "x + y").unwrap();
-        std::fs::create_dir_all(dir.join("Math").join("Empty Subfolder")).unwrap();
+        std::fs::create_dir_all(dir.path().join("Math")).unwrap();
+        std::fs::write(dir.path().join("Math").join("Algebra.md"), "x + y").unwrap();
+        std::fs::create_dir_all(dir.path().join("Math").join("Empty Subfolder")).unwrap();
 
-        let vault = Vault::open(&dir).unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
 
         assert!(vault.folders.contains("Math"));
         assert!(vault.folders.contains("Math/Empty Subfolder"));
         assert_eq!(vault.note("Math/Algebra").unwrap().content, "x + y");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn update_note_content_persists_to_disk() {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note.md"), "old content").unwrap();
-        let mut vault = Vault::open(&dir).unwrap();
+        std::fs::write(dir.path().join("Note.md"), "old content").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
 
         vault
             .update_note_content("Note", "new content".to_string())
             .unwrap();
 
         assert_eq!(vault.note("Note").unwrap().content, "new content");
-        let on_disk = std::fs::read_to_string(dir.join("Note.md")).unwrap();
+        let on_disk = std::fs::read_to_string(dir.path().join("Note.md")).unwrap();
         assert_eq!(on_disk, "new content");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn rename_note_moves_file_and_updates_id() {
         let dir = temp_vault();
-        std::fs::write(dir.join("Old Name.md"), "content").unwrap();
-        let mut vault = Vault::open(&dir).unwrap();
+        std::fs::write(dir.path().join("Old Name.md"), "content").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
 
         let new_id = vault.rename_note("Old Name", "New Name").unwrap();
 
         assert_eq!(new_id, "New Name");
-        assert!(!dir.join("Old Name.md").exists());
-        assert!(dir.join("New Name.md").exists());
+        assert!(!dir.path().join("Old Name.md").exists());
+        assert!(dir.path().join("New Name.md").exists());
         assert!(vault.note("Old Name").is_none());
         assert_eq!(vault.note("New Name").unwrap().content, "content");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn rename_note_dedupes_against_existing_titles() {
         let dir = temp_vault();
-        std::fs::write(dir.join("A.md"), "a").unwrap();
-        std::fs::write(dir.join("B.md"), "b").unwrap();
-        let mut vault = Vault::open(&dir).unwrap();
+        std::fs::write(dir.path().join("A.md"), "a").unwrap();
+        std::fs::write(dir.path().join("B.md"), "b").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
 
         let new_id = vault.rename_note("A", "B").unwrap();
 
         assert_eq!(new_id, "B 1");
-        assert!(dir.join("B 1.md").exists());
-
-        std::fs::remove_dir_all(&dir).ok();
+        assert!(dir.path().join("B 1.md").exists());
     }
 
     #[test]
     fn delete_note_removes_file_and_entry() {
         let dir = temp_vault();
-        std::fs::write(dir.join("Note.md"), "content").unwrap();
-        let mut vault = Vault::open(&dir).unwrap();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
 
         vault.delete_note("Note").unwrap();
 
-        assert!(!dir.join("Note.md").exists());
+        assert!(!dir.path().join("Note.md").exists());
         assert!(vault.note("Note").is_none());
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
     fn search_matches_title_and_content() {
         let dir = temp_vault();
-        std::fs::write(dir.join("Groceries.md"), "Buy milk and eggs.").unwrap();
-        std::fs::write(dir.join("Other.md"), "Unrelated content.").unwrap();
+        std::fs::write(dir.path().join("Groceries.md"), "Buy milk and eggs.").unwrap();
+        std::fs::write(dir.path().join("Other.md"), "Unrelated content.").unwrap();
 
-        let vault = Vault::open(&dir).unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
         let results = vault.search("milk");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Groceries");
-
-        std::fs::remove_dir_all(&dir).ok();
     }
 }
