@@ -1001,6 +1001,63 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn scrolling_away_from_the_cursor_does_not_get_snapped_back(cx: &mut TestAppContext) {
+        // Regression test: `render_editor`'s whole element tree (including
+        // its `canvas` paint closure) is rebuilt on *every* actual screen
+        // repaint, not just ones where the cursor moved — a plain
+        // mouse-wheel scroll alone triggers one too. Before
+        // `Editor::last_autoscrolled_cursor` existed, that meant
+        // `autoscroll_to_cursor` ran unconditionally on every such repaint
+        // and snapped the view straight back to the (unchanged) cursor's
+        // line the moment it scrolled far enough to leave the viewport —
+        // making it impossible to scroll away from the cursor at all.
+        let dir = temp_vault();
+        let lines: Vec<String> = (0..300).map(|i| format!("line {i}")).collect();
+        std::fs::write(dir.path().join("Long Note.md"), lines.join("\n")).unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Long Note", cx);
+        })
+        .unwrap();
+
+        let editor = app.read_with(cx, |app, _| app.editor.clone()).expect("opening a note should create an editor");
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click_at("editor", point(px(1.), px(1.)), cx);
+            // Move the cursor near the end, which (per the test above)
+            // autoscrolls the view down to it.
+            editor.update(cx, |editor, cx| {
+                editor.buffer_mut().move_to_end(false);
+                cx.notify();
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        // Simulate the user then scrolling away from the cursor, back up
+        // toward the top — same effect a mouse wheel would have.
+        let scrolled_away = point(px(0.), px(0.));
+        editor.read_with(cx, |editor, _| editor.scroll_handle().set_offset(scrolled_away));
+
+        // A repaint with no cursor movement at all (e.g. the one a
+        // mouse-wheel scroll itself triggers) must not fight the scroll
+        // back toward the cursor.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        let offset = editor.read_with(cx, |editor, _| editor.scroll_handle().offset());
+        assert_eq!(
+            offset, scrolled_away,
+            "a repaint with an unchanged cursor should not snap the scroll position back toward it"
+        );
+    }
+
+    #[gpui_kit::test]
     fn linking_a_new_note_to_an_existing_note_shows_up_as_its_backlink(cx: &mut TestAppContext) {
         let dir = temp_vault();
         std::fs::write(dir.path().join("Note A.md"), "existing note").unwrap();

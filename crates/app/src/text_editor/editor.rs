@@ -1,3 +1,6 @@
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui_kit::*;
 
 use super::element::render_editor;
@@ -38,6 +41,23 @@ pub struct Editor {
     /// `autoscroll_to_cursor`) — two different modules sharing one handle,
     /// which is exactly what `ScrollHandle`'s `Rc<RefCell<_>>` is for.
     pub(super) scroll_handle: ScrollHandle,
+    /// The buffer cursor offset `autoscroll_to_cursor` last scrolled the
+    /// view to, or `None` before the first paint. Needed because
+    /// `element.rs`'s `render_editor` rebuilds its whole element tree (new
+    /// `canvas` closures included) on *every* actual screen repaint, not
+    /// just ones where the cursor moved — a plain mouse-wheel scroll alone
+    /// triggers one too (e.g. via `window.refresh()`). Without this,
+    /// `autoscroll_to_cursor` ran unconditionally on every such repaint and
+    /// snapped the view straight back to the (unchanged) cursor's line the
+    /// moment it scrolled out of view, making it impossible to scroll away
+    /// from the cursor at all. An `Rc<Cell<_>>` (not a plain field) for the
+    /// same reason `scroll_handle` above is an `Rc`-backed handle rather
+    /// than a plain `usize`: `render_editor` clones it out of `&Editor`
+    /// synchronously (safe, since that's a direct field read) and moves the
+    /// clone into the 'static `canvas` paint closure, which mutates it
+    /// directly — no need to read/update the entity itself from inside
+    /// paint, where that isn't guaranteed safe.
+    pub(super) last_autoscrolled_cursor: Rc<Cell<Option<usize>>>,
 }
 
 impl Editor {
@@ -48,6 +68,7 @@ impl Editor {
             is_dragging: false,
             marked_range: None,
             scroll_handle: ScrollHandle::new(),
+            last_autoscrolled_cursor: Rc::new(Cell::new(None)),
         }
     }
 

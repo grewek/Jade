@@ -1,7 +1,10 @@
 use gpui_kit::*;
 
 use super::block_preview::LineRole;
-use super::live_preview::{build_display_line, hidden_line, DisplayLine, InlineStyle};
+use super::live_preview::{
+    build_display_line, build_display_line_in_context, classify_block_context, hidden_line, DisplayLine,
+    InlineStyle, LineContext, LineIndent,
+};
 use super::Editor;
 
 /// A pale, half-transparent highlight — a reasonable Phase 1 default, not yet
@@ -15,6 +18,25 @@ const SELECTION_HIGHLIGHT: Hsla = Hsla { h: 0.6, s: 0.9, l: 0.6, a: 0.35 };
 const CODE_COLOR: Hsla = Hsla { h: 0.75, s: 0.2, l: 0.55, a: 1.0 };
 const WIKILINK_COLOR: Hsla = Hsla { h: 0.58, s: 0.65, l: 0.6, a: 1.0 };
 const MUTED_COLOR: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.6, a: 1.0 };
+
+/// Pixel width of one structural indent level (see
+/// `live_preview::LineIndent`) — applied identically by `paint_lines`,
+/// `offset_for_position`, and (via [`indent_px`]) `input_handler.rs`'s
+/// `bounds_for_range`, so a line's painted position and its hit-testing/IME
+/// math always agree.
+const INDENT_UNIT: Pixels = px(20.);
+
+/// The left inset, within an indent level's own lane, that a blockquote's
+/// quote bar is painted at — see `paint_lines`.
+const QUOTE_BAR_INSET: Pixels = px(4.);
+const QUOTE_BAR_WIDTH: Pixels = px(2.);
+
+/// The pixel x-offset `level` structural indent levels shifts a line's
+/// content by — `level` is [`LineIndent::level`], `0` for a line with no
+/// indent.
+pub(super) fn indent_px(level: u8) -> Pixels {
+    INDENT_UNIT * level as f32
+}
 
 /// Whether the line spanning `line_range` should render raw/unstyled rather
 /// than with Live Preview markup hidden: only while `focused` (the editor
@@ -76,7 +98,11 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
     match style {
         InlineStyle::Bold | InlineStyle::Heading(_) => font.weight = FontWeight::BOLD,
         InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
-        InlineStyle::Plain | InlineStyle::Code | InlineStyle::WikiLink | InlineStyle::ListMarker => {}
+        InlineStyle::Plain
+        | InlineStyle::Code
+        | InlineStyle::Strikethrough
+        | InlineStyle::WikiLink
+        | InlineStyle::ListMarker => {}
     }
     font
 }
@@ -89,7 +115,16 @@ fn color_for_style(style: InlineStyle, base: Hsla) -> Hsla {
         InlineStyle::Code => CODE_COLOR,
         InlineStyle::WikiLink => WIKILINK_COLOR,
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => MUTED_COLOR,
-        InlineStyle::Plain | InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Heading(_) => base,
+        InlineStyle::Plain | InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Heading(_) | InlineStyle::Strikethrough => base,
+    }
+}
+
+/// The strikethrough line to paint over a visible segment's text, or `None`
+/// for every style but [`InlineStyle::Strikethrough`] itself.
+fn strikethrough_for_style(style: InlineStyle, color: Hsla) -> Option<StrikethroughStyle> {
+    match style {
+        InlineStyle::Strikethrough => Some(StrikethroughStyle { thickness: px(1.), color: Some(color) }),
+        _ => None,
     }
 }
 
@@ -104,34 +139,49 @@ fn color_for_style(style: InlineStyle, base: Hsla) -> Hsla {
 /// - [`LineRole::FenceDelimiter`]: raw when `active`, else [`hidden_line`]
 ///   — the fence marker itself has no "remainder" to show once hidden,
 ///   unlike every other hidden-prefix case in `live_preview.rs`.
-/// - [`LineRole::Plain`]: the normal `build_display_line(line, active)`
-///   path (headings/emphasis/code-spans/wikilinks/blockquotes/lists).
+/// - [`LineRole::Plain`]: `build_display_line_in_context(line, active,
+///   block_ctx)` — `block_ctx` (from `live_preview::classify_block_context`,
+///   also computed once per document) resolves nested-list depth and lazy
+///   continuation, neither of which `line` alone carries enough information
+///   for.
+#[allow(clippy::too_many_arguments)]
 pub(super) fn shape_display_line(
     line: &str,
     role: LineRole,
+    block_ctx: LineContext,
     active: bool,
     font: &Font,
     font_size: Pixels,
     text_color: Hsla,
     window: &mut Window,
 ) -> (ShapedLine, DisplayLine) {
-    let display_line = match role {
+    let mut display_line = match role {
         LineRole::FenceContent => build_display_line(line, true),
         LineRole::FenceDelimiter if !active => hidden_line(line),
-        LineRole::FenceDelimiter | LineRole::Plain => build_display_line(line, active),
+        LineRole::FenceDelimiter => build_display_line(line, active),
+        LineRole::Plain => build_display_line_in_context(line, active, block_ctx),
     };
+    // Fenced code content is never Markdown (see this function's own doc
+    // comment above) — so even if it happens to start with `>` or `- `,
+    // that's not a real blockquote/list line and shouldn't indent as one.
+    if matches!(role, LineRole::FenceContent) {
+        display_line.indent = LineIndent::None;
+    }
 
     let mut runs: Vec<TextRun> = display_line
         .segments
         .iter()
         .filter(|seg| !seg.is_hidden())
-        .map(|seg| TextRun {
-            len: seg.display.len(),
-            font: font_for_style(seg.style, font),
-            color: color_for_style(seg.style, text_color),
-            background_color: None,
-            underline: None,
-            strikethrough: None,
+        .map(|seg| {
+            let color = color_for_style(seg.style, text_color);
+            TextRun {
+                len: seg.display.len(),
+                font: font_for_style(seg.style, font),
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: strikethrough_for_style(seg.style, color),
+            }
         })
         .collect();
     if runs.is_empty() {
@@ -173,10 +223,15 @@ pub(super) fn render_editor(
     let selection = buffer.selection();
     let focus_handle = editor.focus_handle.clone();
     let scroll_handle = editor.scroll_handle.clone();
+    let last_autoscrolled_cursor = editor.last_autoscrolled_cursor.clone();
     // Computed once per paint (not per line) since it needs the whole
     // document to tell whether a given line sits inside an open code
     // fence — see `block_preview`'s module doc.
     let line_roles = super::block_preview::classify_lines(&text);
+    // Same "whole document, once per paint" reasoning as `line_roles` above
+    // — nested-list depth and lazy continuation both depend on prior lines,
+    // see `live_preview::classify_block_context`'s own doc comment.
+    let block_contexts = classify_block_context(&text);
 
     let line_height = window.line_height();
     let line_count = text.split('\n').count().max(1);
@@ -211,12 +266,21 @@ pub(super) fn render_editor(
                 move |_, _, _| {},
                 move |bounds, _, window, cx| {
                     let focused = focus_handle.is_focused(window);
-                    if focused {
+                    // Only snap the view back to the cursor the first time
+                    // we see this particular cursor position, not on every
+                    // repaint — a plain mouse-wheel scroll alone triggers a
+                    // repaint too (with the cursor unchanged), and without
+                    // this check it would get fought right back to the
+                    // cursor's line the moment that line scrolled out of
+                    // view. See `last_autoscrolled_cursor`'s own doc comment.
+                    if focused && last_autoscrolled_cursor.get() != Some(cursor) {
                         autoscroll_to_cursor(&scroll_handle, bounds, line_height, cursor_line_index);
+                        last_autoscrolled_cursor.set(Some(cursor));
                     }
                     paint_lines(
                         &text,
                         &line_roles,
+                        &block_contexts,
                         cursor,
                         selection.clone(),
                         focused,
@@ -233,6 +297,7 @@ pub(super) fn render_editor(
                         editor_entity.clone(),
                         text.clone(),
                         line_roles.clone(),
+                        block_contexts.clone(),
                         cursor,
                         focused,
                         bounds,
@@ -266,6 +331,7 @@ fn register_mouse_handling(
     editor_entity: Entity<Editor>,
     text: String,
     line_roles: Vec<LineRole>,
+    block_contexts: Vec<LineContext>,
     cursor: usize,
     focused: bool,
     bounds: Bounds<Pixels>,
@@ -280,6 +346,7 @@ fn register_mouse_handling(
         let editor_entity = editor_entity.clone();
         let text = text.clone();
         let line_roles = line_roles.clone();
+        let block_contexts = block_contexts.clone();
         let font = font.clone();
         move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble
@@ -289,8 +356,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, &line_roles, cursor, focused, event.position, bounds, line_height, &font, font_size,
-                text_color, window,
+                &text, &line_roles, &block_contexts, cursor, focused, event.position, bounds, line_height, &font,
+                font_size, text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, false);
@@ -308,8 +375,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, &line_roles, cursor, focused, event.position, bounds, line_height, &font, font_size,
-                text_color, window,
+                &text, &line_roles, &block_contexts, cursor, focused, event.position, bounds, line_height, &font,
+                font_size, text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, true);
@@ -343,6 +410,7 @@ fn register_mouse_handling(
 fn offset_for_position(
     text: &str,
     line_roles: &[LineRole],
+    block_contexts: &[LineContext],
     cursor: usize,
     focused: bool,
     position: Point<Pixels>,
@@ -361,9 +429,10 @@ fn offset_for_position(
         let line_range = line_start..line_start + line_text.len();
         if i == target_line {
             let active = is_active_line(&line_range, cursor, focused);
-            let (shaped, display_line) =
-                shape_display_line(line_text, line_roles[i], active, font, font_size, text_color, window);
-            let relative_x = (position.x - bounds.origin.x).max(px(0.));
+            let (shaped, display_line) = shape_display_line(
+                line_text, line_roles[i], block_contexts[i], active, font, font_size, text_color, window,
+            );
+            let relative_x = (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
             let display_offset = shaped.closest_index_for_x(relative_x);
             return line_start + display_line.raw_offset_for_display(display_offset);
         }
@@ -377,6 +446,7 @@ fn offset_for_position(
 fn paint_lines(
     text: &str,
     line_roles: &[LineRole],
+    block_contexts: &[LineContext],
     cursor: usize,
     selection: Option<std::ops::Range<usize>>,
     show_cursor: bool,
@@ -390,12 +460,24 @@ fn paint_lines(
 ) {
     let mut line_start = 0usize;
     for (i, line_text) in text.split('\n').enumerate() {
-        let line_origin = bounds.origin + point(px(0.), line_height * i as f32);
+        let row_origin = bounds.origin + point(px(0.), line_height * i as f32);
         let line_range = line_start..line_start + line_text.len();
         let active = is_active_line(&line_range, cursor, show_cursor);
 
-        let (shaped, display_line) =
-            shape_display_line(line_text, line_roles[i], active, font, font_size, text_color, window);
+        let (shaped, display_line) = shape_display_line(
+            line_text, line_roles[i], block_contexts[i], active, font, font_size, text_color, window,
+        );
+
+        if let LineIndent::Blockquote(depth) = display_line.indent {
+            for level in 0..depth {
+                let bar_x = row_origin.x + indent_px(level) + QUOTE_BAR_INSET;
+                window.paint_quad(fill(
+                    Bounds { origin: point(bar_x, row_origin.y), size: size(QUOTE_BAR_WIDTH, line_height) },
+                    MUTED_COLOR,
+                ));
+            }
+        }
+        let line_origin = row_origin + point(indent_px(display_line.indent.level()), px(0.));
 
         if let Some(selection) = &selection {
             let start = selection.start.max(line_range.start);
@@ -431,6 +513,7 @@ fn paint_lines(
 #[cfg(test)]
 mod tests {
     use super::super::block_preview::LineRole;
+    use super::super::live_preview::{LineContext, LineIndent};
     use super::super::{Editor, InsertTab};
     use super::{is_active_line, shape_display_line};
     use gpui_kit::test::TestWindowExt;
@@ -936,6 +1019,93 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn blockquote_indentation_shifts_the_whole_line_right(cx: &mut TestAppContext) {
+        let text = "first line\n> quoted content";
+        let (window, editor) = open_editor(cx, text);
+        // Cursor starts on line 0, so line 1 renders previewed: its "> " is
+        // hidden entirely (zero display width), unlike a list marker's
+        // replacement bullet — so without the indent fix, the shaped text
+        // would start right at the row's left edge.
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+
+        let line_height = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.line_height()
+            })
+            .unwrap();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // x=15 sits inside the blockquote's indent gutter (< INDENT_UNIT,
+            // 20px) but, with no hidden-prefix width to absorb it the way a
+            // list's bullet does, would already land partway into "quoted
+            // content"'s shaped text without the indent shift.
+            window.click_at("editor", point(px(15.), line_height + px(1.)), cx);
+        })
+        .unwrap();
+
+        let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+        let content_start = text.find("quoted").unwrap();
+        assert_eq!(
+            cursor, content_start,
+            "clicking inside the indent gutter should land at the very start of the quoted content"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn renders_nested_lists_and_lazy_continuation_without_panicking(cx: &mut TestAppContext) {
+        // A wiring smoke test for `classify_block_context`'s `Vec<LineContext>`
+        // being indexed in step with `text.split('\n')` and `line_roles` —
+        // an off-by-one there would panic (index out of bounds) rather than
+        // just render wrong, so this alone is a meaningful regression net
+        // on top of `live_preview`'s own exhaustive pure-logic tests.
+        let text = "1. outer\n   - inner\n     still inner, lazy continuation\n> quoted\nlazy quote continuation";
+        let (window, editor) = open_editor(cx, text);
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(text.len(), false));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("editor").is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_nested_list_marker_indents_deeper_than_its_top_level_parent(cx: &mut TestAppContext) {
+        let text = "first line\n1. outer\n   - inner";
+        let (window, editor) = open_editor(cx, text);
+        // Cursor starts on line 0, so both list lines render previewed.
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+
+        let line_height = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.line_height()
+            })
+            .unwrap();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // x=35 sits inside the nested (depth-2) item's indent gutter
+            // (< 2 * INDENT_UNIT, 40px) but *past* a top-level item's own
+            // gutter (>= INDENT_UNIT, 20px) — if `classify_block_context`'s
+            // resolved depth of 2 weren't actually reaching this line (e.g.
+            // an indexing bug silently left it at `build_display_line`'s
+            // own depth-1 default), this would land inside "inner"'s
+            // shaped text instead of at its very start.
+            window.click_at("editor", point(px(35.), line_height * 2. + px(1.)), cx);
+        })
+        .unwrap();
+
+        let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+        let inner_start = text.find("inner").unwrap();
+        assert_eq!(
+            cursor, inner_start,
+            "clicking inside the nested item's indent gutter should land at the start of its content"
+        );
+    }
+
+    #[gpui_kit::test]
     fn fenced_code_content_is_never_inline_scanned_even_on_the_active_line(cx: &mut TestAppContext) {
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
@@ -950,9 +1120,33 @@ mod tests {
             // same literal treatment regardless of `active`, since a fenced
             // code line must never have its content inline-scanned at all,
             // active or not.
-            let (_, display_line) =
-                shape_display_line(line, LineRole::FenceContent, true, &font, font_size, text_style.color, window);
+            let (_, display_line) = shape_display_line(
+                line, LineRole::FenceContent, LineContext::Plain, true, &font, font_size, text_style.color, window,
+            );
             assert_eq!(display_line.display_text, line, "fenced code content must never be treated as Markdown");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn fenced_code_content_starting_with_quote_or_list_syntax_is_never_indented(cx: &mut TestAppContext) {
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            for line in ["> looks like a quote", "- looks like a list item"] {
+                let (_, display_line) = shape_display_line(
+                    line, LineRole::FenceContent, LineContext::Plain, false, &font, font_size, text_style.color,
+                    window,
+                );
+                assert_eq!(
+                    display_line.indent,
+                    LineIndent::None,
+                    "fenced code content must never indent as a quote/list, even if it looks like one: {line:?}"
+                );
+            }
         })
         .unwrap();
     }
@@ -966,12 +1160,14 @@ mod tests {
             let text_style = window.text_style();
             let font = text_style.font();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
-            let (_, display_line) =
-                shape_display_line(line, LineRole::FenceDelimiter, false, &font, font_size, text_style.color, window);
+            let (_, display_line) = shape_display_line(
+                line, LineRole::FenceDelimiter, LineContext::Plain, false, &font, font_size, text_style.color, window,
+            );
             assert_eq!(display_line.display_text, "", "an inactive fence delimiter line should show nothing");
 
-            let (_, active_display_line) =
-                shape_display_line(line, LineRole::FenceDelimiter, true, &font, font_size, text_style.color, window);
+            let (_, active_display_line) = shape_display_line(
+                line, LineRole::FenceDelimiter, LineContext::Plain, true, &font, font_size, text_style.color, window,
+            );
             assert_eq!(active_display_line.display_text, line, "the active fence delimiter line should show its raw text");
         })
         .unwrap();
