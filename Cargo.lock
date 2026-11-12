@@ -3798,7 +3798,6 @@ dependencies = [
  "criterion",
  "gpui-kit",
  "jade-core",
- "markdown",
  "tempfile",
 ]
 

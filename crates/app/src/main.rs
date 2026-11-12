@@ -1,6 +1,5 @@
 use std::path::PathBuf;
 
-mod markdown_blocks;
 mod text_editor;
 
 use gpui_kit::component::button::{Button, ButtonVariant};
@@ -997,6 +996,90 @@ mod tests {
         assert!(
             offset_after.y < px(0.),
             "moving the cursor to the end of a long note should scroll it into view, got {offset_after:?}"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_line_too_wide_for_the_pane_wraps_instead_of_overflowing(cx: &mut TestAppContext) {
+        // Unlike `text_editor::element`'s own tests (a bare `Editor` with no
+        // surrounding container), only a *real* `note-editor-pane` div
+        // (`.track_scroll(editor.scroll_handle())`, see `main.rs`'s own
+        // rendering code) gives `Editor::last_autoscrolled_cursor`'s sibling
+        // concern — `render_editor`'s pre-layout `measure_document` call —
+        // an actual tracked width to measure wrapping against; a bare
+        // `Editor` always falls back to "assume no wrap" (`Pixels::MAX`),
+        // so this needs the full app to verify wrapping-aware sizing at all.
+        let dir = temp_vault();
+        let long: &'static str = Box::leak("word ".repeat(500).into_boxed_str());
+        std::fs::write(dir.path().join("Long Line.md"), long).unwrap();
+        std::fs::write(dir.path().join("Short.md"), "short").unwrap();
+
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Short", cx);
+        })
+        .unwrap();
+        let short_height = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("editor").bounds().size.height
+            })
+            .unwrap();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Long Line", cx);
+        })
+        .unwrap();
+        let long_height = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("editor").bounds().size.height
+            })
+            .unwrap();
+
+        assert!(
+            long_height > short_height,
+            "a line too wide for the note-editor-pane should wrap onto additional rows \
+             (short={short_height:?}, long={long_height:?})"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_wrapped_lines_second_row_in_the_real_app_lands_further_into_the_text(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        let long: &'static str = Box::leak("a".repeat(2000).into_boxed_str());
+        std::fs::write(dir.path().join("Long Line.md"), long).unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Long Line", cx);
+        })
+        .unwrap();
+        let editor = app.read_with(cx, |app, _| app.editor.clone()).expect("opening a note should create an editor");
+
+        let line_height = cx.update_window(window, |_, window, _cx| window.line_height()).unwrap();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click_at("editor", point(px(1.), px(1.)), cx);
+        })
+        .unwrap();
+        let first_row_cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click_at("editor", point(px(1.), line_height + px(1.)), cx);
+        })
+        .unwrap();
+        let second_row_cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+
+        assert!(
+            second_row_cursor > first_row_cursor,
+            "clicking the wrapped line's second visual row should land further into the text than its first row \
+             (first={first_row_cursor}, second={second_row_cursor})"
         );
     }
 

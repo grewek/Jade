@@ -1,0 +1,572 @@
+//! Table detection and row-parsing — the other *block*-level construct
+//! besides fenced code (`block_preview.rs`), needing cross-line state the
+//! same way: a line's role (header/delimiter/body row, or not a table at
+//! all) and a table's column count/width/alignment all depend on every row
+//! of that table together, not on any single line alone.
+//!
+//! Deliberately independent of `block_preview.rs`'s fence tracking and
+//! `live_preview.rs`'s `classify_block_context` — neither knows about the
+//! other, same as those two don't know about each other either.
+//! `element.rs` only ever consults this module's output for a line already
+//! classified `block_preview::LineRole::Plain`, so a table-like pipe
+//! sequence inside a fenced code block is never mistaken for a real table
+//! (this module's own scan would still "detect" it, since it has no fence
+//! awareness, but nothing ever looks that detection up for a fenced line).
+//! A table nested inside a blockquote or list item (`> | a | b |`) isn't
+//! recognized either — out of scope, same spirit as every other
+//! compounding limit in this editor.
+//!
+//! Rendering a table as an actually-aligned grid (not just markup hidden in
+//! place, like every other construct) is `live_preview.rs`'s
+//! `build_table_row`/`build_table_rule` — made tractable by this editor's
+//! font always being monospace (see `element.rs`'s `render_editor`): a
+//! column's width is a plain character count, with no pixel measurement
+//! needed to line columns up across rows.
+
+use std::ops::Range;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Center,
+    Right,
+}
+
+/// One table column's rendering width (in characters) and alignment, both
+/// resolved from the table's delimiter row — width is the *widest* cell
+/// across the header and every body row, not just the delimiter row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Column {
+    pub width: usize,
+    pub align: Align,
+}
+
+/// One detected table: its header row's line index, the line index right
+/// after its last body row, the byte range it spans in the whole document,
+/// and its resolved columns. The byte range is what `element.rs` checks the
+/// cursor against to decide whether the *whole* table should render raw —
+/// unlike every other construct's single "active line," a table's
+/// row/column alignment can't be resolved from one line in isolation, so
+/// there's no sensible way to keep the rest of the grid rendered while one
+/// row inside it goes raw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Table {
+    pub start_line: usize,
+    pub end_line: usize,
+    pub byte_range: Range<usize>,
+    pub columns: Vec<Column>,
+}
+
+impl Table {
+    pub fn is_delimiter(&self, line: usize) -> bool {
+        line == self.start_line + 1
+    }
+}
+
+/// One row's parsed cells, plus whether a leading/trailing `|` was actually
+/// present in the source — both optional per GFM, and needed by the
+/// renderer to know whether there's a real pipe byte there to visually
+/// replace or whether it's inserting one with no raw counterpart at all.
+pub struct Row {
+    pub cells: Vec<Cell>,
+    pub has_leading_pipe: bool,
+    pub has_trailing_pipe: bool,
+}
+
+/// One cell's raw byte range (the content between its delimiting pipes,
+/// *not* including them, untrimmed) and its trimmed, unescaped (`\|` → a
+/// literal `|`) display text.
+pub struct Cell {
+    pub raw: Range<usize>,
+    pub text: String,
+}
+
+/// Splits a `|`-delimited row into [`Cell`]s. A backslash-escaped pipe
+/// (`\|`) doesn't split a cell — it's unescaped to a literal `|` in that
+/// cell's `text` — and a leading/trailing `|` is optional and, if present,
+/// isn't part of any cell's own range.
+pub fn scan_row(line: &str) -> Row {
+    let bytes = line.as_bytes();
+    let has_leading_pipe = bytes.first() == Some(&b'|');
+    let start = usize::from(has_leading_pipe);
+
+    let mut cells = Vec::new();
+    let mut cell_start = start;
+    let mut i = start;
+    while i < bytes.len() {
+        if bytes[i] == b'\\' && bytes.get(i + 1) == Some(&b'|') {
+            i += 2;
+            continue;
+        }
+        if bytes[i] == b'|' {
+            cells.push(make_cell(line, cell_start..i));
+            cell_start = i + 1;
+        }
+        i += 1;
+    }
+    // If the last byte consumed was a pipe, `cell_start` landed exactly at
+    // the end with nothing left to flush — that's a real trailing pipe,
+    // not a final cell of its own.
+    let has_trailing_pipe = cell_start == bytes.len() && cell_start > start;
+    if !has_trailing_pipe {
+        cells.push(make_cell(line, cell_start..bytes.len()));
+    }
+
+    Row { cells, has_leading_pipe, has_trailing_pipe }
+}
+
+fn make_cell(line: &str, raw: Range<usize>) -> Cell {
+    let text = line[raw.clone()].replace("\\|", "|").trim().to_string();
+    Cell { raw, text }
+}
+
+/// The alignment a delimiter cell (e.g. `---`, `:--`, `--:`, `:-:`)
+/// specifies, or `None` if `cell` isn't a valid delimiter cell at all (not
+/// made up of a run of `-` optionally bounded by `:`).
+fn delimiter_align(cell: &str) -> Option<Align> {
+    let cell = cell.trim();
+    if cell.is_empty() {
+        return None;
+    }
+    let left = cell.starts_with(':');
+    let right = cell.ends_with(':');
+    let start = usize::from(left);
+    let end = cell.len() - usize::from(right);
+    // A single ":" sets both `left` and `right` from the same byte — guard
+    // against that overlap rather than slicing a backwards range.
+    if start > end {
+        return None;
+    }
+    let dashes = &cell[start..end];
+    if dashes.is_empty() || !dashes.bytes().all(|b| b == b'-') {
+        return None;
+    }
+    Some(match (left, right) {
+        (true, true) => Align::Center,
+        (false, true) => Align::Right,
+        _ => Align::Left,
+    })
+}
+
+/// `line`'s per-column alignments if it's a valid delimiter row for a
+/// table with `expected_columns` columns — GFM requires its cell count to
+/// match the header's *exactly* (unlike body rows, which may have more or
+/// fewer cells than the header, padded/truncated when rendered).
+fn parse_delimiter_row(line: &str, expected_columns: usize) -> Option<Vec<Align>> {
+    let row = scan_row(line);
+    if row.cells.len() != expected_columns {
+        return None;
+    }
+    row.cells.iter().map(|cell| delimiter_align(&cell.text)).collect()
+}
+
+/// A line is a plausible table row if it contains at least one `|` — the
+/// cheapest possible check, same spirit as this module's other
+/// simplifications; the real validation happens via the *next* line having
+/// to be a valid delimiter row for a table to be recognized at all.
+fn is_pipe_row(line: &str) -> bool {
+    line.contains('|')
+}
+
+/// Resolves every table in the whole `source` document: for each line, the
+/// index into the returned `Vec<Table>` it belongs to (if any), and each
+/// table's resolved columns. A single sequential pass, mirroring
+/// `block_preview::classify_lines`'s fence-tracking and
+/// `live_preview::classify_block_context`'s list-nesting pass — the same
+/// kind of whole-document state this module's own doc comment explains
+/// tables need and single-line detection can't provide.
+pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
+    let lines: Vec<&str> = source.split('\n').collect();
+    let mut table_for_line = vec![None; lines.len()];
+    let mut tables = Vec::new();
+
+    // Byte offset each line starts at, for `Table::byte_range`.
+    let mut line_starts = Vec::with_capacity(lines.len());
+    let mut offset = 0;
+    for line in &lines {
+        line_starts.push(offset);
+        offset += line.len() + 1; // +1 for the '\n' this line was split on
+    }
+
+    let mut i = 0;
+    while i < lines.len() {
+        if i + 1 >= lines.len() || !is_pipe_row(lines[i]) {
+            i += 1;
+            continue;
+        }
+        let header_row = scan_row(lines[i]);
+        let Some(aligns) = parse_delimiter_row(lines[i + 1], header_row.cells.len()) else {
+            i += 1;
+            continue;
+        };
+
+        let start = i;
+        let mut end = i + 2;
+        while end < lines.len() && is_pipe_row(lines[end]) {
+            end += 1;
+        }
+
+        let mut columns: Vec<Column> = header_row
+            .cells
+            .iter()
+            .zip(aligns)
+            .map(|(cell, align)| Column { width: cell.text.chars().count().max(3), align })
+            .collect();
+        for &line in &lines[start + 2..end] {
+            for (column, cell) in columns.iter_mut().zip(scan_row(line).cells.iter()) {
+                column.width = column.width.max(cell.text.chars().count());
+            }
+        }
+
+        let byte_range = line_starts[start]..line_starts[end - 1] + lines[end - 1].len();
+        for entry in &mut table_for_line[start..end] {
+            *entry = Some(tables.len());
+        }
+        tables.push(Table { start_line: start, end_line: end, byte_range, columns });
+        i = end;
+    }
+
+    (table_for_line, tables)
+}
+
+/// The (left, right) character counts needed to pad a `len`-character cell
+/// to `width` according to `align` — `(0, 0)` if already at least `width`
+/// characters (a column's own width is always at least as wide as every
+/// cell that determined it, but a mismatched row can still have a cell
+/// wider than this table's resolved width if a future change ever grows a
+/// lenient path for that). Exposed separately from [`pad`] itself so a
+/// caller that needs to interleave real (byte-mapped) content between the
+/// two pad amounts, rather than building one opaque combined string, can.
+pub fn pad_amounts(len: usize, width: usize, align: Align) -> (usize, usize) {
+    if len >= width {
+        return (0, 0);
+    }
+    let fill = width - len;
+    match align {
+        Align::Left => (0, fill),
+        Align::Right => (fill, 0),
+        Align::Center => {
+            let left = fill / 2;
+            (left, fill - left)
+        }
+    }
+}
+
+/// Pads `text` to `width` *characters* according to `align`.
+pub fn pad(text: &str, width: usize, align: Align) -> String {
+    let (left, right) = pad_amounts(text.chars().count(), width, align);
+    format!("{}{text}{}", " ".repeat(left), " ".repeat(right))
+}
+
+/// The minimum a column is ever shrunk to by [`cap_column_widths`] — small
+/// enough to still show a few characters per wrapped line, large enough
+/// that a many-column table doesn't collapse every column to nothing.
+const MIN_COLUMN_WIDTH: usize = 3;
+
+/// Shrinks `columns`' natural widths — proportionally to each column's own
+/// share of the total, floored at [`MIN_COLUMN_WIDTH`] — so their total
+/// (plus border/padding overhead) fits within `max_total_chars`, if it
+/// doesn't already. A no-op (returns the natural widths unchanged) when it
+/// already fits. Border overhead is `3 * columns.len() + 1` characters: a
+/// leading `"│ "` (2) and a trailing `" │"` (2), plus `" │ "` (3) between
+/// every pair of adjacent columns — see `live_preview::build_table_row`.
+pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usize> {
+    let natural: Vec<usize> = columns.iter().map(|c| c.width).collect();
+    if columns.is_empty() {
+        return natural;
+    }
+
+    let border_overhead = 3 * columns.len() + 1;
+    let content_budget = max_total_chars.saturating_sub(border_overhead);
+    let natural_total: usize = natural.iter().sum();
+    if natural_total <= content_budget {
+        return natural;
+    }
+
+    let floor_total = MIN_COLUMN_WIDTH * columns.len();
+    if content_budget <= floor_total {
+        return vec![MIN_COLUMN_WIDTH; columns.len()];
+    }
+
+    let shrinkable_budget = content_budget - floor_total;
+    let shrinkable_natural_total: usize = natural.iter().map(|&w| w.saturating_sub(MIN_COLUMN_WIDTH)).sum();
+    natural
+        .iter()
+        .map(|&w| {
+            let shrinkable = w.saturating_sub(MIN_COLUMN_WIDTH);
+            let share = (shrinkable * shrinkable_budget).checked_div(shrinkable_natural_total).unwrap_or(0);
+            MIN_COLUMN_WIDTH + share
+        })
+        .collect()
+}
+
+/// Word-wraps `text` into lines no wider than `width` *characters* — a
+/// plain greedy fill (pack whole words onto the current line until the
+/// next one wouldn't fit, then start a new one), character-counted rather
+/// than pixel-measured since this editor's font is always monospace. A
+/// single word still too long for an entire empty line on its own is
+/// hard-broken at `width` characters rather than left overflowing.
+/// `width` is floored at `1` so a pathologically narrow cap can't cause a
+/// zero-width (infinite) break loop.
+pub fn wrap_cell_text(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut current = String::new();
+
+    for word in text.split_whitespace() {
+        let mut remaining = word;
+        loop {
+            let sep = usize::from(!current.is_empty());
+            if current.chars().count() + sep + remaining.chars().count() <= width {
+                if sep == 1 {
+                    current.push(' ');
+                }
+                current.push_str(remaining);
+                break;
+            }
+            if !current.is_empty() {
+                lines.push(std::mem::take(&mut current));
+                continue;
+            }
+            // `remaining` alone doesn't fit on a fresh, empty line either —
+            // hard-break it at `width` characters and keep going with what's
+            // left.
+            let split_at = remaining.char_indices().nth(width).map_or(remaining.len(), |(i, _)| i);
+            if split_at == remaining.len() {
+                current.push_str(remaining);
+                break;
+            }
+            lines.push(remaining[..split_at].to_string());
+            remaining = &remaining[split_at..];
+        }
+    }
+
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell_texts(row: &Row) -> Vec<&str> {
+        row.cells.iter().map(|c| c.text.as_str()).collect()
+    }
+
+    #[test]
+    fn scan_row_splits_a_simple_row_with_leading_and_trailing_pipes() {
+        let row = scan_row("| Name | Age |");
+        assert_eq!(cell_texts(&row), vec!["Name", "Age"]);
+        assert!(row.has_leading_pipe);
+        assert!(row.has_trailing_pipe);
+    }
+
+    #[test]
+    fn scan_row_handles_missing_leading_and_trailing_pipes() {
+        let row = scan_row("Name | Age");
+        assert_eq!(cell_texts(&row), vec!["Name", "Age"]);
+        assert!(!row.has_leading_pipe);
+        assert!(!row.has_trailing_pipe);
+    }
+
+    #[test]
+    fn scan_row_reports_each_cells_raw_byte_range() {
+        let line = "| Name | Age |";
+        let row = scan_row(line);
+        assert_eq!(&line[row.cells[0].raw.clone()], " Name ");
+        assert_eq!(&line[row.cells[1].raw.clone()], " Age ");
+    }
+
+    #[test]
+    fn scan_row_unescapes_a_backslash_escaped_pipe_without_splitting_the_cell() {
+        let row = scan_row(r"| a \| b | second |");
+        assert_eq!(cell_texts(&row), vec!["a | b", "second"]);
+    }
+
+    #[test]
+    fn scan_row_on_a_single_empty_cell() {
+        let row = scan_row("| |");
+        assert_eq!(cell_texts(&row), vec![""]);
+    }
+
+    #[test]
+    fn delimiter_align_recognizes_all_four_forms() {
+        assert_eq!(delimiter_align("---"), Some(Align::Left));
+        assert_eq!(delimiter_align(":--"), Some(Align::Left));
+        assert_eq!(delimiter_align("--:"), Some(Align::Right));
+        assert_eq!(delimiter_align(":-:"), Some(Align::Center));
+    }
+
+    #[test]
+    fn delimiter_align_rejects_non_dash_content() {
+        assert_eq!(delimiter_align("abc"), None);
+        assert_eq!(delimiter_align(""), None);
+        assert_eq!(delimiter_align(":"), None);
+    }
+
+    #[test]
+    fn classify_tables_recognizes_a_simple_table() {
+        let source = "| Name | Age |\n| --- | --- |\n| Alice | 30 |\n| Bob | 25 |";
+        let (table_for_line, tables) = classify_tables(source);
+        assert_eq!(table_for_line, vec![Some(0), Some(0), Some(0), Some(0)]);
+        assert_eq!(tables.len(), 1);
+        let table = &tables[0];
+        assert_eq!(table.start_line, 0);
+        assert_eq!(table.end_line, 4);
+        assert_eq!(table.columns.len(), 2);
+    }
+
+    #[test]
+    fn classify_tables_resolves_alignment_per_column() {
+        let source = "| L | C | R |\n| :-- | :-: | --: |\n| a | b | c |";
+        let (_, tables) = classify_tables(source);
+        let columns = &tables[0].columns;
+        assert_eq!(columns[0].align, Align::Left);
+        assert_eq!(columns[1].align, Align::Center);
+        assert_eq!(columns[2].align, Align::Right);
+    }
+
+    #[test]
+    fn classify_tables_column_width_is_the_widest_cell_across_every_row() {
+        let source = "| Name | Age |\n| --- | --- |\n| Alexandria | 30 |\n| Bo | 9 |";
+        let (_, tables) = classify_tables(source);
+        // "Alexandria" (10 chars) is wider than the header "Name" (4).
+        assert_eq!(tables[0].columns[0].width, 10);
+        assert_eq!(tables[0].columns[1].width, 3); // header "Age" is widest here
+    }
+
+    #[test]
+    fn classify_tables_ends_at_a_blank_line() {
+        let source = "| A | B |\n| --- | --- |\n| 1 | 2 |\n\nnot part of the table";
+        let (table_for_line, tables) = classify_tables(source);
+        assert_eq!(table_for_line, vec![Some(0), Some(0), Some(0), None, None]);
+        assert_eq!(tables[0].end_line, 3);
+    }
+
+    #[test]
+    fn classify_tables_ends_at_a_non_pipe_line() {
+        let source = "| A | B |\n| --- | --- |\n| 1 | 2 |\nplain paragraph text";
+        let (table_for_line, _) = classify_tables(source);
+        assert_eq!(table_for_line, vec![Some(0), Some(0), Some(0), None]);
+    }
+
+    #[test]
+    fn classify_tables_rejects_a_pipe_row_not_followed_by_a_valid_delimiter() {
+        let source = "| A | B |\nnot a delimiter row\n| 1 | 2 |";
+        let (table_for_line, tables) = classify_tables(source);
+        assert_eq!(table_for_line, vec![None, None, None]);
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn classify_tables_rejects_a_delimiter_row_with_the_wrong_column_count() {
+        let source = "| A | B |\n| --- |\n| 1 | 2 |";
+        let (table_for_line, tables) = classify_tables(source);
+        assert_eq!(table_for_line, vec![None, None, None]);
+        assert!(tables.is_empty());
+    }
+
+    #[test]
+    fn classify_tables_handles_a_body_row_with_fewer_cells_than_the_header() {
+        let source = "| A | B | C |\n| --- | --- | --- |\n| 1 |";
+        let (_, tables) = classify_tables(source);
+        assert_eq!(tables[0].columns.len(), 3);
+        // The missing cells shouldn't widen (or otherwise affect) the
+        // columns they don't have content for.
+        assert_eq!(tables[0].columns[1].width, 3); // "B" padded to the min-3 floor
+    }
+
+    #[test]
+    fn classify_tables_recognizes_two_separate_tables() {
+        let source = "| A |\n| --- |\n| 1 |\n\n| B |\n| --- |\n| 2 |";
+        let (table_for_line, tables) = classify_tables(source);
+        assert_eq!(table_for_line, vec![Some(0), Some(0), Some(0), None, Some(1), Some(1), Some(1)]);
+        assert_eq!(tables.len(), 2);
+    }
+
+    #[test]
+    fn pad_left_aligns_by_default() {
+        assert_eq!(pad("ab", 5, Align::Left), "ab   ");
+    }
+
+    #[test]
+    fn pad_right_aligns() {
+        assert_eq!(pad("ab", 5, Align::Right), "   ab");
+    }
+
+    #[test]
+    fn pad_centers_with_extra_space_on_the_right_for_an_odd_remainder() {
+        assert_eq!(pad("ab", 5, Align::Center), " ab  ");
+    }
+
+    #[test]
+    fn pad_is_a_no_op_when_already_wide_enough() {
+        assert_eq!(pad("already wide", 3, Align::Left), "already wide");
+    }
+
+    fn col(width: usize) -> Column {
+        Column { width, align: Align::Left }
+    }
+
+    #[test]
+    fn cap_column_widths_is_a_no_op_when_everything_already_fits() {
+        let columns = vec![col(5), col(3)];
+        // border overhead for 2 columns = 3*2+1 = 7; 5+3+7 = 15.
+        assert_eq!(cap_column_widths(&columns, 20), vec![5, 3]);
+    }
+
+    #[test]
+    fn cap_column_widths_shrinks_proportionally_to_fit() {
+        let columns = vec![col(20), col(10)];
+        // border overhead = 7; natural total = 30; budget forces a shrink.
+        let widths = cap_column_widths(&columns, 7 + 15);
+        // Integer-division flooring can leave the sum a character or two
+        // under budget, never over it.
+        assert!(widths.iter().sum::<usize>() <= 15);
+        // The wider column should still end up wider than the narrower one.
+        assert!(widths[0] > widths[1]);
+    }
+
+    #[test]
+    fn cap_column_widths_never_shrinks_below_the_minimum() {
+        let columns = vec![col(20), col(20), col(20), col(20)];
+        let widths = cap_column_widths(&columns, 5); // far too narrow for anything
+        assert_eq!(widths, vec![MIN_COLUMN_WIDTH; 4]);
+    }
+
+    #[test]
+    fn wrap_cell_text_packs_whole_words_greedily() {
+        assert_eq!(wrap_cell_text("Alexandria Fitzgerald", 10), vec!["Alexandria", "Fitzgerald"]);
+    }
+
+    #[test]
+    fn wrap_cell_text_is_a_single_line_when_it_already_fits() {
+        assert_eq!(wrap_cell_text("short", 10), vec!["short"]);
+    }
+
+    #[test]
+    fn wrap_cell_text_on_empty_text_is_one_empty_line() {
+        assert_eq!(wrap_cell_text("", 10), vec![""]);
+    }
+
+    #[test]
+    fn wrap_cell_text_hard_breaks_a_word_too_long_for_an_empty_line() {
+        assert_eq!(wrap_cell_text("Supercalifragilistic", 5), vec!["Super", "calif", "ragil", "istic"]);
+    }
+
+    #[test]
+    fn wrap_cell_text_never_produces_a_line_wider_than_the_cap() {
+        for text in ["a b c d e f g h i j k", "onereallylongwordwithnospaces", ""] {
+            for width in 1..8 {
+                for line in wrap_cell_text(text, width) {
+                    assert!(
+                        line.chars().count() <= width,
+                        "line {line:?} exceeds width {width} for input {text:?}"
+                    );
+                }
+            }
+        }
+    }
+}

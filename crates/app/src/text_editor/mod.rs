@@ -9,6 +9,7 @@ mod editor;
 mod element;
 mod input_handler;
 mod live_preview;
+mod table_preview;
 
 pub use buffer::EditorBuffer;
 pub use editor::{Editor, EditorEvent, InsertTab};

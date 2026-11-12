@@ -5,7 +5,7 @@
 //! text tagged with the style it should be painted in.
 //!
 //! Deliberately GPUI-free (same pure-logic-first approach `buffer.rs` and
-//! `markdown_blocks.rs` already use) — `element.rs`/`input_handler.rs`
+//! every other Live Preview module use) — `element.rs`/`input_handler.rs`
 //! consume [`DisplaySegment::style`] to pick an actual `Font`/color, and its
 //! raw↔display byte mapping ([`DisplayLine::display_offset_for_raw`]/
 //! [`DisplayLine::raw_offset_for_display`]) to convert between a raw buffer
@@ -13,14 +13,14 @@
 //! paint — the two are no longer the same string once markup is hidden.
 //!
 //! Scope deliberately narrow for this first pass: headings, bold, italic,
-//! inline code, strikethrough, wikilinks, blockquote `>` prefixes, and list
-//! markers — not the full CommonMark/GFM grammar (no tables, autolinks).
-//! Emphasis matching is also simplified: `**x**`/`__x__` is bold, a lone
-//! `*x*`/`_x_` is italic, without CommonMark's full left/right-flanking
-//! delimiter-run algorithm — a deliberate v1 scope cut, in the same spirit
-//! as `markdown_blocks.rs`'s own simplifications (a whole list is always one
-//! block, etc). Strikethrough (`~~x~~`) only recognizes the doubled-tilde
-//! GFM form, mirroring Strong's `**`/`__` pairing — unlike GitHub's own
+//! inline code, strikethrough, wikilinks, blockquote `>` prefixes, list
+//! markers, and tables (`table_preview.rs`'s detection, this module's
+//! `build_table_row`/`build_table_rule` rendering) — not the full
+//! CommonMark/GFM grammar (no autolinks). Emphasis matching is also
+//! simplified: `**x**`/`__x__` is bold, a lone `*x*`/`_x_` is italic,
+//! without CommonMark's full left/right-flanking delimiter-run algorithm —
+//! a deliberate v1 scope cut. Strikethrough (`~~x~~`) only recognizes the
+//! doubled-tilde GFM form, mirroring Strong's `**`/`__` pairing — unlike GitHub's own
 //! renderer, a lone `~x~` isn't treated as anything special and is left as
 //! plain text, since GFM itself doesn't define single-tilde strikethrough
 //! either (that's a cmark-gfm extension option GitHub doesn't enable).
@@ -57,6 +57,8 @@
 
 use std::ops::Range;
 
+use super::table_preview::{self, Column};
+
 /// How a visible [`DisplaySegment`] should be painted. Plain data —
 /// `element.rs` maps each variant to an actual `Font`/color, keeping this
 /// module GPUI-free. Meaningless (never read) on a hidden segment.
@@ -76,6 +78,10 @@ pub enum InlineStyle {
     /// [`DisplaySegment::is_replaced`]. Not applied to a list item's actual
     /// text content, only to the marker's own replacement glyph.
     ListMarker,
+    /// The synthetic `│`/`─`/`┼` box-drawing glyphs a table's borders and
+    /// horizontal rule are built from — see `build_table_row`/
+    /// `build_table_rule`. Never applied to a cell's own text content.
+    TableBorder,
 }
 
 /// One contiguous run of a line: the byte range it occupies in the *raw*
@@ -221,6 +227,26 @@ impl DisplayLine {
             }
         }
         self.segments.last().map_or(0, |s| s.raw.end)
+    }
+
+    /// Like [`raw_offset_for_display`](Self::raw_offset_for_display), but
+    /// considers *every* segment, including a hidden or replaced one,
+    /// rather than skipping straight past it to whatever comes next —
+    /// needed for a table's wrapped sub-rows (`build_table_row`), where
+    /// *every* segment (even a cell's own text) is `is_replaced()` once
+    /// that cell's content no longer fits on one line, so
+    /// `raw_offset_for_display`'s "skip every replaced segment" rule would
+    /// otherwise always fall through to this line's very end, regardless
+    /// of where it was actually clicked. Every other construct in this
+    /// editor keeps at least one genuinely visible segment to land on, so
+    /// it never needs this — it's specific to that one table case.
+    pub fn nearest_segment_raw_start(&self, display_offset: usize) -> usize {
+        for seg in &self.segments {
+            if display_offset < seg.display.end {
+                return seg.raw.start;
+            }
+        }
+        self.segments.last().map_or(0, |s| s.raw.start)
     }
 }
 
@@ -744,6 +770,233 @@ pub fn hidden_line(line: &str) -> DisplayLine {
         segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..0, style: InlineStyle::Plain, replaced: false }],
         indent: LineIndent::None,
     }
+}
+
+/// Renders one header or body row of a table as one or more actually-
+/// aligned grid lines — unlike every other construct in this module, which
+/// only hides or replaces markup *in place*, a table's cells get padded to
+/// each column's resolved width and separated by a synthetic `│`, since
+/// the raw pipe-delimited text has no consistent column alignment of its
+/// own. Tractable without any pixel measurement because this editor's
+/// font is always monospace (`element.rs`'s `render_editor`) — a character
+/// count lines up identically across every row.
+///
+/// More than one line is returned only when `max_row_width_chars` is given
+/// and at least one cell's text doesn't fit its column within that budget
+/// — `table_preview::cap_column_widths` shrinks the natural (`columns`)
+/// widths to fit first, and any cell still too wide for its now-narrower
+/// column wraps onto additional lines *within that cell*
+/// (`table_preview::wrap_cell_text`) rather than letting the row overflow
+/// the editor's own width. `None` skips capping/wrapping entirely (the
+/// natural widths are used verbatim, always exactly one line) — a caller
+/// with no width budget to measure against.
+///
+/// Each cell's own text is pushed via `push_cell_content`, which keeps it a
+/// genuinely *visible*, byte-mapped segment (so clicking into it lands
+/// inside its actual raw content, unlike a border glyph, which always
+/// collapses to whatever follows it when clicked) in the common
+/// single-line case — but once a cell's content is split across multiple
+/// *returned* lines, no single line's text is the cell's whole verbatim
+/// content any more, so every line falls back to `push_replaced` for every
+/// cell instead (collapsing to that cell's raw start when clicked, the
+/// same "collapses to one anchor point" behavior a border glyph or list
+/// marker's bullet already has — not byte-exact within a wrapped cell, a
+/// deliberate v1 scope cut). Cells are never inline-scanned for
+/// bold/italic/etc. either way (GFM cells are inline-content-only anyway,
+/// so this isn't a *compounding* gap the way blockquote/list markup is,
+/// just a simplification). A missing cell (this row has fewer cells than
+/// `columns`) gets a zero-width raw range at the line's end, same
+/// treatment `build_display_line_in_context` gives a lazy continuation's
+/// missing prefix. The real leading/trailing pipe byte (if present — both
+/// are optional per GFM) is replaced with the grid's own border glyph; if
+/// absent, a zero-width insertion stands in for it, same "synthetic, no
+/// raw counterpart" pattern — repeated on every returned line, so a
+/// wrapped cell still reads as one continuous bordered block.
+pub fn build_table_row(line: &str, columns: &[Column], max_row_width_chars: Option<usize>) -> Vec<DisplayLine> {
+    let row = table_preview::scan_row(line);
+    let widths: Vec<usize> = match max_row_width_chars {
+        Some(max) => table_preview::cap_column_widths(columns, max),
+        None => columns.iter().map(|c| c.width).collect(),
+    };
+
+    let wrapped_cells: Vec<Vec<String>> = (0..columns.len())
+        .map(|i| {
+            let text = row.cells.get(i).map_or("", |cell| cell.text.as_str());
+            table_preview::wrap_cell_text(text, widths[i])
+        })
+        .collect();
+    let sub_rows = wrapped_cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+
+    if sub_rows == 1 {
+        return vec![build_table_row_line(line, &row, columns, &widths)];
+    }
+
+    (0..sub_rows)
+        .map(|sub_row| {
+            build_table_row_wrapped_line(&row, columns, &widths, &wrapped_cells, sub_row, line.len())
+        })
+        .collect()
+}
+
+/// The common (non-wrapped) case: exactly one line, every cell's full text
+/// via the precise, byte-mapped `push_cell_content`. Split out from
+/// [`build_table_row`] so that path (still the overwhelming majority of
+/// tables, which fit without any cell needing to wrap) stays byte-exact —
+/// only [`build_table_row_wrapped_line`], used when it doesn't, pays for
+/// the less precise fallback.
+fn build_table_row_line(line: &str, row: &table_preview::Row, columns: &[Column], widths: &[usize]) -> DisplayLine {
+    let mut segments = Vec::new();
+    let mut display_text = String::new();
+
+    let leading_raw = if row.has_leading_pipe { 0..1 } else { 0..0 };
+    push_replaced(&mut segments, &mut display_text, leading_raw, "│ ", InlineStyle::TableBorder);
+
+    let real_count = row.cells.len();
+    let mut trailing_pipe_consumed = false;
+
+    for (i, &width) in widths.iter().enumerate() {
+        let align = columns[i].align;
+        match row.cells.get(i) {
+            Some(cell) => push_cell_content(line, &mut segments, &mut display_text, cell, width, align),
+            None => {
+                let padded = table_preview::pad("", width, align);
+                push_replaced(&mut segments, &mut display_text, line.len()..line.len(), &padded, InlineStyle::Plain);
+            }
+        }
+
+        let is_last_column = i + 1 == widths.len();
+        let sep_text = if is_last_column { " │" } else { " │ " };
+        // The real interior pipe between this cell and the next only
+        // exists if both are actually present in the source; the real
+        // trailing pipe (if any) is consumed exactly once, whichever
+        // column turns out to be the last *real* one — any columns past
+        // that are purely synthetic and must not re-claim the same byte.
+        let sep_raw = if i + 1 < real_count {
+            row.cells[i].raw.end..row.cells[i].raw.end + 1
+        } else if !trailing_pipe_consumed && row.has_trailing_pipe {
+            trailing_pipe_consumed = true;
+            line.len() - 1..line.len()
+        } else {
+            line.len()..line.len()
+        };
+        push_replaced(&mut segments, &mut display_text, sep_raw, sep_text, InlineStyle::TableBorder);
+    }
+
+    DisplayLine { display_text, segments, indent: LineIndent::None }
+}
+
+/// One sub-row of a row that needed cell-wrapping: for each column, either
+/// that cell's `sub_row`-th wrapped line (if it has one) or blank padding
+/// (if its wrapped text is shorter than the tallest cell in this row) —
+/// every cell uses `push_replaced` with its *whole* raw range regardless
+/// (see [`build_table_row`]'s own doc comment for why byte-exact mapping
+/// isn't possible here).
+fn build_table_row_wrapped_line(
+    row: &table_preview::Row,
+    columns: &[Column],
+    widths: &[usize],
+    wrapped_cells: &[Vec<String>],
+    sub_row: usize,
+    line_len: usize,
+) -> DisplayLine {
+    let mut segments = Vec::new();
+    let mut display_text = String::new();
+
+    let leading_raw = if row.has_leading_pipe { 0..1 } else { 0..0 };
+    push_replaced(&mut segments, &mut display_text, leading_raw, "│ ", InlineStyle::TableBorder);
+
+    let real_count = row.cells.len();
+    let mut trailing_pipe_consumed = false;
+
+    for (i, &width) in widths.iter().enumerate() {
+        let text = wrapped_cells[i].get(sub_row).map_or("", String::as_str);
+        let padded = table_preview::pad(text, width, columns[i].align);
+        let raw = row.cells.get(i).map_or(line_len..line_len, |cell| cell.raw.clone());
+        push_replaced(&mut segments, &mut display_text, raw, &padded, InlineStyle::Plain);
+
+        // Same real-pipe-position logic as `build_table_row_line`, so raw
+        // coverage stays contiguous — this sub-row still only claims each
+        // byte once, it just maps every cell's *whole* range to one
+        // combined blob (its text on this sub-row, or blank) rather than a
+        // byte-exact slice.
+        let is_last_column = i + 1 == widths.len();
+        let sep_text = if is_last_column { " │" } else { " │ " };
+        let sep_raw = if i + 1 < real_count {
+            row.cells[i].raw.end..row.cells[i].raw.end + 1
+        } else if !trailing_pipe_consumed && row.has_trailing_pipe {
+            trailing_pipe_consumed = true;
+            line_len - 1..line_len
+        } else {
+            line_len..line_len
+        };
+        push_replaced(&mut segments, &mut display_text, sep_raw, sep_text, InlineStyle::TableBorder);
+    }
+
+    DisplayLine { display_text, segments, indent: LineIndent::None }
+}
+
+/// Pushes one cell's padded, alignment-adjusted content as (up to) three
+/// segments: the original leading/trailing whitespace `trim()` already
+/// removed from `cell.text` (replaced with this column's actual alignment
+/// padding — `cell.raw` minus that whitespace is exactly where the real
+/// trimmed content lives), and the trimmed text itself. That middle segment
+/// is pushed via `push_visible` (a genuine raw↔display byte mapping, not
+/// `push_replaced`) whenever `cell.text` has no backslash in it — i.e. no
+/// `\|` for `table_preview::scan_row` to have unescaped — so clicking into
+/// the cell's own text resolves to a real position inside it rather than
+/// falling through to whatever comes after, the way a border glyph or a
+/// list marker's bullet always does. The rarer escaped-pipe case falls back
+/// to one `push_replaced` segment for the whole cell (display length no
+/// longer matches raw length once the escape is collapsed, so a byte-exact
+/// mapping isn't possible) — same "collapses to the next segment" click
+/// behavior a border glyph already has, not a regression, just not as
+/// precise.
+fn push_cell_content(
+    line: &str,
+    segments: &mut Vec<DisplaySegment>,
+    display_text: &mut String,
+    cell: &table_preview::Cell,
+    width: usize,
+    align: table_preview::Align,
+) {
+    let raw_slice = &line[cell.raw.clone()];
+    if raw_slice.contains('\\') {
+        let padded = table_preview::pad(&cell.text, width, align);
+        push_replaced(segments, display_text, cell.raw.clone(), &padded, InlineStyle::Plain);
+        return;
+    }
+
+    let content_start = cell.raw.start + (raw_slice.len() - raw_slice.trim_start().len());
+    let content_end = cell.raw.start + raw_slice.trim_end().len();
+    let (left_pad, right_pad) = table_preview::pad_amounts(cell.text.chars().count(), width, align);
+
+    push_replaced(segments, display_text, cell.raw.start..content_start, &" ".repeat(left_pad), InlineStyle::Plain);
+    push_visible(line, segments, display_text, content_start..content_end, InlineStyle::Plain);
+    push_replaced(segments, display_text, content_end..cell.raw.end, &" ".repeat(right_pad), InlineStyle::Plain);
+}
+
+/// Renders a table's delimiter row (e.g. `| --- | --- |`) as a horizontal
+/// rule (`├───┼───┤`) spanning every column — its entire raw text is
+/// consumed by one `push_replaced` segment, same "nothing left to scan"
+/// treatment `hidden_line` gives a fence delimiter, since a delimiter row
+/// is pure markup with no actual cell content to preserve. Capped the same
+/// way [`build_table_row`] caps its own widths (`max_row_width_chars`, via
+/// `table_preview::cap_column_widths`) so the rule stays visually aligned
+/// under a row whose cells wrapped.
+pub fn build_table_rule(line: &str, columns: &[Column], max_row_width_chars: Option<usize>) -> DisplayLine {
+    let widths: Vec<usize> = match max_row_width_chars {
+        Some(max) => table_preview::cap_column_widths(columns, max),
+        None => columns.iter().map(|c| c.width).collect(),
+    };
+    let mut rule = String::from("├");
+    for (i, &width) in widths.iter().enumerate() {
+        rule.push_str(&"─".repeat(width + 2));
+        rule.push(if i + 1 == widths.len() { '┤' } else { '┼' });
+    }
+    let mut segments = Vec::new();
+    let mut display_text = String::new();
+    push_replaced(&mut segments, &mut display_text, 0..line.len(), &rule, InlineStyle::TableBorder);
+    DisplayLine { display_text, segments, indent: LineIndent::None }
 }
 
 /// A blockquote prefix's nesting depth (1 for `>`, 2 for `>>` or `> >`, ...)
@@ -1432,5 +1685,177 @@ mod tests {
         // lands right at the start of the actual item text, raw byte 2.
         assert_eq!(dl.raw_offset_for_display(0), 2);
         assert_eq!(dl.raw_offset_for_display(3), 2);
+    }
+
+    fn two_columns() -> Vec<Column> {
+        vec![
+            Column { width: 5, align: table_preview::Align::Left },
+            Column { width: 3, align: table_preview::Align::Left },
+        ]
+    }
+
+    #[test]
+    fn build_table_row_pads_cells_to_column_width_and_adds_borders() {
+        let line = "| Alice | 30 |";
+        let dl = &build_table_row(line, &two_columns(), None)[0];
+        assert_eq!(dl.display_text, "│ Alice │ 30  │");
+        assert_contiguous(dl, line.len());
+        assert_eq!(dl.indent, LineIndent::None);
+    }
+
+    #[test]
+    fn build_table_row_styles_cell_text_as_plain_and_borders_as_table_border() {
+        let dl = &build_table_row("| Alice | 30 |", &two_columns(), None)[0];
+        // "Alice" exactly fills its 5-wide column (no padding segment);
+        // "30" is 2 chars in a 3-wide column, so it gets its own trailing
+        // padding segment alongside the genuinely visible "30" text.
+        assert_eq!(
+            visible_styles(dl),
+            vec![
+                ("│ ".to_string(), InlineStyle::TableBorder),
+                ("Alice".to_string(), InlineStyle::Plain),
+                (" │ ".to_string(), InlineStyle::TableBorder),
+                ("30".to_string(), InlineStyle::Plain),
+                (" ".to_string(), InlineStyle::Plain),
+                (" │".to_string(), InlineStyle::TableBorder),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_table_row_right_aligns_per_column_spec() {
+        let columns = vec![Column { width: 5, align: table_preview::Align::Right }];
+        let dl = &build_table_row("| x |", &columns, None)[0];
+        assert_eq!(dl.display_text, "│     x │");
+    }
+
+    #[test]
+    fn build_table_row_pads_a_missing_cell_as_empty_with_a_zero_width_raw_range() {
+        let line = "| Alice |";
+        let dl = &build_table_row(line, &two_columns(), None)[0];
+        assert_eq!(dl.display_text, "│ Alice │     │");
+        assert_contiguous(dl, line.len());
+    }
+
+    #[test]
+    fn build_table_row_handles_a_row_with_no_leading_or_trailing_pipe() {
+        let line = "Alice | 30";
+        let dl = &build_table_row(line, &two_columns(), None)[0];
+        assert_eq!(dl.display_text, "│ Alice │ 30  │");
+        assert_contiguous(dl, line.len());
+    }
+
+    #[test]
+    fn build_table_row_click_offsets_round_trip_into_the_right_cell() {
+        let line = "| Alice | 30 |";
+        let dl = &build_table_row(line, &two_columns(), None)[0];
+        // "30" starts right after "│ Alice │ " in the display text.
+        let thirty_display_start = dl.display_text.find("30").unwrap();
+        let raw = dl.raw_offset_for_display(thirty_display_start);
+        let thirty_raw_start = line.find("30").unwrap();
+        assert_eq!(raw, thirty_raw_start, "clicking on the second cell should land in its raw byte range");
+    }
+
+    #[test]
+    fn build_table_row_falls_back_to_a_replaced_segment_for_an_escaped_pipe_cell() {
+        let line = r"| a \| b | 30 |";
+        let dl = &build_table_row(line, &two_columns(), None)[0];
+        assert_contiguous(dl, line.len());
+        assert!(dl.display_text.contains("a | b"), "the escaped pipe should still unescape to a literal |");
+    }
+
+    #[test]
+    fn build_table_row_is_contiguous_with_real_alignment_padding() {
+        let columns =
+            vec![Column { width: 6, align: table_preview::Align::Right }, Column { width: 3, align: table_preview::Align::Center }];
+        let line = "|  x  |  y  |";
+        let dl = &build_table_row(line, &columns, None)[0];
+        assert_contiguous(dl, line.len());
+    }
+
+    #[test]
+    fn build_table_rule_draws_a_horizontal_rule_spanning_every_column() {
+        let line = "| --- | --- |";
+        let dl = build_table_rule(line, &two_columns(), None);
+        assert_eq!(dl.display_text, "├───────┼─────┤");
+        assert_contiguous(&dl, line.len());
+        assert_eq!(dl.indent, LineIndent::None);
+        assert_eq!(visible_styles(&dl), vec![(dl.display_text.clone(), InlineStyle::TableBorder)]);
+    }
+
+    fn two_wide_columns() -> Vec<Column> {
+        vec![
+            // 21 chars — exactly fits "Alexandria Fitzgerald" unwrapped.
+            Column { width: 21, align: table_preview::Align::Left },
+            Column { width: 3, align: table_preview::Align::Left },
+        ]
+    }
+
+    #[test]
+    fn build_table_row_without_a_budget_never_wraps() {
+        let line = "| Alexandria Fitzgerald | 41 |";
+        let rows = build_table_row(line, &two_wide_columns(), None);
+        assert_eq!(rows.len(), 1, "no width budget at all means no capping/wrapping");
+    }
+
+    #[test]
+    fn build_table_row_wraps_a_cell_too_wide_for_its_capped_column() {
+        let line = "| Alexandria Fitzgerald | 41 |";
+        // Border overhead for 2 columns = 7; a budget of 17 leaves only 10
+        // content characters, capping column 0 well below its natural
+        // (20-character) width, so "Alexandria Fitzgerald" no longer fits
+        // on one line.
+        let rows = build_table_row(line, &two_wide_columns(), Some(17));
+        assert!(rows.len() > 1, "a cell too wide for its capped column should wrap onto more than one sub-row");
+        for dl in &rows {
+            assert_contiguous(dl, line.len());
+            assert_eq!(dl.indent, LineIndent::None);
+        }
+    }
+
+    #[test]
+    fn build_table_row_leaves_a_short_cells_extra_sub_rows_blank() {
+        let line = "| Alexandria Fitzgerald | 41 |";
+        let rows = build_table_row(line, &two_wide_columns(), Some(17));
+        assert!(rows.len() > 1);
+        // Column 1's "41" fits on a single wrapped line (width 3) even
+        // though column 0 needs several — it should show up on exactly
+        // one sub-row, blank-padded on every other one.
+        let containing_41 = rows.iter().filter(|dl| dl.display_text.contains("41")).count();
+        assert_eq!(containing_41, 1, "a short cell's text should appear on exactly one sub-row");
+    }
+
+    #[test]
+    fn build_table_row_wrapped_cells_collapse_clicks_to_their_own_raw_start() {
+        let line = "| Alexandria Fitzgerald | 41 |";
+        let rows = build_table_row(line, &two_wide_columns(), Some(17));
+        // The cell's raw range starts right after the leading pipe,
+        // including the space before "Alexandria" — not
+        // `line.find("Alexandria")` itself, which skips that space.
+        let col0_raw_start = table_preview::scan_row(line).cells[0].raw.start;
+        for dl in &rows {
+            // Clicking anywhere a wrapped cell's own text is shown should
+            // land at that cell's raw start — the documented "collapses to
+            // one anchor point" simplification `build_table_row`'s own doc
+            // comment describes for the wrapped case. Every segment here is
+            // `is_replaced()` (no cell's text is byte-exact to its wrapped
+            // sub-line), so `nearest_segment_raw_start` is the method that
+            // actually applies — not `raw_offset_for_display`, which would
+            // skip every one of them and fall through to the line's end.
+            if let Some(display_start) = dl.display_text.find("Alexand") {
+                assert_eq!(dl.nearest_segment_raw_start(display_start), col0_raw_start);
+            }
+        }
+    }
+
+    #[test]
+    fn build_table_rule_uses_capped_widths_to_stay_aligned_with_a_wrapped_row() {
+        let line = "| -------------------- | --- |";
+        let capped = build_table_rule(line, &two_wide_columns(), Some(17));
+        let uncapped = build_table_rule(line, &two_wide_columns(), None);
+        assert!(
+            capped.display_text.chars().count() < uncapped.display_text.chars().count(),
+            "the rule should narrow along with the row's capped columns"
+        );
     }
 }

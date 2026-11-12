@@ -2,10 +2,53 @@ use gpui_kit::*;
 
 use super::block_preview::LineRole;
 use super::live_preview::{
-    build_display_line, build_display_line_in_context, classify_block_context, hidden_line, DisplayLine,
-    InlineStyle, LineContext, LineIndent,
+    build_display_line, build_display_line_in_context, build_table_row, build_table_rule, classify_block_context,
+    hidden_line, DisplayLine, InlineStyle, LineContext, LineIndent,
 };
+use super::table_preview::{classify_tables, Table};
 use super::Editor;
+
+/// Which table-related rendering a `LineRole::Plain` line needs, resolved
+/// by the caller (which already knows the line's absolute index, needed to
+/// tell a table's delimiter row from its header/body rows) — see
+/// `table_line_kind`.
+pub(super) enum TableLineKind<'a> {
+    None,
+    Delimiter(&'a Table),
+    Row(&'a Table),
+}
+
+/// Resolves `line_index`'s [`TableLineKind`] from `classify_tables`'
+/// per-line table-index lookup and the resolved `tables` themselves.
+pub(super) fn table_line_kind<'a>(tables: &'a [Table], table_for_line: &[Option<usize>], line_index: usize) -> TableLineKind<'a> {
+    match table_for_line[line_index] {
+        None => TableLineKind::None,
+        Some(idx) => {
+            let table = &tables[idx];
+            if table.is_delimiter(line_index) {
+                TableLineKind::Delimiter(table)
+            } else {
+                TableLineKind::Row(table)
+            }
+        }
+    }
+}
+
+/// Whether `line_index`'s table (if any) should render raw rather than as
+/// an aligned grid — true whenever the cursor sits anywhere inside that
+/// table's own byte range, not just on this specific line. Unlike every
+/// other construct's single "active line," a table's row/column alignment
+/// can't be resolved from one line considered in isolation, so there's no
+/// sensible way to keep the rest of the grid rendered while one row inside
+/// it goes raw — the whole table becomes the unit of "active," same
+/// `focused`-gating as `is_active_line`.
+pub(super) fn is_table_active(tables: &[Table], table_for_line: &[Option<usize>], line_index: usize, cursor: usize, focused: bool) -> bool {
+    focused
+        && table_for_line[line_index].is_some_and(|idx| {
+            let range = &tables[idx].byte_range;
+            cursor >= range.start && cursor <= range.end
+        })
+}
 
 /// A pale, half-transparent highlight — a reasonable Phase 1 default, not yet
 /// pulled from the app's theme (`ActiveTheme`/`cx.theme()`, as `gpui-component`
@@ -54,21 +97,27 @@ pub(super) fn is_active_line(line_range: &std::ops::Range<usize>, cursor: usize,
 /// div — see `Editor::scroll_handle`'s doc comment) just enough to bring the
 /// cursor's line fully into view, if it currently isn't. `content_bounds` is
 /// this element's own (already scroll-shifted) on-screen bounds, the same
-/// `bounds` `paint_lines`/mouse hit-testing use. Adding `line_height *
-/// cursor_line_index` to its origin gives the cursor line's actual current
-/// screen position, directly comparable against `scroll_handle.bounds()`
-/// (the viewport's fixed on-screen bounds, which don't move as you scroll).
+/// `bounds` `paint_lines`/mouse hit-testing use. Adding `cursor_top` (the
+/// cursor's line's accumulated Y offset *within* the document — see
+/// `measure_document`, since a wrapped line ahead of it can make this more
+/// than `line_height * cursor_line_index`) to that origin gives the cursor
+/// line's actual current screen position, directly comparable against
+/// `scroll_handle.bounds()` (the viewport's fixed on-screen bounds, which
+/// don't move as you scroll). `cursor_height` is that same line's own
+/// height (a multiple of `line_height` if it's wrapped across several
+/// rows), so a tall wrapped line scrolls its *bottom* row into view rather
+/// than stopping as soon as its top row is visible.
 ///
 /// A no-op if the cursor's line is already fully visible, or before the
 /// container has been laid out at least once (`scroll_handle.bounds()` is
 /// zero-sized until then).
-fn autoscroll_to_cursor(scroll_handle: &ScrollHandle, content_bounds: Bounds<Pixels>, line_height: Pixels, cursor_line_index: usize) {
+fn autoscroll_to_cursor(scroll_handle: &ScrollHandle, content_bounds: Bounds<Pixels>, cursor_top: Pixels, cursor_height: Pixels) {
     let viewport = scroll_handle.bounds();
     if viewport.size.height <= px(0.) {
         return;
     }
-    let cursor_top = content_bounds.origin.y + line_height * cursor_line_index as f32;
-    let cursor_bottom = cursor_top + line_height;
+    let cursor_top = content_bounds.origin.y + cursor_top;
+    let cursor_bottom = cursor_top + cursor_height;
     let viewport_top = viewport.origin.y;
     let viewport_bottom = viewport_top + viewport.size.height;
 
@@ -89,6 +138,62 @@ fn autoscroll_to_cursor(scroll_handle: &ScrollHandle, content_bounds: Bounds<Pix
     scroll_handle.set_offset(offset);
 }
 
+/// Computes the whole document's total rendered height and the cursor's
+/// own line's accumulated top-Y offset and height — needed by
+/// `render_editor` *before* it can construct its element tree (the outer
+/// `div`'s own `.h(...)` sizing, and `autoscroll_to_cursor`'s inputs),
+/// which is before the canvas paint closure where `paint_lines`/
+/// `offset_for_position` do their own per-line shaping as they go. Trivial
+/// when every line was exactly one `line_height` tall; not anymore now
+/// that a line can soft-wrap into several rows (see `shape_display_line`'s
+/// own `wrap_width_for`), so this shapes every line once just to measure
+/// it — the same per-line dispatch (`is_active_line`/`table_line_kind`/
+/// `is_table_active`) `paint_lines` uses, since a line's *active* wrapping
+/// shows different (unhidden) text than its previewed form and so can
+/// genuinely wrap differently.
+#[allow(clippy::too_many_arguments)]
+fn measure_document(
+    text: &str,
+    line_roles: &[LineRole],
+    block_contexts: &[LineContext],
+    table_for_line: &[Option<usize>],
+    tables: &[Table],
+    cursor: usize,
+    focused: bool,
+    available_width: Pixels,
+    line_height: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    window: &mut Window,
+) -> (Pixels, Pixels, Pixels) {
+    let mut total = px(0.);
+    let mut cursor_top = px(0.);
+    let mut cursor_height = line_height;
+    let mut line_start = 0usize;
+    for (i, line_text) in text.split('\n').enumerate() {
+        let line_range = line_start..line_start + line_text.len();
+        let active = is_active_line(&line_range, cursor, focused);
+        let table_kind = table_line_kind(tables, table_for_line, i);
+        let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
+        let results = shape_display_line(
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size,
+            text_color, available_width, window,
+        );
+        // Usually one entry; more than one only for a table row whose
+        // cells had to wrap (see `shape_display_line`'s own doc comment) —
+        // the raw line's total height is their combined height either way.
+        let height: Pixels = results.iter().map(|(wrapped, _)| wrapped.size(line_height).height).sum();
+        if cursor >= line_range.start && cursor <= line_range.end {
+            cursor_top = total;
+            cursor_height = height;
+        }
+        total += height;
+        line_start = line_range.end + 1;
+    }
+    (total, cursor_top, cursor_height)
+}
+
 /// The `Font` to paint a [`DisplaySegment`](super::live_preview::DisplaySegment)'s
 /// visible text in, derived from `base` (the editor's ambient mono font) —
 /// only weight/style vary per [`InlineStyle`], not family or size, so every
@@ -102,19 +207,20 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
         | InlineStyle::Code
         | InlineStyle::Strikethrough
         | InlineStyle::WikiLink
-        | InlineStyle::ListMarker => {}
+        | InlineStyle::ListMarker
+        | InlineStyle::TableBorder => {}
     }
     font
 }
 
 /// The color to paint a visible segment's text in — distinct colors for
-/// inline code, wikilinks, and blockquote/list-marker text, `base` (the
-/// editor's ambient text color) otherwise.
+/// inline code, wikilinks, blockquote/list-marker text, and table borders;
+/// `base` (the editor's ambient text color) otherwise.
 fn color_for_style(style: InlineStyle, base: Hsla) -> Hsla {
     match style {
         InlineStyle::Code => CODE_COLOR,
         InlineStyle::WikiLink => WIKILINK_COLOR,
-        InlineStyle::Blockquote(_) | InlineStyle::ListMarker => MUTED_COLOR,
+        InlineStyle::Blockquote(_) | InlineStyle::ListMarker | InlineStyle::TableBorder => MUTED_COLOR,
         InlineStyle::Plain | InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Heading(_) | InlineStyle::Strikethrough => base,
     }
 }
@@ -128,9 +234,32 @@ fn strikethrough_for_style(style: InlineStyle, color: Hsla) -> Option<Strikethro
     }
 }
 
-/// Shapes `line`'s Live Preview display text into one multi-styled
-/// `ShapedLine`, alongside the [`DisplayLine`] mapping needed to convert a
-/// raw buffer offset into an x position in it (or back). `role` (from
+/// The wrap width to shape a line at, given how much horizontal space
+/// `available_width` actually leaves it once its own [`indent_px`] shift is
+/// accounted for — `None` (no wrapping at all) for a table row/rule
+/// (`table_kind`, unless `table_active`, since wrapping would break its
+/// column alignment; an *active* table renders as plain raw text instead,
+/// which wraps like any other line), `Some(width)` otherwise. `width` is
+/// floored at `1px` so a pathologically narrow container can't make
+/// `shape_text` divide-by-zero or loop forever trying to fit even a single
+/// character.
+fn wrap_width_for(table_kind: &TableLineKind, table_active: bool, available_width: Pixels, indent_level: u8) -> Option<Pixels> {
+    if table_active {
+        return Some((available_width - indent_px(indent_level)).max(px(1.)));
+    }
+    match table_kind {
+        TableLineKind::None => Some((available_width - indent_px(indent_level)).max(px(1.))),
+        TableLineKind::Delimiter(_) | TableLineKind::Row(_) => None,
+    }
+}
+
+/// Shapes `line`'s Live Preview display text into one multi-styled,
+/// soft-wrapped `WrappedLine` (so a line too wide for the editor's own
+/// width wraps onto additional visual rows instead of overflowing
+/// horizontally — `wrap_width_for` picks the width to wrap at, or `None`
+/// for a table row/rule, which must stay unwrapped or its column alignment
+/// breaks), alongside the [`DisplayLine`] mapping needed to convert a raw
+/// buffer offset into a position in it (or back). `role` (from
 /// `block_preview::classify_lines`, computed once per document) picks
 /// between three cases:
 /// - [`LineRole::FenceContent`]: always literal (`build_display_line(line,
@@ -139,57 +268,125 @@ fn strikethrough_for_style(style: InlineStyle, color: Hsla) -> Option<Strikethro
 /// - [`LineRole::FenceDelimiter`]: raw when `active`, else [`hidden_line`]
 ///   — the fence marker itself has no "remainder" to show once hidden,
 ///   unlike every other hidden-prefix case in `live_preview.rs`.
-/// - [`LineRole::Plain`]: `build_display_line_in_context(line, active,
-///   block_ctx)` — `block_ctx` (from `live_preview::classify_block_context`,
-///   also computed once per document) resolves nested-list depth and lazy
-///   continuation, neither of which `line` alone carries enough information
-///   for.
+/// - [`LineRole::Plain`]: a line that isn't part of a table renders via
+///   `build_display_line_in_context(line, active, block_ctx)` — `block_ctx`
+///   (from `live_preview::classify_block_context`, also computed once per
+///   document) resolves nested-list depth and lazy continuation, neither
+///   of which `line` alone carries enough information for. A line that
+///   *is* part of a table (`table_kind`, from `table_line_kind`) instead
+///   renders as an aligned grid row/rule via `build_table_row`/
+///   `build_table_rule` — unless `table_active` (the cursor is anywhere in
+///   that whole table, from `is_table_active`), in which case it falls
+///   back to raw text, same as every other construct's active line.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn shape_display_line(
     line: &str,
     role: LineRole,
     block_ctx: LineContext,
+    table_kind: TableLineKind,
+    table_active: bool,
     active: bool,
     font: &Font,
     font_size: Pixels,
     text_color: Hsla,
+    available_width: Pixels,
     window: &mut Window,
-) -> (ShapedLine, DisplayLine) {
-    let mut display_line = match role {
-        LineRole::FenceContent => build_display_line(line, true),
-        LineRole::FenceDelimiter if !active => hidden_line(line),
-        LineRole::FenceDelimiter => build_display_line(line, active),
-        LineRole::Plain => build_display_line_in_context(line, active, block_ctx),
-    };
-    // Fenced code content is never Markdown (see this function's own doc
-    // comment above) — so even if it happens to start with `>` or `- `,
-    // that's not a real blockquote/list line and shouldn't indent as one.
-    if matches!(role, LineRole::FenceContent) {
-        display_line.indent = LineIndent::None;
-    }
-
-    let mut runs: Vec<TextRun> = display_line
-        .segments
-        .iter()
-        .filter(|seg| !seg.is_hidden())
-        .map(|seg| {
-            let color = color_for_style(seg.style, text_color);
-            TextRun {
-                len: seg.display.len(),
-                font: font_for_style(seg.style, font),
-                color,
-                background_color: None,
-                underline: None,
-                strikethrough: strikethrough_for_style(seg.style, color),
+) -> Vec<(WrappedLine, DisplayLine)> {
+    let display_lines: Vec<DisplayLine> = match role {
+        LineRole::FenceContent => vec![build_display_line(line, true)],
+        LineRole::FenceDelimiter if !active => vec![hidden_line(line)],
+        LineRole::FenceDelimiter => vec![build_display_line(line, active)],
+        LineRole::Plain if table_active && !matches!(table_kind, TableLineKind::None) => {
+            vec![build_display_line(line, true)]
+        }
+        LineRole::Plain => match table_kind {
+            TableLineKind::None => vec![build_display_line_in_context(line, active, block_ctx)],
+            TableLineKind::Delimiter(table) => {
+                let max_chars = table_row_char_budget(available_width, font, font_size, text_color, window);
+                vec![build_table_rule(line, &table.columns, max_chars)]
             }
-        })
-        .collect();
-    if runs.is_empty() {
-        runs.push(TextRun { len: 0, font: font.clone(), color: text_color, background_color: None, underline: None, strikethrough: None });
-    }
+            TableLineKind::Row(table) => {
+                let max_chars = table_row_char_budget(available_width, font, font_size, text_color, window);
+                build_table_row(line, &table.columns, max_chars)
+            }
+        },
+    };
 
-    let shaped = window.text_system().shape_line(display_line.display_text.clone().into(), font_size, &runs, None);
-    (shaped, display_line)
+    // A table's own indent is always `None` across every one of its
+    // (possibly several, once cells wrap) returned lines, same as every
+    // other case here only ever returning one — safe to read just the
+    // first for the whole line's wrap width.
+    let wrap_width = wrap_width_for(&table_kind, table_active, available_width, display_lines[0].indent.level());
+
+    display_lines
+        .into_iter()
+        .map(|mut display_line| {
+            // Fenced code content is never Markdown (see this function's
+            // own doc comment above) — so even if it happens to start with
+            // `>` or `- `, that's not a real blockquote/list line and
+            // shouldn't indent as one.
+            if matches!(role, LineRole::FenceContent) {
+                display_line.indent = LineIndent::None;
+            }
+
+            let mut runs: Vec<TextRun> = display_line
+                .segments
+                .iter()
+                .filter(|seg| !seg.is_hidden())
+                .map(|seg| {
+                    let color = color_for_style(seg.style, text_color);
+                    TextRun {
+                        len: seg.display.len(),
+                        font: font_for_style(seg.style, font),
+                        color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: strikethrough_for_style(seg.style, color),
+                    }
+                })
+                .collect();
+            if runs.is_empty() {
+                runs.push(TextRun {
+                    len: 0,
+                    font: font.clone(),
+                    color: text_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+
+            let wrapped = window
+                .text_system()
+                .shape_text(display_line.display_text.clone().into(), font_size, &runs, wrap_width, None)
+                .expect("shaping a single line of text should not fail")
+                .pop()
+                .expect("shape_text on a \\n-free string returns exactly one WrappedLine");
+            (wrapped, display_line)
+        })
+        .collect()
+}
+
+/// The character budget a table row/rule should fit within, given
+/// `available_width` — `None` if that's non-positive (shouldn't happen in
+/// practice, but a column-width budget of `0` would make
+/// `table_preview::cap_column_widths` collapse every column uselessly) or
+/// this editor's mono-space advance width can't be measured for some
+/// reason. Measured by shaping a single reference character rather than
+/// hard-coding an advance width, so it stays correct across font/size
+/// changes without this function needing to know either value's meaning —
+/// cheap even called once per table row/rule, since GPUI caches shaped
+/// text internally and this exact one-character shape repeats every call.
+fn table_row_char_budget(available_width: Pixels, font: &Font, font_size: Pixels, text_color: Hsla, window: &mut Window) -> Option<usize> {
+    if available_width <= px(0.) {
+        return None;
+    }
+    let run = TextRun { len: 1, font: font.clone(), color: text_color, background_color: None, underline: None, strikethrough: None };
+    let char_width = window.text_system().shape_line("0".into(), font_size, &[run], None).width;
+    if char_width <= px(0.) {
+        return None;
+    }
+    Some((available_width / char_width) as usize)
 }
 
 /// Renders `editor`'s buffer: each `\n`-delimited line shaped and painted, a
@@ -219,7 +416,6 @@ pub(super) fn render_editor(
     let buffer = editor.buffer();
     let text = buffer.text().to_string();
     let cursor = buffer.cursor();
-    let cursor_line_index = text[..cursor].matches('\n').count();
     let selection = buffer.selection();
     let focus_handle = editor.focus_handle.clone();
     let scroll_handle = editor.scroll_handle.clone();
@@ -232,9 +428,12 @@ pub(super) fn render_editor(
     // — nested-list depth and lazy continuation both depend on prior lines,
     // see `live_preview::classify_block_context`'s own doc comment.
     let block_contexts = classify_block_context(&text);
+    // Same reasoning again — a table's column widths/alignment depend on
+    // every row together, see `table_preview`'s own module doc.
+    let (table_for_line, tables) = classify_tables(&text);
 
     let line_height = window.line_height();
-    let line_count = text.split('\n').count().max(1);
+    let focused = focus_handle.is_focused(window);
 
     let text_style = window.text_style();
     // The note editor's own font, not the ambient `text_style`'s — only the
@@ -248,11 +447,30 @@ pub(super) fn render_editor(
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let text_color = text_style.color;
 
+    // The editor's own on-screen width isn't known yet at this point (this
+    // function only *builds* the element tree — actual layout, and the
+    // `bounds` the canvas paint closure below receives, happens afterward)
+    // but is needed now regardless, to size this `div`'s height up front
+    // once wrapping can make that depend on width. `scroll_handle`'s
+    // tracked container bounds (the same "last completed layout" value
+    // `autoscroll_to_cursor` already relies on) stands in for it — zero
+    // (and so falls back to effectively "don't wrap" via `Pixels::MAX`,
+    // same as this editor's pre-wrapping behavior) only before the very
+    // first layout, self-correcting the moment that completes.
+    let available_width = {
+        let width = scroll_handle.bounds().size.width;
+        if width > px(0.) { width } else { Pixels::MAX }
+    };
+    let (total_height, cursor_top, cursor_height) = measure_document(
+        &text, &line_roles, &block_contexts, &table_for_line, &tables, cursor, focused, available_width,
+        line_height, &font, font_size, text_color, window,
+    );
+
     div()
         .id("editor")
         .test_support()
         .w_full()
-        .h(line_height * line_count as f32)
+        .h(total_height)
         .track_focus(&focus_handle)
         // Must out-rank `gpui_kit::init`'s global `Root` component, which
         // binds plain "tab" to its own focus-next action in a "Root"
@@ -274,13 +492,15 @@ pub(super) fn render_editor(
                     // cursor's line the moment that line scrolled out of
                     // view. See `last_autoscrolled_cursor`'s own doc comment.
                     if focused && last_autoscrolled_cursor.get() != Some(cursor) {
-                        autoscroll_to_cursor(&scroll_handle, bounds, line_height, cursor_line_index);
+                        autoscroll_to_cursor(&scroll_handle, bounds, cursor_top, cursor_height);
                         last_autoscrolled_cursor.set(Some(cursor));
                     }
                     paint_lines(
                         &text,
                         &line_roles,
                         &block_contexts,
+                        &table_for_line,
+                        &tables,
                         cursor,
                         selection.clone(),
                         focused,
@@ -298,6 +518,8 @@ pub(super) fn render_editor(
                         text.clone(),
                         line_roles.clone(),
                         block_contexts.clone(),
+                        table_for_line.clone(),
+                        tables.clone(),
                         cursor,
                         focused,
                         bounds,
@@ -332,6 +554,8 @@ fn register_mouse_handling(
     text: String,
     line_roles: Vec<LineRole>,
     block_contexts: Vec<LineContext>,
+    table_for_line: Vec<Option<usize>>,
+    tables: Vec<Table>,
     cursor: usize,
     focused: bool,
     bounds: Bounds<Pixels>,
@@ -347,6 +571,8 @@ fn register_mouse_handling(
         let text = text.clone();
         let line_roles = line_roles.clone();
         let block_contexts = block_contexts.clone();
+        let table_for_line = table_for_line.clone();
+        let tables = tables.clone();
         let font = font.clone();
         move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble
@@ -356,8 +582,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, &line_roles, &block_contexts, cursor, focused, event.position, bounds, line_height, &font,
-                font_size, text_color, window,
+                &text, &line_roles, &block_contexts, &table_for_line, &tables, cursor, focused, event.position,
+                bounds, line_height, &font, font_size, text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, false);
@@ -375,8 +601,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, &line_roles, &block_contexts, cursor, focused, event.position, bounds, line_height, &font,
-                font_size, text_color, window,
+                &text, &line_roles, &block_contexts, &table_for_line, &tables, cursor, focused, event.position,
+                bounds, line_height, &font, font_size, text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, true);
@@ -399,18 +625,25 @@ fn register_mouse_handling(
 }
 
 /// The byte offset closest to `position` (window coordinates): the line
-/// implied by its `y`, then the closest char boundary — in that line's
+/// whose accumulated vertical extent `position`'s `y` falls into (no
+/// longer a plain division by `line_height`, now that a wrapped line's own
+/// height can be a multiple of it — see `shape_display_line`'s
+/// `wrap_width_for`), then the closest char boundary within it — in its
 /// *display* text, i.e. accounting for any Live Preview markup hidden on a
-/// non-active line — to its `x`, via `LineLayout::closest_index_for_x`
-/// (through `ShapedLine`'s `Deref`), mapped back to a raw buffer offset via
-/// `DisplayLine::raw_offset_for_display`. Reshapes the target line rather
-/// than reusing a shaped line from painting — cheap for one line, and
-/// avoids persisting shaped lines across frames just for this.
+/// non-active line — via `WrappedLineLayout::closest_index_for_position`
+/// (through `WrappedLine`'s `Deref`, now taking a full `Point` rather than
+/// a bare `x`, since which *row* of a wrapped line matters too), mapped
+/// back to a raw buffer offset via `DisplayLine::raw_offset_for_display`.
+/// Still only reshapes each line once while searching for the target (same
+/// "cheap enough, no cross-frame shape cache needed" reasoning as before)
+/// rather than needing some separately persisted per-line height table.
 #[allow(clippy::too_many_arguments)]
 fn offset_for_position(
     text: &str,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
+    table_for_line: &[Option<usize>],
+    tables: &[Table],
     cursor: usize,
     focused: bool,
     position: Point<Pixels>,
@@ -422,19 +655,45 @@ fn offset_for_position(
     window: &mut Window,
 ) -> usize {
     let relative_y = (position.y - bounds.origin.y).max(px(0.));
-    let target_line = (relative_y / line_height) as usize;
 
     let mut line_start = 0usize;
+    let mut y_offset = px(0.);
     for (i, line_text) in text.split('\n').enumerate() {
         let line_range = line_start..line_start + line_text.len();
-        if i == target_line {
-            let active = is_active_line(&line_range, cursor, focused);
-            let (shaped, display_line) = shape_display_line(
-                line_text, line_roles[i], block_contexts[i], active, font, font_size, text_color, window,
-            );
-            let relative_x = (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
-            let display_offset = shaped.closest_index_for_x(relative_x);
-            return line_start + display_line.raw_offset_for_display(display_offset);
+        let active = is_active_line(&line_range, cursor, focused);
+        let table_kind = table_line_kind(tables, table_for_line, i);
+        let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
+        let results = shape_display_line(
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size,
+            text_color, bounds.size.width, window,
+        );
+        // Usually one entry; more than one only for a table row whose
+        // cells had to wrap, each entry then its own (unwrapped, since
+        // already sized to fit) sub-row of that row — same click-then-find
+        // the right sub-row logic, just one level deeper.
+        let multi_entry = results.len() > 1;
+        for (wrapped, display_line) in &results {
+            let height = wrapped.size(line_height).height;
+            if relative_y < y_offset + height {
+                let relative_x = (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
+                let local_y = (relative_y - y_offset).max(px(0.));
+                let display_offset = match wrapped.closest_index_for_position(point(relative_x, local_y), line_height) {
+                    Ok(ix) | Err(ix) => ix,
+                };
+                // A wrapped table sub-row has no genuinely visible segment
+                // to land on (every cell's text is `is_replaced()` there,
+                // see `build_table_row`'s own doc comment) — only
+                // `nearest_segment_raw_start` handles that case correctly,
+                // `raw_offset_for_display` would always fall through to
+                // this line's very end regardless of where it was clicked.
+                let raw_offset = if multi_entry {
+                    display_line.nearest_segment_raw_start(display_offset)
+                } else {
+                    display_line.raw_offset_for_display(display_offset)
+                };
+                return line_start + raw_offset;
+            }
+            y_offset += height;
         }
         line_start = line_range.end + 1;
     }
@@ -447,6 +706,8 @@ fn paint_lines(
     text: &str,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
+    table_for_line: &[Option<usize>],
+    tables: &[Table],
     cursor: usize,
     selection: Option<std::ops::Range<usize>>,
     show_cursor: bool,
@@ -459,49 +720,130 @@ fn paint_lines(
     cx: &mut App,
 ) {
     let mut line_start = 0usize;
+    let mut y_offset = px(0.);
     for (i, line_text) in text.split('\n').enumerate() {
-        let row_origin = bounds.origin + point(px(0.), line_height * i as f32);
         let line_range = line_start..line_start + line_text.len();
         let active = is_active_line(&line_range, cursor, show_cursor);
+        let table_kind = table_line_kind(tables, table_for_line, i);
+        let table_active = is_table_active(tables, table_for_line, i, cursor, show_cursor);
 
-        let (shaped, display_line) = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], active, font, font_size, text_color, window,
+        let results = shape_display_line(
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size,
+            text_color, bounds.size.width, window,
         );
+        // Usually one entry; more than one only for a table row whose
+        // cells had to wrap (see `shape_display_line`'s own doc comment).
+        let total_height: Pixels = results.iter().map(|(wrapped, _)| wrapped.size(line_height).height).sum();
+        // Every entry of one raw line shares the same indent (a table's is
+        // always `None` across all of them, same as the common one-entry
+        // case) — fine to read it off the first.
+        let indent_level = results[0].1.indent.level();
+        let line_origin = bounds.origin + point(indent_px(indent_level), y_offset);
+        // The width a wrapped row should be highlighted to when a
+        // selection continues past it onto the next row — the same budget
+        // `wrap_width_for` gave this line to wrap within.
+        let full_row_width = bounds.size.width - indent_px(indent_level);
 
-        if let LineIndent::Blockquote(depth) = display_line.indent {
+        if let LineIndent::Blockquote(depth) = results[0].1.indent {
             for level in 0..depth {
-                let bar_x = row_origin.x + indent_px(level) + QUOTE_BAR_INSET;
+                let bar_x = bounds.origin.x + indent_px(level) + QUOTE_BAR_INSET;
                 window.paint_quad(fill(
-                    Bounds { origin: point(bar_x, row_origin.y), size: size(QUOTE_BAR_WIDTH, line_height) },
+                    Bounds { origin: point(bar_x, bounds.origin.y + y_offset), size: size(QUOTE_BAR_WIDTH, total_height) },
                     MUTED_COLOR,
                 ));
             }
         }
-        let line_origin = row_origin + point(indent_px(display_line.indent.level()), px(0.));
 
-        if let Some(selection) = &selection {
-            let start = selection.start.max(line_range.start);
-            let end = selection.end.min(line_range.end);
-            if start < end {
-                let x0 = shaped.split_at(display_line.display_offset_for_raw(start - line_start)).0.width();
-                let x1 = shaped.split_at(display_line.display_offset_for_raw(end - line_start)).0.width();
+        if results.len() > 1 {
+            // A wrapped table row — see `shape_display_line`'s own doc
+            // comment on why this sub-row split can't carry a byte-exact
+            // raw↔display mapping the way a regular wrapped paragraph
+            // does, which rules out the per-character selection/cursor
+            // placement below. Pragmatic fallback: highlight the row's
+            // *whole* combined block if the selection touches it at all,
+            // and always place the caret on its first sub-row.
+            if let Some(selection) = &selection
+                && selection.start.max(line_range.start) < selection.end.min(line_range.end)
+            {
                 window.paint_quad(fill(
-                    Bounds { origin: line_origin + point(x0, px(0.)), size: size(x1 - x0, line_height) },
+                    Bounds { origin: line_origin, size: size(full_row_width, total_height) },
                     SELECTION_HIGHLIGHT,
+                ));
+            }
+            let mut row_y = y_offset;
+            for (wrapped, _) in &results {
+                let _ = wrapped.paint(bounds.origin + point(indent_px(indent_level), row_y), line_height, TextAlign::Left, None, window, cx);
+                row_y += wrapped.size(line_height).height;
+            }
+            if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
+                window.paint_quad(fill(
+                    Bounds { origin: line_origin, size: size(px(1.), line_height) },
+                    text_color,
+                ));
+            }
+        } else {
+            let (wrapped, display_line) = &results[0];
+
+            if let Some(selection) = &selection {
+                let start = selection.start.max(line_range.start);
+                let end = selection.end.min(line_range.end);
+                if start < end {
+                    let start_pos = wrapped
+                        .position_for_index(display_line.display_offset_for_raw(start - line_start), line_height)
+                        .unwrap_or(point(px(0.), px(0.)));
+                    let end_pos = wrapped
+                        .position_for_index(display_line.display_offset_for_raw(end - line_start), line_height)
+                        .unwrap_or(point(full_row_width, total_height - line_height));
+                    let start_row = (start_pos.y / line_height) as i32;
+                    let end_row = (end_pos.y / line_height) as i32;
+                    if start_row == end_row {
+                        window.paint_quad(fill(
+                            Bounds { origin: line_origin + start_pos, size: size(end_pos.x - start_pos.x, line_height) },
+                            SELECTION_HIGHLIGHT,
+                        ));
+                    } else {
+                        // Spans more than one wrapped row of this same
+                        // line: the first row highlights from the
+                        // selection's start to the row's own right edge,
+                        // the last row from the row's left edge to the
+                        // selection's end, and any rows in between are
+                        // highlighted in full.
+                        for row in start_row..=end_row {
+                            let (x0, x1) = if row == start_row {
+                                (start_pos.x, full_row_width)
+                            } else if row == end_row {
+                                (px(0.), end_pos.x)
+                            } else {
+                                (px(0.), full_row_width)
+                            };
+                            if x1 > x0 {
+                                window.paint_quad(fill(
+                                    Bounds {
+                                        origin: line_origin + point(x0, line_height * row as f32),
+                                        size: size(x1 - x0, line_height),
+                                    },
+                                    SELECTION_HIGHLIGHT,
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+
+            let _ = wrapped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
+
+            if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
+                let pos = wrapped
+                    .position_for_index(display_line.display_offset_for_raw(cursor - line_start), line_height)
+                    .unwrap_or(point(px(0.), px(0.)));
+                window.paint_quad(fill(
+                    Bounds { origin: line_origin + pos, size: size(px(1.), line_height) },
+                    text_color,
                 ));
             }
         }
 
-        let _ = shaped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
-
-        if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
-            let x = shaped.split_at(display_line.display_offset_for_raw(cursor - line_start)).0.width();
-            window.paint_quad(fill(
-                Bounds { origin: line_origin + point(x, px(0.)), size: size(px(1.), line_height) },
-                text_color,
-            ));
-        }
-
+        y_offset += total_height;
         line_start = line_range.end + 1; // +1 for the '\n' this line was split on
     }
 }
@@ -514,8 +856,9 @@ fn paint_lines(
 mod tests {
     use super::super::block_preview::LineRole;
     use super::super::live_preview::{LineContext, LineIndent};
+    use super::super::table_preview::classify_tables;
     use super::super::{Editor, InsertTab};
-    use super::{is_active_line, shape_display_line};
+    use super::{is_active_line, shape_display_line, TableLineKind};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         AnyWindowHandle, AppContext, Entity, EntityInputHandler, KeyBinding, Pixels, Point,
@@ -566,6 +909,150 @@ mod tests {
             .unwrap();
 
         assert_eq!(three_line_height, one_line_height * 3., "three lines should be exactly 3x as tall as one");
+    }
+
+    #[gpui_kit::test]
+    fn shape_display_line_wraps_at_the_given_width(cx: &mut TestAppContext) {
+        // A direct, low-level check of the wrapping mechanism itself
+        // (`shape_display_line`'s `wrap_width_for` dispatch into
+        // `WindowTextSystem::shape_text`), independent of the *rest* of
+        // `main.rs`'s `scrolling_away_from_the_cursor_does_not_get_snapped_back`-
+        // style tests, which check the surrounding sizing/autoscroll
+        // plumbing instead. A bare `Editor` has no tracked ancestor to
+        // measure wrapping against for its *own* div sizing (see
+        // `main.rs`'s `a_line_too_wide_for_the_pane_wraps_instead_of_overflowing`,
+        // which needs the real app for that reason) — but `shape_display_line`
+        // itself just takes whatever `available_width` it's given, so
+        // calling it directly sidesteps that entirely.
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let line = "word ".repeat(50);
+            let line_height = window.line_height();
+
+            let (unwrapped, _) = {
+            let mut results = shape_display_line(
+                &line, LineRole::Plain, LineContext::Plain, TableLineKind::None, false, false, &font, font_size,
+                text_style.color, Pixels::MAX, window,
+            );
+            assert_eq!(results.len(), 1, "expected exactly one entry");
+            results.remove(0)
+        };
+            assert_eq!(
+                unwrapped.size(line_height).height, line_height,
+                "an effectively unbounded width should never wrap"
+            );
+
+            let (wrapped, _) = {
+            let mut results = shape_display_line(
+                &line, LineRole::Plain, LineContext::Plain, TableLineKind::None, false, false, &font, font_size,
+                text_style.color, px(100.), window,
+            );
+            assert_eq!(results.len(), 1, "expected exactly one entry");
+            results.remove(0)
+        };
+            assert!(
+                wrapped.size(line_height).height > line_height,
+                "a line far wider than a 100px budget should wrap onto more than one row"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn shape_display_line_never_gpui_wraps_a_table_row_even_at_a_narrow_width(cx: &mut TestAppContext) {
+        // GPUI's own character-level line-wrapping is never applied to a
+        // table row's *entries* (`wrap_width_for`'s table exception) —
+        // doing that would break column alignment. A row too wide for a
+        // narrow budget instead splits into multiple *entries* (one per
+        // sub-row of wrapped cell content, see
+        // `shape_display_line_wraps_a_table_rows_cells_within_their_own_column`),
+        // each of which still individually measures exactly one
+        // `line_height` tall.
+        let text = "| Name | Age |\n| --- | --- |\n| Alice | 30 |";
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let line_height = window.line_height();
+            let (_, tables) = classify_tables(text);
+            let table = &tables[0];
+
+            let results = shape_display_line(
+                "| Alice | 30 |", LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false,
+                &font, font_size, text_style.color, px(10.), window,
+            );
+            for (wrapped, _) in &results {
+                assert_eq!(
+                    wrapped.size(line_height).height, line_height,
+                    "no individual entry should itself further (GPUI-level) wrap"
+                );
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn shape_display_line_wraps_a_table_rows_cells_within_their_own_column(cx: &mut TestAppContext) {
+        // The actual fix: a cell too wide for the editor's own width wraps
+        // *within its column* (multiple `shape_display_line` entries for
+        // the one raw row) rather than letting the row overflow past the
+        // editor's right edge.
+        let text = "| Name | Bio |\n| --- | --- |\n| Alice | A very long biography that does not fit |";
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let line_height = window.line_height();
+            let (_, tables) = classify_tables(text);
+            let table = &tables[0];
+            let row = "| Alice | A very long biography that does not fit |";
+
+            let narrow = shape_display_line(
+                row, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false, &font, font_size,
+                text_style.color, px(150.), window,
+            );
+            assert!(narrow.len() > 1, "a cell too wide for a 150px budget should split into multiple sub-rows");
+
+            // None of those sub-rows' own rendered width should exceed the
+            // budget they were wrapped to fit.
+            for (wrapped, _) in &narrow {
+                assert!(
+                    wrapped.size(line_height).width <= px(150.),
+                    "a wrapped sub-row must not itself overflow the width budget, got {:?}",
+                    wrapped.size(line_height).width
+                );
+            }
+
+            let wide = shape_display_line(
+                row, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false, &font, font_size,
+                text_style.color, Pixels::MAX, window,
+            );
+            assert_eq!(wide.len(), 1, "an effectively unbounded width should never need to wrap a cell");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn selecting_across_a_wrap_boundary_does_not_panic(cx: &mut TestAppContext) {
+        let long_text: &'static str = Box::leak("word ".repeat(300).into_boxed_str());
+        let (window, editor) = open_editor(cx, long_text);
+        editor.update(cx, |editor, _| {
+            editor.buffer_mut().set_cursor(0, false);
+            editor.buffer_mut().set_cursor(long_text.len(), true);
+        });
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("editor").is_some());
+        })
+        .unwrap();
     }
 
     #[gpui_kit::test]
@@ -1106,6 +1593,91 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn renders_a_table_without_panicking(cx: &mut TestAppContext) {
+        // A wiring smoke test, same spirit as `renders_nested_lists_and_
+        // lazy_continuation_without_panicking` — `classify_tables`'
+        // `table_for_line` must stay index-aligned with `text.split('\n')`
+        // across `paint_lines`/`offset_for_position`, or this panics rather
+        // than just rendering wrong.
+        let text = "before\n\n| Name | Age |\n| --- | --- |\n| Alice | 30 |\n| Bob | 25 |\n\nafter";
+        let (window, _editor) = open_editor(cx, text);
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("editor").is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_table_renders_as_a_grid_until_the_cursor_enters_it_then_renders_raw(cx: &mut TestAppContext) {
+        let text = "| Name | Age |\n| --- | --- |\n| Alice | 30 |";
+        let (window, _editor) = open_editor(cx, text);
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let (_, tables) = classify_tables(text);
+            let table = &tables[0];
+            let header = "| Name | Age |";
+
+            let (_, grid) = {
+            let mut results = shape_display_line(
+                header, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false, &font, font_size, text_style.color,
+                Pixels::MAX, window,
+            );
+            assert_eq!(results.len(), 1, "expected exactly one entry");
+            results.remove(0)
+        };
+            // Columns resolve to width 5 ("Alice" is the widest cell in
+            // column 0) and width 3 ("Age"/"Age" is widest in column 1).
+            assert_eq!(grid.display_text, "│ Name  │ Age │");
+
+            let (_, raw) = {
+            let mut results = shape_display_line(
+                header, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), true, false, &font, font_size, text_style.color,
+                Pixels::MAX, window,
+            );
+            assert_eq!(results.len(), 1, "expected exactly one entry");
+            results.remove(0)
+        };
+            assert_eq!(raw.display_text, header, "once the cursor is anywhere in the table, it must render raw");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_near_the_left_edge_of_a_table_row_lands_at_its_first_cell(cx: &mut TestAppContext) {
+        let text = "first line\n| Name | Age |\n| --- | --- |\n| Alice | 30 |";
+        let (window, editor) = open_editor(cx, text);
+        // Cursor starts on line 0, outside the table, so it renders as the
+        // aligned grid rather than raw.
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+
+        let line_height = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.line_height()
+            })
+            .unwrap();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // Near the left edge of the header row (line index 1) — within
+            // the leading "│ " border, which should land at the start of
+            // the first cell's own content, same "click near the start of
+            // replaced markup lands past it" behavior every other
+            // construct in this editor already has.
+            window.click_at("editor", point(px(1.), line_height + px(1.)), cx);
+        })
+        .unwrap();
+
+        let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+        let name_start = text.find("Name").unwrap();
+        assert_eq!(cursor, name_start, "clicking near the table's left border should land at the first cell's content");
+    }
+
+    #[gpui_kit::test]
     fn fenced_code_content_is_never_inline_scanned_even_on_the_active_line(cx: &mut TestAppContext) {
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
@@ -1120,9 +1692,14 @@ mod tests {
             // same literal treatment regardless of `active`, since a fenced
             // code line must never have its content inline-scanned at all,
             // active or not.
-            let (_, display_line) = shape_display_line(
-                line, LineRole::FenceContent, LineContext::Plain, true, &font, font_size, text_style.color, window,
+            let (_, display_line) = {
+            let mut results = shape_display_line(
+                line, LineRole::FenceContent, LineContext::Plain, TableLineKind::None, false, true, &font, font_size, text_style.color,
+                Pixels::MAX, window,
             );
+            assert_eq!(results.len(), 1, "expected exactly one entry");
+            results.remove(0)
+        };
             assert_eq!(display_line.display_text, line, "fenced code content must never be treated as Markdown");
         })
         .unwrap();
@@ -1137,10 +1714,14 @@ mod tests {
             let font = text_style.font();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
             for line in ["> looks like a quote", "- looks like a list item"] {
-                let (_, display_line) = shape_display_line(
-                    line, LineRole::FenceContent, LineContext::Plain, false, &font, font_size, text_style.color,
-                    window,
-                );
+                let (_, display_line) = {
+            let mut results = shape_display_line(
+                line, LineRole::FenceContent, LineContext::Plain, TableLineKind::None, false, false, &font, font_size, text_style.color,
+                Pixels::MAX, window,
+            );
+            assert_eq!(results.len(), 1, "expected exactly one entry");
+            results.remove(0)
+        };
                 assert_eq!(
                     display_line.indent,
                     LineIndent::None,
@@ -1160,14 +1741,24 @@ mod tests {
             let text_style = window.text_style();
             let font = text_style.font();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
-            let (_, display_line) = shape_display_line(
-                line, LineRole::FenceDelimiter, LineContext::Plain, false, &font, font_size, text_style.color, window,
+            let (_, display_line) = {
+            let mut results = shape_display_line(
+                line, LineRole::FenceDelimiter, LineContext::Plain, TableLineKind::None, false, false, &font, font_size, text_style.color,
+                Pixels::MAX, window,
             );
+            assert_eq!(results.len(), 1, "expected exactly one entry");
+            results.remove(0)
+        };
             assert_eq!(display_line.display_text, "", "an inactive fence delimiter line should show nothing");
 
-            let (_, active_display_line) = shape_display_line(
-                line, LineRole::FenceDelimiter, LineContext::Plain, true, &font, font_size, text_style.color, window,
+            let (_, active_display_line) = {
+            let mut results = shape_display_line(
+                line, LineRole::FenceDelimiter, LineContext::Plain, TableLineKind::None, false, true, &font, font_size, text_style.color,
+                Pixels::MAX, window,
             );
+            assert_eq!(results.len(), 1, "expected exactly one entry");
+            results.remove(0)
+        };
             assert_eq!(active_display_line.display_text, line, "the active fence delimiter line should show its raw text");
         })
         .unwrap();

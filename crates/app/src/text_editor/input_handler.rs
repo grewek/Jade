@@ -3,8 +3,9 @@ use std::ops::Range;
 use gpui_kit::*;
 
 use super::block_preview::classify_lines;
-use super::element::{indent_px, is_active_line, shape_display_line};
+use super::element::{indent_px, is_active_line, is_table_active, shape_display_line, table_line_kind};
 use super::live_preview::classify_block_context;
+use super::table_preview::classify_tables;
 use super::Editor;
 
 /// The byte offset in `text` after `utf16_offset` UTF-16 code units.
@@ -165,19 +166,33 @@ impl EntityInputHandler for Editor {
         let text_color = text_style.color;
         let line_roles = classify_lines(&text);
         let block_contexts = classify_block_context(&text);
+        let (table_for_line, tables) = classify_tables(&text);
 
         let mut line_start = 0usize;
+        let mut y_offset = px(0.);
         for (i, line_text) in text.split('\n').enumerate() {
             let line_range = line_start..line_start + line_text.len();
-            if byte_offset <= line_range.end {
-                let active = is_active_line(&line_range, cursor, self.focus_handle.is_focused(window));
-                let (shaped, display_line) = shape_display_line(
-                    line_text, line_roles[i], block_contexts[i], active, &font, font_size, text_color, window,
-                );
-                let x = shaped.x_for_index(display_line.display_offset_for_raw(byte_offset - line_start))
-                    + indent_px(display_line.indent.level());
-                let origin = element_bounds.origin + point(x, line_height * i as f32);
-                return Some(Bounds { origin, size: size(px(1.), line_height) });
+            let focused = self.focus_handle.is_focused(window);
+            let active = is_active_line(&line_range, cursor, focused);
+            let table_kind = table_line_kind(&tables, &table_for_line, i);
+            let table_active = is_table_active(&tables, &table_for_line, i, cursor, focused);
+            let results = shape_display_line(
+                line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, &font, font_size,
+                text_color, element_bounds.size.width, window,
+            );
+            // Usually one entry; more than one only for a table row whose
+            // cells had to wrap — same "which sub-row is this byte
+            // actually on" search, one level deeper.
+            for (wrapped, display_line) in &results {
+                let height = wrapped.size(line_height).height;
+                if byte_offset <= line_range.end {
+                    let display_offset = display_line.display_offset_for_raw(byte_offset - line_start);
+                    let pos = wrapped.position_for_index(display_offset, line_height).unwrap_or(point(px(0.), px(0.)));
+                    let x = pos.x + indent_px(display_line.indent.level());
+                    let origin = element_bounds.origin + point(x, y_offset + pos.y);
+                    return Some(Bounds { origin, size: size(px(1.), line_height) });
+                }
+                y_offset += height;
             }
             line_start = line_range.end + 1;
         }
