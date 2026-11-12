@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
+use super::element::{is_active_line, shape_display_line};
 use super::Editor;
 
 /// The byte offset in `text` after `utf16_offset` UTF-16 code units.
@@ -145,33 +146,33 @@ impl EntityInputHandler for Editor {
         range_utf16: Range<usize>,
         element_bounds: Bounds<Pixels>,
         window: &mut Window,
-        _cx: &mut Context<Self>,
+        cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let text = self.buffer.text().to_string();
         let byte_offset = utf16_to_utf8(&text, range_utf16.start);
+        let cursor = self.buffer.cursor();
         let line_height = window.line_height();
         let text_style = window.text_style();
-        let font = text_style.font();
+        // Same mono-family override `element.rs`'s `render_editor` applies —
+        // bold/italic Live Preview runs need the bundled mono family's real
+        // Bold/Italic faces, and this method must shape with the same font
+        // that painting did or the IME candidate window lands slightly off.
+        let mut font = text_style.font();
+        font.family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
+        let text_color = text_style.color;
 
         let mut line_start = 0usize;
         for (i, line_text) in text.split('\n').enumerate() {
-            let line_end = line_start + line_text.len();
-            if byte_offset <= line_end {
-                let run = TextRun {
-                    len: line_text.len(),
-                    font,
-                    color: text_style.color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                };
-                let shaped = window.text_system().shape_line(line_text.to_string().into(), font_size, &[run], None);
-                let x = shaped.x_for_index(byte_offset - line_start);
+            let line_range = line_start..line_start + line_text.len();
+            if byte_offset <= line_range.end {
+                let active = is_active_line(&line_range, cursor, self.focus_handle.is_focused(window));
+                let (shaped, display_line) = shape_display_line(line_text, active, &font, font_size, text_color, window);
+                let x = shaped.x_for_index(display_line.display_offset_for_raw(byte_offset - line_start));
                 let origin = element_bounds.origin + point(x, line_height * i as f32);
                 return Some(Bounds { origin, size: size(px(1.), line_height) });
             }
-            line_start = line_end + 1;
+            line_start = line_range.end + 1;
         }
         None
     }
