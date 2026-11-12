@@ -2,10 +2,10 @@ use gpui_kit::*;
 
 use super::block_preview::LineRole;
 use super::live_preview::{
-    build_display_line, build_display_line_in_context, build_table_row, build_table_rule, classify_block_context,
-    hidden_line, DisplayLine, InlineStyle, LineContext, LineIndent,
+    build_display_line, build_display_line_in_context, build_table_row, classify_block_context, hidden_line, DisplayLine, InlineStyle,
+    LineContext, LineIndent,
 };
-use super::table_preview::{classify_tables, Table};
+use super::table_preview::{self, classify_tables, Table};
 use super::Editor;
 
 /// Which table-related rendering a `LineRole::Plain` line needs, resolved
@@ -73,6 +73,9 @@ const INDENT_UNIT: Pixels = px(20.);
 /// quote bar is painted at — see `paint_lines`.
 const QUOTE_BAR_INSET: Pixels = px(4.);
 const QUOTE_BAR_WIDTH: Pixels = px(2.);
+
+/// The thickness of a table's grid lines — see `paint_table_grid_lines`.
+const TABLE_LINE_WIDTH: Pixels = px(1.);
 
 /// The pixel x-offset `level` structural indent levels shifts a line's
 /// content by — `level` is [`LineIndent::level`], `0` for a line with no
@@ -177,8 +180,8 @@ fn measure_document(
         let table_kind = table_line_kind(tables, table_for_line, i);
         let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
         let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size,
-            text_color, available_width, window,
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size, text_color,
+            available_width, window,
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment) —
@@ -203,24 +206,19 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
     match style {
         InlineStyle::Bold | InlineStyle::Heading(_) => font.weight = FontWeight::BOLD,
         InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
-        InlineStyle::Plain
-        | InlineStyle::Code
-        | InlineStyle::Strikethrough
-        | InlineStyle::WikiLink
-        | InlineStyle::ListMarker
-        | InlineStyle::TableBorder => {}
+        InlineStyle::Plain | InlineStyle::Code | InlineStyle::Strikethrough | InlineStyle::WikiLink | InlineStyle::ListMarker => {}
     }
     font
 }
 
 /// The color to paint a visible segment's text in — distinct colors for
-/// inline code, wikilinks, blockquote/list-marker text, and table borders;
-/// `base` (the editor's ambient text color) otherwise.
+/// inline code, wikilinks, and blockquote/list-marker text; `base` (the
+/// editor's ambient text color) otherwise.
 fn color_for_style(style: InlineStyle, base: Hsla) -> Hsla {
     match style {
         InlineStyle::Code => CODE_COLOR,
         InlineStyle::WikiLink => WIKILINK_COLOR,
-        InlineStyle::Blockquote(_) | InlineStyle::ListMarker | InlineStyle::TableBorder => MUTED_COLOR,
+        InlineStyle::Blockquote(_) | InlineStyle::ListMarker => MUTED_COLOR,
         InlineStyle::Plain | InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Heading(_) | InlineStyle::Strikethrough => base,
     }
 }
@@ -277,7 +275,11 @@ fn wrap_width_for(table_kind: &TableLineKind, table_active: bool, available_widt
 ///   renders as an aligned grid row/rule via `build_table_row`/
 ///   `build_table_rule` — unless `table_active` (the cursor is anywhere in
 ///   that whole table, from `is_table_active`), in which case it falls
-///   back to raw text, same as every other construct's active line.
+///   back to raw text, same as every other construct's active line. A
+///   table's delimiter row has no cell content of its own to show at all,
+///   so it's just [`hidden_line`] — `element.rs`'s `paint_lines` paints its
+///   header/body divider as a real vector line directly over it (see
+///   `paint_table_grid_lines`), not as dashed-rule text.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn shape_display_line(
     line: &str,
@@ -301,10 +303,7 @@ pub(super) fn shape_display_line(
         }
         LineRole::Plain => match table_kind {
             TableLineKind::None => vec![build_display_line_in_context(line, active, block_ctx)],
-            TableLineKind::Delimiter(table) => {
-                let max_chars = table_row_char_budget(available_width, font, font_size, text_color, window);
-                vec![build_table_rule(line, &table.columns, max_chars)]
-            }
+            TableLineKind::Delimiter(_) => vec![hidden_line(line)],
             TableLineKind::Row(table) => {
                 let max_chars = table_row_char_budget(available_width, font, font_size, text_color, window);
                 build_table_row(line, &table.columns, max_chars)
@@ -367,22 +366,32 @@ pub(super) fn shape_display_line(
         .collect()
 }
 
+/// This editor's monospace advance width — one character's pixel width,
+/// identical for every character since the font is always monospace (see
+/// `render_editor`'s own font override). `0.` if it can't be measured for
+/// some reason. Measured by shaping a single reference character rather
+/// than hard-coding an advance width, so it stays correct across font/size
+/// changes without either caller needing to know either value's meaning —
+/// cheap even called once per table row/rule/grid-line, since GPUI caches
+/// shaped text internally and this exact one-character shape repeats every
+/// call. Shared by `table_row_char_budget` (converts it to a *character*
+/// budget) and `paint_table_grid_lines` (converts a *character offset* to
+/// an actual pixel x) — both need the same measurement to agree.
+fn mono_char_width(font: &Font, font_size: Pixels, text_color: Hsla, window: &mut Window) -> Pixels {
+    let run = TextRun { len: 1, font: font.clone(), color: text_color, background_color: None, underline: None, strikethrough: None };
+    window.text_system().shape_line("0".into(), font_size, &[run], None).width
+}
+
 /// The character budget a table row/rule should fit within, given
 /// `available_width` — `None` if that's non-positive (shouldn't happen in
 /// practice, but a column-width budget of `0` would make
 /// `table_preview::cap_column_widths` collapse every column uselessly) or
-/// this editor's mono-space advance width can't be measured for some
-/// reason. Measured by shaping a single reference character rather than
-/// hard-coding an advance width, so it stays correct across font/size
-/// changes without this function needing to know either value's meaning —
-/// cheap even called once per table row/rule, since GPUI caches shaped
-/// text internally and this exact one-character shape repeats every call.
+/// [`mono_char_width`] can't be measured for some reason.
 fn table_row_char_budget(available_width: Pixels, font: &Font, font_size: Pixels, text_color: Hsla, window: &mut Window) -> Option<usize> {
     if available_width <= px(0.) {
         return None;
     }
-    let run = TextRun { len: 1, font: font.clone(), color: text_color, background_color: None, underline: None, strikethrough: None };
-    let char_width = window.text_system().shape_line("0".into(), font_size, &[run], None).width;
+    let char_width = mono_char_width(font, font_size, text_color, window);
     if char_width <= px(0.) {
         return None;
     }
@@ -664,8 +673,8 @@ fn offset_for_position(
         let table_kind = table_line_kind(tables, table_for_line, i);
         let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
         let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size,
-            text_color, bounds.size.width, window,
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size, text_color,
+            bounds.size.width, window,
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap, each entry then its own (unwrapped, since
@@ -701,6 +710,51 @@ fn offset_for_position(
     text.len()
 }
 
+/// Accumulated while `paint_lines` walks one table's lines, top to bottom —
+/// everything `paint_table_grid_lines` needs, gathered once `top`/`column_x`
+/// are known (the table's header row) and finalized once `bottom` is known
+/// (the table's own last line), at which point it's painted and dropped.
+struct TablePaint {
+    top: Pixels,
+    /// The y to paint the header/body divider line at — `None` until the
+    /// delimiter row is reached (always set by the time painting actually
+    /// happens, since every table `classify_tables` produces has one).
+    divider_y: Option<Pixels>,
+    /// Pixel x-position of every vertical grid line this table needs: the
+    /// left outer edge, one between each pair of adjacent columns, and the
+    /// right outer edge — converted once, from `table_preview::column_
+    /// divider_char_offsets`, when the header row is reached, and reused
+    /// unchanged for every other line (a table's columns don't change
+    /// width partway through it).
+    column_x: Vec<Pixels>,
+}
+
+/// Paints one table's grid as real vector lines — the outer box, a vertical
+/// divider between every pair of columns, and the header/body divider —
+/// rather than relying on box-drawing glyphs (`┌`/`│`/`┼`/etc.) shaped and
+/// painted as ordinary text. A monospace font's glyphs don't reliably abut
+/// pixel-for-pixel across separately-shaped/painted lines or at junctions,
+/// which reads as visible seams/gaps between them; a quad painted directly
+/// at the right pixel position has no such seam regardless of font/hinting
+/// — the same reasoning `paint_lines`'s own blockquote quote-bar already
+/// uses a painted quad for, rather than a vertical-bar character.
+fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, window: &mut Window) {
+    for &x in &paint.column_x {
+        window.paint_quad(fill(Bounds { origin: point(x, paint.top), size: size(TABLE_LINE_WIDTH, bottom - paint.top) }, MUTED_COLOR));
+    }
+    let left = paint.column_x.first().copied().unwrap_or(px(0.));
+    let right = paint.column_x.last().copied().unwrap_or(px(0.));
+    let width = right - left;
+    window.paint_quad(fill(Bounds { origin: point(left, paint.top), size: size(width, TABLE_LINE_WIDTH) }, MUTED_COLOR));
+    window.paint_quad(fill(
+        Bounds { origin: point(left, bottom - TABLE_LINE_WIDTH), size: size(width, TABLE_LINE_WIDTH) },
+        MUTED_COLOR,
+    ));
+    if let Some(divider_y) = paint.divider_y {
+        window.paint_quad(fill(Bounds { origin: point(left, divider_y), size: size(width, TABLE_LINE_WIDTH) }, MUTED_COLOR));
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn paint_lines(
     text: &str,
@@ -721,6 +775,12 @@ fn paint_lines(
 ) {
     let mut line_start = 0usize;
     let mut y_offset = px(0.);
+    // Accumulated across a table's own lines, then painted and cleared
+    // once its last line is reached — see `TablePaint`/`paint_table_grid_
+    // lines`. Never started at all for a table that's rendering raw
+    // (`table_active`), matching every other construct's own "border
+    // disappears while active" behavior.
+    let mut table_paint: Option<TablePaint> = None;
     for (i, line_text) in text.split('\n').enumerate() {
         let line_range = line_start..line_start + line_text.len();
         let active = is_active_line(&line_range, cursor, show_cursor);
@@ -728,8 +788,8 @@ fn paint_lines(
         let table_active = is_table_active(tables, table_for_line, i, cursor, show_cursor);
 
         let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size,
-            text_color, bounds.size.width, window,
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size, text_color,
+            bounds.size.width, window,
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
@@ -743,6 +803,36 @@ fn paint_lines(
         // selection continues past it onto the next row — the same budget
         // `wrap_width_for` gave this line to wrap within.
         let full_row_width = bounds.size.width - indent_px(indent_level);
+
+        if !table_active {
+            // `table_kind` was already moved into `shape_display_line`
+            // above — cheap to resolve again (a plain array lookup) rather
+            // than restructuring this loop just to keep the first value
+            // alive.
+            let table_kind_for_geometry = table_line_kind(tables, table_for_line, i);
+            if let TableLineKind::Row(table) | TableLineKind::Delimiter(table) = &table_kind_for_geometry {
+                if table.is_first_row(i) {
+                    let max_chars = table_row_char_budget(bounds.size.width, font, font_size, text_color, window);
+                    let widths = table_preview::resolve_widths(&table.columns, max_chars);
+                    let char_width = mono_char_width(font, font_size, text_color, window);
+                    let column_x = table_preview::column_divider_char_offsets(&widths)
+                        .into_iter()
+                        .map(|offset| line_origin.x + char_width * offset as f32)
+                        .collect();
+                    table_paint = Some(TablePaint { top: bounds.origin.y + y_offset, divider_y: None, column_x });
+                }
+                if table.is_delimiter(i)
+                    && let Some(paint) = table_paint.as_mut()
+                {
+                    paint.divider_y = Some(bounds.origin.y + y_offset + total_height / 2.);
+                }
+                if table.is_last_line(i)
+                    && let Some(paint) = table_paint.take()
+                {
+                    paint_table_grid_lines(&paint, bounds.origin.y + y_offset + total_height, window);
+                }
+            }
+        }
 
         if let LineIndent::Blockquote(depth) = results[0].1.indent {
             for level in 0..depth {
@@ -984,8 +1074,8 @@ mod tests {
             let table = &tables[0];
 
             let results = shape_display_line(
-                "| Alice | 30 |", LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false,
-                &font, font_size, text_style.color, px(10.), window,
+                "| Alice | 30 |", LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false, &font,
+                font_size, text_style.color, px(10.), window,
             );
             for (wrapped, _) in &results {
                 assert_eq!(
@@ -1609,6 +1699,37 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn renders_a_table_with_no_body_rows_without_panicking(cx: &mut TestAppContext) {
+        // The delimiter row is itself the table's last line here (no body
+        // rows at all) — the one case `paint_lines`'s table-geometry
+        // tracking finalizes (and paints the grid for) on a
+        // `TableLineKind::Delimiter` line rather than a `Row` one.
+        let text = "| Name | Age |\n| --- | --- |";
+        let (window, _editor) = open_editor(cx, text);
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("editor").is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn renders_a_table_whose_last_row_wraps_without_panicking(cx: &mut TestAppContext) {
+        // A very long cell forces wrapping regardless of the test window's
+        // actual width — exercising `paint_lines`'s table-geometry tracking
+        // finalizing the bottom border/divider from a *multi-entry* last
+        // line's combined height, not just a plain single-entry one.
+        let long_bio: &'static str =
+            Box::leak(format!("| Name | Bio |\n| --- | --- |\n| Alice | {} |", "word ".repeat(100)).into_boxed_str());
+        let (window, _editor) = open_editor(cx, long_bio);
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("editor").is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn a_table_renders_as_a_grid_until_the_cursor_enters_it_then_renders_raw(cx: &mut TestAppContext) {
         let text = "| Name | Age |\n| --- | --- |\n| Alice | 30 |";
         let (window, _editor) = open_editor(cx, text);
@@ -1631,7 +1752,10 @@ mod tests {
         };
             // Columns resolve to width 5 ("Alice" is the widest cell in
             // column 0) and width 3 ("Age"/"Age" is widest in column 1).
-            assert_eq!(grid.display_text, "│ Name  │ Age │");
+            // The blank gaps at the border positions aren't drawn as text —
+            // `element.rs`'s `paint_table_grid_lines` paints real vector
+            // lines over them instead, see that function's own doc comment.
+            assert_eq!(grid.display_text, "  Name    Age  ");
 
             let (_, raw) = {
             let mut results = shape_display_line(
@@ -1664,10 +1788,11 @@ mod tests {
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             // Near the left edge of the header row (line index 1) — within
-            // the leading "│ " border, which should land at the start of
+            // the blank gap the real left-border line is painted over (see
+            // `paint_table_grid_lines`), which should land at the start of
             // the first cell's own content, same "click near the start of
-            // replaced markup lands past it" behavior every other
-            // construct in this editor already has.
+            // replaced markup lands past it" behavior every other construct
+            // in this editor already has.
             window.click_at("editor", point(px(1.), line_height + px(1.)), cx);
         })
         .unwrap();

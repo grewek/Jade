@@ -61,6 +61,22 @@ impl Table {
     pub fn is_delimiter(&self, line: usize) -> bool {
         line == self.start_line + 1
     }
+
+    /// Whether `line` is this table's header row — the one line that gets a
+    /// top border frame (`┌─┬─┐`) drawn above it, so the grid reads as a
+    /// fully closed box rather than open along its top edge.
+    pub fn is_first_row(&self, line: usize) -> bool {
+        line == self.start_line
+    }
+
+    /// Whether `line` is this table's very last line — a body row usually,
+    /// but the delimiter row itself if the table has no body rows at all
+    /// (`end_line` is exclusive, so the last real line is `end_line - 1`).
+    /// Gets a bottom border frame (`└─┴─┘`) drawn below it, mirroring
+    /// `is_first_row`'s top frame.
+    pub fn is_last_line(&self, line: usize) -> bool {
+        line == self.end_line - 1
+    }
 }
 
 /// One row's parsed cells, plus whether a leading/trailing `|` was actually
@@ -268,8 +284,11 @@ const MIN_COLUMN_WIDTH: usize = 3;
 /// (plus border/padding overhead) fits within `max_total_chars`, if it
 /// doesn't already. A no-op (returns the natural widths unchanged) when it
 /// already fits. Border overhead is `3 * columns.len() + 1` characters: a
-/// leading `"│ "` (2) and a trailing `" │"` (2), plus `" │ "` (3) between
-/// every pair of adjacent columns — see `live_preview::build_table_row`.
+/// leading 2-character gap and a trailing 2-character gap (both blank —
+/// the table's actual left/right border lines are painted as real vector
+/// quads over them, see `column_divider_char_offsets` below, not drawn as
+/// text), plus a 3-character blank gap between every pair of adjacent
+/// columns — see `live_preview::build_table_row`.
 pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usize> {
     let natural: Vec<usize> = columns.iter().map(|c| c.width).collect();
     if columns.is_empty() {
@@ -298,6 +317,50 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
             MIN_COLUMN_WIDTH + share
         })
         .collect()
+}
+
+/// `columns`' widths as actually used for rendering — [`cap_column_widths`]
+/// if `max_total_chars` is given, else each column's own natural width
+/// verbatim. The one place both `live_preview::build_table_row` and
+/// `element.rs`'s border-painting code (which needs the *same* resolved
+/// widths `build_table_row` used, to position its vector lines at exactly
+/// the gaps that row's text actually left blank) make this decision, so
+/// they can't silently disagree.
+pub fn resolve_widths(columns: &[Column], max_total_chars: Option<usize>) -> Vec<usize> {
+    match max_total_chars {
+        Some(max) => cap_column_widths(columns, max),
+        None => columns.iter().map(|c| c.width).collect(),
+    }
+}
+
+/// The character offsets (from the start of a rendered table row) of every
+/// vertical grid line that row's text leaves blank for — the left outer
+/// edge, one between each pair of adjacent columns, and the right outer
+/// edge (so `widths.len() + 1` offsets in total). Mirrors the exact column
+/// layout `live_preview::build_table_row_line` lays out in characters (a
+/// 2-character leading gap, each cell padded to its own `widths[i]`,
+/// separated by a 3-character gap — except the final gap, which is only
+/// 2 characters) without needing to lay out any text at all; `element.rs`
+/// converts each offset to a pixel x (this editor's font is always
+/// monospace, so one multiply by a measured character-advance width is
+/// enough) and paints a real vector line there, rather than relying on a
+/// box-drawing glyph to land pixel-exact against its neighbors.
+pub fn column_divider_char_offsets(widths: &[usize]) -> Vec<usize> {
+    let mut offsets = Vec::with_capacity(widths.len() + 1);
+    let mut pos = 0;
+    offsets.push(pos);
+    pos += 2; // leading gap
+    for (i, &width) in widths.iter().enumerate() {
+        pos += width;
+        if i + 1 != widths.len() {
+            offsets.push(pos + 1); // middle of the 3-character gap
+            pos += 3;
+        } else {
+            offsets.push(pos + 1); // second character of the final 2-character gap
+            pos += 2;
+        }
+    }
+    offsets
 }
 
 /// Word-wraps `text` into lines no wider than `width` *characters* — a
@@ -534,6 +597,42 @@ mod tests {
         let columns = vec![col(20), col(20), col(20), col(20)];
         let widths = cap_column_widths(&columns, 5); // far too narrow for anything
         assert_eq!(widths, vec![MIN_COLUMN_WIDTH; 4]);
+    }
+
+    #[test]
+    fn resolve_widths_is_natural_widths_without_a_budget() {
+        let columns = vec![col(5), col(3)];
+        assert_eq!(resolve_widths(&columns, None), vec![5, 3]);
+    }
+
+    #[test]
+    fn resolve_widths_caps_when_a_budget_is_given() {
+        let columns = vec![col(20), col(20), col(20), col(20)];
+        assert_eq!(resolve_widths(&columns, Some(5)), vec![MIN_COLUMN_WIDTH; 4]);
+    }
+
+    #[test]
+    fn column_divider_char_offsets_matches_build_table_row_lines_own_layout() {
+        // Mirrors "│ Alice │ 30  │" (widths 5, 3): border characters land
+        // at positions 0, 8, and 14 — see `build_table_row_pads_cells_to_
+        // column_width_and_adds_borders` in `live_preview.rs` for the
+        // string this layout corresponds to (now rendered as blank gaps,
+        // with these exact offsets telling `element.rs` where to paint a
+        // real line instead).
+        assert_eq!(column_divider_char_offsets(&[5, 3]), vec![0, 8, 14]);
+    }
+
+    #[test]
+    fn column_divider_char_offsets_handles_a_single_column() {
+        // "|  x  |" style single-column row: leading gap (2) + width (5) +
+        // trailing gap (2) = 9 characters total, border at 0 and 8.
+        assert_eq!(column_divider_char_offsets(&[5]), vec![0, 8]);
+    }
+
+    #[test]
+    fn column_divider_char_offsets_returns_one_more_offset_than_columns() {
+        let widths = vec![4, 6, 3];
+        assert_eq!(column_divider_char_offsets(&widths).len(), widths.len() + 1);
     }
 
     #[test]
