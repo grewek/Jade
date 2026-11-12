@@ -1,3 +1,29 @@
 [workspace]
 resolver = "2"
 members = ["crates/core", "crates/app"]
+
+# Neither profile ships external debug symbols — `cargo build`'s own default
+# profile.dev (`debug = true`) is why an unstripped debug binary runs into the
+# hundreds of MB; `debug = false` stops rustc emitting that debug info at the
+# source, rather than generating and then discarding it. `strip = true` on
+# both additionally drops the symbol table at link time (defense-in-depth;
+# redundant with `debug = false` for dev, but a release build still carries
+# one even with `debug = false`, since that's cargo's own default already).
+#
+# A debug build is still large (~95MB stripped, vs. ~37MB for release) even
+# with debug info gone — that remainder is unoptimized dev codegen itself
+# (opt-level 0: no inlining/dead-code elimination, a full copy per generic
+# monomorphization, ...), not debug symbols. Measured by actually stripping
+# a debug binary by hand before adding `debug = false` here: its size barely
+# moved (~103MB → ~95MB), confirming debug info wasn't the dominant cost.
+# Shrinking it further would mean trading dev build speed for size (e.g. a
+# higher dev opt-level) — not done, since fast iteration is the point of the
+# dev profile; not something to change without checking in first.
+[profile.dev]
+debug = false
+strip = true
+
+[profile.release]
+strip = true
+lto = "thin"
+codegen-units = 1

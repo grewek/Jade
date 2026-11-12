@@ -79,7 +79,7 @@ Deliberately deferred follow-ups — don't pick these up without checking in fir
 Workspace-wide:
 - Build: `cargo build`
 - Run the app: `cargo run -p jade-app`
-- Release build: `cargo build --release`
+- Release build: `cargo build --release` (~37MB stripped binary; see the workspace `Cargo.toml`'s `[profile.release]`/`[profile.dev]` — neither profile emits/keeps debug symbols, see that file's comment for why a debug build is still large regardless: unoptimized codegen, not debug info)
 - Check (fast compile check without producing a binary): `cargo check`
 - Test all crates: `cargo test -- --test-threads=1`
 - Test a single crate: `cargo test -p jade-core` / `cargo test -p jade-app -- --test-threads=1`
