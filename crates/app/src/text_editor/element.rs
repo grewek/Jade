@@ -1,6 +1,7 @@
 use gpui_kit::*;
 
-use super::live_preview::{build_display_line, DisplayLine, InlineStyle};
+use super::block_preview::LineRole;
+use super::live_preview::{build_display_line, hidden_line, DisplayLine, InlineStyle};
 use super::Editor;
 
 /// A pale, half-transparent highlight — a reasonable Phase 1 default, not yet
@@ -8,11 +9,12 @@ use super::Editor;
 /// itself does for its own selection color).
 const SELECTION_HIGHLIGHT: Hsla = Hsla { h: 0.6, s: 0.9, l: 0.6, a: 0.35 };
 
-/// Live Preview colors for inline code and wikilink text — same "flat
-/// constant, not yet pulled from the theme" Phase 1 compromise as
-/// `SELECTION_HIGHLIGHT` above.
+/// Live Preview colors for inline code, wikilink, and blockquote/list-marker
+/// text — same "flat constant, not yet pulled from the theme" Phase 1
+/// compromise as `SELECTION_HIGHLIGHT` above.
 const CODE_COLOR: Hsla = Hsla { h: 0.75, s: 0.2, l: 0.55, a: 1.0 };
 const WIKILINK_COLOR: Hsla = Hsla { h: 0.58, s: 0.65, l: 0.6, a: 1.0 };
+const MUTED_COLOR: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.6, a: 1.0 };
 
 /// Whether the line spanning `line_range` should render raw/unstyled rather
 /// than with Live Preview markup hidden: only while `focused` (the editor
@@ -34,36 +36,51 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
     let mut font = base.clone();
     match style {
         InlineStyle::Bold | InlineStyle::Heading(_) => font.weight = FontWeight::BOLD,
-        InlineStyle::Italic => font.style = FontStyle::Italic,
-        InlineStyle::Plain | InlineStyle::Code | InlineStyle::WikiLink => {}
+        InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
+        InlineStyle::Plain | InlineStyle::Code | InlineStyle::WikiLink | InlineStyle::ListMarker => {}
     }
     font
 }
 
 /// The color to paint a visible segment's text in — distinct colors for
-/// inline code and wikilinks, `base` (the editor's ambient text color)
-/// otherwise.
+/// inline code, wikilinks, and blockquote/list-marker text, `base` (the
+/// editor's ambient text color) otherwise.
 fn color_for_style(style: InlineStyle, base: Hsla) -> Hsla {
     match style {
         InlineStyle::Code => CODE_COLOR,
         InlineStyle::WikiLink => WIKILINK_COLOR,
+        InlineStyle::Blockquote(_) | InlineStyle::ListMarker => MUTED_COLOR,
         InlineStyle::Plain | InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Heading(_) => base,
     }
 }
 
-/// Shapes `line`'s Live Preview display text (hidden-markup-free if
-/// `active` is false, see `live_preview`'s module doc) into one
-/// multi-styled `ShapedLine`, alongside the [`DisplayLine`] mapping needed
-/// to convert a raw buffer offset into an x position in it (or back).
+/// Shapes `line`'s Live Preview display text into one multi-styled
+/// `ShapedLine`, alongside the [`DisplayLine`] mapping needed to convert a
+/// raw buffer offset into an x position in it (or back). `role` (from
+/// `block_preview::classify_lines`, computed once per document) picks
+/// between three cases:
+/// - [`LineRole::FenceContent`]: always literal (`build_display_line(line,
+///   true)`, i.e. the same "show it verbatim" path an active line takes) —
+///   code fence content is never Markdown, so `active` doesn't apply to it.
+/// - [`LineRole::FenceDelimiter`]: raw when `active`, else [`hidden_line`]
+///   — the fence marker itself has no "remainder" to show once hidden,
+///   unlike every other hidden-prefix case in `live_preview.rs`.
+/// - [`LineRole::Plain`]: the normal `build_display_line(line, active)`
+///   path (headings/emphasis/code-spans/wikilinks/blockquotes/lists).
 pub(super) fn shape_display_line(
     line: &str,
+    role: LineRole,
     active: bool,
     font: &Font,
     font_size: Pixels,
     text_color: Hsla,
     window: &mut Window,
 ) -> (ShapedLine, DisplayLine) {
-    let display_line = build_display_line(line, active);
+    let display_line = match role {
+        LineRole::FenceContent => build_display_line(line, true),
+        LineRole::FenceDelimiter if !active => hidden_line(line),
+        LineRole::FenceDelimiter | LineRole::Plain => build_display_line(line, active),
+    };
 
     let mut runs: Vec<TextRun> = display_line
         .segments
@@ -115,6 +132,10 @@ pub(super) fn render_editor(
     let cursor = buffer.cursor();
     let selection = buffer.selection();
     let focus_handle = editor.focus_handle.clone();
+    // Computed once per paint (not per line) since it needs the whole
+    // document to tell whether a given line sits inside an open code
+    // fence — see `block_preview`'s module doc.
+    let line_roles = super::block_preview::classify_lines(&text);
 
     let line_height = window.line_height();
     let line_count = text.split('\n').count().max(1);
@@ -145,6 +166,7 @@ pub(super) fn render_editor(
                     let focused = focus_handle.is_focused(window);
                     paint_lines(
                         &text,
+                        &line_roles,
                         cursor,
                         selection.clone(),
                         focused,
@@ -160,6 +182,7 @@ pub(super) fn render_editor(
                     register_mouse_handling(
                         editor_entity.clone(),
                         text.clone(),
+                        line_roles.clone(),
                         cursor,
                         focused,
                         bounds,
@@ -192,6 +215,7 @@ pub(super) fn render_editor(
 fn register_mouse_handling(
     editor_entity: Entity<Editor>,
     text: String,
+    line_roles: Vec<LineRole>,
     cursor: usize,
     focused: bool,
     bounds: Bounds<Pixels>,
@@ -205,6 +229,7 @@ fn register_mouse_handling(
     window.on_mouse_event({
         let editor_entity = editor_entity.clone();
         let text = text.clone();
+        let line_roles = line_roles.clone();
         let font = font.clone();
         move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble
@@ -214,7 +239,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, cursor, focused, event.position, bounds, line_height, &font, font_size, text_color, window,
+                &text, &line_roles, cursor, focused, event.position, bounds, line_height, &font, font_size,
+                text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, false);
@@ -232,7 +258,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, cursor, focused, event.position, bounds, line_height, &font, font_size, text_color, window,
+                &text, &line_roles, cursor, focused, event.position, bounds, line_height, &font, font_size,
+                text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, true);
@@ -265,6 +292,7 @@ fn register_mouse_handling(
 #[allow(clippy::too_many_arguments)]
 fn offset_for_position(
     text: &str,
+    line_roles: &[LineRole],
     cursor: usize,
     focused: bool,
     position: Point<Pixels>,
@@ -283,7 +311,8 @@ fn offset_for_position(
         let line_range = line_start..line_start + line_text.len();
         if i == target_line {
             let active = is_active_line(&line_range, cursor, focused);
-            let (shaped, display_line) = shape_display_line(line_text, active, font, font_size, text_color, window);
+            let (shaped, display_line) =
+                shape_display_line(line_text, line_roles[i], active, font, font_size, text_color, window);
             let relative_x = (position.x - bounds.origin.x).max(px(0.));
             let display_offset = shaped.closest_index_for_x(relative_x);
             return line_start + display_line.raw_offset_for_display(display_offset);
@@ -297,6 +326,7 @@ fn offset_for_position(
 #[allow(clippy::too_many_arguments)]
 fn paint_lines(
     text: &str,
+    line_roles: &[LineRole],
     cursor: usize,
     selection: Option<std::ops::Range<usize>>,
     show_cursor: bool,
@@ -314,7 +344,8 @@ fn paint_lines(
         let line_range = line_start..line_start + line_text.len();
         let active = is_active_line(&line_range, cursor, show_cursor);
 
-        let (shaped, display_line) = shape_display_line(line_text, active, font, font_size, text_color, window);
+        let (shaped, display_line) =
+            shape_display_line(line_text, line_roles[i], active, font, font_size, text_color, window);
 
         if let Some(selection) = &selection {
             let start = selection.start.max(line_range.start);
@@ -349,8 +380,9 @@ fn paint_lines(
 // recurse infinitely (see the project-wide note on this in `main.rs`).
 #[cfg(test)]
 mod tests {
+    use super::super::block_preview::LineRole;
     use super::super::Editor;
-    use super::is_active_line;
+    use super::{is_active_line, shape_display_line};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         AnyWindowHandle, AppContext, Entity, EntityInputHandler, Pixels, Point, TestAppContext,
@@ -795,5 +827,78 @@ mod tests {
         // `clicking_focuses_the_editor_and_places_the_cursor_near_the_click`).
         let active = editor.read_with(cx, |editor, _| is_active_line(&(11..text.len()), editor.buffer().cursor(), true));
         assert!(active, "the line the cursor landed on should now be active");
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_previewed_list_item_lands_past_its_hidden_marker(cx: &mut TestAppContext) {
+        let text = "first line\n- list item";
+        let (window, editor) = open_editor(cx, text);
+        // Cursor starts on line 0, so line 1 ("- list item") renders
+        // previewed: its "- " hidden behind a bullet glyph.
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+
+        let line_height = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.line_height()
+            })
+            .unwrap();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // Near the left edge of the second rendered row, i.e. on the
+            // bullet glyph itself.
+            window.click_at("editor", point(px(1.), line_height + px(1.)), cx);
+        })
+        .unwrap();
+
+        let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+        let item_text_start = text.find("list item").unwrap();
+        assert_eq!(
+            cursor, item_text_start,
+            "clicking the bullet glyph should land right after the hidden \"- \" marker, not before it"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn fenced_code_content_is_never_inline_scanned_even_on_the_active_line(cx: &mut TestAppContext) {
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let line = "**not bold** [[not a wikilink]]";
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            // `active: true` on its own would normally be enough to show a
+            // line verbatim anyway (see `live_preview`'s own tests) — the
+            // real thing this test guards is that `FenceContent` forces the
+            // same literal treatment regardless of `active`, since a fenced
+            // code line must never have its content inline-scanned at all,
+            // active or not.
+            let (_, display_line) =
+                shape_display_line(line, LineRole::FenceContent, true, &font, font_size, text_style.color, window);
+            assert_eq!(display_line.display_text, line, "fenced code content must never be treated as Markdown");
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_fence_delimiter_line_is_hidden_when_not_active(cx: &mut TestAppContext) {
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let line = "```rust";
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let (_, display_line) =
+                shape_display_line(line, LineRole::FenceDelimiter, false, &font, font_size, text_style.color, window);
+            assert_eq!(display_line.display_text, "", "an inactive fence delimiter line should show nothing");
+
+            let (_, active_display_line) =
+                shape_display_line(line, LineRole::FenceDelimiter, true, &font, font_size, text_style.color, window);
+            assert_eq!(active_display_line.display_text, line, "the active fence delimiter line should show its raw text");
+        })
+        .unwrap();
     }
 }

@@ -2,6 +2,7 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
+use super::block_preview::classify_lines;
 use super::element::{is_active_line, shape_display_line};
 use super::Editor;
 
@@ -161,13 +162,15 @@ impl EntityInputHandler for Editor {
         font.family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let text_color = text_style.color;
+        let line_roles = classify_lines(&text);
 
         let mut line_start = 0usize;
         for (i, line_text) in text.split('\n').enumerate() {
             let line_range = line_start..line_start + line_text.len();
             if byte_offset <= line_range.end {
                 let active = is_active_line(&line_range, cursor, self.focus_handle.is_focused(window));
-                let (shaped, display_line) = shape_display_line(line_text, active, &font, font_size, text_color, window);
+                let (shaped, display_line) =
+                    shape_display_line(line_text, line_roles[i], active, &font, font_size, text_color, window);
                 let x = shaped.x_for_index(display_line.display_offset_for_raw(byte_offset - line_start));
                 let origin = element_bounds.origin + point(x, line_height * i as f32);
                 return Some(Bounds { origin, size: size(px(1.), line_height) });

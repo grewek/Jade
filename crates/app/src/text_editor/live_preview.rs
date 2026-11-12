@@ -13,12 +13,29 @@
 //! paint — the two are no longer the same string once markup is hidden.
 //!
 //! Scope deliberately narrow for this first pass: headings, bold, italic,
-//! inline code, wikilinks — not the full CommonMark/GFM inline grammar (no
-//! strikethrough, tables, autolinks). Emphasis matching is also simplified:
-//! `**x**`/`__x__` is bold, a lone `*x*`/`_x_` is italic, without
-//! CommonMark's full left/right-flanking delimiter-run algorithm — a
-//! deliberate v1 scope cut, in the same spirit as `markdown_blocks.rs`'s own
-//! simplifications (a whole list is always one block, etc).
+//! inline code, wikilinks, blockquote `>` prefixes, and list markers — not
+//! the full CommonMark/GFM grammar (no strikethrough, tables, autolinks, no
+//! nested lists, no lazy continuation lines, no compounding a block
+//! construct with another — e.g. a heading inside a blockquote hides the
+//! blockquote's `>` but doesn't then also hide the heading's `#` in the
+//! remainder). Emphasis matching is also simplified: `**x**`/`__x__` is
+//! bold, a lone `*x*`/`_x_` is italic, without CommonMark's full
+//! left/right-flanking delimiter-run algorithm — a deliberate v1 scope cut,
+//! in the same spirit as `markdown_blocks.rs`'s own simplifications (a whole
+//! list is always one block, etc).
+//!
+//! Blockquote and list-marker detection stay in this module (rather than in
+//! `block_preview.rs`) because, unlike fenced code, each is fully determined
+//! by its own line's content — no whole-document state needed. Fenced code
+//! blocks *do* need that (whether a line sits inside an open fence depends
+//! on earlier lines), so that one construct lives in `block_preview.rs`
+//! instead and this module never reasons about fences at all, beyond
+//! exposing [`hidden_line`] for `element.rs` to use on a fence's own
+//! delimiter line.
+//!
+//! List markers are hidden like any other markup, but — unlike a `**`/`#`,
+//! which simply vanishes — are *replaced* with a bullet (`•`) or a
+//! canonical `N. `, not left blank: see [`DisplaySegment::is_replaced`].
 //!
 //! The line containing the cursor is never hidden — `build_display_line`'s
 //! `active` flag turns rendering off entirely for it, showing the literal
@@ -40,28 +57,53 @@ pub enum InlineStyle {
     Italic,
     Code,
     WikiLink,
+    /// Content after a hidden blockquote `>` prefix; carries nesting depth
+    /// (1 for `>`, 2 for `>>` or `> >`, ...).
+    Blockquote(u8),
+    /// The bullet/number glyph standing in for a hidden list marker — see
+    /// [`DisplaySegment::is_replaced`]. Not applied to a list item's actual
+    /// text content, only to the marker's own replacement glyph.
+    ListMarker,
 }
 
 /// One contiguous run of a line: the byte range it occupies in the *raw*
 /// line, the byte range it occupies in [`DisplayLine::display_text`], and
-/// the style to paint that display range in. A hidden run of markup (the
-/// `**`/`` ` ``/`[[`/... delimiters themselves) has a non-empty `raw` range
-/// but an empty `display` range — it contributes nothing to what's painted.
+/// the style to paint that display range in.
+///
+/// Two kinds contribute no *meaningful* raw↔display correspondence byte for
+/// byte, and are treated alike by [`DisplayLine`]'s offset mapping (any raw
+/// offset inside either one collapses to the segment's single display
+/// point, since there's nothing finer to map to):
+/// - **Hidden** markup (the `**`/`` ` ``/`[[`/... delimiters themselves, or
+///   a list marker before replacement) — empty `display` range, paints
+///   nothing. [`is_hidden`](Self::is_hidden).
+/// - **Replaced** markup — non-empty `display` range, but one holding a
+///   *different* string than the `raw` bytes it stands in for (a bullet/
+///   number glyph, not the raw `-`/`1.` text) — so, unlike an ordinary
+///   visible run, `display.len()` has no reason to equal `raw.len()` and a
+///   byte offset inside it can't be interpolated. [`is_replaced`](Self::is_replaced).
+///
+/// Every other visible segment is shown verbatim (`display.len() ==
+/// raw.len()`, the text itself unchanged from `raw`).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplaySegment {
     pub raw: Range<usize>,
     pub display: Range<usize>,
     pub style: InlineStyle,
+    replaced: bool,
 }
 
 impl DisplaySegment {
-    /// Markup that's collapsed to zero display width — by construction,
-    /// every segment this module builds is either hidden with an empty
-    /// `display` range, or visible with `display.len() == raw.len()`
-    /// (visible text is shown verbatim, never re-encoded), so checking
-    /// `display` alone is enough to tell them apart.
+    /// Markup collapsed to zero display width — paints nothing at all.
     pub fn is_hidden(&self) -> bool {
         self.display.is_empty()
+    }
+
+    /// A visible glyph standing in for different raw markup (see this
+    /// struct's doc comment) — paints something, but not a verbatim slice
+    /// of `raw`.
+    pub fn is_replaced(&self) -> bool {
+        self.replaced
     }
 }
 
@@ -78,17 +120,29 @@ pub struct DisplayLine {
 
 impl DisplayLine {
     /// The display byte offset corresponding to raw byte offset `raw_offset`
-    /// (which must be within this line's raw range). A `raw_offset` inside a
-    /// hidden segment collapses to that segment's single display point —
-    /// there's nothing else to map it to, since hidden markup paints nothing.
+    /// (which must be within this line's raw range). A `raw_offset` strictly
+    /// inside a hidden *or* replaced segment (see [`DisplaySegment`]'s doc
+    /// comment) collapses to that segment's display *start* — there's
+    /// nothing finer to map it to, whether that's because the segment
+    /// paints nothing (hidden) or because its text isn't a verbatim slice of
+    /// `raw` to interpolate into (replaced). A `raw_offset` sitting exactly
+    /// at such a segment's end resolves to its display *end* instead — for
+    /// a zero-width hidden segment that's the same point as its start, but
+    /// for a replaced segment (non-empty display range, e.g. a 4-byte "• "
+    /// standing in for a 2-byte "- ") it's not: using `display.start` there
+    /// would collapse back into the glyph instead of landing right after
+    /// it, at the start of whatever visible text follows.
     pub fn display_offset_for_raw(&self, raw_offset: usize) -> usize {
         for seg in &self.segments {
-            if raw_offset <= seg.raw.end {
-                if seg.is_hidden() {
-                    return seg.display.start;
-                }
-                let delta = raw_offset.saturating_sub(seg.raw.start);
-                return seg.display.start + delta;
+            if raw_offset < seg.raw.end {
+                return if seg.is_hidden() || seg.is_replaced() {
+                    seg.display.start
+                } else {
+                    seg.display.start + (raw_offset - seg.raw.start)
+                };
+            }
+            if raw_offset == seg.raw.end {
+                return seg.display.end;
             }
         }
         self.display_text.len()
@@ -96,9 +150,12 @@ impl DisplayLine {
 
     /// The raw byte offset corresponding to display byte offset
     /// `display_offset` — the inverse of [`display_offset_for_raw`]. Hidden
-    /// segments are skipped: they occupy no display width, so a real
-    /// `display_offset` (e.g. from a mouse click against shaped
-    /// `display_text`) can never fall inside one.
+    /// and replaced segments are both skipped: a real `display_offset` (e.g.
+    /// from a mouse click against shaped `display_text`) landing anywhere on
+    /// either one — on the bullet glyph standing in for a list marker, say —
+    /// falls through to the next segment via the same strict-`<` tie-break
+    /// described below, landing at the start of whatever visible text
+    /// follows it.
     ///
     /// Uses a strict `<` against each visible segment's end, not `<=`: when
     /// `display_offset` sits exactly on the boundary between a visible run
@@ -109,7 +166,7 @@ impl DisplayLine {
     /// which is what a click right at that boundary should feel like.
     pub fn raw_offset_for_display(&self, display_offset: usize) -> usize {
         for seg in &self.segments {
-            if seg.is_hidden() {
+            if seg.is_hidden() || seg.is_replaced() {
                 continue;
             }
             if display_offset < seg.display.end {
@@ -129,22 +186,36 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
     if active || line.is_empty() {
         return DisplayLine {
             display_text: line.to_string(),
-            segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain }],
+            segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain, replaced: false }],
         };
     }
 
     let mut segments = Vec::new();
     let mut display_text = String::new();
 
-    let start = if let Some((level, prefix_len)) = heading_prefix(line) {
+    if let Some((level, prefix_len)) = heading_prefix(line) {
         push_hidden(&mut segments, &display_text, 0..prefix_len);
         scan_inline(line, prefix_len, line.len(), InlineStyle::Heading(level), &mut segments, &mut display_text);
         return DisplayLine { display_text, segments };
-    } else {
-        0
-    };
+    }
 
-    scan_inline(line, start, line.len(), InlineStyle::Plain, &mut segments, &mut display_text);
+    if let Some((depth, prefix_len)) = blockquote_prefix(line) {
+        push_hidden(&mut segments, &display_text, 0..prefix_len);
+        scan_inline(line, prefix_len, line.len(), InlineStyle::Blockquote(depth), &mut segments, &mut display_text);
+        return DisplayLine { display_text, segments };
+    }
+
+    if let Some((marker, marker_len)) = list_marker(line) {
+        let replacement = match marker {
+            ListMarker::Unordered => "• ".to_string(),
+            ListMarker::Ordered { number } => format!("{number}. "),
+        };
+        push_replaced(&mut segments, &mut display_text, 0..marker_len, &replacement, InlineStyle::ListMarker);
+        scan_inline(line, marker_len, line.len(), InlineStyle::Plain, &mut segments, &mut display_text);
+        return DisplayLine { display_text, segments };
+    }
+
+    scan_inline(line, 0, line.len(), InlineStyle::Plain, &mut segments, &mut display_text);
     DisplayLine { display_text, segments }
 }
 
@@ -325,7 +396,7 @@ fn push_hidden(segments: &mut Vec<DisplaySegment>, display_text: &str, raw: Rang
         return;
     }
     let at = display_text.len();
-    segments.push(DisplaySegment { raw, display: at..at, style: InlineStyle::Plain });
+    segments.push(DisplaySegment { raw, display: at..at, style: InlineStyle::Plain, replaced: false });
 }
 
 fn push_visible(
@@ -341,7 +412,81 @@ fn push_visible(
     let display_start = display_text.len();
     display_text.push_str(&line[raw.clone()]);
     let display_end = display_text.len();
-    segments.push(DisplaySegment { raw, display: display_start..display_end, style });
+    segments.push(DisplaySegment { raw, display: display_start..display_end, style, replaced: false });
+}
+
+/// Like [`push_visible`], but `replacement` is painted in place of `raw`
+/// instead of `raw`'s own text — used only for a list marker's bullet/
+/// number glyph. `raw` must be non-empty (callers only ever pass an actual
+/// marker's byte range).
+fn push_replaced(
+    segments: &mut Vec<DisplaySegment>,
+    display_text: &mut String,
+    raw: Range<usize>,
+    replacement: &str,
+    style: InlineStyle,
+) {
+    let display_start = display_text.len();
+    display_text.push_str(replacement);
+    let display_end = display_text.len();
+    segments.push(DisplaySegment { raw, display: display_start..display_end, style, replaced: true });
+}
+
+/// A line whose entire raw text is hidden (zero display width) — used by
+/// `element.rs` for a fenced code block's own delimiter line (e.g.
+/// `` ```rust `` or `` ``` ``) when it isn't the active line. Unlike every
+/// other hidden-prefix case in this module, there's no remainder to scan:
+/// once the fence marker itself is hidden there's nothing left on that line.
+pub fn hidden_line(line: &str) -> DisplayLine {
+    DisplayLine { display_text: String::new(), segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..0, style: InlineStyle::Plain, replaced: false }] }
+}
+
+/// A blockquote prefix's nesting depth (1 for `>`, 2 for `>>` or `> >`, ...)
+/// and the byte length of the prefix itself (each `>` plus at most one
+/// space right after it), if `line` starts with one.
+fn blockquote_prefix(line: &str) -> Option<(u8, usize)> {
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut depth: u8 = 0;
+    while bytes.get(i) == Some(&b'>') {
+        i += 1;
+        depth += 1;
+        if bytes.get(i) == Some(&b' ') {
+            i += 1;
+        }
+    }
+    if depth == 0 { None } else { Some((depth, i)) }
+}
+
+/// A list marker at the start of a line — just enough to know how many raw
+/// bytes to hide and what to replace them with.
+enum ListMarker {
+    /// `-`, `*`, or `+` followed by a space.
+    Unordered,
+    /// One to nine digits followed by `.` or `)` and a space; `number` is
+    /// shown as-is in the replacement (`"5. "`), not renumbered.
+    Ordered { number: u32 },
+}
+
+/// `line`'s list marker and its raw byte length, if it starts with one.
+/// Deliberately simplified like `heading_prefix`: no leading-space
+/// allowance (CommonMark permits up to 3) and exactly one trailing space
+/// required (CommonMark allows more, or a tab) — real lists typically
+/// satisfy both anyway.
+fn list_marker(line: &str) -> Option<(ListMarker, usize)> {
+    let bytes = line.as_bytes();
+    if matches!(bytes.first(), Some(b'-' | b'*' | b'+')) && bytes.get(1) == Some(&b' ') {
+        return Some((ListMarker::Unordered, 2));
+    }
+    let digits = line.bytes().take_while(u8::is_ascii_digit).count();
+    if digits == 0 || digits > 9 {
+        return None;
+    }
+    if !matches!(bytes.get(digits), Some(b'.' | b')')) || bytes.get(digits + 1) != Some(&b' ') {
+        return None;
+    }
+    let number: u32 = line[..digits].parse().ok()?;
+    Some((ListMarker::Ordered { number }, digits + 2))
 }
 
 #[cfg(test)]
@@ -374,14 +519,14 @@ mod tests {
         let line = "# **bold** [[Link]]";
         let dl = build_display_line(line, true);
         assert_eq!(dl.display_text, line);
-        assert_eq!(dl.segments, vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain }]);
+        assert_eq!(dl.segments, vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain, replaced: false }]);
     }
 
     #[test]
     fn empty_line_is_a_single_empty_segment() {
         let dl = build_display_line("", false);
         assert_eq!(dl.display_text, "");
-        assert_eq!(dl.segments, vec![DisplaySegment { raw: 0..0, display: 0..0, style: InlineStyle::Plain }]);
+        assert_eq!(dl.segments, vec![DisplaySegment { raw: 0..0, display: 0..0, style: InlineStyle::Plain, replaced: false }]);
     }
 
     #[test]
@@ -554,5 +699,116 @@ mod tests {
         assert_eq!(dl.display_offset_for_raw(0), 0);
         assert_eq!(dl.display_offset_for_raw(1), 0);
         assert_eq!(dl.display_offset_for_raw(2), 0);
+    }
+
+    #[test]
+    fn blockquote_hides_its_prefix_and_styles_the_rest() {
+        let line = "> a quoted line";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, "a quoted line");
+        assert_eq!(visible_styles(&dl), vec![("a quoted line".to_string(), InlineStyle::Blockquote(1))]);
+        assert_contiguous(&dl, line.len());
+    }
+
+    #[test]
+    fn nested_blockquote_prefixes_increase_depth() {
+        let dl = build_display_line(">> deeper", false);
+        assert_eq!(dl.display_text, "deeper");
+        assert_eq!(visible_styles(&dl), vec![("deeper".to_string(), InlineStyle::Blockquote(2))]);
+
+        let dl = build_display_line("> > also deeper", false);
+        assert_eq!(dl.display_text, "also deeper");
+        assert_eq!(visible_styles(&dl), vec![("also deeper".to_string(), InlineStyle::Blockquote(2))]);
+    }
+
+    #[test]
+    fn blockquote_content_can_itself_contain_inline_constructs() {
+        let line = "> a **bold** quote";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, "a bold quote");
+        assert_eq!(
+            visible_styles(&dl),
+            vec![
+                ("a ".to_string(), InlineStyle::Blockquote(1)),
+                ("bold".to_string(), InlineStyle::Bold),
+                (" quote".to_string(), InlineStyle::Blockquote(1)),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_bare_greater_than_without_following_text_is_still_a_blockquote() {
+        let dl = build_display_line(">", false);
+        assert_eq!(dl.display_text, "");
+        assert_contiguous(&dl, 1);
+    }
+
+    #[test]
+    fn unordered_list_marker_is_replaced_with_a_bullet() {
+        for marker in ["-", "*", "+"] {
+            let line = format!("{marker} first item");
+            let dl = build_display_line(&line, false);
+            assert_eq!(dl.display_text, "• first item", "marker {marker:?}");
+            assert_eq!(
+                visible_styles(&dl),
+                vec![("• ".to_string(), InlineStyle::ListMarker), ("first item".to_string(), InlineStyle::Plain)],
+                "marker {marker:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_list_marker_is_replaced_with_its_canonical_form() {
+        let line = "12) ninth item";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, "12. ninth item");
+        assert_contiguous(&dl, line.len());
+    }
+
+    #[test]
+    fn list_item_content_can_itself_contain_inline_constructs() {
+        let line = "- a [[Link]] here";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, "• a Link here");
+        assert_eq!(
+            visible_styles(&dl),
+            vec![
+                ("• ".to_string(), InlineStyle::ListMarker),
+                ("a ".to_string(), InlineStyle::Plain),
+                ("Link".to_string(), InlineStyle::WikiLink),
+                (" here".to_string(), InlineStyle::Plain),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_digit_run_without_a_following_space_is_not_a_list_marker() {
+        let dl = build_display_line("12.5 is not a list", false);
+        assert_eq!(dl.display_text, "12.5 is not a list");
+    }
+
+    #[test]
+    fn display_and_raw_offsets_round_trip_around_a_replaced_list_marker() {
+        let line = "- item"; // raw: "-"(1) " "(1) "item"(4), marker = raw 0..2
+        let dl = build_display_line(line, false);
+        // "•" is 3 UTF-8 bytes, so "• " (the replacement) is 4 bytes, not 2
+        // — the whole point of `is_replaced()` existing separately from
+        // `is_hidden()` is that this length mismatch is expected.
+        assert_eq!(dl.display_text, "• item");
+        assert_eq!(dl.display_text.len(), 8);
+
+        // Raw offsets strictly inside the 2-byte marker collapse to display
+        // 0, where the replacement bullet begins.
+        assert_eq!(dl.display_offset_for_raw(0), 0);
+        assert_eq!(dl.display_offset_for_raw(1), 0);
+        // Raw offset 2 (right after the marker, start of "item") lands at
+        // display 4 (right after the 4-byte "• "), not display 2 — it must
+        // skip the glyph's own width, not land inside it.
+        assert_eq!(dl.display_offset_for_raw(2), 4);
+
+        // Clicking anywhere on the bullet glyph's display range (0..4, "• ")
+        // lands right at the start of the actual item text, raw byte 2.
+        assert_eq!(dl.raw_offset_for_display(0), 2);
+        assert_eq!(dl.raw_offset_for_display(3), 2);
     }
 }
