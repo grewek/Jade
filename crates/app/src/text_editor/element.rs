@@ -28,6 +28,45 @@ pub(super) fn is_active_line(line_range: &std::ops::Range<usize>, cursor: usize,
     focused && cursor >= line_range.start && cursor <= line_range.end
 }
 
+/// Scrolls `scroll_handle`'s tracked container (`main.rs`'s note-editor-pane
+/// div — see `Editor::scroll_handle`'s doc comment) just enough to bring the
+/// cursor's line fully into view, if it currently isn't. `content_bounds` is
+/// this element's own (already scroll-shifted) on-screen bounds, the same
+/// `bounds` `paint_lines`/mouse hit-testing use. Adding `line_height *
+/// cursor_line_index` to its origin gives the cursor line's actual current
+/// screen position, directly comparable against `scroll_handle.bounds()`
+/// (the viewport's fixed on-screen bounds, which don't move as you scroll).
+///
+/// A no-op if the cursor's line is already fully visible, or before the
+/// container has been laid out at least once (`scroll_handle.bounds()` is
+/// zero-sized until then).
+fn autoscroll_to_cursor(scroll_handle: &ScrollHandle, content_bounds: Bounds<Pixels>, line_height: Pixels, cursor_line_index: usize) {
+    let viewport = scroll_handle.bounds();
+    if viewport.size.height <= px(0.) {
+        return;
+    }
+    let cursor_top = content_bounds.origin.y + line_height * cursor_line_index as f32;
+    let cursor_bottom = cursor_top + line_height;
+    let viewport_top = viewport.origin.y;
+    let viewport_bottom = viewport_top + viewport.size.height;
+
+    let mut offset = scroll_handle.offset();
+    if cursor_top < viewport_top {
+        offset.y += viewport_top - cursor_top;
+    } else if cursor_bottom > viewport_bottom {
+        offset.y += viewport_bottom - cursor_bottom;
+    } else {
+        return;
+    }
+    // `ScrollHandle::max_offset()` is a positive magnitude (how much
+    // scrollable overflow there is), not the offset's own lower bound — the
+    // valid offset range is `[-max_offset, 0]`, same convention `gpui-pre`'s
+    // own scroll-clamping code uses internally.
+    let max_offset = scroll_handle.max_offset();
+    offset.y = offset.y.clamp(-max_offset.y, px(0.));
+    scroll_handle.set_offset(offset);
+}
+
 /// The `Font` to paint a [`DisplaySegment`](super::live_preview::DisplaySegment)'s
 /// visible text in, derived from `base` (the editor's ambient mono font) —
 /// only weight/style vary per [`InlineStyle`], not family or size, so every
@@ -130,8 +169,10 @@ pub(super) fn render_editor(
     let buffer = editor.buffer();
     let text = buffer.text().to_string();
     let cursor = buffer.cursor();
+    let cursor_line_index = text[..cursor].matches('\n').count();
     let selection = buffer.selection();
     let focus_handle = editor.focus_handle.clone();
+    let scroll_handle = editor.scroll_handle.clone();
     // Computed once per paint (not per line) since it needs the whole
     // document to tell whether a given line sits inside an open code
     // fence — see `block_preview`'s module doc.
@@ -158,12 +199,21 @@ pub(super) fn render_editor(
         .w_full()
         .h(line_height * line_count as f32)
         .track_focus(&focus_handle)
+        // Must out-rank `gpui_kit::init`'s global `Root` component, which
+        // binds plain "tab" to its own focus-next action in a "Root"
+        // context wrapping the whole app — see `Editor::handle_insert_tab`'s
+        // doc comment for why an `on_key_down` match arm alone can't do this.
+        .key_context("TextEditor")
+        .on_action(cx.listener(Editor::handle_insert_tab))
         .on_key_down(cx.listener(Editor::handle_key_down))
         .child(
             canvas(
                 move |_, _, _| {},
                 move |bounds, _, window, cx| {
                     let focused = focus_handle.is_focused(window);
+                    if focused {
+                        autoscroll_to_cursor(&scroll_handle, bounds, line_height, cursor_line_index);
+                    }
                     paint_lines(
                         &text,
                         &line_roles,
@@ -381,17 +431,20 @@ fn paint_lines(
 #[cfg(test)]
 mod tests {
     use super::super::block_preview::LineRole;
-    use super::super::Editor;
+    use super::super::{Editor, InsertTab};
     use super::{is_active_line, shape_display_line};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
-        AnyWindowHandle, AppContext, Entity, EntityInputHandler, Pixels, Point, TestAppContext,
-        WindowOptions, point, px,
+        AnyWindowHandle, AppContext, Entity, EntityInputHandler, KeyBinding, Pixels, Point,
+        TestAppContext, WindowOptions, point, px,
     };
 
     fn open_editor(cx: &mut TestAppContext, text: &'static str) -> (AnyWindowHandle, Entity<Editor>) {
         cx.update(gpui_kit::init);
         cx.update(|cx| {
+            // Must out-rank `gpui_kit::init`'s own global "tab" binding —
+            // see `Editor::handle_insert_tab`'s doc comment.
+            cx.bind_keys([KeyBinding::new("tab", InsertTab, Some("TextEditor"))]);
             gpui_kit::open_window(WindowOptions::default(), cx, move |_window, cx| {
                 cx.new(|cx| Editor::new(text, cx))
             })
@@ -560,6 +613,28 @@ mod tests {
 
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
         assert_eq!(text, "hello\nworld");
+    }
+
+    #[gpui_kit::test]
+    fn tab_inserts_a_tab_character_instead_of_moving_focus_away(cx: &mut TestAppContext) {
+        let (window, editor) = open_editor(cx, "hello");
+        cx.update_window(window, |_, window, cx| {
+            focus_editor(window, cx);
+            window.press("end", cx);
+            window.press("tab", cx);
+        })
+        .unwrap();
+
+        let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
+        assert_eq!(text, "hello\t", "tab should insert a tab character, not fall through to a no-op");
+
+        let focused = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("editor").focused()
+            })
+            .unwrap();
+        assert_eq!(focused, Some(true), "tab must not move focus out of the editor");
     }
 
     #[gpui_kit::test]

@@ -10,7 +10,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::{Theme, WindowExt};
 use gpui_kit::*;
 use jade_core::Vault;
-use text_editor::{Editor, EditorEvent};
+use text_editor::{Editor, EditorEvent, InsertTab};
 
 /// IBM Plex — the typeface Zed itself uses — bundled under the SIL Open Font
 /// License (OFL 1.1, see `assets/fonts/*/LICENSE.txt`), which explicitly
@@ -833,11 +833,18 @@ impl Render for JadeApp {
                 }
             }
 
-            let editor_pane = div()
+            let mut editor_pane = div()
                 .id("note-editor-pane")
                 .flex_1()
                 .overflow_y_scroll()
                 .children(self.editor.clone());
+            // Tracked so `text_editor::element`'s `autoscroll_to_cursor` can
+            // scroll this container itself (see `Editor::scroll_handle`'s
+            // doc comment) — without this, moving the cursor below the
+            // visible area via the keyboard has nothing to adjust.
+            if let Some(editor) = &self.editor {
+                editor_pane = editor_pane.track_scroll(editor.read(cx).scroll_handle());
+            }
 
             div()
                 .flex()
@@ -875,6 +882,7 @@ fn main() {
         cx.bind_keys([
             KeyBinding::new("f2", RenameNote, Some("NoteList")),
             KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
+            KeyBinding::new("tab", InsertTab, Some("TextEditor")),
         ]);
         gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
             cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
@@ -888,11 +896,11 @@ fn main() {
 // shadows the plain `#[test]` its own expansion relies on and recurses forever.
 #[cfg(test)]
 mod tests {
-    use super::{DeleteNote, JadeApp, RenameNote};
+    use super::{DeleteNote, Editor, InsertTab, JadeApp, RenameNote};
     use gpui_kit::component::WindowExt;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
-        AnyWindowHandle, AppContext, Entity, Focusable, KeyBinding, TestAppContext, WindowOptions,
+        AnyWindowHandle, AppContext, Entity, Focusable, KeyBinding, TestAppContext, WindowOptions, point, px,
     };
     use std::path::PathBuf;
     use tempfile::{TempDir, tempdir};
@@ -907,6 +915,7 @@ mod tests {
             cx.bind_keys([
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
+                KeyBinding::new("tab", InsertTab, Some("TextEditor")),
             ]);
             gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
                 cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
@@ -949,6 +958,46 @@ mod tests {
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Note A".to_string()));
+    }
+
+    #[gpui_kit::test]
+    fn moving_the_cursor_below_the_visible_area_scrolls_it_into_view(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        let lines: Vec<String> = (0..300).map(|i| format!("line {i}")).collect();
+        std::fs::write(dir.path().join("Long Note.md"), lines.join("\n")).unwrap();
+
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Long Note", cx);
+        })
+        .unwrap();
+
+        let editor = app.read_with(cx, |app, _| app.editor.clone()).expect("opening a note should create an editor");
+
+        let offset_before = editor.read_with(cx, |editor, _| editor.scroll_handle().offset());
+        assert_eq!(offset_before.y, px(0.), "a freshly opened note should start scrolled to the top");
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // Near the top-left corner — definitely within the initial,
+            // unscrolled viewport, unlike a plain `click` on this 300-line
+            // element, whose default (centered) target position could land
+            // well below the visible area.
+            window.click_at("editor", point(px(1.), px(1.)), cx);
+            editor.update(cx, |editor, cx| {
+                editor.buffer_mut().move_to_end(false);
+                cx.notify();
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        let offset_after = editor.read_with(cx, |editor, _| editor.scroll_handle().offset());
+        assert!(
+            offset_after.y < px(0.),
+            "moving the cursor to the end of a long note should scroll it into view, got {offset_after:?}"
+        );
     }
 
     #[gpui_kit::test]

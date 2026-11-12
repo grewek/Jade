@@ -29,6 +29,15 @@ pub struct Editor {
     /// yet rendered with the underline real IME composition conventionally
     /// gets; a Phase 1 cosmetic gap, not a functional one.
     pub(super) marked_range: Option<std::ops::Range<usize>>,
+    /// Tracks the scroll position of *this editor's* note-editor-pane
+    /// container in `main.rs` — owned here (not by `JadeApp`) so it resets
+    /// naturally per opened note, same lifetime as everything else about
+    /// this `Editor`. `main.rs` calls `.track_scroll(editor.scroll_handle())`
+    /// on that container; `element.rs`'s `render_editor` reads/writes it
+    /// every paint to keep the cursor's line scrolled into view (see
+    /// `autoscroll_to_cursor`) — two different modules sharing one handle,
+    /// which is exactly what `ScrollHandle`'s `Rc<RefCell<_>>` is for.
+    pub(super) scroll_handle: ScrollHandle,
 }
 
 impl Editor {
@@ -38,6 +47,7 @@ impl Editor {
             focus_handle: cx.focus_handle(),
             is_dragging: false,
             marked_range: None,
+            scroll_handle: ScrollHandle::new(),
         }
     }
 
@@ -47,6 +57,12 @@ impl Editor {
 
     pub fn buffer_mut(&mut self) -> &mut EditorBuffer {
         &mut self.buffer
+    }
+
+    /// The scroll handle for `main.rs`'s note-editor-pane container to
+    /// `.track_scroll(...)` — see the field's own doc comment.
+    pub fn scroll_handle(&self) -> &ScrollHandle {
+        &self.scroll_handle
     }
 
     /// For call sites (here and in `input_handler.rs`) where the buffer's
@@ -146,7 +162,27 @@ impl Editor {
             cx.notify();
         }
     }
+
+    /// Inserts a literal tab character. Not handled inside `handle_key_down`
+    /// like every other key, because a plain `on_key_down` listener can't
+    /// win here: `gpui_kit::init`'s global `Root` component already binds
+    /// `"tab"` to its own `Tab` action (focus-next) in a `"Root"` key
+    /// context that wraps the whole app, and GPUI resolves a keystroke
+    /// against bound actions — innermost key-context first — *before*
+    /// running any element's raw `key_down_listeners` at all. An
+    /// `on_key_down` handler simply never sees "tab"; only binding a
+    /// *more specific* action ourselves, in a context nested inside
+    /// "Root", can take priority over it — the same mechanism `main.rs`
+    /// already uses for `RenameNote`/`DeleteNote` (`"NoteList"` context),
+    /// just here needing to actually out-rank a default binding rather
+    /// than just adding a new one.
+    pub(super) fn handle_insert_tab(&mut self, _: &InsertTab, _window: &mut Window, cx: &mut Context<Self>) {
+        self.buffer.insert("\t");
+        self.notify_changed(cx);
+    }
 }
+
+actions!(text_editor, [InsertTab]);
 
 impl EventEmitter<EditorEvent> for Editor {}
 
