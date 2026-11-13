@@ -3,6 +3,7 @@ use std::path::PathBuf;
 mod text_editor;
 
 use gpui_kit::component::button::{Button, ButtonVariant};
+use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
@@ -49,7 +50,7 @@ fn install_fonts(cx: &mut App) {
     theme.mono_font_family = IBM_PLEX_MONO.into();
 }
 
-actions!(jade, [RenameNote, DeleteNote]);
+actions!(jade, [RenameNote, DeleteNote, OpenCommandPalette]);
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 enum SidebarTab {
@@ -245,6 +246,59 @@ impl JadeApp {
             }
         }
         cx.notify();
+    }
+
+    /// `Ctrl+P` action handler — opens a `Command` palette (gpui-component's
+    /// own searchable action-list widget) hosted inside a plain `Dialog`,
+    /// same `window.open_dialog` mechanism `open_rename_dialog`/`open_delete_
+    /// dialog` already use below (which already renders above the whole
+    /// window and has its own built-in close "x", so there's nothing extra
+    /// to wire up for either of those). Only one item for now — confirming
+    /// it (`on_confirm`, the palette's own Enter/click handler) closes this
+    /// dialog and opens the (currently non-functional) Settings one;
+    /// `Command` has no idea it's hosted in a `Dialog`, so closing it is
+    /// explicit, not automatic.
+    fn open_command_palette(&mut self, _: &OpenCommandPalette, window: &mut Window, cx: &mut Context<Self>) {
+        let state = cx.new(|cx| CommandState::new(window, cx));
+        window.open_dialog(cx, move |dialog, window, cx| {
+            // `Command` never focuses itself on mount — without this,
+            // Enter/arrow-key navigation has no focused element inside the
+            // dialog to dispatch to at all (same reasoning the global
+            // Ctrl+P binding itself needs *some* focused leaf to bubble up
+            // from).
+            state.update(cx, |state, cx| state.focus(window, cx));
+            dialog.title("Command Palette").child(
+                Command::new(&state)
+                    // Hosted inside a `Dialog`, which already draws its own
+                    // frame — `Command`'s own border would double up.
+                    .bordered(false)
+                    .placeholder("Type a command...")
+                    .item(CommandItem::new().label("Open Settings"))
+                    .on_confirm(|_index_path, window, cx| {
+                        window.close_dialog(cx);
+                        JadeApp::open_settings_dialog(window, cx);
+                    }),
+            )
+        });
+    }
+
+    /// A placeholder — nothing here is wired up to anything yet (themes,
+    /// text size, general editor preferences are all still to come, see
+    /// CLAUDE.md's Backlog). A plain associated function, not a `&mut self`
+    /// method like the dialog-openers below it: unlike those, it never
+    /// needs to call back into `JadeApp`'s own state, so there's no reason
+    /// to thread an `Entity<Self>` through it.
+    fn open_settings_dialog(window: &mut Window, cx: &mut App) {
+        window.open_dialog(cx, |dialog, _window, _cx| {
+            dialog.title("Settings").child(
+                div()
+                    .id("settings-panel")
+                    .test_support()
+                    .p_4()
+                    .text_color(rgb(0x888888))
+                    .child("Settings aren't implemented yet — themes, text size, and general editor preferences are coming soon."),
+            )
+        });
     }
 
     fn rename_selected(&mut self, _: &RenameNote, window: &mut Window, cx: &mut Context<Self>) {
@@ -864,6 +918,14 @@ impl Render for JadeApp {
             .flex()
             .flex_row()
             .size_full()
+            // On the outermost element, not some inner subtree, so the
+            // bubble-up action dispatch reaches it regardless of which
+            // widget — editor, search input, sidebar tree — currently has
+            // focus. Paired with the `None` context on this action's own
+            // `KeyBinding` (see `main()`), which is what makes Ctrl+P
+            // global in the first place rather than scoped like `RenameNote`/
+            // `DeleteNote`'s `"NoteList"` context.
+            .on_action(cx.listener(Self::open_command_palette))
             .child(sidebar)
             .child(div().flex_1().child(content))
     }
@@ -882,6 +944,7 @@ fn main() {
             KeyBinding::new("f2", RenameNote, Some("NoteList")),
             KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
             KeyBinding::new("tab", InsertTab, Some("TextEditor")),
+            KeyBinding::new("ctrl-p", OpenCommandPalette, None),
         ]);
         gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
             cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
@@ -895,7 +958,7 @@ fn main() {
 // shadows the plain `#[test]` its own expansion relies on and recurses forever.
 #[cfg(test)]
 mod tests {
-    use super::{DeleteNote, Editor, InsertTab, JadeApp, RenameNote};
+    use super::{DeleteNote, Editor, InsertTab, JadeApp, OpenCommandPalette, RenameNote};
     use gpui_kit::component::WindowExt;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
@@ -915,6 +978,7 @@ mod tests {
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
                 KeyBinding::new("tab", InsertTab, Some("TextEditor")),
+                KeyBinding::new("ctrl-p", OpenCommandPalette, None),
             ]);
             gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
                 cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
@@ -1346,6 +1410,137 @@ mod tests {
             .unwrap();
 
         assert!(dialog_open);
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_p_opens_the_command_palette(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // Action dispatch bubbles up from whichever element is
+            // currently focused — with nothing clicked yet there's no
+            // focused leaf for it to start from at all, so establish one
+            // first (same reasoning every other hotkey test already
+            // clicks a note before pressing its own key; the sidebar tab
+            // switcher itself is a plain styled div, not something
+            // `.track_focus`-ed, so clicking it alone doesn't help).
+            window.click("Note", cx);
+            window.render_frame(cx);
+            window.press("ctrl-p", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        let dialog_open = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.has_active_dialog(cx)
+            })
+            .unwrap();
+        assert!(dialog_open, "Ctrl+P should open the command palette");
+    }
+
+    #[gpui_kit::test]
+    fn ctrl_p_works_regardless_of_current_focus(cx: &mut TestAppContext) {
+        // The regression test for "global" specifically — `RenameNote`/
+        // `DeleteNote`'s own hotkeys only fire while the sidebar's
+        // `"NoteList"` key context has focus, but Ctrl+P's `KeyBinding` has
+        // no context predicate at all, so it must still fire with the
+        // editor focused instead.
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note", cx);
+            window.render_frame(cx);
+            window.click("editor", cx);
+            window.render_frame(cx);
+            window.press("ctrl-p", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        let dialog_open = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.has_active_dialog(cx)
+            })
+            .unwrap();
+        assert!(dialog_open, "Ctrl+P should open the palette even while the editor has focus");
+    }
+
+    #[gpui_kit::test]
+    fn confirming_open_settings_closes_the_palette_and_opens_settings(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note", cx);
+            window.render_frame(cx);
+            window.press("ctrl-p", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // Only one item in the palette — Enter alone confirms it,
+            // no need to click it first.
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(
+                window.try_find("settings-panel").is_some(),
+                "confirming \"Open Settings\" should have opened the Settings dialog"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_the_close_button_closes_the_settings_dialog(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note", cx);
+            window.render_frame(cx);
+            window.press("ctrl-p", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            // The fixed id `Dialog`'s own built-in close "x" button uses,
+            // same way `AlertDialog`'s OK/Cancel are fixed "ok"/"cancel".
+            window.click("close", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        let dialog_open = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.has_active_dialog(cx)
+            })
+            .unwrap();
+        assert!(!dialog_open, "clicking the x should close the Settings dialog");
     }
 
     #[gpui_kit::test]
