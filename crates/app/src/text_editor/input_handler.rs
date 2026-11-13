@@ -7,7 +7,7 @@ use super::element::{
     analyze_line_layout, callout_at_line, indent_px, is_active_line, is_table_active, shape_display_line,
     table_line_kind, visible_line_range,
 };
-use super::Editor;
+use super::{Editor, EditorBuffer};
 
 /// The byte offset in `text` after `utf16_offset` UTF-16 code units.
 ///
@@ -31,6 +31,32 @@ pub(super) fn utf16_to_utf8(text: &str, utf16_offset: usize) -> usize {
 /// [`utf16_to_utf8`].
 pub(super) fn utf8_to_utf16(text: &str, byte_offset: usize) -> usize {
     text[..byte_offset].chars().map(char::len_utf16).sum()
+}
+
+/// The byte range `replace_text_in_range`/`replace_and_mark_text_in_range`
+/// should replace: the explicit `range_utf16` if given, else whatever's
+/// still marked, else the current selection/cursor — see each caller's own
+/// doc comment for why that fallback order matters. Deliberately borrows
+/// `buffer.text()` rather than cloning it (an earlier version of both
+/// callers did `buffer.text().to_string()` unconditionally, even though
+/// `range_utf16` is `None` for every plain keystroke — not just real IME
+/// composition — making that an O(document) clone paid on every single
+/// character typed in a large note, confirmed by direct measurement to
+/// cost ~1ms on the 320K-line stress fixture for no reason the `None` case
+/// ever needed it for) — the borrow only has to survive long enough to
+/// resolve `r`'s UTF-16 offsets, well before either caller's own first
+/// mutating `buffer` call.
+fn resolve_replace_range(buffer: &EditorBuffer, marked_range: &Option<Range<usize>>, range_utf16: Option<Range<usize>>) -> Range<usize> {
+    match range_utf16 {
+        Some(r) => {
+            let text = buffer.text();
+            utf16_to_utf8(text, r.start)..utf16_to_utf8(text, r.end)
+        }
+        None => marked_range.clone().unwrap_or_else(|| {
+            let cursor = buffer.cursor();
+            buffer.selection().unwrap_or(cursor..cursor)
+        }),
+    }
 }
 
 impl EntityInputHandler for Editor {
@@ -80,7 +106,7 @@ impl EntityInputHandler for Editor {
         &mut self,
         range_utf16: Option<Range<usize>>,
         text: &str,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         // `range_utf16` is `None` for, among other cases, committing an IME
@@ -92,14 +118,7 @@ impl EntityInputHandler for Editor {
         // preview character in the buffer and inserted the committed text
         // right after it, duplicating the symbol once the composition ended
         // (e.g. on the next keystroke, like pressing space).
-        let buffer_text = self.buffer.text().to_string();
-        let replace_range = range_utf16
-            .map(|r| utf16_to_utf8(&buffer_text, r.start)..utf16_to_utf8(&buffer_text, r.end))
-            .or_else(|| self.marked_range.clone())
-            .unwrap_or_else(|| {
-                let cursor = self.buffer.cursor();
-                self.buffer.selection().unwrap_or(cursor..cursor)
-            });
+        let replace_range = resolve_replace_range(&self.buffer, &self.marked_range, range_utf16);
         let edit = TextEdit {
             start_byte: replace_range.start,
             old_end_byte: replace_range.end,
@@ -109,7 +128,7 @@ impl EntityInputHandler for Editor {
         self.buffer.set_cursor(replace_range.end, true);
         self.buffer.insert(text);
         self.marked_range = None;
-        self.record_edit(edit, cx);
+        self.record_edit(edit, window, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -117,18 +136,10 @@ impl EntityInputHandler for Editor {
         range_utf16: Option<Range<usize>>,
         new_text: &str,
         new_selected_range: Option<Range<usize>>,
-        _window: &mut Window,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let buffer_text = self.buffer.text().to_string();
-        let replace_range = range_utf16
-            .map(|r| utf16_to_utf8(&buffer_text, r.start)..utf16_to_utf8(&buffer_text, r.end))
-            .or_else(|| self.marked_range.clone())
-            .unwrap_or_else(|| {
-                let cursor = self.buffer.cursor();
-                self.buffer.selection().unwrap_or(cursor..cursor)
-            });
-
+        let replace_range = resolve_replace_range(&self.buffer, &self.marked_range, range_utf16);
         let edit = TextEdit {
             start_byte: replace_range.start,
             old_end_byte: replace_range.end,
@@ -152,7 +163,7 @@ impl EntityInputHandler for Editor {
             }
             None => self.buffer.set_cursor(marked_end, false),
         }
-        self.record_edit(edit, cx);
+        self.record_edit(edit, window, cx);
     }
 
     fn bounds_for_range(
@@ -175,17 +186,6 @@ impl EntityInputHandler for Editor {
         font.family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let text_color = text_style.color;
-        // Reads the same persisted cache every edit already updated via
-        // `record_edit`/`invalidate_all` — this used to independently rerun
-        // all four classify_* passes on every call, not just once per
-        // paint like `render_editor`; see `document_cache`'s own module doc.
-        let cache_ref = self.document_cache.borrow();
-        let line_roles = cache_ref.line_roles();
-        let block_contexts = cache_ref.block_contexts();
-        let table_for_line = cache_ref.table_for_line();
-        let tables = cache_ref.tables();
-        let callout_for_line = cache_ref.callout_for_line();
-        let callouts = cache_ref.callouts();
         let focused = self.focus_handle.is_focused(window);
 
         // Same viewport-bounded approach `element.rs`'s `paint_lines`/
@@ -193,11 +193,26 @@ impl EntityInputHandler for Editor {
         // is normally at/near the cursor, which (per `autoscroll_to_cursor`)
         // should already be inside the visible viewport, so windowing here
         // avoids the same O(document) real-shaping cost those functions
-        // used to pay on every call, not just on every paint.
+        // used to pay on every call, not just on every paint. Also reuses
+        // `row_height_cache` (patched incrementally the same way `document_
+        // cache` is — see `Editor::record_edit`) rather than re-deriving
+        // every line's row count here too.
         let layout = analyze_line_layout(
-            &text, line_roles, block_contexts, table_for_line, tables, callout_for_line, callouts, cursor,
-            focused, element_bounds.size.width, line_height, &font, font_size, text_color, window,
+            &text, &self.document_cache, &self.row_height_cache, cursor, focused, element_bounds.size.width,
+            line_height, &font, font_size, text_color, window,
         );
+        // Reads the same persisted classification cache every edit already
+        // updated via `record_edit`/`invalidate_all` — this used to
+        // independently rerun all four classify_* passes on every call, not
+        // just once per paint like `render_editor`; see `document_cache`'s
+        // own module doc.
+        let cache_ref = self.document_cache.borrow();
+        let line_roles = cache_ref.line_roles();
+        let block_contexts = cache_ref.block_contexts();
+        let table_for_line = cache_ref.table_for_line();
+        let tables = cache_ref.tables();
+        let callout_for_line = cache_ref.callout_for_line();
+        let callouts = cache_ref.callouts();
         let viewport = self.scroll_handle.bounds();
         let range = visible_line_range(&layout, element_bounds, viewport);
         if range.is_empty() {

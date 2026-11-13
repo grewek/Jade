@@ -5,7 +5,7 @@ use std::rc::Rc;
 use gpui_kit::*;
 
 use super::document_cache::{DocumentCache, TextEdit};
-use super::element::render_editor;
+use super::element::{mono_char_width, render_editor, render_params, RowHeightCache};
 use super::EditorBuffer;
 
 /// The `TextEdit` for a plain insertion of `inserted_len` bytes replacing
@@ -85,6 +85,17 @@ pub struct Editor {
     /// nothing inside the paint closure mutates it yet) from inside the
     /// `'static` canvas paint closure without touching the entity.
     pub(super) document_cache: Rc<RefCell<DocumentCache>>,
+    /// Persisted per-line row-height estimates for the buffer's current
+    /// text — see `element::RowHeightCache`'s own module doc. Starts empty
+    /// (`RowHeightCache::empty()`): unlike `document_cache` above, building
+    /// this needs a `Font`/`Window` to measure a monospace character's
+    /// advance width, neither of which `Editor::new` has — it's populated
+    /// lazily by `element::analyze_line_layout`'s fingerprint check on the
+    /// first real paint instead, the same "eager cost deferred to first
+    /// use" shape `available_width`'s own `Pixels::MAX`-before-first-layout
+    /// fallback already has. Same `Rc<RefCell<_>>` sharing reasoning as
+    /// `document_cache`.
+    pub(super) row_height_cache: Rc<RefCell<RowHeightCache>>,
 }
 
 impl Editor {
@@ -102,6 +113,7 @@ impl Editor {
             scroll_handle: ScrollHandle::new(),
             last_autoscrolled_cursor: Rc::new(Cell::new(None)),
             document_cache,
+            row_height_cache: Rc::new(RefCell::new(RowHeightCache::empty())),
         }
     }
 
@@ -128,23 +140,59 @@ impl Editor {
         cx.notify();
     }
 
-    /// Patches `document_cache` for a precisely-known edit and emits
-    /// `EditorEvent::Changed` — the call every text-mutating call site in
+    /// Patches `document_cache` for a precisely-known edit, then patches
+    /// `row_height_cache` too — using the touched-line range `document_
+    /// cache`'s own patch just returned, and the same render parameters
+    /// (`font`/`available_width`/etc.) `render_editor` itself computes every
+    /// paint, via `element::render_params` — before emitting
+    /// `EditorEvent::Changed`. The call every text-mutating call site in
     /// this file and `input_handler.rs` makes instead of a plain
     /// `notify_changed(cx)`, right after the `buffer` mutation itself.
-    pub(super) fn record_edit(&mut self, edit: TextEdit, cx: &mut Context<Self>) {
-        self.document_cache.borrow_mut().record_edit(self.buffer.text(), edit);
+    pub(super) fn record_edit(&mut self, edit: TextEdit, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.buffer.text().to_string();
+        let touched = self.document_cache.borrow_mut().record_edit(&text, edit);
+
+        let params = render_params(self, window, cx);
+        let cursor = self.buffer.cursor();
+        let focused = self.focus_handle.is_focused(window);
+        let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
+        let doc = self.document_cache.borrow();
+        let mut rows = self.row_height_cache.borrow_mut();
+        match touched {
+            Some(range) if !rows.needs_full_rebuild(&doc, params.available_width, char_width) => {
+                rows.patch_lines(&text, &doc, range, cursor, focused, char_width, &params.font, params.font_size, params.text_color, window);
+            }
+            _ => {
+                rows.rebuild(&text, &doc, cursor, focused, params.available_width, char_width, &params.font, params.font_size, params.text_color, window);
+            }
+        }
+        drop(rows);
+        drop(doc);
+
         self.notify_changed(cx);
     }
 
     /// For undo/redo: a `Snapshot` swap gives no derivable `TextEdit` at all
     /// (the edit it undoes/redoes could have touched anything), so this
     /// always falls back to a full recompute rather than guessing at a
-    /// range. Not on the hot per-keystroke path — see `document_cache.rs`'s
-    /// own module doc and CLAUDE.md's Backlog entry for why this is an
-    /// accepted, explicitly-scoped gap rather than an oversight.
-    pub(super) fn invalidate_all(&mut self, cx: &mut Context<Self>) {
-        self.document_cache.borrow_mut().recompute_all(self.buffer.text());
+    /// range, for both caches — not on the hot per-keystroke path, see
+    /// `document_cache.rs`'s own module doc for why this is an accepted,
+    /// explicitly-scoped gap rather than an oversight.
+    pub(super) fn invalidate_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let text = self.buffer.text().to_string();
+        self.document_cache.borrow_mut().recompute_all(&text);
+
+        let params = render_params(self, window, cx);
+        let cursor = self.buffer.cursor();
+        let focused = self.focus_handle.is_focused(window);
+        let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
+        let doc = self.document_cache.borrow();
+        self.row_height_cache.borrow_mut().rebuild(
+            &text, &doc, cursor, focused, params.available_width, char_width, &params.font, params.font_size,
+            params.text_color, window,
+        );
+        drop(doc);
+
         self.notify_changed(cx);
     }
 
@@ -164,7 +212,7 @@ impl Editor {
     /// platform's own Services-menu/drag-drop paste plumbing on some
     /// platforms, not guaranteed to fire for a plain Ctrl/Cmd+V keystroke, so
     /// explicit is the more predictable choice here.
-    pub(super) fn handle_key_down(&mut self, event: &KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn handle_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let shift = keystroke.modifiers.shift;
         let command = keystroke.modifiers.control || keystroke.modifiers.platform;
@@ -187,7 +235,7 @@ impl Editor {
                         && let Some(text) = self.buffer.cut()
                     {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
-                        self.record_edit(edit, cx);
+                        self.record_edit(edit, window, cx);
                     }
                     return;
                 }
@@ -199,14 +247,14 @@ impl Editor {
                         });
                         let edit = edit_for_insertion(old_range, text.len());
                         self.buffer.insert(&text);
-                        self.record_edit(edit, cx);
+                        self.record_edit(edit, window, cx);
                     }
                     return;
                 }
                 "z" => {
                     let changed = if shift { self.buffer.redo() } else { self.buffer.undo() };
                     if changed {
-                        self.invalidate_all(cx);
+                        self.invalidate_all(window, cx);
                     }
                     return;
                 }
@@ -259,7 +307,7 @@ impl Editor {
             "backspace" => {
                 if let Some(edit) = edit_for_deletion(self.buffer.selection()) {
                     self.buffer.delete_backward();
-                    self.record_edit(edit, cx);
+                    self.record_edit(edit, window, cx);
                 } else {
                     let old_cursor = self.buffer.cursor();
                     self.buffer.delete_backward();
@@ -267,6 +315,7 @@ impl Editor {
                     if new_cursor != old_cursor {
                         self.record_edit(
                             TextEdit { start_byte: new_cursor, old_end_byte: old_cursor, new_end_byte: new_cursor },
+                            window,
                             cx,
                         );
                     }
@@ -277,7 +326,7 @@ impl Editor {
             "delete" => {
                 if let Some(edit) = edit_for_deletion(self.buffer.selection()) {
                     self.buffer.delete_forward();
-                    self.record_edit(edit, cx);
+                    self.record_edit(edit, window, cx);
                 } else {
                     let old_cursor = self.buffer.cursor();
                     let old_len = self.buffer.text().len();
@@ -290,6 +339,7 @@ impl Editor {
                                 old_end_byte: old_cursor + (old_len - new_len),
                                 new_end_byte: old_cursor,
                             },
+                            window,
                             cx,
                         );
                     }
@@ -302,7 +352,7 @@ impl Editor {
                 });
                 let edit = edit_for_insertion(old_range, 1);
                 self.buffer.insert("\n");
-                self.record_edit(edit, cx);
+                self.record_edit(edit, window, cx);
             }
             _ => {}
         }
@@ -321,14 +371,14 @@ impl Editor {
     /// already uses for `RenameNote`/`DeleteNote` (`"NoteList"` context),
     /// just here needing to actually out-rank a default binding rather
     /// than just adding a new one.
-    pub(super) fn handle_insert_tab(&mut self, _: &InsertTab, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn handle_insert_tab(&mut self, _: &InsertTab, window: &mut Window, cx: &mut Context<Self>) {
         let old_range = self.buffer.selection().unwrap_or_else(|| {
             let c = self.buffer.cursor();
             c..c
         });
         let edit = edit_for_insertion(old_range, 1);
         self.buffer.insert("\t");
-        self.record_edit(edit, cx);
+        self.record_edit(edit, window, cx);
     }
 }
 

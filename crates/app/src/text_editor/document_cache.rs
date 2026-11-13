@@ -1,7 +1,7 @@
 //! A persistent, edit-patched cache of the four whole-document Live Preview
 //! classification passes (`block_preview::classify_lines`,
 //! `live_preview::classify_block_context`, `table_preview::classify_tables`,
-//! `callout::classify_callouts`) — see CLAUDE.md's Backlog entry on
+//! `callout::classify_callouts`) — see ARCHITECTURE.md's own bullet on
 //! incremental classification for why this exists: re-running all four from
 //! scratch on every paint cost ~420ms combined on the 320K-line stress
 //! fixture, re-paid on every keystroke, nowhere near the 16.66ms/60fps bar.
@@ -27,6 +27,17 @@
 //! on every keystroke exactly the cost this cache exists to remove, even
 //! though every patch function is only *looking* at the handful of lines it
 //! actually walks.
+//!
+//! [`DocumentCache::record_edit`] also reports the union of every
+//! classifier's own touched-line range back to its caller (`editor.rs`) —
+//! not consumed by anything in this module, but the one piece of
+//! information `element.rs`'s own `RowHeightCache` needs to patch just the
+//! lines whose rendered row count could have changed, instead of
+//! re-deriving the whole document's layout on every edit (see that
+//! struct's own doc comment for the next classification-adjacent cost this
+//! unblocks).
+
+use std::ops::Range;
 
 use super::block_preview::{self, FenceState, LineRole};
 use super::callout::{self, Callout, CalloutState};
@@ -147,6 +158,22 @@ impl DocumentCache {
         &self.callouts
     }
 
+    /// The document's current line count — the row-height cache's own
+    /// line-count fingerprint (see `element.rs`'s `RowHeightCache`) compares
+    /// against this to know when a line-count-changing edit (which this
+    /// cache's own `line_roles.len()` already reflects, but which that
+    /// *other* cache can't detect on its own) forces a full rebuild there
+    /// too.
+    pub(super) fn line_count(&self) -> usize {
+        self.line_roles.len()
+    }
+
+    /// The byte offset line `line` begins at — the complement of
+    /// [`Self::line_end_byte`].
+    pub(super) fn line_start_byte(&self, line: usize) -> usize {
+        self.line_index.prefix_sum(line) as usize
+    }
+
     /// Full whole-document recompute of every classifier — the cold-open
     /// path, and the fallback whenever a patch function can't cheaply
     /// resolve a particular edit.
@@ -158,34 +185,35 @@ impl DocumentCache {
     }
 
     /// Patches the cache for a precisely-ranged edit: the real incremental
-    /// path for every classifier (falling back to a full recompute of just
-    /// that classifier when it can't cheaply apply — see each `patch_*`
-    /// function's own doc comment for when that happens).
-    pub(super) fn record_edit(&mut self, text: &str, edit: TextEdit) {
-        let span = self.edit_span(text, edit);
+    /// path for every classifier. Returns the union of every classifier's
+    /// own touched-line range (always including at least the lines whose
+    /// raw *text* the edit itself changed, regardless of whether any
+    /// classifier's output over them actually differs) — `element.rs`'s
+    /// `RowHeightCache` consumes this to patch exactly those lines' row
+    /// counts instead of re-deriving the whole document's layout. `None`
+    /// means a line-count-changing edit forced a full recompute instead
+    /// (see [`Self::edit_span`]), so every line is potentially dirty.
+    pub(super) fn record_edit(&mut self, text: &str, edit: TextEdit) -> Option<Range<usize>> {
+        let Some(span) = self.edit_span(text, edit) else {
+            self.recompute_all(text);
+            return None;
+        };
 
-        let patched_block_preview = span.as_ref().is_some_and(|span| self.patch_block_preview(text, span));
-        if !patched_block_preview {
-            self.recompute_block_preview(text);
-        }
+        // Every line the edit's old byte range actually spanned has
+        // different raw text now, regardless of what any classifier below
+        // reports — this is the floor of what's touched.
+        let minimal = span.start_line..(span.start_line + span.lines_removed + 1);
 
-        let patched_callouts = span.as_ref().is_some_and(|span| self.patch_callouts(text, span));
-        if !patched_callouts {
-            self.recompute_callouts(text);
-        }
-
-        let patched_block_context = span.as_ref().is_some_and(|span| self.patch_block_context(text, span));
-        if !patched_block_context {
-            self.recompute_block_context(text);
-        }
-
+        let r1 = self.patch_block_preview(text, &span);
+        let r2 = self.patch_callouts(text, &span);
         // `patch_tables` relies on `line_index` already reflecting the new
-        // text's layout, which the block_preview step above (patch or
-        // fallback recompute, either way) has already guaranteed by now.
-        let patched_tables = span.as_ref().is_some_and(|span| self.patch_tables(text, span));
-        if !patched_tables {
-            self.recompute_tables(text);
-        }
+        // text's layout, which `patch_block_preview` above has already
+        // guaranteed.
+        let r3 = self.patch_block_context(text, &span);
+        let r4 = self.patch_tables(text, &span);
+
+        let touched = [minimal, r1, r2, r3, r4].into_iter().reduce(union_ranges).unwrap();
+        Some(touched.start..touched.end.min(self.line_roles.len()))
     }
 
     fn recompute_block_preview(&mut self, text: &str) {
@@ -229,9 +257,9 @@ impl DocumentCache {
 
     /// The byte offset right after line `line`'s own content, excluding
     /// its trailing `\n` (or the document's total length, for the actual
-    /// last line, which has none) — the complement of `line_index.prefix_
-    /// sum(line)`, which gives where it *starts*.
-    fn line_end_byte(&self, line: usize) -> usize {
+    /// last line, which has none) — the complement of [`Self::line_start_
+    /// byte`].
+    pub(super) fn line_end_byte(&self, line: usize) -> usize {
         let next_start = self.line_index.prefix_sum(line + 1) as usize;
         if line + 1 < self.line_roles.len() { next_start - 1 } else { next_start }
     }
@@ -272,7 +300,7 @@ impl DocumentCache {
     /// the window or belonging to a kept-after table whose index shifted
     /// touched — bounded by the window's own size plus the total number of
     /// tables and the line spans of ones kept, not by document length.
-    fn patch_tables(&mut self, text: &str, span: &EditSpan) -> bool {
+    fn patch_tables(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
         let old_line_count = self.table_for_line.len();
         let start_line = span.start_line;
         let last_touched_line = (start_line + span.lines_removed).min(old_line_count.saturating_sub(1));
@@ -298,7 +326,11 @@ impl DocumentCache {
             for (t, range) in self.tables.iter_mut().zip(new_ranges) {
                 t.byte_range = range;
             }
-            return true;
+            // Table *membership* didn't change for any line here — only
+            // pre-existing tables' byte ranges were refreshed — so nothing
+            // beyond the minimal raw-text-changed span needs its row count
+            // re-derived on this classifier's account.
+            return start_line..(last_touched_line + 1);
         }
 
         let mut window_start = start_line;
@@ -354,7 +386,7 @@ impl DocumentCache {
         }
 
         self.tables = new_tables;
-        true
+        window_start..window_end
     }
 
     /// The line index whose byte-stride range contains `byte_offset`,
@@ -362,7 +394,7 @@ impl DocumentCache {
     /// document's current total byte length (e.g. appending at the very
     /// end) — `line_index.find` itself only answers for offsets strictly
     /// inside the tree's total.
-    fn line_at(&self, byte_offset: usize) -> usize {
+    pub(super) fn line_at(&self, byte_offset: usize) -> usize {
         if byte_offset as i64 >= self.line_index.total() {
             return self.line_roles.len().saturating_sub(1);
         }
@@ -399,7 +431,7 @@ impl DocumentCache {
     /// next line — everything after that point is provably identical to
     /// before (same state in, same unchanged text, same result), so it's
     /// reused as-is rather than recomputed.
-    fn patch_block_preview(&mut self, text: &str, span: &EditSpan) -> bool {
+    fn patch_block_preview(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
         let old_line_count = self.line_roles.len();
         let start_line = span.start_line;
         // The last *old* line index the edit actually replaced — every new
@@ -431,11 +463,11 @@ impl DocumentCache {
                 self.fence_states[i + 1] = next_state;
             }
             if reconverged || !has_next {
-                return true;
+                return start_line..(i + 1);
             }
             state = next_state;
         }
-        true
+        start_line..old_line_count
     }
 
     /// The real incremental path for `callout`: the same resumable-walk
@@ -458,7 +490,7 @@ impl DocumentCache {
     ///    since the untouched tail beyond the reconvergence point is what
     ///    would otherwise have kept extending it. Caught by this module's
     ///    own randomized property test, not reasoned out in advance.
-    fn patch_callouts(&mut self, text: &str, span: &EditSpan) -> bool {
+    fn patch_callouts(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
         let old_line_count = self.callout_for_line.len();
         let start_line = span.start_line;
         let last_touched_line = start_line + span.lines_removed;
@@ -487,18 +519,18 @@ impl DocumentCache {
                     self.callouts[idx].end_line = old_snapshot[idx].end_line;
                 }
                 self.callouts.extend_from_slice(&old_snapshot[self.callouts.len()..]);
-                return true;
+                return start_line..(i + 1);
             }
             if !has_next {
                 // Walked to the document's actual last line with no
                 // reconvergence — `self.callouts` is already the complete,
                 // freshly computed result, and `old_snapshot` (everything
                 // that used to follow) is correctly discarded.
-                return true;
+                return start_line..(i + 1);
             }
             state = next_state;
         }
-        true
+        start_line..old_line_count
     }
 
     /// The real incremental path for `live_preview`'s block context: the
@@ -506,7 +538,7 @@ impl DocumentCache {
     /// never references an external index the way a callout's state does,
     /// so (unlike `patch_callouts`) a plain state-equality check at
     /// reconvergence is enough on its own.
-    fn patch_block_context(&mut self, text: &str, span: &EditSpan) -> bool {
+    fn patch_block_context(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
         let old_line_count = self.block_contexts.len();
         let start_line = span.start_line;
         let last_touched_line = start_line + span.lines_removed;
@@ -523,12 +555,20 @@ impl DocumentCache {
                 self.open_block_states[i + 1] = next_state.clone();
             }
             if reconverged || !has_next {
-                return true;
+                return start_line..(i + 1);
             }
             state = next_state;
         }
-        true
+        start_line..old_line_count
     }
+}
+
+/// The smallest range containing both `a` and `b` — used by
+/// [`DocumentCache::record_edit`] to union each classifier's own touched
+/// range into one overall "these lines might need their row heights
+/// recomputed" range.
+fn union_ranges(a: Range<usize>, b: Range<usize>) -> Range<usize> {
+    a.start.min(b.start)..a.end.max(b.end)
 }
 
 /// Yields `(line_text, line_len, has_next_line)` starting at `start_byte`

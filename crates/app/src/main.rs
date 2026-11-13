@@ -1460,16 +1460,18 @@ mod tests {
         // Viewport-bounded rendering (`text_editor::element`'s `LineLayout`/
         // `visible_line_range` — real shaping now only happens for the
         // handful of lines actually on screen) brought this down to ~1.4s
-        // on the same file — a real ~7x win, but *not* yet within a 60fps
-        // frame budget: `analyze_line_layout` itself is still one O(document)
-        // pass every paint (cheap arithmetic, no real text-shaping, but
-        // still a `DisplayLine` built per line) — closing *that* gap needs
-        // incremental caching across paints/edits, tracked as a follow-up
-        // in CLAUDE.md's Backlog, not done here. This threshold is
-        // deliberately loose (comfortably under 1.44s measured, nowhere
-        // near the original 10s) — tight enough to catch a real regression
-        // back toward "every line in the document gets shaped again,"
-        // loose enough not to be flaky on a slower CI machine.
+        // on the same file — a real ~7x win. This one render still pays a
+        // full O(document) cost regardless (`RowHeightCache::rebuild`,
+        // since the cache starts empty — the first paint after opening any
+        // note always rebuilds it once), which is what this test still
+        // measures; see `typing_in_a_huge_file_after_it_is_open_is_fast`
+        // for the steady-state per-keystroke cost *after* that one-time
+        // cost, which is what the 16.66ms/60fps bar actually applies to.
+        // This threshold is deliberately loose (comfortably under 1.44s
+        // measured, nowhere near the original 10s) — tight enough to catch
+        // a real regression back toward "every line in the document gets
+        // shaped again," loose enough not to be flaky on a slower CI
+        // machine.
         let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
         let Ok(content) = std::fs::read_to_string(fixture_path) else {
             eprintln!("stress fixture not found at {fixture_path:?}, skipping");
@@ -1496,12 +1498,19 @@ mod tests {
 
     #[gpui_kit::test]
     fn typing_in_a_huge_file_after_it_is_open_is_fast(cx: &mut TestAppContext) {
-        // Diagnostic/regression test for Part 2 of the performance fix
-        // (incremental classification caching, see CLAUDE.md's Backlog):
-        // once the file is open (Part 1's viewport-bounded rendering
-        // already covers that cost), a single keystroke's cost is what
-        // this measures — the actual per-frame/per-keystroke steady-state
-        // cost the 16.66ms (60fps) bar applies to, not cold-open.
+        // Diagnostic/regression test for the per-keystroke performance work
+        // (incremental classification caching plus row-height caching, see
+        // ARCHITECTURE.md's own `document_cache.rs`/`element.rs` bullets and
+        // HISTORY.md for the measurement journey): once the file is open
+        // (Part 1's viewport-bounded rendering already covers that cost), a
+        // single keystroke's cost is what this measures — the actual
+        // per-frame/per-keystroke steady-state cost the 16.66ms (60fps) bar
+        // applies to, not cold-open. `edit` (buffer mutation + cache
+        // patching) and `render` (now dominated by `RowHeightCache`'s own
+        // cheap active-line sync, not a full `build_display_lines` sweep)
+        // are reported separately rather than combined — see HISTORY.md for
+        // why most of `edit`'s own cost traces to GPUI's own keystroke
+        // dispatch, not this codebase.
         //
         // Deliberately *not* `window.input(...)` — `gpui_kit::test`'s own
         // `input_text` helper bundles a `render_frame` both before *and*

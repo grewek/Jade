@@ -1,8 +1,13 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui_kit::component::WindowExt;
 use gpui_kit::*;
 
 use super::block_preview::LineRole;
 use super::callout::{Callout, CalloutType};
+use super::document_cache::DocumentCache;
+use super::fenwick::Fenwick;
 use super::live_preview::{
     build_callout_header_line, build_display_line, build_display_line_in_context, build_table_row, hidden_line,
     is_thematic_break, DisplayLine, InlineStyle, LineContext, LineIndent,
@@ -191,71 +196,348 @@ fn autoscroll_to_cursor(scroll_handle: &ScrollHandle, content_bounds: Bounds<Pix
 /// regardless).
 const OVERSCAN_LINES: usize = 20;
 
+/// A persistent, edit-patched cache of every line's *row count* (how many
+/// wrapped visual rows a line occupies, per [`wrapped_row_count`]) — the
+/// per-paint piece `analyze_line_layout` used to re-derive from scratch for
+/// every line in the document, every paint, by calling `build_display_lines`
+/// (the real per-line Live Preview dispatch/inline-scan, not just
+/// arithmetic) even though `document_cache::DocumentCache` had already made
+/// *classification itself* incremental. Confirmed by direct measurement to
+/// be the dominant remaining per-keystroke cost on the 320K-line stress
+/// fixture (~140-155ms) once classification dropped to sub-1ms — this cache
+/// is what closes that gap, mirroring `DocumentCache`'s own "whole-document
+/// pass once, patch per edit after that" shape.
+///
+/// Stores row counts in a [`Fenwick`] tree (not a flat `Vec`) for the same
+/// reason `DocumentCache::line_index` does: a point update to one line's row
+/// count shifts every *subsequent* line's cumulative offset, which a flat
+/// array would need an O(suffix length) walk to keep in sync — the whole
+/// cost this cache exists to avoid. `line_height` is deliberately *not*
+/// baked into the stored values (unlike the old flat `cumulative: Vec<Pixels>`
+/// this replaces) — row counts are a property of wrapping alone, so a
+/// `line_height`-only change (a font-size bump that doesn't change character
+/// width) wouldn't need to invalidate anything if this cache tracked pixels
+/// directly; in practice `font_size` changing also changes `char_width`
+/// (this editor's font is always monospace), so the [`Self::available_width`]/
+/// [`Self::char_width`] fingerprint below still catches it, but the
+/// separation keeps the *reason* for each invalidation trigger distinct.
+///
+/// Three invalidation triggers, matching exactly what a line's row count
+/// can actually depend on:
+/// - **An edit** — patched eagerly, at the same call site `DocumentCache`
+///   itself is patched (`Editor::record_edit`/`invalidate_all`), using the
+///   touched-line range `DocumentCache::record_edit` returns. Needs
+///   `window`/font/width at that point, which weren't previously computed
+///   outside of paint — see [`RenderParams`].
+/// - **The active line changing with no edit** (arrow keys, a mouse click
+///   elsewhere) — nothing above fires for this, since cursor-only movement
+///   is scattered across many call sites in `editor.rs`/mouse handling, none
+///   of which report a `TextEdit`. Deliberately *not* hooked at each of
+///   those call sites — instead handled lazily, the same way
+///   `last_autoscrolled_cursor` already catches "the cursor moved" without
+///   being wired into every mover: [`Self::sync_active_line`] is called from
+///   `analyze_line_layout` (so every paint, cheaply) and just compares the
+///   current active line against what was cached, patching at most the old
+///   and new active line if they differ.
+/// - **A rendering-context change** (window resize, font/size change) —
+///   caught by the same `analyze_line_layout` call via
+///   [`Self::needs_full_rebuild`]'s `available_width`/`char_width`
+///   fingerprint comparison; a mismatch forces a full [`Self::rebuild`]
+///   (the same O(document) cost `analyze_line_layout` used to pay on
+///   *every* paint, now paid only on an actual resize/font change, or the
+///   very first paint after opening a note).
+pub(super) struct RowHeightCache {
+    rows: Fenwick,
+    /// Which line (if any) was rendered raw/unstyled — [`is_active_line`] —
+    /// the last time this cache was built or patched. Compared against the
+    /// current cursor's line on every [`Self::sync_active_line`] call so a
+    /// pure cursor move (no edit) patches just the lines whose active
+    /// status actually changed.
+    active_line: Option<usize>,
+    /// The `available_width` [`Self::rebuild`] last ran with — part of the
+    /// render-context fingerprint `needs_full_rebuild` checks.
+    available_width: Pixels,
+    /// This editor's monospace advance width (see [`mono_char_width`]) the
+    /// last time [`Self::rebuild`] ran — captures both font family/weight
+    /// and font size changes in one comparable value, rather than needing
+    /// `Font: PartialEq` (which this type deliberately avoids depending on).
+    char_width: Pixels,
+}
+
+impl RowHeightCache {
+    /// Before the first real paint has ever populated this — `available_
+    /// width`/`char_width` are left at `0`, a sentinel no real font/width
+    /// ever produces, so [`Self::needs_full_rebuild`] is unconditionally
+    /// true until the first [`Self::rebuild`] call.
+    pub(super) fn empty() -> Self {
+        Self { rows: Fenwick::new(&[]), active_line: None, available_width: px(0.), char_width: px(0.) }
+    }
+
+    pub(super) fn line_count(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// The cumulative row count of lines `0..i` — `i == line_count()` (one
+    /// past the last line) is valid too, giving the document's total row
+    /// count.
+    pub(super) fn prefix_sum(&self, i: usize) -> i64 {
+        self.rows.prefix_sum(i)
+    }
+
+    /// Whether [`Self::rebuild`] needs to run again before this cache's row
+    /// counts can be trusted at all: either the document's line count has
+    /// drifted out of sync with `doc` (a line-count-changing edit, or this
+    /// cache never having been built at all), or the render context this
+    /// cache's existing row counts were computed against has changed.
+    pub(super) fn needs_full_rebuild(&self, doc: &DocumentCache, available_width: Pixels, char_width: Pixels) -> bool {
+        self.line_count() != doc.line_count() || self.available_width != available_width || self.char_width != char_width
+    }
+
+    /// Full O(document) rebuild — the same per-line cost `analyze_line_
+    /// layout` used to pay on *every* paint, now paid only when
+    /// [`Self::needs_full_rebuild`] says so (first paint after opening a
+    /// note, a resize, or a font/size change).
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn rebuild(
+        &mut self,
+        text: &str,
+        doc: &DocumentCache,
+        cursor: usize,
+        focused: bool,
+        available_width: Pixels,
+        char_width: Pixels,
+        font: &Font,
+        font_size: Pixels,
+        text_color: Hsla,
+        window: &mut Window,
+    ) {
+        let line_count = doc.line_count();
+        let mut counts = Vec::with_capacity(line_count);
+        for i in 0..line_count {
+            let count = row_count_for_line(text, doc, i, cursor, focused, char_width, font, font_size, text_color, available_width, window);
+            counts.push(count as i64);
+        }
+        self.rows = Fenwick::new(&counts);
+        self.active_line = if focused { Some(doc.line_at(cursor)) } else { None };
+        self.available_width = available_width;
+        self.char_width = char_width;
+    }
+
+    /// Recomputes every line in `touched`, patching the Fenwick tree in
+    /// place — the real incremental path for a text edit, called with the
+    /// touched-line range `DocumentCache::record_edit` already returned for
+    /// this same edit. Assumes [`Self::needs_full_rebuild`] is already
+    /// false (checked by the caller) — a render-context change is handled
+    /// by a full [`Self::rebuild`] instead, never this.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn patch_lines(
+        &mut self,
+        text: &str,
+        doc: &DocumentCache,
+        touched: std::ops::Range<usize>,
+        cursor: usize,
+        focused: bool,
+        char_width: Pixels,
+        font: &Font,
+        font_size: Pixels,
+        text_color: Hsla,
+        window: &mut Window,
+    ) {
+        for i in touched {
+            let old = self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i);
+            let new = row_count_for_line(text, doc, i, cursor, focused, char_width, font, font_size, text_color, self.available_width, window);
+            self.rows.add_at(i, new as i64 - old);
+        }
+        self.active_line = if focused { Some(doc.line_at(cursor)) } else { None };
+    }
+
+    /// Patches whichever of the previously-active and newly-active line (at
+    /// most two lines) actually changed status since this cache was last
+    /// built or patched — the lazy, render-time-only trigger for "the
+    /// cursor moved with no accompanying edit" (see this struct's own doc
+    /// comment for why that case isn't hooked at every cursor-moving call
+    /// site instead). A no-op (not even a `Fenwick` touch) when the active
+    /// line hasn't actually changed.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn sync_active_line(
+        &mut self,
+        text: &str,
+        doc: &DocumentCache,
+        cursor: usize,
+        focused: bool,
+        char_width: Pixels,
+        font: &Font,
+        font_size: Pixels,
+        text_color: Hsla,
+        window: &mut Window,
+    ) {
+        let new_active = if focused { Some(doc.line_at(cursor)) } else { None };
+        if new_active == self.active_line {
+            return;
+        }
+        for line in [self.active_line, new_active].into_iter().flatten() {
+            if line < self.line_count() {
+                let old = self.rows.prefix_sum(line + 1) - self.rows.prefix_sum(line);
+                let new = row_count_for_line(text, doc, line, cursor, focused, char_width, font, font_size, text_color, self.available_width, window);
+                self.rows.add_at(line, new as i64 - old);
+            }
+        }
+        self.active_line = new_active;
+    }
+}
+
+/// The row count for line `i` alone — the same per-line computation
+/// `analyze_line_layout`'s old whole-document loop ran unconditionally for
+/// every line; now only ever called for a line [`RowHeightCache`] actually
+/// needs to (re)compute.
+#[allow(clippy::too_many_arguments)]
+fn row_count_for_line(
+    text: &str,
+    doc: &DocumentCache,
+    i: usize,
+    cursor: usize,
+    focused: bool,
+    char_width: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    available_width: Pixels,
+    window: &mut Window,
+) -> usize {
+    let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
+    let line_text = &text[line_range.clone()];
+    let active = is_active_line(&line_range, cursor, focused);
+    let table_kind = table_line_kind(doc.tables(), doc.table_for_line(), i);
+    let table_active = is_table_active(doc.tables(), doc.table_for_line(), i, cursor, focused);
+    let callout = callout_at_line(doc.callouts(), doc.callout_for_line(), i);
+    let callout_is_header = callout.is_some_and(|c| c.is_header(i));
+    let (display_lines, wrap_width) = build_display_lines(
+        line_text, doc.line_roles()[i], doc.block_contexts()[i], &table_kind, table_active, callout_is_header, active,
+        font, font_size, text_color, available_width, window,
+    );
+    display_lines.iter().map(|dl| wrapped_row_count(&dl.display_text, wrap_width, char_width)).sum::<usize>().max(1)
+}
+
 /// Per-document, per-paint layout data that lets `measure_document`/
 /// `paint_lines`/`offset_for_position`/`input_handler::bounds_for_range`
 /// each touch only the lines they actually need, instead of every line in
 /// the document — see this module's own notes on viewport-bounded
-/// rendering. Built once per paint by `analyze_line_layout`.
+/// rendering. Built once per paint by `analyze_line_layout`, which first
+/// makes sure the two caches below are up to date (cheaply, in the common
+/// case — see [`RowHeightCache`]'s own doc comment) and then just wraps
+/// clones of them (`Rc`, so cheap) alongside `line_height`; every query
+/// method below is an O(log n) lookup into one of them, not an array index,
+/// but that's still a tiny cost against what re-deriving them would be.
 ///
-/// Deliberately holds byte *ranges*, not `&str` slices, into the buffer
-/// text rather than borrowing it directly — `render_editor`'s paint
-/// closure needs to move both the buffer text and this layout into the
-/// same `'static` closure together, which a `LineLayout<'a>` borrowing
-/// from that very text can't do (the text and a borrow of it can't be
-/// moved into the same place independently). A caller with `text: &str`
-/// already in scope just slices it with `layout.line_range(i)`.
+/// Holds the caches themselves rather than, say, a flat `Vec` of resolved
+/// byte ranges/heights for the same reason the old flat-`Vec` version of
+/// this struct held byte *ranges* rather than borrowed `&str` slices:
+/// `render_editor`'s paint closure needs to move this into a `'static`
+/// closure, and an owned `Rc` clone satisfies that the same way an owned
+/// `Range<usize>` did.
 #[derive(Clone)]
 pub(super) struct LineLayout {
-    /// `line_ranges[i]` is line `i`'s own byte range in the whole buffer
-    /// (excluding its own trailing `\n`).
-    line_ranges: Vec<std::ops::Range<usize>>,
-    /// Prefix sums of each line's *estimated* height (`wrapped_row_count`,
-    /// not real shaping) — `cumulative[i]` is the total height of lines
-    /// `0..i`, so `cumulative.len() == line_ranges.len() + 1` and
-    /// `cumulative`'s last entry is the document's total estimated height.
-    /// Monotonically non-decreasing, so `visible_line_range` can
-    /// binary-search it.
-    cumulative: Vec<Pixels>,
+    doc_cache: Rc<RefCell<DocumentCache>>,
+    row_cache: Rc<RefCell<RowHeightCache>>,
+    line_height: Pixels,
 }
 
 impl LineLayout {
     pub(super) fn line_count(&self) -> usize {
-        self.line_ranges.len()
+        self.doc_cache.borrow().line_count()
     }
 
     /// Estimated height of line `i` alone.
     pub(super) fn height(&self, i: usize) -> Pixels {
-        self.cumulative[i + 1] - self.cumulative[i]
+        self.cumulative_at(i + 1) - self.cumulative_at(i)
     }
 
     pub(super) fn line_range(&self, i: usize) -> std::ops::Range<usize> {
-        self.line_ranges[i].clone()
+        let doc = self.doc_cache.borrow();
+        doc.line_start_byte(i)..doc.line_end_byte(i)
     }
 
     /// The estimated document-space Y offset where line `i` begins —
-    /// `cumulative[line_count()]` (i.e. `line_count()` itself) is valid too,
-    /// giving the document's total estimated height.
+    /// `line_count()` (one past the last line) is valid too, giving the
+    /// document's total estimated height.
     pub(super) fn cumulative_at(&self, i: usize) -> Pixels {
-        self.cumulative[i]
+        self.line_height * self.row_cache.borrow().prefix_sum(i) as f32
+    }
+
+    /// The line containing buffer byte offset `cursor`.
+    pub(super) fn line_at(&self, cursor: usize) -> usize {
+        self.doc_cache.borrow().line_at(cursor)
+    }
+
+    /// Binary search over [`Self::cumulative_at`], matching `[Pixels]::
+    /// partition_point`'s semantics (the first index, in `0..=line_count()`,
+    /// for which `pred` is false) exactly — reimplemented here rather than
+    /// materializing the cumulative sequence into a slice (which would
+    /// reintroduce the O(document) cost incremental caching exists to
+    /// remove), since `RowHeightCache`'s own `Fenwick` tree only supports
+    /// O(log n) *point* queries directly, not slice-style binary search.
+    fn partition_point_cumulative(&self, pred: impl Fn(Pixels) -> bool) -> usize {
+        let mut lo = 0usize;
+        let mut hi = self.line_count();
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if pred(self.cumulative_at(mid)) {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
     }
 }
 
-/// Builds a document's [`LineLayout`] in one pass — for every line, this
-/// calls the *pure* half of line-building (`build_display_lines`, not
-/// `shape_display_line`) to get its real `display_text`, then estimates
-/// its row count arithmetically (`wrapped_row_count`) rather than paying
-/// for a real `shape_text` call. This is still an O(document) pass (not yet
-/// incremental across edits/paints — see CLAUDE.md's Backlog), but a cheap
-/// one: no GPUI text shaping happens anywhere in this function.
+/// The render parameters [`analyze_line_layout`] needs, computed the same
+/// way both `render_editor` (every paint) and `Editor::record_edit`/
+/// `invalidate_all` (every edit, so [`RowHeightCache`] can be patched
+/// synchronously right there rather than deferred to the next paint) need
+/// them — pulled out into one function once a second call site needed the
+/// exact same computation `render_editor` already did inline.
+pub(super) struct RenderParams {
+    pub(super) font: Font,
+    pub(super) font_size: Pixels,
+    pub(super) text_color: Hsla,
+    pub(super) available_width: Pixels,
+    pub(super) line_height: Pixels,
+}
+
+pub(super) fn render_params(editor: &Editor, window: &mut Window, cx: &mut Context<Editor>) -> RenderParams {
+    let text_style = window.text_style();
+    // The note editor's own font, not the ambient `text_style`'s — only the
+    // bundled mono family has real Bold/Italic/BoldItalic faces (the Sans UI
+    // family only has Regular/Italic), which Live Preview's bold/italic runs
+    // need.
+    let mut font = text_style.font();
+    font.family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
+    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let text_color = text_style.color;
+    // The editor's own on-screen width isn't known yet before the first
+    // layout — `scroll_handle`'s tracked container bounds (the same "last
+    // completed layout" value `autoscroll_to_cursor` already relies on)
+    // stands in for it, falling back to "don't wrap" (`Pixels::MAX`) only
+    // before that first layout, self-correcting the moment it completes.
+    let available_width = {
+        let width = editor.scroll_handle.bounds().size.width;
+        if width > px(0.) { width } else { Pixels::MAX }
+    };
+    let line_height = window.line_height();
+    RenderParams { font, font_size, text_color, available_width, line_height }
+}
+
+/// Makes sure `row_cache` is up to date (a cheap active-line sync in the
+/// common case, a full rebuild only on the first call or an actual
+/// render-context change — see [`RowHeightCache`]'s own doc comment) and
+/// returns a [`LineLayout`] wrapping it alongside `doc_cache`. Replaces what
+/// used to be an unconditional O(document) pass here on every single paint.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn analyze_line_layout(
     text: &str,
-    line_roles: &[LineRole],
-    block_contexts: &[LineContext],
-    table_for_line: &[Option<usize>],
-    tables: &[Table],
-    callout_for_line: &[Option<usize>],
-    callouts: &[Callout],
+    doc_cache: &Rc<RefCell<DocumentCache>>,
+    row_cache: &Rc<RefCell<RowHeightCache>>,
     cursor: usize,
     focused: bool,
     available_width: Pixels,
@@ -266,39 +548,25 @@ pub(super) fn analyze_line_layout(
     window: &mut Window,
 ) -> LineLayout {
     let char_width = mono_char_width(font, font_size, text_color, window);
-
-    let mut line_ranges = Vec::new();
-    let mut cumulative = vec![px(0.)];
-    let mut line_start = 0usize;
-    for (i, line_text) in text.split('\n').enumerate() {
-        let line_range = line_start..line_start + line_text.len();
-        let active = is_active_line(&line_range, cursor, focused);
-        let table_kind = table_line_kind(tables, table_for_line, i);
-        let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
-        let callout = callout_at_line(callouts, callout_for_line, i);
-        let callout_is_header = callout.is_some_and(|c| c.is_header(i));
-        let (display_lines, wrap_width) = build_display_lines(
-            line_text, line_roles[i], block_contexts[i], &table_kind, table_active, callout_is_header, active, font,
-            font_size, text_color, available_width, window,
-        );
-        let rows: usize = display_lines.iter().map(|dl| wrapped_row_count(&dl.display_text, wrap_width, char_width)).sum();
-
-        cumulative.push(*cumulative.last().unwrap() + line_height * rows.max(1) as f32);
-        line_ranges.push(line_range.clone());
-
-        line_start = line_range.end + 1;
+    {
+        let doc = doc_cache.borrow();
+        let mut rows = row_cache.borrow_mut();
+        if rows.needs_full_rebuild(&doc, available_width, char_width) {
+            rows.rebuild(text, &doc, cursor, focused, available_width, char_width, font, font_size, text_color, window);
+        } else {
+            rows.sync_active_line(text, &doc, cursor, focused, char_width, font, font_size, text_color, window);
+        }
     }
-
-    LineLayout { line_ranges, cumulative }
+    LineLayout { doc_cache: doc_cache.clone(), row_cache: row_cache.clone(), line_height }
 }
 
 /// The `[start, end)` line-index range actually relevant to paint/hit-test
 /// this frame — the viewport's own document-space Y-range (`bounds`, the
 /// editor's own on-screen bounds, vs. `viewport`, the scrollable
 /// container's fixed on-screen bounds — same two values `autoscroll_to_cursor`
-/// already compares), found via binary search against `layout.cumulative`
-/// (monotonically non-decreasing, so `partition_point` applies) rather than
-/// a linear walk, padded by [`OVERSCAN_LINES`] on each side and clamped to
+/// already compares), found via binary search (`partition_point_cumulative`,
+/// matching `[Pixels]::partition_point`'s own semantics) rather than a
+/// linear walk, padded by [`OVERSCAN_LINES`] on each side and clamped to
 /// the document's own line count. Falls back to the whole document if the
 /// viewport hasn't been laid out yet (`viewport.size.height <= 0`, e.g. the
 /// very first paint before `scroll_handle`'s tracked container has a size)
@@ -313,8 +581,8 @@ pub(super) fn visible_line_range(layout: &LineLayout, bounds: Bounds<Pixels>, vi
     }
     let doc_top = viewport.origin.y - bounds.origin.y;
     let doc_bottom = doc_top + viewport.size.height;
-    let start = layout.cumulative.partition_point(|&c| c <= doc_top).saturating_sub(1);
-    let end = layout.cumulative.partition_point(|&c| c < doc_bottom);
+    let start = layout.partition_point_cumulative(|c| c <= doc_top).saturating_sub(1);
+    let end = layout.partition_point_cumulative(|c| c < doc_bottom);
     let start = start.saturating_sub(OVERSCAN_LINES);
     let end = (end + OVERSCAN_LINES).min(line_count);
     start..end
@@ -327,27 +595,23 @@ pub(super) fn visible_line_range(layout: &LineLayout, bounds: Bounds<Pixels>, vi
 /// `autoscroll_to_cursor`'s inputs), which is before the canvas paint
 /// closure where `paint_lines`/`offset_for_position` do their own (now
 /// viewport-bounded, real) shaping. No shaping happens in this function at
-/// all — everything here is a handful of O(1)/O(callouts.len()) lookups
-/// into `layout`, which already did the one O(document) pass needed this
-/// paint.
+/// all — everything here is a handful of O(log n)/O(callouts.len()) lookups
+/// into `layout`, which (via `analyze_line_layout`) is almost always already
+/// up to date before this paint even starts.
 fn measure_document(layout: &LineLayout, cursor: usize, callouts: &[Callout], line_height: Pixels) -> (Pixels, Pixels, Pixels, Vec<(Pixels, Pixels)>) {
-    let total = *layout.cumulative.last().unwrap();
+    let total = layout.cumulative_at(layout.line_count());
 
-    // The cursor's own line: binary-search `line_ranges` by start offset
-    // (already built, O(log n)) rather than a linear walk.
-    let cursor_line = layout.line_ranges.partition_point(|r| r.start <= cursor).saturating_sub(1);
-    let cursor_top = layout.cumulative[cursor_line];
+    let cursor_line = layout.line_at(cursor);
+    let cursor_top = layout.cumulative_at(cursor_line);
     let cursor_height = layout.height(cursor_line).max(line_height);
 
     // Each callout's `(top, bottom)` pixel range, read straight from
-    // `layout.cumulative` at its known `start_line`/`end_line` — no need to
-    // have actually visited those lines "for real" the way a sequential
-    // accumulator would have required, which matters once `paint_lines`
-    // stops visiting every line (see that function's own doc comment).
-    let callout_ranges = callouts
-        .iter()
-        .map(|c| (layout.cumulative[c.start_line], layout.cumulative[c.end_line]))
-        .collect();
+    // `layout`'s cumulative row counts at its known `start_line`/`end_line`
+    // — no need to have actually visited those lines "for real" the way a
+    // sequential accumulator would have required, which matters once
+    // `paint_lines` stops visiting every line (see that function's own doc
+    // comment).
+    let callout_ranges = callouts.iter().map(|c| (layout.cumulative_at(c.start_line), layout.cumulative_at(c.end_line))).collect();
 
     (total, cursor_top, cursor_height, callout_ranges)
 }
@@ -468,7 +732,7 @@ fn wrap_width_for(table_kind: &TableLineKind, table_active: bool, available_widt
 /// actually asked to shape. See this module's own notes on viewport-bounded
 /// rendering for why that split matters.
 #[allow(clippy::too_many_arguments)]
-fn build_display_lines(
+pub(super) fn build_display_lines(
     line: &str,
     role: LineRole,
     block_ctx: LineContext,
@@ -529,7 +793,7 @@ fn build_display_lines(
 /// long/short words, a deliberate v1 approximation (see this module's own
 /// notes on viewport-bounded rendering) rather than requiring the real
 /// shaping call this function exists specifically to avoid.
-fn wrapped_row_count(display_text: &str, wrap_width: Option<Pixels>, char_width: Pixels) -> usize {
+pub(super) fn wrapped_row_count(display_text: &str, wrap_width: Option<Pixels>, char_width: Pixels) -> usize {
     let Some(wrap_width) = wrap_width else { return 1 };
     if char_width <= px(0.) {
         return 1;
@@ -618,7 +882,7 @@ pub(super) fn shape_display_line(
 /// call. Shared by `table_row_char_budget` (converts it to a *character*
 /// budget) and `paint_table_grid_lines` (converts a *character offset* to
 /// an actual pixel x) — both need the same measurement to agree.
-fn mono_char_width(font: &Font, font_size: Pixels, text_color: Hsla, window: &mut Window) -> Pixels {
+pub(super) fn mono_char_width(font: &Font, font_size: Pixels, text_color: Hsla, window: &mut Window) -> Pixels {
     let run = TextRun { len: 1, font: font.clone(), color: text_color, background_color: None, underline: None, strikethrough: None };
     window.text_system().shape_line("0".into(), font_size, &[run], None).width
 }
@@ -688,44 +952,22 @@ pub(super) fn render_editor(
             cache.callouts().to_vec(),
         )
     };
+    let row_height_cache = editor.row_height_cache.clone();
 
-    let line_height = window.line_height();
     let focused = focus_handle.is_focused(window);
+    let params = render_params(editor, window, cx);
+    let RenderParams { font, font_size, text_color, available_width, line_height } = params;
 
-    let text_style = window.text_style();
-    // The note editor's own font, not the ambient `text_style`'s — only the
-    // bundled mono family has real Bold/Italic/BoldItalic faces (the Sans UI
-    // family only has Regular/Italic), which Live Preview's bold/italic runs
-    // need. Fixes the font-family gap `text_editor`'s module doc previously
-    // called out as a deferred cosmetic cut, now that this code path
-    // actually needs the distinction.
-    let mut font = text_style.font();
-    font.family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
-    let font_size = text_style.font_size.to_pixels(window.rem_size());
-    let text_color = text_style.color;
-
-    // The editor's own on-screen width isn't known yet at this point (this
-    // function only *builds* the element tree — actual layout, and the
-    // `bounds` the canvas paint closure below receives, happens afterward)
-    // but is needed now regardless, to size this `div`'s height up front
-    // once wrapping can make that depend on width. `scroll_handle`'s
-    // tracked container bounds (the same "last completed layout" value
-    // `autoscroll_to_cursor` already relies on) stands in for it — zero
-    // (and so falls back to effectively "don't wrap" via `Pixels::MAX`,
-    // same as this editor's pre-wrapping behavior) only before the very
-    // first layout, self-correcting the moment that completes.
-    let available_width = {
-        let width = scroll_handle.bounds().size.width;
-        if width > px(0.) { width } else { Pixels::MAX }
-    };
-    // One O(document) pass (cheap arithmetic, no real text-shaping — see
-    // `LineLayout`'s own doc comment) feeding `measure_document`'s sizing
-    // and `paint_lines`/`offset_for_position`/`register_mouse_handling`'s
-    // viewport-bounded windowing below — none of those re-walk the whole
-    // document themselves any more.
+    // Makes sure `row_height_cache` is up to date (almost always a cheap
+    // active-line check — see `RowHeightCache`'s own doc comment, and
+    // `Editor::record_edit`/`invalidate_all` for the edit-triggered half of
+    // keeping it that way) and wraps it alongside `document_cache` into a
+    // `LineLayout`, feeding `measure_document`'s sizing and `paint_lines`/
+    // `offset_for_position`/`register_mouse_handling`'s viewport-bounded
+    // windowing below.
     let layout = analyze_line_layout(
-        &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor, focused,
-        available_width, line_height, &font, font_size, text_color, window,
+        &text, &document_cache, &row_height_cache, cursor, focused, available_width, line_height, &font, font_size,
+        text_color, window,
     );
     let (total_height, cursor_top, cursor_height, callout_ranges) = measure_document(&layout, cursor, &callouts, line_height);
 
@@ -954,7 +1196,7 @@ fn offset_for_position(
         return 0;
     }
 
-    let mut y_offset = layout.cumulative[range.start];
+    let mut y_offset = layout.cumulative_at(range.start);
     for i in range.clone() {
         let line_text = &text[layout.line_range(i)];
         let active = is_active_line(&layout.line_range(i), cursor, focused);
@@ -1078,8 +1320,8 @@ fn paint_lines(
     // painting them after a row's own text is fine), a full-width
     // background fill painted afterward would paint right over and hide
     // that text. `callout_ranges` (from `measure_document`'s own
-    // `layout.cumulative` lookups) gives each callout's already-known top/
-    // bottom extent without needing to have visited its lines at all, so
+    // `layout.cumulative_at` lookups) gives each callout's already-known
+    // top/bottom extent without needing to have visited its lines at all, so
     // this runs as its own pass, skipping any callout whose range doesn't
     // intersect the viewport at all (cheap, and keeps this pass bounded
     // even for a document with a huge number of callouts).
@@ -1107,13 +1349,13 @@ fn paint_lines(
         return;
     }
 
-    let mut y_offset = layout.cumulative[range.start];
+    let mut y_offset = layout.cumulative_at(range.start);
     // Accumulated across a table's own lines, then painted and cleared
     // once its last line is reached — see `TablePaint`/`paint_table_grid_
     // lines`. Never started at all for a table that's rendering raw
     // (`table_active`), matching every other construct's own "border
     // disappears while active" behavior. Pre-seeded from the estimate
-    // (`layout.cumulative`) if this window starts *inside* a table whose
+    // (`layout.cumulative_at`) if this window starts *inside* a table whose
     // header row is off-screen — the main loop below only ever discovers
     // a table's start by actually visiting its header row, which doesn't
     // happen if that row is outside `range`.
@@ -1134,8 +1376,8 @@ fn paint_lines(
                 .collect();
             let delimiter_line = table.start_line + 1;
             let divider_y = (delimiter_line < range.start)
-                .then(|| bounds.origin.y + layout.cumulative[delimiter_line] + layout.height(delimiter_line) / 2.);
-            table_paint = Some(TablePaint { top: bounds.origin.y + layout.cumulative[table.start_line], divider_y, column_x });
+                .then(|| bounds.origin.y + layout.cumulative_at(delimiter_line) + layout.height(delimiter_line) / 2.);
+            table_paint = Some(TablePaint { top: bounds.origin.y + layout.cumulative_at(table.start_line), divider_y, column_x });
         }
     }
 
@@ -2315,6 +2557,150 @@ mod tests {
             results.remove(0)
         };
             assert_eq!(active_display_line.display_text, line, "the active fence delimiter line should show its raw text");
+        })
+        .unwrap();
+    }
+
+    /// Applies one edit to `text` (replacing `start..old_end` with `insert`)
+    /// and returns the resulting text alongside the `TextEdit` describing
+    /// it — same shape as `document_cache.rs`'s own test helper of the same
+    /// name, duplicated rather than shared since that one is private to
+    /// that module.
+    fn apply_edit(text: &str, start: usize, old_end: usize, insert: &str) -> (String, super::super::document_cache::TextEdit) {
+        let mut new_text = String::with_capacity(text.len() - (old_end - start) + insert.len());
+        new_text.push_str(&text[..start]);
+        new_text.push_str(insert);
+        new_text.push_str(&text[old_end..]);
+        let edit = super::super::document_cache::TextEdit { start_byte: start, old_end_byte: old_end, new_end_byte: start + insert.len() };
+        (new_text, edit)
+    }
+
+    /// Every line's current row count, read out of `rows` via its own
+    /// Fenwick-backed prefix sums — what every assertion below compares
+    /// between an incrementally-patched cache and a freshly-rebuilt oracle.
+    fn row_counts(rows: &super::RowHeightCache) -> Vec<i64> {
+        (0..rows.line_count()).map(|i| rows.prefix_sum(i + 1) - rows.prefix_sum(i)).collect()
+    }
+
+    /// The property [`super::RowHeightCache::patch_lines`]/[`super::
+    /// RowHeightCache::rebuild`] actually rely on: after any sequence of
+    /// edits (including line-count-changing ones, which force a fallback
+    /// full rebuild — see `needs_full_rebuild`), a cache kept incrementally
+    /// in sync edit-by-edit must have exactly the same per-line row counts
+    /// as a cache built fresh, from scratch, on the final text — the same
+    /// "fuzz against an oracle" discipline `document_cache.rs`'s own
+    /// property tests already use, which is what actually caught every real
+    /// bug in *that* module; this is the matching test for the row-height
+    /// cache this module adds on top of it. `focused: false` throughout
+    /// (no line is ever "active") — active-line transitions are a
+    /// deliberately separate, narrower mechanism, covered by its own test
+    /// below instead of complicating this one.
+    #[gpui_kit::test]
+    fn row_height_cache_matches_a_full_rebuild_after_a_sequence_of_edits(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::{mono_char_width, RowHeightCache};
+
+        let mut text = String::from(
+            "intro\n```\ncode line one\ncode line two\n```\nplain\n> quote\n- item\n  - nested\nmore plain text here\n\
+             | a | b |\n| --- | --- |\n| 1 | 2 |\nafter table\n# Heading\nFinal line",
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let text_color = text_style.color;
+            let available_width = px(400.);
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+
+            let mut doc_cache = DocumentCache::new(&text);
+            let mut row_cache = RowHeightCache::empty();
+            row_cache.rebuild(&text, &doc_cache, 0, false, available_width, char_width, &font, font_size, text_color, window);
+
+            // (start, delete_len, insert) — a mix of same-line-count edits
+            // (exercising the real `patch_lines` incremental path) and
+            // line-count-changing ones (exercising the full-rebuild fallback).
+            let edits: &[(usize, usize, &str)] = &[
+                (0, 0, "x"),                         // insert at the very start
+                (5, 0, "!"),                          // insert mid-line, no newline
+                (0, 1, ""),                           // delete one char at the start
+                (0, 0, "a new unterminated line"),    // same-line-count edit far from any construct
+                (9, 0, "\n"),                         // insert a bare newline (line-count change)
+                (0, 0, "```\nmore code\n```\n"),       // insert a whole new fence block
+                (0, 3, ""),                            // delete across a newline (line-count change)
+            ];
+
+            for &(start, delete_len, insert) in edits {
+                let old_end = start + delete_len;
+                let (new_text, edit) = apply_edit(&text, start, old_end, insert);
+                let touched = doc_cache.record_edit(&new_text, edit);
+                match touched {
+                    Some(range) if !row_cache.needs_full_rebuild(&doc_cache, available_width, char_width) => {
+                        row_cache.patch_lines(&new_text, &doc_cache, range, 0, false, char_width, &font, font_size, text_color, window);
+                    }
+                    _ => {
+                        row_cache.rebuild(&new_text, &doc_cache, 0, false, available_width, char_width, &font, font_size, text_color, window);
+                    }
+                }
+
+                let oracle_doc = DocumentCache::new(&new_text);
+                let mut oracle_rows = RowHeightCache::empty();
+                oracle_rows.rebuild(&new_text, &oracle_doc, 0, false, available_width, char_width, &font, font_size, text_color, window);
+
+                assert_eq!(
+                    row_counts(&row_cache),
+                    row_counts(&oracle_rows),
+                    "after editing {:?} on text {:?}",
+                    (start, old_end, insert),
+                    text
+                );
+                text = new_text;
+            }
+        })
+        .unwrap();
+    }
+
+    /// The other half of [`super::RowHeightCache`]'s invalidation story:
+    /// moving the cursor with *no* accompanying edit still needs the old
+    /// and new active lines patched (`sync_active_line`), since the active
+    /// line always renders raw/unstyled regardless of what the (identical)
+    /// underlying text would otherwise classify it as.
+    #[gpui_kit::test]
+    fn row_height_cache_active_line_sync_matches_a_full_rebuild(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::{mono_char_width, RowHeightCache};
+
+        // A line long enough that hiding/showing its `**bold**` markup
+        // while active/inactive actually changes its row count at a narrow
+        // wrap width — otherwise active-vs-not could coincidentally never
+        // move the needle this test is checking for.
+        let long_bold = "x".repeat(40);
+        let text = format!("short\n**{long_bold}**\nanother short line\nyet another line here");
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let text_color = text_style.color;
+            let available_width = px(80.); // narrow enough to force wrapping
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+
+            let doc_cache = DocumentCache::new(&text);
+            let mut row_cache = RowHeightCache::empty();
+            row_cache.rebuild(&text, &doc_cache, 0, true, available_width, char_width, &font, font_size, text_color, window);
+
+            // Move the cursor onto the bold line (line 1), then off it again
+            // onto line 2 — each a pure cursor move, no edit at all.
+            for cursor in [text.find(&long_bold).unwrap(), text.rfind("another").unwrap(), 0] {
+                row_cache.sync_active_line(&text, &doc_cache, cursor, true, char_width, &font, font_size, text_color, window);
+
+                let mut oracle_rows = RowHeightCache::empty();
+                oracle_rows.rebuild(&text, &doc_cache, cursor, true, available_width, char_width, &font, font_size, text_color, window);
+
+                assert_eq!(row_counts(&row_cache), row_counts(&oracle_rows), "cursor at {cursor}");
+            }
         })
         .unwrap();
     }
