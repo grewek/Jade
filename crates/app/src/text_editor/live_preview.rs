@@ -56,6 +56,7 @@
 //! narrow construct list above.)
 
 use std::ops::Range;
+use std::rc::Rc;
 
 use super::callout::{self, callout_header_prefix};
 use super::table_preview::{self, Column};
@@ -454,10 +455,74 @@ pub(super) fn classify_block_context(source: &str) -> Vec<LineContext> {
 pub(super) enum OpenBlock {
     None,
     Blockquote(u8),
-    /// Indentation column of each currently-open list level, outermost
-    /// first. Never empty while this variant is current — see the
-    /// marker-line branch below, which always leaves at least one entry.
-    List(Vec<usize>),
+    /// The currently-open list's nesting stack, top = innermost level —
+    /// see [`ListNode`]'s own doc comment for why this is a persistent
+    /// `Rc`-linked chain rather than a `Vec<usize>`. Never `None` while
+    /// this variant is current — see the marker-line branch below, which
+    /// always leaves at least one level.
+    List(Rc<ListNode>),
+}
+
+/// One level of [`OpenBlock::List`]'s nesting stack, linked to its parent
+/// (the next level out) via `Rc` rather than stored inline in a `Vec` —
+/// replaces what used to be a plain `Vec<usize>` that `classify_block_
+/// context_from`'s loop deep-cloned (`open = next.clone()`) on *every*
+/// line inside an open list, not just where nesting depth actually
+/// changed (confirmed by direct measurement: ~18MB / 98,642 separate
+/// heap allocations on the 320K-line stress fixture, where 21.9% of all
+/// lines are inside some open list — see HISTORY.md).
+///
+/// The `Rc`-chain representation makes the *common* case genuinely free:
+/// a sibling item at the same depth, or any plain non-marker line,
+/// reuses the existing top node via a cheap `Rc::clone()` (no allocation
+/// at all), and even a real depth *increase* only ever allocates one
+/// small node (not a whole stack) — see [`ListNode::resume_or_push`].
+/// `depth` is cached here (rather than derived by walking `parent`) so
+/// reading it stays O(1), matching what `Vec::len()` already was for the
+/// structure this replaced.
+///
+/// `PartialEq`/`Eq` are derived, not hand-written, and still do the right
+/// thing for `document_cache.rs`'s reconvergence check (which needs two
+/// *separately allocated* chains representing the same sequence of
+/// indents to compare equal, the same as two `Vec<usize>`s with identical
+/// contents always did): `Rc<T>`'s own `PartialEq` impl already compares
+/// *values* (`**self == **other`), falling back to that whenever the
+/// pointers themselves differ, rather than only ever comparing pointer
+/// identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct ListNode {
+    indent: usize,
+    depth: u8,
+    parent: Option<Rc<ListNode>>,
+}
+
+impl ListNode {
+    /// Resolves the list-nesting stack's new top node for a marker line at
+    /// `indent`, given `current` (the stack's existing top, or `None` if
+    /// no list was open) — the structural-sharing replacement for the
+    /// original `Vec<usize>`'s "pop while deeper, then push if not already
+    /// at this depth" dance. Walks up `parent` links (no allocation) while
+    /// the current top is deeper than `indent`; if it lands exactly on
+    /// `indent` (a sibling item, or dedenting back to an already-open
+    /// ancestor level), that existing node is reused outright — only an
+    /// actual depth *increase* allocates, and only one small node.
+    fn resume_or_push(current: Option<Rc<ListNode>>, indent: usize) -> Rc<ListNode> {
+        let mut node = current;
+        while let Some(n) = &node {
+            if n.indent > indent {
+                node = n.parent.clone();
+            } else {
+                break;
+            }
+        }
+        match node {
+            Some(n) if n.indent == indent => n,
+            other => {
+                let depth = other.as_ref().map_or(1, |n| n.depth + 1);
+                Rc::new(ListNode { indent, depth, parent: other })
+            }
+        }
+    }
 }
 
 /// The one per-line transition [`classify_block_context`]/
@@ -480,24 +545,19 @@ pub(super) fn block_context_step(open: OpenBlock, line: &str) -> (LineContext, O
     }
 
     if let Some((_, indent, _)) = indented_list_marker(line) {
-        let mut stack = match open {
-            OpenBlock::List(stack) => stack,
-            _ => Vec::new(),
+        let current = match open {
+            OpenBlock::List(top) => Some(top),
+            _ => None,
         };
-        while matches!(stack.last(), Some(&top) if top > indent) {
-            stack.pop();
-        }
-        if stack.last() != Some(&indent) {
-            stack.push(indent);
-        }
-        let depth = stack.len() as u8;
-        return (LineContext::ListMarkerLine(depth), OpenBlock::List(stack));
+        let top = ListNode::resume_or_push(current, indent);
+        let depth = top.depth;
+        return (LineContext::ListMarkerLine(depth), OpenBlock::List(top));
     }
 
     let ctx = match &open {
         OpenBlock::Blockquote(depth) => LineContext::LazyContinuation(LineIndent::Blockquote(*depth)),
-        OpenBlock::List(stack) if !stack.is_empty() => LineContext::LazyContinuation(LineIndent::List(stack.len() as u8)),
-        _ => LineContext::Plain,
+        OpenBlock::List(top) => LineContext::LazyContinuation(LineIndent::List(top.depth)),
+        OpenBlock::None => LineContext::Plain,
     };
     (ctx, open)
 }
@@ -1934,6 +1994,25 @@ mod tests {
             ctx,
             vec![LineContext::ListMarkerLine(1), LineContext::ListMarkerLine(2), LineContext::ListMarkerLine(2)]
         );
+    }
+
+    #[test]
+    fn list_node_chains_with_the_same_indents_compare_equal_even_when_separately_allocated() {
+        // Two independently-built chains representing the same logical
+        // nesting (0, then 2) must compare equal regardless of being
+        // different `Rc` allocations — `document_cache.rs`'s reconvergence
+        // check relies on exactly this (see `ListNode`'s own doc comment):
+        // a freshly-walked chain reconverging with a cached one needs
+        // value equality, not pointer identity, the same way two
+        // `Vec<usize>`s with identical contents already compared equal.
+        let a = ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 2);
+        let b = ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 2);
+        assert!(!Rc::ptr_eq(&a, &b), "sanity check: these really are two separate allocations");
+        assert_eq!(a, b);
+        assert_eq!(OpenBlock::List(a), OpenBlock::List(b));
+
+        let c = ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 3); // different inner indent
+        assert_ne!(ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 2), c);
     }
 
     #[test]
