@@ -14,6 +14,15 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 
 **Do not add dependencies to any `Cargo.toml` without first asking the user for explicit approval** — this applies even to crates already agreed upon in principle (e.g. `gpui`, `gpui-kit`), ask again at the point of actually adding them.
 
+## Performance
+
+Performance is a standing, firm requirement, not an afterthought to clean up once something feels slow:
+
+- **Always measure** methods/functions/structs for CPU and memory inefficiency — on this codebase specifically, that means profiling/timing directly (e.g. against `crates/app/benches/fixtures/large_markdown_stress_test.md`) rather than reasoning about Big-O alone. A plan that "sounds cheap" still gets measured before being called done — Part 1 of the viewport-rendering fix was initially guessed at "tens of ms" and actually measured at ~1.4s; only the real number is trustworthy.
+- **The bar for anything rendered or updated on every frame is 16.66ms (60fps)**, full stop — not "better than before," not "much faster than the broken baseline." If a change can't hit that, say so plainly and either keep closing the gap or explicitly queue the remaining work as the *next* thing (not indefinite backlog) rather than quietly shipping something that's merely improved. Lower than 16.66ms is still better than exactly 16.66ms — treat the budget as a ceiling to clear, not a target to land on.
+- **If an abstraction costs real performance, don't just accept the cost for the abstraction's sake.** Work out *why* it's expensive, then either find a cheaper abstraction that keeps the same clarity, or drop the abstraction entirely if nothing cheaper preserves it — don't keep a costly abstraction around unexamined just because it's tidier to read.
+- This applies everywhere in the codebase (`jade-core` included, not just `jade-app`'s render loop) — a one-time cost at startup/file-open is a separate, more negotiable question from steady-state per-frame/per-call cost; ask if that distinction matters for a specific case rather than assuming either way.
+
 ## Project state
 
 Workspace with two crates:
