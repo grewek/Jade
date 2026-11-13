@@ -6,12 +6,14 @@
 //! scratch on every paint cost ~420ms combined on the 320K-line stress
 //! fixture, re-paid on every keystroke, nowhere near the 16.66ms/60fps bar.
 //!
-//! **Real incremental paths landed for `block_preview` and `callout`** —
-//! see `patch_block_preview`/`patch_callouts`. `live_preview`'s block
-//! context and `table_preview`'s tables are still fully recomputed on every
-//! edit (`recompute_rest`) — later increments replace each one's piece the
-//! same way, one at a time, without needing to change this module's public
-//! shape or any caller again.
+//! **Real incremental paths landed for all four classifiers** —
+//! `patch_block_preview`/`patch_callouts`/`patch_block_context` resume a
+//! per-line state machine from the edited line; `patch_tables` (the one
+//! classifier that isn't a per-line state machine at all — a table's
+//! column widths are an aggregate over its whole row range) instead
+//! rescans just the bounded window a table could possibly have been
+//! affected in, not the whole document. See each function's own doc
+//! comment.
 //!
 //! `line_index` (a [`Fenwick`] tree over per-line byte strides) is the
 //! shared piece every incremental classifier needs and none of the four
@@ -30,7 +32,7 @@ use super::block_preview::{self, FenceState, LineRole};
 use super::callout::{self, Callout, CalloutState};
 use super::fenwick::Fenwick;
 use super::live_preview::{self, LineContext, OpenBlock};
-use super::table_preview::{self, Table};
+use super::table_preview::{self, is_pipe_row, Table};
 
 /// A tree-sitter-`InputEdit`-style description of what just changed in the
 /// buffer: the byte range `start_byte..old_end_byte` in the *old* text was
@@ -152,14 +154,13 @@ impl DocumentCache {
         self.recompute_block_preview(text);
         self.recompute_callouts(text);
         self.recompute_block_context(text);
-        self.recompute_rest(text);
+        self.recompute_tables(text);
     }
 
     /// Patches the cache for a precisely-ranged edit: the real incremental
-    /// path for `block_preview`/`callout`/`live_preview`'s block context
-    /// (falling back to a full recompute of just that classifier when it
-    /// can't cheaply apply), full recompute for everything else (not
-    /// incremental yet — see this module's own doc comment).
+    /// path for every classifier (falling back to a full recompute of just
+    /// that classifier when it can't cheaply apply — see each `patch_*`
+    /// function's own doc comment for when that happens).
     pub(super) fn record_edit(&mut self, text: &str, edit: TextEdit) {
         let span = self.edit_span(text, edit);
 
@@ -178,7 +179,13 @@ impl DocumentCache {
             self.recompute_block_context(text);
         }
 
-        self.recompute_rest(text);
+        // `patch_tables` relies on `line_index` already reflecting the new
+        // text's layout, which the block_preview step above (patch or
+        // fallback recompute, either way) has already guaranteed by now.
+        let patched_tables = span.as_ref().is_some_and(|span| self.patch_tables(text, span));
+        if !patched_tables {
+            self.recompute_tables(text);
+        }
     }
 
     fn recompute_block_preview(&mut self, text: &str) {
@@ -214,10 +221,140 @@ impl DocumentCache {
         self.open_block_states.extend(results.into_iter().take(n.saturating_sub(1)).map(|(_, state)| state));
     }
 
-    fn recompute_rest(&mut self, text: &str) {
+    fn recompute_tables(&mut self, text: &str) {
         let (table_for_line, tables) = table_preview::classify_tables(text);
         self.table_for_line = table_for_line;
         self.tables = tables;
+    }
+
+    /// The byte offset right after line `line`'s own content, excluding
+    /// its trailing `\n` (or the document's total length, for the actual
+    /// last line, which has none) — the complement of `line_index.prefix_
+    /// sum(line)`, which gives where it *starts*.
+    fn line_end_byte(&self, line: usize) -> usize {
+        let next_start = self.line_index.prefix_sum(line + 1) as usize;
+        if line + 1 < self.line_roles.len() { next_start - 1 } else { next_start }
+    }
+
+    /// `line`'s own text, sliced directly out of `text` via `line_index` —
+    /// an O(log n) + O(line length) lookup, not a scan from the start of
+    /// the document, usable for any line regardless of whether it's near
+    /// the edit or not (unlike `lines_from`, which only walks forward from
+    /// a known starting byte).
+    fn line_text_at<'t>(&self, text: &'t str, line: usize) -> &'t str {
+        let start = self.line_index.prefix_sum(line) as usize;
+        &text[start..self.line_end_byte(line)]
+    }
+
+    /// The real incremental path for `table_preview`: unlike the other
+    /// three classifiers, a table's column widths are an aggregate over
+    /// its whole row range, so there's no meaningful per-line "entering
+    /// state" to resume from — instead, this rescans just the bounded
+    /// window a table could possibly have been affected in.
+    ///
+    /// If none of the directly-edited lines used to belong to a table and
+    /// none of them are pipe-rows in the *new* text either, nothing here
+    /// could possibly have changed — a genuine O(1) no-op for the common
+    /// case (editing a paragraph nowhere near a table). Otherwise, the
+    /// window is the union of: the edited range itself, the full line
+    /// span of any old table any edited line belonged to (a change to one
+    /// row, even far from this table's header, can invalidate the whole
+    /// table), and the maximal run of pipe-row lines (in the new text)
+    /// containing that — a table can only ever start or end at a
+    /// non-pipe-row boundary, so within one such run there's at most one
+    /// table either way (`table_preview::classify_tables`'s own row-
+    /// consumption loop never starts a second one mid-run).
+    ///
+    /// `table_preview::classify_tables` (the existing, already-correct
+    /// whole-document function) is reused directly on just that window's
+    /// substring, then spliced back in: tables entirely before/after the
+    /// window are kept, with only `table_for_line` entries actually inside
+    /// the window or belonging to a kept-after table whose index shifted
+    /// touched — bounded by the window's own size plus the total number of
+    /// tables and the line spans of ones kept, not by document length.
+    fn patch_tables(&mut self, text: &str, span: &EditSpan) -> bool {
+        let old_line_count = self.table_for_line.len();
+        let start_line = span.start_line;
+        let last_touched_line = (start_line + span.lines_removed).min(old_line_count.saturating_sub(1));
+
+        let touched_old_table = (start_line..=last_touched_line).any(|i| self.table_for_line[i].is_some());
+        let touched_new_pipe_row = (start_line..=last_touched_line).any(|i| is_pipe_row(self.line_text_at(text, i)));
+        if !touched_old_table && !touched_new_pipe_row {
+            // No table's own *content* could have changed, but an edit
+            // anywhere before a table still shifts every subsequent byte
+            // offset — `line_index` already reflects that (patched before
+            // `patch_tables` runs), so every table's `byte_range` still
+            // needs refreshing from it, even though nothing about which
+            // lines belong to which table changes. Caught by this
+            // module's own property test (the "far from any table" case),
+            // not reasoned out in advance — an earlier version of this
+            // function treated "nothing table-related touched" as a
+            // literal no-op and left every table's `byte_range` stale.
+            let new_ranges: Vec<_> = self
+                .tables
+                .iter()
+                .map(|t| self.line_index.prefix_sum(t.start_line) as usize..self.line_end_byte(t.end_line - 1))
+                .collect();
+            for (t, range) in self.tables.iter_mut().zip(new_ranges) {
+                t.byte_range = range;
+            }
+            return true;
+        }
+
+        let mut window_start = start_line;
+        let mut window_end = last_touched_line + 1;
+        for i in start_line..=last_touched_line {
+            if let Some(idx) = self.table_for_line[i] {
+                window_start = window_start.min(self.tables[idx].start_line);
+                window_end = window_end.max(self.tables[idx].end_line);
+            }
+        }
+        while window_start > 0 && is_pipe_row(self.line_text_at(text, window_start - 1)) {
+            window_start -= 1;
+        }
+        while window_end < old_line_count && is_pipe_row(self.line_text_at(text, window_end)) {
+            window_end += 1;
+        }
+
+        let window_start_byte = self.line_index.prefix_sum(window_start) as usize;
+        let window_end_byte = self.line_end_byte(window_end - 1);
+        let window_text = &text[window_start_byte..window_end_byte];
+        let (local_for_line, local_tables) = table_preview::classify_tables(window_text);
+
+        let prefix_table_count = self.tables.partition_point(|t| t.end_line <= window_start);
+        let suffix_start_idx = self.tables.partition_point(|t| t.start_line < window_end);
+
+        let mut new_tables: Vec<Table> = self.tables[..prefix_table_count].to_vec();
+        for t in &local_tables {
+            new_tables.push(Table {
+                start_line: t.start_line + window_start,
+                end_line: t.end_line + window_start,
+                byte_range: (t.byte_range.start + window_start_byte)..(t.byte_range.end + window_start_byte),
+                columns: t.columns.clone(),
+            });
+        }
+        let first_kept_suffix_new_idx = new_tables.len();
+        for t in &self.tables[suffix_start_idx..] {
+            new_tables.push(Table {
+                start_line: t.start_line,
+                end_line: t.end_line,
+                byte_range: self.line_index.prefix_sum(t.start_line) as usize..self.line_end_byte(t.end_line - 1),
+                columns: t.columns.clone(),
+            });
+        }
+
+        for (i, entry) in local_for_line.iter().enumerate() {
+            self.table_for_line[window_start + i] = entry.map(|idx| idx + prefix_table_count);
+        }
+        for (offset, t) in new_tables[first_kept_suffix_new_idx..].iter().enumerate() {
+            let new_idx = first_kept_suffix_new_idx + offset;
+            for entry in &mut self.table_for_line[t.start_line..t.end_line] {
+                *entry = Some(new_idx);
+            }
+        }
+
+        self.tables = new_tables;
+        true
     }
 
     /// The line index whose byte-stride range contains `byte_offset`,
@@ -483,6 +620,61 @@ mod tests {
         }
     }
 
+    /// Hand-picked edge cases `patch_tables` needs to get right that a
+    /// short random run might not stumble into: merging two previously
+    /// separate tables by deleting the blank line between them, splitting
+    /// one table into two by inserting a blank line in the middle,
+    /// invalidating a table entirely by corrupting its delimiter row, and
+    /// an edit far from any table that must stay a complete no-op.
+    #[test]
+    fn incremental_tables_handles_merge_split_and_invalidate() {
+        let mut text = String::from(
+            "before\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n| c | d |\n| --- | --- |\n| 3 | 4 |\n\nafter",
+        );
+        let mut cache = DocumentCache::new(&text);
+        assert_eq!(cache.tables().len(), 2, "sanity: two separate tables to start");
+
+        // Delete the blank line between the two tables — `classify_tables`
+        // would now see one unbroken pipe-row run, but since "| 1 | 2 |"
+        // isn't a valid delimiter row for a 2-column header, this merges
+        // into a *single* table (the first one's body absorbing
+        // everything through the second table's own rows) rather than two.
+        let blank_line_start = text.find("\n\n| c").unwrap() + 1;
+        let (new_text, edit) = apply_edit(&text, blank_line_start, blank_line_start + 1, "");
+        cache.record_edit(&new_text, edit);
+        let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
+        assert_eq!(cache.table_for_line(), expected_for_line.as_slice());
+        assert_eq!(cache.tables(), expected_tables.as_slice());
+        assert_eq!(cache.tables().len(), 1, "the two tables merged into one");
+        text = new_text;
+
+        // Corrupt the merged table's own delimiter row so it's no longer
+        // valid — the merged table is destroyed, though (per
+        // `classify_tables`'s own forward-scanning algorithm) a *smaller*
+        // table re-forms further down, where "| c | d |" / the second,
+        // still-intact "| --- | --- |" happen to form a valid header/
+        // delimiter pair of their own. The real property under test is
+        // still just "matches the oracle," not a specific table count —
+        // this was caught by that equality check alone, not an assumption
+        // written into the test, when an earlier version of this test
+        // wrongly assumed the table count would drop to zero.
+        let delim_start = text.find("| --- | --- |").unwrap();
+        let (new_text, edit) = apply_edit(&text, delim_start, delim_start + 1, "x");
+        cache.record_edit(&new_text, edit);
+        let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
+        assert_eq!(cache.table_for_line(), expected_for_line.as_slice());
+        assert_eq!(cache.tables(), expected_tables.as_slice());
+        text = new_text;
+
+        // An edit far from anything table-related (the leading "before")
+        // must be a complete no-op for this classifier.
+        let (new_text, edit) = apply_edit(&text, 0, 0, "BEFORE ");
+        cache.record_edit(&new_text, edit);
+        let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
+        assert_eq!(cache.table_for_line(), expected_for_line.as_slice());
+        assert_eq!(cache.tables(), expected_tables.as_slice());
+    }
+
     /// Same property, exercised over many pseudo-random edits — deliberate
     /// coverage of positions/fragments a hand-picked sequence wouldn't
     /// think to try, same "fuzz the invariant against the oracle" approach
@@ -499,7 +691,8 @@ mod tests {
 
         let mut text = String::from(
             "intro\n```\ncode\n```\nplain\n> q\n- item\n  - nested\n    - deeper\nmore plain text here\n~~~\ntilde\n~~~\nend\n\
-             > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter",
+             > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter\n\
+             | a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\nafter table",
         );
         let mut cache = DocumentCache::new(&text);
 
@@ -522,6 +715,10 @@ mod tests {
             "    - even deeper\n",
             "> quoted\n",
             "# Heading\n",
+            "| x | y |\n",
+            "| --- | --- |\n",
+            "|",
+            " extra |",
         ];
 
         for step in 0..400 {
@@ -557,6 +754,18 @@ mod tests {
                 cache.block_contexts(),
                 expected_contexts.as_slice(),
                 "block_contexts step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
+            );
+
+            let (expected_table_for_line, expected_tables) = table_preview::classify_tables(&new_text);
+            assert_eq!(
+                cache.table_for_line(),
+                expected_table_for_line.as_slice(),
+                "table_for_line step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
+            );
+            assert_eq!(
+                cache.tables(),
+                expected_tables.as_slice(),
+                "tables step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
             );
 
             text = new_text;

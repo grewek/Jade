@@ -180,7 +180,7 @@ fn parse_delimiter_row(line: &str, expected_columns: usize) -> Option<Vec<Align>
 /// cheapest possible check, same spirit as this module's other
 /// simplifications; the real validation happens via the *next* line having
 /// to be a valid delimiter row for a table to be recognized at all.
-fn is_pipe_row(line: &str) -> bool {
+pub(super) fn is_pipe_row(line: &str) -> bool {
     line.contains('|')
 }
 
