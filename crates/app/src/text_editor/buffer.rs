@@ -1,7 +1,7 @@
 //! A plain-text buffer with cursor/selection, independent of GPUI.
 //!
-//! This is the Phase 1 foundation of Jade's own editor (see `CLAUDE.md`'s
-//! "Custom editor" section): a `String`-backed buffer the GPUI-facing element
+//! This is the Phase 1 foundation of Jade's own editor (see `ARCHITECTURE.md`'s
+//! `text_editor/` section): a `String`-backed buffer the GPUI-facing element
 //! (rendering, mouse, keyboard, IME) will drive. Kept separate and GPUI-free
 //! so the editing logic itself is exhaustively unit-testable, the same
 //! pure-logic-first approach every Live Preview module (`live_preview.rs`,
@@ -32,13 +32,50 @@ pub struct EditorBuffer {
     /// every other operation (even just moving left/right) since those make
     /// a new column the deliberate one.
     preferred_column: Option<usize>,
-    /// One snapshot per text-modifying operation (not per cursor movement),
-    /// each taken *before* that operation applied — "basic" linear undo, not
-    /// a real editor's coalescing of a whole burst of typing into one step;
-    /// a deliberate Phase 1 scope cut.
+    /// One snapshot per *burst* of same-kind, contiguous text-modifying
+    /// operations (not one per individual operation, and not per cursor
+    /// movement) — see `push_undo`/`LastEdit` for what counts as
+    /// "continuing" a burst. Capped at `UNDO_STACK_CAP` entries, oldest
+    /// evicted first, so even a long uncoalesced sequence (many distinct,
+    /// non-contiguous edits) can't retain an unbounded number of full-text
+    /// clones.
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
+    /// The most recent text-modifying operation's kind and the buffer
+    /// position a *following* operation must start at to be considered
+    /// part of the same burst — `None` whenever the next edit should
+    /// unconditionally start a fresh undo entry (right after undo/redo, an
+    /// explicit cursor move, `select_all`, or any edit that replaced an
+    /// active selection, since none of those represent "the same simple
+    /// typing/backspacing session continuing").
+    last_edit: Option<LastEdit>,
 }
+
+/// Which direction of plain (no-selection) edit just happened — kept
+/// separate from `None` (any selection-involving edit) so inserting and
+/// then immediately backspacing, or backspacing and then forward-deleting,
+/// each still starts a new undo entry rather than silently merging two
+/// edits that moved in different directions into one step.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EditKind {
+    Insert,
+    DeleteBackward,
+    DeleteForward,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct LastEdit {
+    kind: EditKind,
+    continuation_point: usize,
+}
+
+/// How many burst-coalesced undo entries to retain at most — generous
+/// enough that this is never the limiting factor in practice (each entry
+/// is a whole burst, e.g. a sentence's worth of typing, not one
+/// character), while still giving the uncoalesced worst case (many
+/// distinct, non-contiguous edits — e.g. repeated find/replace at
+/// scattered positions) a hard ceiling on retained full-text clones.
+const UNDO_STACK_CAP: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Snapshot {
@@ -56,6 +93,7 @@ impl EditorBuffer {
             preferred_column: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
+            last_edit: None,
         }
     }
 
@@ -97,57 +135,94 @@ impl EditorBuffer {
             self.anchor = None;
         }
         self.cursor = offset;
+        // An explicit cursor move always ends the current undo burst, even
+        // if a later edit happens to land back at the same position —
+        // moving away (a click, an arrow key) is a deliberate break in the
+        // editing session, not something that should let a coincidentally
+        // same-position edit silently merge with whatever came before it.
+        self.last_edit = None;
     }
 
     pub fn select_all(&mut self) {
         self.preferred_column = None;
         self.anchor = Some(0);
         self.cursor = self.text.len();
+        self.last_edit = None;
     }
 
     /// Replaces the selection (if any) with `s`, else inserts it at the cursor.
     /// The cursor ends up right after the inserted text.
     pub fn insert(&mut self, s: &str) {
-        self.push_undo();
-        self.preferred_column = None;
+        let had_selection = self.selection().is_some();
         let range = self.selection().unwrap_or(self.cursor..self.cursor);
+        // Continues the current burst only if this is itself a plain
+        // (no-selection) insert landing exactly where the last one in the
+        // burst left the cursor — see `LastEdit`'s own doc comment.
+        let continues = !had_selection
+            && self.last_edit == Some(LastEdit { kind: EditKind::Insert, continuation_point: range.start });
+        self.push_undo(continues);
+        self.preferred_column = None;
         self.text.replace_range(range.clone(), s);
         self.cursor = range.start + s.len();
         self.anchor = None;
+        self.last_edit =
+            (!had_selection).then_some(LastEdit { kind: EditKind::Insert, continuation_point: self.cursor });
     }
 
     /// Deletes the selection, or the one char before the cursor.
     pub fn delete_backward(&mut self) {
         if let Some(range) = self.selection() {
-            self.delete_range(range);
+            self.delete_range(range, None);
             return;
         }
         if self.cursor == 0 {
             return;
         }
         let start = prev_char_boundary(&self.text, self.cursor);
-        self.delete_range(start..self.cursor);
+        self.delete_range(start..self.cursor, Some(EditKind::DeleteBackward));
     }
 
     /// Deletes the selection, or the one char after the cursor.
     pub fn delete_forward(&mut self) {
         if let Some(range) = self.selection() {
-            self.delete_range(range);
+            self.delete_range(range, None);
             return;
         }
         if self.cursor >= self.text.len() {
             return;
         }
         let end = next_char_boundary(&self.text, self.cursor);
-        self.delete_range(self.cursor..end);
+        self.delete_range(self.cursor..end, Some(EditKind::DeleteForward));
     }
 
-    fn delete_range(&mut self, range: Range<usize>) {
-        self.push_undo();
+    /// `kind` is `None` for a selection delete (never coalesces with
+    /// anything, in either direction) or `Some` for a plain single-char
+    /// delete — whether *that* continues the current burst depends on the
+    /// direction: a backward delete (backspace) continues if the previous
+    /// one in the burst ended exactly at `range.end` (this deletion's own
+    /// right edge, i.e. where the cursor already was); a forward delete
+    /// continues if the previous one ended at `range.start` (its left
+    /// edge — which never moves for a forward-delete burst, since deleting
+    /// the char *after* the cursor doesn't move the cursor itself). Either
+    /// way, the position the *next* delete in the burst must match is
+    /// `range.start` (what the cursor becomes after this one, for both
+    /// directions), so that's what gets recorded regardless of direction.
+    fn delete_range(&mut self, range: Range<usize>, kind: Option<EditKind>) {
+        let continues = match kind {
+            Some(EditKind::DeleteBackward) => {
+                self.last_edit == Some(LastEdit { kind: EditKind::DeleteBackward, continuation_point: range.end })
+            }
+            Some(EditKind::DeleteForward) => {
+                self.last_edit == Some(LastEdit { kind: EditKind::DeleteForward, continuation_point: range.start })
+            }
+            _ => false,
+        };
+        self.push_undo(continues);
         self.preferred_column = None;
         self.text.replace_range(range.clone(), "");
         self.cursor = range.start;
         self.anchor = None;
+        self.last_edit = kind.map(|kind| LastEdit { kind, continuation_point: range.start });
     }
 
     pub fn move_left(&mut self, extend: bool) {
@@ -256,7 +331,7 @@ impl EditorBuffer {
     pub fn cut(&mut self) -> Option<String> {
         let range = self.selection()?;
         let cut = self.text[range.clone()].to_string();
-        self.delete_range(range);
+        self.delete_range(range, None);
         Some(cut)
     }
 
@@ -272,8 +347,24 @@ impl EditorBuffer {
     /// Records the state *before* a text-modifying operation, so `undo` can
     /// return to it, and clears `redo_stack` — making a fresh edit after an
     /// undo abandon the redone-away future, same as every other editor.
-    fn push_undo(&mut self) {
-        self.undo_stack.push(self.snapshot());
+    ///
+    /// If `continues` is true (the caller already determined this edit
+    /// picks up exactly where the previous one in the current burst left
+    /// off), no new snapshot is pushed at all — the existing top-of-stack
+    /// entry already represents "before this whole burst," which is
+    /// exactly what undoing the burst as one step needs; pushing another
+    /// one here would just make undo stop one keystroke early instead of
+    /// at the start of the sentence. Caps `undo_stack` at
+    /// [`UNDO_STACK_CAP`] regardless of coalescing, evicting the oldest
+    /// entry, so a long sequence of distinct (non-continuing) edits still
+    /// has a hard ceiling on retained full-text clones.
+    fn push_undo(&mut self, continues: bool) {
+        if !continues {
+            if self.undo_stack.len() >= UNDO_STACK_CAP {
+                self.undo_stack.remove(0);
+            }
+            self.undo_stack.push(self.snapshot());
+        }
         self.redo_stack.clear();
     }
 
@@ -282,6 +373,10 @@ impl EditorBuffer {
         self.cursor = snapshot.cursor;
         self.anchor = snapshot.anchor;
         self.preferred_column = None;
+        // An undo/redo jump is never "continued" by whatever edit comes
+        // next, even if it happens to land at the same position restoring
+        // left the cursor at.
+        self.last_edit = None;
     }
 
     /// Undoes the most recent text-modifying operation, if any. Returns
@@ -654,8 +749,15 @@ mod tests {
     #[test]
     fn multiple_undos_walk_back_through_history_in_order() {
         let mut buf = EditorBuffer::new("");
+        // A cursor "move" to wherever it already is between each insert
+        // deliberately breaks burst-coalescing (see `LastEdit`'s own doc
+        // comment) — this test is specifically about walking back through
+        // *separate* undo entries, not about coalescing itself (covered by
+        // its own tests below).
         buf.insert("a");
+        buf.set_cursor(buf.cursor(), false);
         buf.insert("b");
+        buf.set_cursor(buf.cursor(), false);
         buf.insert("c");
         assert_eq!(buf.text(), "abc");
         assert!(buf.undo());
@@ -677,12 +779,133 @@ mod tests {
     #[test]
     fn a_new_edit_after_an_undo_clears_the_redo_stack() {
         let mut buf = EditorBuffer::new("");
+        // See the previous test's own comment — breaks coalescing so "a"
+        // and "b" land in separate undo entries, matching this test's
+        // actual intent (undoing just the second edit, not the whole burst).
         buf.insert("a");
+        buf.set_cursor(buf.cursor(), false);
         buf.insert("b");
         buf.undo();
         buf.insert("c");
         assert_eq!(buf.text(), "ac");
         assert!(!buf.redo(), "redo history was abandoned by the new edit");
+    }
+
+    #[test]
+    fn a_burst_of_single_char_inserts_coalesces_into_one_undo_step() {
+        let mut buf = EditorBuffer::new("");
+        for c in "hello".chars() {
+            buf.insert(&c.to_string());
+        }
+        assert_eq!(buf.text(), "hello");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "", "the whole burst undoes in one step, not one character at a time");
+        assert!(!buf.undo(), "nothing left to undo — the burst was a single entry");
+    }
+
+    #[test]
+    fn a_cursor_move_between_inserts_breaks_coalescing() {
+        let mut buf = EditorBuffer::new("");
+        buf.insert("a");
+        buf.set_cursor(buf.cursor(), false); // an explicit move, even back to the same spot
+        buf.insert("b");
+        assert_eq!(buf.text(), "ab");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "a", "only the second insert undoes — the move broke the burst");
+    }
+
+    #[test]
+    fn inserting_through_a_selection_never_coalesces_with_a_later_insert() {
+        let mut buf = EditorBuffer::new("x");
+        buf.set_cursor(0, false);
+        buf.set_cursor(1, true);
+        buf.insert("a"); // replaces the selection — "x" -> "a"
+        buf.insert("b"); // plain insert right after, same position a burst would continue from
+        assert_eq!(buf.text(), "ab");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "a", "the selection-replacing insert must not coalesce with what follows it");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "x");
+    }
+
+    #[test]
+    fn switching_from_inserting_to_deleting_breaks_coalescing() {
+        let mut buf = EditorBuffer::new("");
+        buf.insert("ab");
+        buf.delete_backward();
+        assert_eq!(buf.text(), "a");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "ab", "only the delete undoes first, not the insert too");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "");
+    }
+
+    #[test]
+    fn a_burst_of_backspaces_coalesces_into_one_undo_step() {
+        let mut buf = EditorBuffer::new("hello");
+        buf.set_cursor(5, false);
+        for _ in 0..5 {
+            buf.delete_backward();
+        }
+        assert_eq!(buf.text(), "");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "hello", "the whole backspace burst undoes in one step");
+    }
+
+    #[test]
+    fn a_burst_of_forward_deletes_coalesces_into_one_undo_step() {
+        let mut buf = EditorBuffer::new("hello");
+        buf.set_cursor(0, false);
+        for _ in 0..5 {
+            buf.delete_forward();
+        }
+        assert_eq!(buf.text(), "");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "hello");
+    }
+
+    #[test]
+    fn backspacing_then_forward_deleting_at_the_same_point_does_not_coalesce() {
+        // Both are plain, no-selection deletes that happen to meet at the
+        // same buffer position — direction still has to matter, or undoing
+        // once after this would silently revert both as one step.
+        let mut buf = EditorBuffer::new("abcde");
+        buf.set_cursor(3, false); // between "abc" and "de"
+        buf.delete_backward(); // removes "c" -> "abde", cursor at 2
+        buf.set_cursor(2, false);
+        buf.delete_forward(); // removes "d" -> "abe", cursor at 2
+        assert_eq!(buf.text(), "abe");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "abde", "only the forward delete undoes");
+    }
+
+    #[test]
+    fn redo_reapplies_a_whole_coalesced_burst_at_once() {
+        let mut buf = EditorBuffer::new("");
+        for c in "hi".chars() {
+            buf.insert(&c.to_string());
+        }
+        buf.undo();
+        assert_eq!(buf.text(), "");
+        assert!(buf.redo());
+        assert_eq!(buf.text(), "hi");
+    }
+
+    #[test]
+    fn the_undo_stack_is_capped_and_evicts_the_oldest_entry() {
+        let mut buf = EditorBuffer::new("");
+        // Each insert is deliberately non-continuing (a cursor "move"
+        // between them) so every one becomes its own undo entry, pushing
+        // well past the cap.
+        for i in 0..(UNDO_STACK_CAP + 10) {
+            buf.insert(&i.to_string());
+            buf.set_cursor(buf.cursor(), false);
+        }
+        let mut undo_count = 0;
+        while buf.undo() {
+            undo_count += 1;
+        }
+        assert_eq!(undo_count, UNDO_STACK_CAP, "the oldest entries beyond the cap should have been evicted");
     }
 
     #[test]
@@ -775,5 +998,71 @@ mod tests {
         buf.move_word_left(false);
         assert_eq!(buf.cursor(), 2, "should collapse to the selection's start, like plain Left does");
         assert!(!buf.has_selection());
+    }
+
+    /// Diagnostic, not a correctness test (those are above) — measures (via
+    /// `crate::test_alloc`'s counting allocator) that the undo stack's
+    /// retained memory on a large buffer is actually bounded the two ways
+    /// this module now claims: a coalesced typing burst costs one clone
+    /// total, not one per keystroke, and a long run of *non*-continuing
+    /// edits is capped at [`UNDO_STACK_CAP`] clones rather than growing
+    /// without bound. Added after a real user report of surprisingly high
+    /// RSS with a large note open — this was flagged as the single most
+    /// consequential fix available if a huge note gets edited for a while,
+    /// even though it wasn't today's specific cause (see HISTORY.md).
+    #[test]
+    fn undo_stack_memory_stays_bounded_for_both_a_coalesced_burst_and_a_capped_long_run() {
+        let big_text = "x".repeat(1_000_000); // 1MB — big enough that an unbounded clone-per-edit would be obvious
+
+        // A coalesced burst: 300 single-character inserts in a row should
+        // cost one retained clone of the buffer, not 300.
+        let mut buf = EditorBuffer::new(big_text.clone());
+        buf.set_cursor(0, false);
+        crate::test_alloc::reset();
+        let before = crate::test_alloc::snapshot();
+        for _ in 0..300 {
+            buf.insert("y");
+        }
+        let after = crate::test_alloc::snapshot();
+        let retained = after.current - before.current;
+        eprintln!(
+            "undo_stack_memory: 300 coalesced inserts on a {}MB buffer retained {}MB \
+             (an uncoalesced, uncapped version of this would have retained ~{}MB)",
+            big_text.len() / 1_000_000,
+            retained / 1_000_000,
+            300 * big_text.len() / 1_000_000,
+        );
+        assert!(
+            retained < 3 * big_text.len(),
+            "300 coalesced inserts retained {retained} bytes — expected roughly one buffer's worth, not ~300"
+        );
+        drop(buf);
+
+        // A long run of *non*-continuing edits (cursor moves between each)
+        // must still be capped, not grow linearly with edit count.
+        let mut buf = EditorBuffer::new(big_text.clone());
+        crate::test_alloc::reset();
+        let before = crate::test_alloc::snapshot();
+        for i in 0..(UNDO_STACK_CAP * 3) {
+            buf.set_cursor(i % big_text.len(), false);
+            buf.insert("z");
+        }
+        let after = crate::test_alloc::snapshot();
+        let retained = after.current - before.current;
+        let cap_worth = (UNDO_STACK_CAP + 2) * big_text.len();
+        eprintln!(
+            "undo_stack_memory: {} non-continuing inserts on a {}MB buffer retained {}MB \
+             (an uncapped version of this would have retained ~{}MB)",
+            UNDO_STACK_CAP * 3,
+            big_text.len() / 1_000_000,
+            retained / 1_000_000,
+            UNDO_STACK_CAP * 3 * big_text.len() / 1_000_000,
+        );
+        assert!(
+            retained < cap_worth,
+            "{} non-continuing edits retained {retained} bytes — expected at most roughly \
+             UNDO_STACK_CAP ({UNDO_STACK_CAP}) buffers' worth ({cap_worth} bytes), not one per edit",
+            UNDO_STACK_CAP * 3
+        );
     }
 }
