@@ -10,7 +10,7 @@ use super::document_cache::DocumentCache;
 use super::fenwick::Fenwick;
 use super::live_preview::{
     build_callout_header_line, build_display_line, build_display_line_in_context, build_table_row, hidden_line,
-    is_thematic_break, DisplayLine, InlineStyle, LineContext, LineIndent,
+    is_thematic_break, line_indent, DisplayLine, InlineStyle, LineContext, LineIndent,
 };
 use super::table_preview::{self, Table};
 use super::Editor;
@@ -293,10 +293,21 @@ impl RowHeightCache {
         self.line_count() != doc.line_count() || self.available_width != available_width || self.char_width != char_width
     }
 
-    /// Full O(document) rebuild — the same per-line cost `analyze_line_
-    /// layout` used to pay on *every* paint, now paid only when
-    /// [`Self::needs_full_rebuild`] says so (first paint after opening a
-    /// note, a resize, or a font/size change).
+    /// Full O(document) rebuild — paid only when [`Self::needs_full_
+    /// rebuild`] says so (first paint after opening a note, a resize, or a
+    /// font/size change). Unlike the very first version of this cache,
+    /// this no longer pays `build_display_lines`'s real Live-Preview
+    /// inline-scan cost for every line: [`estimate_row_count`] gives a
+    /// cheap, allocation-free over-estimate for ordinary lines (confirmed
+    /// by direct measurement to cut cold-open allocation count from ~4
+    /// million to a small fraction of that on the 320K-line stress
+    /// fixture — see HISTORY.md), falling back to the exact computation
+    /// only for table rows/delimiters, where an estimate based on raw
+    /// source length isn't safely guaranteed to be an over-estimate (a
+    /// padded cell can display *wider* than its trimmed source). Any
+    /// line seeded with an estimate gets corrected to the exact value the
+    /// first time it's actually painted — see `paint_lines`'s own call to
+    /// `LineLayout::correct_row_count`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn rebuild(
         &mut self,
@@ -314,7 +325,9 @@ impl RowHeightCache {
         let line_count = doc.line_count();
         let mut counts = Vec::with_capacity(line_count);
         for i in 0..line_count {
-            let count = row_count_for_line(text, doc, i, cursor, focused, char_width, font, font_size, text_color, available_width, window);
+            let count = estimate_row_count(text, doc, i, char_width, available_width).unwrap_or_else(|| {
+                row_count_for_line(text, doc, i, cursor, focused, char_width, font, font_size, text_color, available_width, window)
+            });
             counts.push(count as i64);
         }
         self.rows = Fenwick::new(&counts);
@@ -384,6 +397,66 @@ impl RowHeightCache {
         }
         self.active_line = new_active;
     }
+
+    /// Upgrades line `i`'s row count to `real_rows` if it differs from
+    /// what's currently cached — the third invalidation trigger, used by
+    /// `paint_lines` to correct a cold-rebuild estimate (see
+    /// [`Self::rebuild`]) to the truth using a value it already computed
+    /// for real painting, at zero extra cost. Idempotent: a no-op once a
+    /// line has already been corrected, or for any line `rebuild` already
+    /// computed exactly (table rows/delimiters).
+    pub(super) fn correct(&mut self, i: usize, real_rows: usize) {
+        if i >= self.line_count() {
+            return;
+        }
+        let old = self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i);
+        let delta = real_rows as i64 - old;
+        if delta != 0 {
+            self.rows.add_at(i, delta);
+        }
+    }
+}
+
+/// A cheap, allocation-free over-estimate of line `i`'s row count — the
+/// cold-`rebuild` fast path for an *ordinary* line (`None` for a table row
+/// or delimiter, which falls back to the exact computation instead — see
+/// [`RowHeightCache::rebuild`]'s own doc comment for why). Uses the line's
+/// *raw* length rather than running `build_display_lines`'s real Live-
+/// Preview inline scan at all: always safe (an over-estimate, never
+/// fewer rows than the truth) because every hiding/replacement transform
+/// this editor's Live Preview does — markup removal, a bullet/checkbox
+/// glyph, a callout's icon + capitalized type name — only ever shrinks
+/// what's displayed relative to the raw source, never grows it. Also
+/// exact, not just a safe over-estimate, for the active line and for
+/// fenced code content, both of which always render their raw text
+/// verbatim anyway.
+///
+/// Still needs the indent level right (a wider wrap width than the real
+/// one would *under*-estimate, the one way this could go unsafe) — reuses
+/// `live_preview::line_indent` (the same cheap prefix-only check `build_
+/// display_line` itself uses, not the expensive scan) combined with the
+/// line's already-known `LineContext` (from `DocumentCache`, itself
+/// already computed — not rederived here) the same way `build_display_
+/// line_in_context` resolves it for real, except for fenced code content,
+/// whose indent is always forced to `None` regardless (see
+/// `build_display_lines`'s own fence-content override).
+fn estimate_row_count(text: &str, doc: &DocumentCache, i: usize, char_width: Pixels, available_width: Pixels) -> Option<usize> {
+    if !matches!(table_line_kind(doc.tables(), doc.table_for_line(), i), TableLineKind::None) {
+        return None;
+    }
+    let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
+    let line = &text[line_range];
+    let indent_level = if matches!(doc.line_roles()[i], LineRole::FenceContent) {
+        0
+    } else {
+        match doc.block_contexts()[i] {
+            LineContext::Plain => line_indent(line).level(),
+            LineContext::ListMarkerLine(depth) => depth,
+            LineContext::LazyContinuation(indent) => indent.level(),
+        }
+    };
+    let wrap_width = Some((available_width - indent_px(indent_level)).max(px(1.)));
+    Some(wrapped_row_count(line, wrap_width, char_width).max(1))
 }
 
 /// The row count for line `i` alone — the same per-line computation
@@ -467,6 +540,14 @@ impl LineLayout {
     /// The line containing buffer byte offset `cursor`.
     pub(super) fn line_at(&self, cursor: usize) -> usize {
         self.doc_cache.borrow().line_at(cursor)
+    }
+
+    /// Upgrades line `i`'s cached row count to `real_rows` — see
+    /// `RowHeightCache::correct`'s own doc comment. `&self`, not `&mut
+    /// self`: mutates through `row_cache`'s `RefCell`, the same interior-
+    /// mutability pattern [`Self::cumulative_at`] already relies on.
+    pub(super) fn correct_row_count(&self, i: usize, real_rows: usize) {
+        self.row_cache.borrow_mut().correct(i, real_rows);
     }
 
     /// Binary search over [`Self::cumulative_at`], matching `[Pixels]::
@@ -1422,6 +1503,14 @@ fn paint_lines(
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
         let total_height: Pixels = results.iter().map(|(wrapped, _)| wrapped.size(line_height).height).sum();
+        // Upgrades a cold-rebuild estimate (see `RowHeightCache::rebuild`)
+        // to the truth using the real shaping this line's painting already
+        // needed — zero extra cost, and idempotent (a no-op once this line
+        // has already been corrected, e.g. by an earlier viewing or an
+        // edit). `.round()` because `total_height` is always an exact
+        // multiple of `line_height` in principle, but float division can
+        // land a hair off either side of the actual integer.
+        layout.correct_row_count(i, (total_height / line_height).round() as usize);
         // Every entry of one raw line shares the same indent (a table's is
         // always `None` across all of them, same as the common one-entry
         // case) — fine to read it off the first.
@@ -1604,7 +1693,7 @@ mod tests {
     use super::super::live_preview::{LineContext, LineIndent};
     use super::super::table_preview::classify_tables;
     use super::super::{Editor, InsertTab};
-    use super::{is_active_line, shape_display_line, TableLineKind};
+    use super::{is_active_line, row_count_for_line, shape_display_line, TableLineKind};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         AnyWindowHandle, AppContext, Entity, EntityInputHandler, KeyBinding, Pixels, Point,
@@ -2602,9 +2691,39 @@ mod tests {
 
     /// Every line's current row count, read out of `rows` via its own
     /// Fenwick-backed prefix sums — what every assertion below compares
-    /// between an incrementally-patched cache and a freshly-rebuilt oracle.
+    /// between an incrementally-patched cache and an exact oracle.
     fn row_counts(rows: &super::RowHeightCache) -> Vec<i64> {
         (0..rows.line_count()).map(|i| rows.prefix_sum(i + 1) - rows.prefix_sum(i)).collect()
+    }
+
+    /// The true, never-estimated row count for every line, computed
+    /// directly via `row_count_for_line` (the same function `RowHeightCache
+    /// ::patch_lines`/`sync_active_line` already always use) — the oracle
+    /// every property test below compares an incrementally-maintained
+    /// cache against. Deliberately *not* `RowHeightCache::rebuild`'s own
+    /// output: `rebuild` itself now estimates for non-table lines (see its
+    /// own doc comment) and is only guaranteed exact for whichever single
+    /// line is currently active, so it stopped being a valid full-document
+    /// "ground truth" the moment that landed — this helper is what still
+    /// is one.
+    #[allow(clippy::too_many_arguments)]
+    fn exact_row_counts(
+        text: &str,
+        doc: &super::super::document_cache::DocumentCache,
+        cursor: usize,
+        focused: bool,
+        char_width: Pixels,
+        font: &gpui_kit::Font,
+        font_size: Pixels,
+        text_color: gpui_kit::Hsla,
+        available_width: Pixels,
+        window: &mut gpui_kit::Window,
+    ) -> Vec<i64> {
+        (0..doc.line_count())
+            .map(|i| {
+                super::row_count_for_line(text, doc, i, cursor, focused, char_width, font, font_size, text_color, available_width, window) as i64
+            })
+            .collect()
     }
 
     /// The property [`super::RowHeightCache::patch_lines`]/[`super::
@@ -2612,16 +2731,24 @@ mod tests {
     /// edits (including line-count-changing ones, which force a fallback
     /// full rebuild — see `needs_full_rebuild`), a cache kept incrementally
     /// in sync edit-by-edit must have exactly the same per-line row counts
-    /// as a cache built fresh, from scratch, on the final text — the same
-    /// "fuzz against an oracle" discipline `document_cache.rs`'s own
-    /// property tests already use, which is what actually caught every real
-    /// bug in *that* module; this is the matching test for the row-height
-    /// cache this module adds on top of it. `focused: false` throughout
-    /// (no line is ever "active") — active-line transitions are a
-    /// deliberately separate, narrower mechanism, covered by its own test
+    /// as [`exact_row_counts`] computes directly from scratch on the final
+    /// text — the same "fuzz against an oracle" discipline `document_
+    /// cache.rs`'s own property tests already use, which is what actually
+    /// caught every real bug in *that* module; this is the matching test
+    /// for the row-height cache this module adds on top of it. Compared
+    /// against `exact_row_counts` specifically, not a second `RowHeightCache
+    /// ::rebuild` call — `rebuild` itself now also estimates for non-table
+    /// lines (see its own doc comment), so it stopped being usable as this
+    /// test's oracle the moment that landed; an earlier version of this
+    /// test compared against `rebuild` directly and passed only by
+    /// coincidence (this text/width combination never happened to make an
+    /// estimate differ from the truth), until the *other* property test
+    /// below caught the real gap on a text that does. `focused: false`
+    /// throughout (no line is ever "active") — active-line transitions are
+    /// a deliberately separate, narrower mechanism, covered by its own test
     /// below instead of complicating this one.
     #[gpui_kit::test]
-    fn row_height_cache_matches_a_full_rebuild_after_a_sequence_of_edits(cx: &mut TestAppContext) {
+    fn row_height_cache_patch_lines_matches_the_exact_row_counts_after_a_sequence_of_edits(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
         use super::{mono_char_width, RowHeightCache};
 
@@ -2670,12 +2797,11 @@ mod tests {
                 }
 
                 let oracle_doc = DocumentCache::new(&new_text);
-                let mut oracle_rows = RowHeightCache::empty();
-                oracle_rows.rebuild(&new_text, &oracle_doc, 0, false, available_width, char_width, &font, font_size, text_color, window);
+                let expected = exact_row_counts(&new_text, &oracle_doc, 0, false, char_width, &font, font_size, text_color, available_width, window);
 
                 assert_eq!(
                     row_counts(&row_cache),
-                    row_counts(&oracle_rows),
+                    expected,
                     "after editing {:?} on text {:?}",
                     (start, old_end, insert),
                     text
@@ -2690,9 +2816,17 @@ mod tests {
     /// moving the cursor with *no* accompanying edit still needs the old
     /// and new active lines patched (`sync_active_line`), since the active
     /// line always renders raw/unstyled regardless of what the (identical)
-    /// underlying text would otherwise classify it as.
+    /// underlying text would otherwise classify it as. Compared against
+    /// [`exact_row_counts`], not a second `rebuild` call — this is exactly
+    /// the test that caught `rebuild`'s own estimate path not being a valid
+    /// oracle any more (see `exact_row_counts`'s own doc comment): a line
+    /// that's *inactive* right now but was corrected to its exact value by
+    /// an earlier `sync_active_line` call (e.g. line 1 here, bold markup
+    /// hidden, briefly active in an earlier loop iteration) must stay at
+    /// that exact value, not drift back toward a fresh `rebuild`'s
+    /// over-estimate for it.
     #[gpui_kit::test]
-    fn row_height_cache_active_line_sync_matches_a_full_rebuild(cx: &mut TestAppContext) {
+    fn row_height_cache_sync_active_line_matches_the_exact_row_counts(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
         use super::{mono_char_width, RowHeightCache};
 
@@ -2721,11 +2855,58 @@ mod tests {
             for cursor in [text.find(&long_bold).unwrap(), text.rfind("another").unwrap(), 0] {
                 row_cache.sync_active_line(&text, &doc_cache, cursor, true, char_width, &font, font_size, text_color, window);
 
-                let mut oracle_rows = RowHeightCache::empty();
-                oracle_rows.rebuild(&text, &doc_cache, cursor, true, available_width, char_width, &font, font_size, text_color, window);
+                let expected = exact_row_counts(&text, &doc_cache, cursor, true, char_width, &font, font_size, text_color, available_width, window);
 
-                assert_eq!(row_counts(&row_cache), row_counts(&oracle_rows), "cursor at {cursor}");
+                assert_eq!(row_counts(&row_cache), expected, "cursor at {cursor}");
             }
+        })
+        .unwrap();
+    }
+
+    /// Proves the estimate-then-correct scheme (`RowHeightCache::rebuild`'s
+    /// cheap seed, upgraded to the truth line-by-line as `paint_lines`
+    /// actually corrects each one — see `RowHeightCache::correct`'s own
+    /// doc comment) converges to exactly the same state the old always-
+    /// exact path guaranteed, once *every* line has been "viewed": builds
+    /// a cold `rebuild` (cheap estimates for every non-table line), then
+    /// simulates scrolling through the *entire* 320K-line stress fixture
+    /// by calling `correct` for every line with its real computed value
+    /// (what `paint_lines` would do for whichever lines are actually
+    /// visible, just exhaustively here rather than only for a viewport),
+    /// and asserts the fully-corrected result matches [`exact_row_counts`]
+    /// everywhere — not just for the handful of lines a real viewport
+    /// would reach.
+    #[gpui_kit::test]
+    fn row_height_cache_converges_to_the_exact_row_counts_once_every_line_has_been_corrected(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::{mono_char_width, RowHeightCache};
+
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(text) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let text_color = text_style.color;
+            let available_width = px(800.);
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+
+            let doc_cache = DocumentCache::new(&text);
+            let mut row_cache = RowHeightCache::empty();
+            row_cache.rebuild(&text, &doc_cache, 0, false, available_width, char_width, &font, font_size, text_color, window);
+
+            for i in 0..doc_cache.line_count() {
+                let real = row_count_for_line(&text, &doc_cache, i, 0, false, char_width, &font, font_size, text_color, available_width, window);
+                row_cache.correct(i, real);
+            }
+
+            let expected = exact_row_counts(&text, &doc_cache, 0, false, char_width, &font, font_size, text_color, available_width, window);
+            assert_eq!(row_counts(&row_cache), expected);
         })
         .unwrap();
     }

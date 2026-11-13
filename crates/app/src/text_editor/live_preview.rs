@@ -381,7 +381,7 @@ fn compound_inner(
 /// hiding/replacing markup — computed separately (rather than threaded out
 /// of those branches) so it's available even on the active line, which skips
 /// them entirely.
-fn line_indent(line: &str) -> LineIndent {
+pub(super) fn line_indent(line: &str) -> LineIndent {
     if let Some((depth, _)) = blockquote_prefix(line) {
         return LineIndent::Blockquote(depth);
     }
