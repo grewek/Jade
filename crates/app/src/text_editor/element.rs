@@ -1,3 +1,4 @@
+use gpui_kit::component::WindowExt;
 use gpui_kit::*;
 
 use super::block_preview::LineRole;
@@ -688,6 +689,15 @@ fn register_mouse_handling(
             if phase != DispatchPhase::Bubble
                 || event.button != MouseButton::Left
                 || !bounds.contains(&event.position)
+                // A raw `window.on_mouse_event` listener isn't hitbox-aware
+                // — it fires purely off `bounds.contains(...)`, regardless
+                // of a `Dialog`'s own occluding backdrop sitting visually
+                // on top (GPUI's `occlude()` only gates `Hitbox::is_hovered`-
+                // based convenience wrappers like `.on_click`, never the raw
+                // mouse-listener dispatch loop). Without this guard, a click
+                // on a dialog that happens to be positioned over the editor
+                // (e.g. Settings) also starts a drag-select here.
+                || window.has_active_dialog(cx)
             {
                 return;
             }
@@ -707,7 +717,7 @@ fn register_mouse_handling(
     window.on_mouse_event({
         let editor_entity = editor_entity.clone();
         move |event: &MouseMoveEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble || !editor_entity.read(cx).is_dragging {
+            if phase != DispatchPhase::Bubble || !editor_entity.read(cx).is_dragging || window.has_active_dialog(cx) {
                 return;
             }
             let offset = offset_for_position(

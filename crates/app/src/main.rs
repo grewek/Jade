@@ -248,17 +248,32 @@ impl JadeApp {
         cx.notify();
     }
 
-    /// `Ctrl+P` action handler — opens a `Command` palette (gpui-component's
-    /// own searchable action-list widget) hosted inside a plain `Dialog`,
-    /// same `window.open_dialog` mechanism `open_rename_dialog`/`open_delete_
-    /// dialog` already use below (which already renders above the whole
-    /// window and has its own built-in close "x", so there's nothing extra
-    /// to wire up for either of those). Only one item for now — confirming
-    /// it (`on_confirm`, the palette's own Enter/click handler) closes this
-    /// dialog and opens the (currently non-functional) Settings one;
-    /// `Command` has no idea it's hosted in a `Dialog`, so closing it is
-    /// explicit, not automatic.
-    fn open_command_palette(&mut self, _: &OpenCommandPalette, window: &mut Window, cx: &mut Context<Self>) {
+    /// Opens a `Command` palette (gpui-component's own searchable action-
+    /// list widget) hosted inside a plain `Dialog`, same `window.open_dialog`
+    /// mechanism `open_rename_dialog`/`open_delete_dialog` already use below
+    /// (which already renders above the whole window and has its own built-
+    /// in close "x", so there's nothing extra to wire up for either of
+    /// those). Only one item for now — confirming it (`on_confirm`, the
+    /// palette's own Enter/click handler) closes this dialog and opens the
+    /// (currently non-functional) Settings one; `Command` has no idea it's
+    /// hosted in a `Dialog`, so closing it is explicit, not automatic.
+    ///
+    /// A **plain associated function**, not an action-handling `&mut self`
+    /// method dispatched via `.on_action(cx.listener(...))` on some element
+    /// — Ctrl+P must work even with *nothing* in the app focused yet (e.g.
+    /// right after opening, or right after closing a dialog), and GPUI's
+    /// action dispatch only walks a path from the currently-*focused* node
+    /// up to the tree root; with no focus at all, that path collapses to a
+    /// single handler-less root node, so an element-attached listener a
+    /// level below would simply never be reached. `cx.on_action::<OpenCommandPalette>(...)`
+    /// (registered once in `main()`, see below) sidesteps this entirely —
+    /// global action listeners run unconditionally, independent of any
+    /// dispatch path — same mechanism `gpui_component`'s own always-on
+    /// `ToggleInspector` shortcut uses. Since opening a dialog never reads/
+    /// writes any `JadeApp` field anyway (same reasoning `open_settings_
+    /// dialog` below is already a plain function, not a method), there's no
+    /// `Entity<Self>` to round-trip back through here either.
+    fn open_command_palette(window: &mut Window, cx: &mut App) {
         let state = cx.new(|cx| CommandState::new(window, cx));
         window.open_dialog(cx, move |dialog, window, cx| {
             // `Command` never focuses itself on mount — without this,
@@ -918,14 +933,6 @@ impl Render for JadeApp {
             .flex()
             .flex_row()
             .size_full()
-            // On the outermost element, not some inner subtree, so the
-            // bubble-up action dispatch reaches it regardless of which
-            // widget — editor, search input, sidebar tree — currently has
-            // focus. Paired with the `None` context on this action's own
-            // `KeyBinding` (see `main()`), which is what makes Ctrl+P
-            // global in the first place rather than scoped like `RenameNote`/
-            // `DeleteNote`'s `"NoteList"` context.
-            .on_action(cx.listener(Self::open_command_palette))
             .child(sidebar)
             .child(div().flex_1().child(content))
     }
@@ -937,7 +944,11 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("vault"));
 
-    gpui_kit::application().run(move |cx| {
+    // Registers the bundled Lucide icon SVGs (`Dialog`'s own close "x",
+    // `Button::icon(...)`, etc.) with GPUI's asset loader — without this,
+    // every `IconName` renders as empty (the button itself still paints,
+    // just with nothing inside it), not just the close button specifically.
+    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
         gpui_kit::init(cx);
         install_fonts(cx);
         cx.bind_keys([
@@ -946,10 +957,37 @@ fn main() {
             KeyBinding::new("tab", InsertTab, Some("TextEditor")),
             KeyBinding::new("ctrl-p", OpenCommandPalette, None),
         ]);
+        bind_open_command_palette(cx);
         gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
             cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
         })
         .expect("failed to open window");
+    });
+}
+
+/// Registers `OpenCommandPalette`'s handler globally (`cx.on_action`, not an
+/// element-attached `.on_action(cx.listener(...))`) — see `JadeApp::
+/// open_command_palette`'s own doc comment for why this specific mechanism
+/// is required for Ctrl+P to work with nothing in the app currently
+/// focused. Split out so both `main()` and the test helper `open_app` call
+/// the exact same registration, same reasoning `cx.bind_keys([...])` is
+/// already duplicated between the two rather than risking them drifting
+/// apart.
+fn bind_open_command_palette(cx: &mut App) {
+    cx.on_action(|_: &OpenCommandPalette, cx| {
+        // Not `cx.active_window()` — that's a genuine OS-level "which
+        // window has platform focus" query (`App::active_window` delegates
+        // straight to `self.platform.active_window()`), which is legitimately
+        // always `None` under the headless test platform (no real window
+        // manager to ask), and not something to lean on for a single-window
+        // app regardless. `cx.windows()` just lists every window GPUI
+        // itself has open, with no OS-focus dependency at all.
+        let Some(window_handle) = cx.windows().into_iter().next() else { return };
+        cx.defer(move |cx| {
+            _ = window_handle.update(cx, |_, window, cx| {
+                JadeApp::open_command_palette(window, cx);
+            });
+        });
     });
 }
 
@@ -980,6 +1018,7 @@ mod tests {
                 KeyBinding::new("tab", InsertTab, Some("TextEditor")),
                 KeyBinding::new("ctrl-p", OpenCommandPalette, None),
             ]);
+            super::bind_open_command_palette(cx);
             gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
                 cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
             })
@@ -1414,19 +1453,16 @@ mod tests {
 
     #[gpui_kit::test]
     fn ctrl_p_opens_the_command_palette(cx: &mut TestAppContext) {
+        // Deliberately nothing clicked first — this is the actual
+        // regression case: a plain element-attached `.on_action` would
+        // only ever fire via dispatch bubbling from whatever's currently
+        // focused, and with *nothing* focused yet (right after opening the
+        // app, before any click), that path collapses to empty. This is
+        // why `JadeApp::open_command_palette` is wired through a global
+        // `cx.on_action` instead — see its own doc comment.
         let dir = temp_vault();
-        std::fs::write(dir.path().join("Note.md"), "content").unwrap();
         let (window, _app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            // Action dispatch bubbles up from whichever element is
-            // currently focused — with nothing clicked yet there's no
-            // focused leaf for it to start from at all, so establish one
-            // first (same reasoning every other hotkey test already
-            // clicks a note before pressing its own key; the sidebar tab
-            // switcher itself is a plain styled div, not something
-            // `.track_focus`-ed, so clicking it alone doesn't help).
-            window.click("Note", cx);
             window.render_frame(cx);
             window.press("ctrl-p", cx);
         })
@@ -1541,6 +1577,63 @@ mod tests {
             })
             .unwrap();
         assert!(!dialog_open, "clicking the x should close the Settings dialog");
+    }
+
+    #[gpui_kit::test]
+    fn closing_a_dialog_does_not_leave_the_editor_mid_drag(cx: &mut TestAppContext) {
+        // Guards against the bug class (not a proven reproduction of it —
+        // see below): clicking a dialog positioned over the editor used to
+        // also fire the editor's raw `MouseDownEvent` listener, since that
+        // listener has no idea a dialog's backdrop is occluding it (GPUI's
+        // `occlude()` only gates `.on_click`-style convenience wrappers,
+        // never a raw `window.on_mouse_event`'s own `bounds.contains(...)`
+        // check) — setting `is_dragging = true` with no matching `MouseUp`
+        // reaching the editor to reset it (a dialog's own `Cancel` action,
+        // dispatched synchronously from within that same click, poisons
+        // `propagate_event` for the rest of that event's bubble, which the
+        // editor's own later-registered `MouseUp` listener never gets to
+        // see). Fixed in `text_editor::element::register_mouse_handling` by
+        // bailing out of the Mouse-Down/Move listeners while any dialog is
+        // open. Note: this specific test passes even *without* that fix —
+        // the headless harness's `click()` dispatch apparently doesn't
+        // reproduce the exact `propagate_event` leak a real windowed click
+        // does (confirmed by temporarily reverting the fix and rerunning
+        // this test alone) — so treat it as a basic sanity check, not a
+        // proven regression guard for this exact bug.
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "hello world").unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note", cx);
+            window.render_frame(cx);
+            window.press("ctrl-p", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("close", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        // No button held — just moving the mouse over the editor.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.hover("editor", cx);
+        })
+        .unwrap();
+
+        let editor = app.read_with(cx, |app, _| app.editor.clone()).expect("note should still be open");
+        let selection = editor.read_with(cx, |editor, _| editor.buffer().selection());
+        assert!(selection.is_none(), "moving the mouse with no button held must not start/extend a selection, got {selection:?}");
     }
 
     #[gpui_kit::test]
