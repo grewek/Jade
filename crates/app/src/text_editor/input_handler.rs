@@ -4,7 +4,10 @@ use gpui_kit::*;
 
 use super::block_preview::classify_lines;
 use super::callout::classify_callouts;
-use super::element::{callout_at_line, indent_px, is_active_line, is_table_active, shape_display_line, table_line_kind};
+use super::element::{
+    analyze_line_layout, callout_at_line, indent_px, is_active_line, is_table_active, shape_display_line,
+    table_line_kind, visible_line_range,
+};
 use super::live_preview::classify_block_context;
 use super::table_preview::classify_tables;
 use super::Editor;
@@ -169,12 +172,28 @@ impl EntityInputHandler for Editor {
         let block_contexts = classify_block_context(&text);
         let (table_for_line, tables) = classify_tables(&text);
         let (callout_for_line, callouts) = classify_callouts(&text);
+        let focused = self.focus_handle.is_focused(window);
 
-        let mut line_start = 0usize;
-        let mut y_offset = px(0.);
-        for (i, line_text) in text.split('\n').enumerate() {
-            let line_range = line_start..line_start + line_text.len();
-            let focused = self.focus_handle.is_focused(window);
+        // Same viewport-bounded approach `element.rs`'s `paint_lines`/
+        // `offset_for_position` use — IME composition's target byte offset
+        // is normally at/near the cursor, which (per `autoscroll_to_cursor`)
+        // should already be inside the visible viewport, so windowing here
+        // avoids the same O(document) real-shaping cost those functions
+        // used to pay on every call, not just on every paint.
+        let layout = analyze_line_layout(
+            &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor,
+            focused, element_bounds.size.width, line_height, &font, font_size, text_color, window,
+        );
+        let viewport = self.scroll_handle.bounds();
+        let range = visible_line_range(&layout, element_bounds, viewport);
+        if range.is_empty() {
+            return None;
+        }
+
+        let mut y_offset = layout.cumulative_at(range.start);
+        for i in range {
+            let line_range = layout.line_range(i);
+            let line_text = &text[line_range.clone()];
             let active = is_active_line(&line_range, cursor, focused);
             let table_kind = table_line_kind(&tables, &table_for_line, i);
             let table_active = is_table_active(&tables, &table_for_line, i, cursor, focused);
@@ -190,7 +209,7 @@ impl EntityInputHandler for Editor {
             for (wrapped, display_line) in &results {
                 let height = wrapped.size(line_height).height;
                 if byte_offset <= line_range.end {
-                    let display_offset = display_line.display_offset_for_raw(byte_offset - line_start);
+                    let display_offset = display_line.display_offset_for_raw(byte_offset - line_range.start);
                     let pos = wrapped.position_for_index(display_offset, line_height).unwrap_or(point(px(0.), px(0.)));
                     let x = pos.x + indent_px(display_line.indent.level());
                     let origin = element_bounds.origin + point(x, y_offset + pos.y);
@@ -198,7 +217,6 @@ impl EntityInputHandler for Editor {
                 }
                 y_offset += height;
             }
-            line_start = line_range.end + 1;
         }
         None
     }

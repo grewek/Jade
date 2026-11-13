@@ -1452,6 +1452,49 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn opening_a_huge_file_does_not_take_several_seconds_to_render(cx: &mut TestAppContext) {
+        // Regression test for a real user report: opening the 320K-line
+        // stress fixture used to take ~10.1 SECONDS per `render_frame` —
+        // `measure_document`/`paint_lines` shaped every line in the
+        // document, every single paint, regardless of the viewport.
+        // Viewport-bounded rendering (`text_editor::element`'s `LineLayout`/
+        // `visible_line_range` — real shaping now only happens for the
+        // handful of lines actually on screen) brought this down to ~1.4s
+        // on the same file — a real ~7x win, but *not* yet within a 60fps
+        // frame budget: `analyze_line_layout` itself is still one O(document)
+        // pass every paint (cheap arithmetic, no real text-shaping, but
+        // still a `DisplayLine` built per line) — closing *that* gap needs
+        // incremental caching across paints/edits, tracked as a follow-up
+        // in CLAUDE.md's Backlog, not done here. This threshold is
+        // deliberately loose (comfortably under 1.44s measured, nowhere
+        // near the original 10s) — tight enough to catch a real regression
+        // back toward "every line in the document gets shaped again,"
+        // loose enough not to be flaky on a slower CI machine.
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Big.md"), &content).unwrap();
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Big", cx);
+            let elapsed = {
+                let start = std::time::Instant::now();
+                window.render_frame(cx);
+                start.elapsed()
+            };
+            assert!(
+                elapsed < std::time::Duration::from_secs(3),
+                "rendering the stress fixture took {elapsed:?} — expected well under the old ~10.1s, ideally close to the ~1.4s this was fixed to"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn ctrl_p_opens_the_command_palette(cx: &mut TestAppContext) {
         // Deliberately nothing clicked first — this is the actual
         // regression case: a plain element-attached `.on_action` would

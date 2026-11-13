@@ -184,21 +184,71 @@ fn autoscroll_to_cursor(scroll_handle: &ScrollHandle, content_bounds: Bounds<Pix
     scroll_handle.set_offset(offset);
 }
 
-/// Computes the whole document's total rendered height and the cursor's
-/// own line's accumulated top-Y offset and height — needed by
-/// `render_editor` *before* it can construct its element tree (the outer
-/// `div`'s own `.h(...)` sizing, and `autoscroll_to_cursor`'s inputs),
-/// which is before the canvas paint closure where `paint_lines`/
-/// `offset_for_position` do their own per-line shaping as they go. Trivial
-/// when every line was exactly one `line_height` tall; not anymore now
-/// that a line can soft-wrap into several rows (see `shape_display_line`'s
-/// own `wrap_width_for`), so this shapes every line once just to measure
-/// it — the same per-line dispatch (`is_active_line`/`table_line_kind`/
-/// `is_table_active`) `paint_lines` uses, since a line's *active* wrapping
-/// shows different (unhidden) text than its previewed form and so can
-/// genuinely wrap differently.
+/// How many lines of overscan (shaped/painted even though just outside the
+/// viewport) `visible_line_range` pads the true viewport range by — a
+/// smooth-scroll/wrap-estimate-slop margin, not load-bearing for
+/// correctness (every line still gets exactly one entry in [`LineLayout`]
+/// regardless).
+const OVERSCAN_LINES: usize = 20;
+
+/// Per-document, per-paint layout data that lets `measure_document`/
+/// `paint_lines`/`offset_for_position`/`input_handler::bounds_for_range`
+/// each touch only the lines they actually need, instead of every line in
+/// the document — see this module's own notes on viewport-bounded
+/// rendering. Built once per paint by `analyze_line_layout`.
+///
+/// Deliberately holds byte *ranges*, not `&str` slices, into the buffer
+/// text rather than borrowing it directly — `render_editor`'s paint
+/// closure needs to move both the buffer text and this layout into the
+/// same `'static` closure together, which a `LineLayout<'a>` borrowing
+/// from that very text can't do (the text and a borrow of it can't be
+/// moved into the same place independently). A caller with `text: &str`
+/// already in scope just slices it with `layout.line_range(i)`.
+#[derive(Clone)]
+pub(super) struct LineLayout {
+    /// `line_ranges[i]` is line `i`'s own byte range in the whole buffer
+    /// (excluding its own trailing `\n`).
+    line_ranges: Vec<std::ops::Range<usize>>,
+    /// Prefix sums of each line's *estimated* height (`wrapped_row_count`,
+    /// not real shaping) — `cumulative[i]` is the total height of lines
+    /// `0..i`, so `cumulative.len() == line_ranges.len() + 1` and
+    /// `cumulative`'s last entry is the document's total estimated height.
+    /// Monotonically non-decreasing, so `visible_line_range` can
+    /// binary-search it.
+    cumulative: Vec<Pixels>,
+}
+
+impl LineLayout {
+    pub(super) fn line_count(&self) -> usize {
+        self.line_ranges.len()
+    }
+
+    /// Estimated height of line `i` alone.
+    pub(super) fn height(&self, i: usize) -> Pixels {
+        self.cumulative[i + 1] - self.cumulative[i]
+    }
+
+    pub(super) fn line_range(&self, i: usize) -> std::ops::Range<usize> {
+        self.line_ranges[i].clone()
+    }
+
+    /// The estimated document-space Y offset where line `i` begins —
+    /// `cumulative[line_count()]` (i.e. `line_count()` itself) is valid too,
+    /// giving the document's total estimated height.
+    pub(super) fn cumulative_at(&self, i: usize) -> Pixels {
+        self.cumulative[i]
+    }
+}
+
+/// Builds a document's [`LineLayout`] in one pass — for every line, this
+/// calls the *pure* half of line-building (`build_display_lines`, not
+/// `shape_display_line`) to get its real `display_text`, then estimates
+/// its row count arithmetically (`wrapped_row_count`) rather than paying
+/// for a real `shape_text` call. This is still an O(document) pass (not yet
+/// incremental across edits/paints — see CLAUDE.md's Backlog), but a cheap
+/// one: no GPUI text shaping happens anywhere in this function.
 #[allow(clippy::too_many_arguments)]
-fn measure_document(
+pub(super) fn analyze_line_layout(
     text: &str,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
@@ -214,20 +264,11 @@ fn measure_document(
     font_size: Pixels,
     text_color: Hsla,
     window: &mut Window,
-) -> (Pixels, Pixels, Pixels, Vec<(Pixels, Pixels)>) {
-    let mut total = px(0.);
-    let mut cursor_top = px(0.);
-    let mut cursor_height = line_height;
-    // Each callout's accumulated `(top, bottom)` pixel range, parallel to
-    // `callouts` — `top` is set when its header line (the first in its
-    // range) is reached, `bottom` is just kept updated to "wherever we are
-    // after this line" on every line that belongs to it, ending up correct
-    // once its last line has been processed. Consumed by `paint_lines`'
-    // background/accent-bar pre-pass — see that function's own doc comment
-    // for why it can't just accumulate this itself the way `TablePaint`
-    // does (a background fill needs to be painted *before* that range's
-    // text, not after).
-    let mut callout_ranges = vec![(px(0.), px(0.)); callouts.len()];
+) -> LineLayout {
+    let char_width = mono_char_width(font, font_size, text_color, window);
+
+    let mut line_ranges = Vec::new();
+    let mut cumulative = vec![px(0.)];
     let mut line_start = 0usize;
     for (i, line_text) in text.split('\n').enumerate() {
         let line_range = line_start..line_start + line_text.len();
@@ -236,27 +277,78 @@ fn measure_document(
         let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
         let callout = callout_at_line(callouts, callout_for_line, i);
         let callout_is_header = callout.is_some_and(|c| c.is_header(i));
-        let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header, active,
-            font, font_size, text_color, available_width, window,
+        let (display_lines, wrap_width) = build_display_lines(
+            line_text, line_roles[i], block_contexts[i], &table_kind, table_active, callout_is_header, active, font,
+            font_size, text_color, available_width, window,
         );
-        // Usually one entry; more than one only for a table row whose
-        // cells had to wrap (see `shape_display_line`'s own doc comment) —
-        // the raw line's total height is their combined height either way.
-        let height: Pixels = results.iter().map(|(wrapped, _)| wrapped.size(line_height).height).sum();
-        if let Some(idx) = callout_for_line[i] {
-            if callout_is_header {
-                callout_ranges[idx].0 = total;
-            }
-            callout_ranges[idx].1 = total + height;
-        }
-        if cursor >= line_range.start && cursor <= line_range.end {
-            cursor_top = total;
-            cursor_height = height;
-        }
-        total += height;
+        let rows: usize = display_lines.iter().map(|dl| wrapped_row_count(&dl.display_text, wrap_width, char_width)).sum();
+
+        cumulative.push(*cumulative.last().unwrap() + line_height * rows.max(1) as f32);
+        line_ranges.push(line_range.clone());
+
         line_start = line_range.end + 1;
     }
+
+    LineLayout { line_ranges, cumulative }
+}
+
+/// The `[start, end)` line-index range actually relevant to paint/hit-test
+/// this frame — the viewport's own document-space Y-range (`bounds`, the
+/// editor's own on-screen bounds, vs. `viewport`, the scrollable
+/// container's fixed on-screen bounds — same two values `autoscroll_to_cursor`
+/// already compares), found via binary search against `layout.cumulative`
+/// (monotonically non-decreasing, so `partition_point` applies) rather than
+/// a linear walk, padded by [`OVERSCAN_LINES`] on each side and clamped to
+/// the document's own line count. Falls back to the whole document if the
+/// viewport hasn't been laid out yet (`viewport.size.height <= 0`, e.g. the
+/// very first paint before `scroll_handle`'s tracked container has a size)
+/// — matches `autoscroll_to_cursor`'s own "nothing to do yet" guard.
+pub(super) fn visible_line_range(layout: &LineLayout, bounds: Bounds<Pixels>, viewport: Bounds<Pixels>) -> std::ops::Range<usize> {
+    let line_count = layout.line_count();
+    if line_count == 0 {
+        return 0..0;
+    }
+    if viewport.size.height <= px(0.) {
+        return 0..line_count;
+    }
+    let doc_top = viewport.origin.y - bounds.origin.y;
+    let doc_bottom = doc_top + viewport.size.height;
+    let start = layout.cumulative.partition_point(|&c| c <= doc_top).saturating_sub(1);
+    let end = layout.cumulative.partition_point(|&c| c < doc_bottom);
+    let start = start.saturating_sub(OVERSCAN_LINES);
+    let end = (end + OVERSCAN_LINES).min(line_count);
+    start..end
+}
+
+/// Computes the whole document's total rendered height (estimated — see
+/// [`analyze_line_layout`]) and the cursor's own line's accumulated top-Y
+/// offset and height — needed by `render_editor` *before* it can construct
+/// its element tree (the outer `div`'s own `.h(...)` sizing, and
+/// `autoscroll_to_cursor`'s inputs), which is before the canvas paint
+/// closure where `paint_lines`/`offset_for_position` do their own (now
+/// viewport-bounded, real) shaping. No shaping happens in this function at
+/// all — everything here is a handful of O(1)/O(callouts.len()) lookups
+/// into `layout`, which already did the one O(document) pass needed this
+/// paint.
+fn measure_document(layout: &LineLayout, cursor: usize, callouts: &[Callout], line_height: Pixels) -> (Pixels, Pixels, Pixels, Vec<(Pixels, Pixels)>) {
+    let total = *layout.cumulative.last().unwrap();
+
+    // The cursor's own line: binary-search `line_ranges` by start offset
+    // (already built, O(log n)) rather than a linear walk.
+    let cursor_line = layout.line_ranges.partition_point(|r| r.start <= cursor).saturating_sub(1);
+    let cursor_top = layout.cumulative[cursor_line];
+    let cursor_height = layout.height(cursor_line).max(line_height);
+
+    // Each callout's `(top, bottom)` pixel range, read straight from
+    // `layout.cumulative` at its known `start_line`/`end_line` — no need to
+    // have actually visited those lines "for real" the way a sequential
+    // accumulator would have required, which matters once `paint_lines`
+    // stops visiting every line (see that function's own doc comment).
+    let callout_ranges = callouts
+        .iter()
+        .map(|c| (layout.cumulative[c.start_line], layout.cumulative[c.end_line]))
+        .collect();
+
     (total, cursor_top, cursor_height, callout_ranges)
 }
 
@@ -364,14 +456,24 @@ fn wrap_width_for(table_kind: &TableLineKind, table_active: bool, available_widt
 ///   so it's just [`hidden_line`] — `element.rs`'s `paint_lines` paints its
 ///   header/body divider as a real vector line directly over it (see
 ///   `paint_table_grid_lines`), not as dashed-rule text.
+///
+/// This is the *pure* half of that dispatch — no real text-shaping happens
+/// here (see [`mono_char_width`]'s own "cheap, cached single-character
+/// shape" exception) — split out from [`shape_display_line`] so
+/// [`analyze_line_layout`] can get a line's real `display_text` (and so its
+/// real wrapped-row count, computed arithmetically via [`wrapped_row_count`]
+/// — this editor's font is always monospace, so a row count is just a
+/// character-count/width division) without paying for the actual expensive
+/// `shape_text` call `shape_display_line` still does, for every line it's
+/// actually asked to shape. See this module's own notes on viewport-bounded
+/// rendering for why that split matters.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn shape_display_line(
+fn build_display_lines(
     line: &str,
     role: LineRole,
     block_ctx: LineContext,
-    table_kind: TableLineKind,
+    table_kind: &TableLineKind,
     table_active: bool,
-    callout: Option<&Callout>,
     callout_is_header: bool,
     active: bool,
     font: &Font,
@@ -379,8 +481,8 @@ pub(super) fn shape_display_line(
     text_color: Hsla,
     available_width: Pixels,
     window: &mut Window,
-) -> Vec<(WrappedLine, DisplayLine)> {
-    let display_lines: Vec<DisplayLine> = match role {
+) -> (Vec<DisplayLine>, Option<Pixels>) {
+    let mut display_lines: Vec<DisplayLine> = match role {
         LineRole::FenceContent => vec![build_display_line(line, true)],
         LineRole::FenceDelimiter if !active => vec![hidden_line(line)],
         LineRole::FenceDelimiter => vec![build_display_line(line, active)],
@@ -399,23 +501,74 @@ pub(super) fn shape_display_line(
         },
     };
 
+    // Fenced code content is never Markdown (see `shape_display_line`'s own
+    // doc comment) — so even if it happens to start with `>` or `- `,
+    // that's not a real blockquote/list line and shouldn't indent as one.
+    if matches!(role, LineRole::FenceContent) {
+        for display_line in &mut display_lines {
+            display_line.indent = LineIndent::None;
+        }
+    }
+
     // A table's own indent is always `None` across every one of its
     // (possibly several, once cells wrap) returned lines, same as every
     // other case here only ever returning one — safe to read just the
     // first for the whole line's wrap width.
-    let wrap_width = wrap_width_for(&table_kind, table_active, available_width, display_lines[0].indent.level());
+    let wrap_width = wrap_width_for(table_kind, table_active, available_width, display_lines[0].indent.level());
+    (display_lines, wrap_width)
+}
+
+/// How many visual rows `display_text` wraps onto at `wrap_width`, given a
+/// monospace advance of `char_width` — pure arithmetic (a character-count/
+/// width division), not a real `shape_text` call. This editor's font is
+/// always monospace (`render_editor`'s own font override), so this is exact
+/// for *wrap existing or not* (`wrap_width` is `None` for a table row/rule,
+/// which never wraps — always `1`) and a close, cheap stand-in for the real
+/// row count otherwise — real `shape_text` wraps at word boundaries, not raw
+/// character counts, so this can be off by a row for text with unusually
+/// long/short words, a deliberate v1 approximation (see this module's own
+/// notes on viewport-bounded rendering) rather than requiring the real
+/// shaping call this function exists specifically to avoid.
+fn wrapped_row_count(display_text: &str, wrap_width: Option<Pixels>, char_width: Pixels) -> usize {
+    let Some(wrap_width) = wrap_width else { return 1 };
+    if char_width <= px(0.) {
+        return 1;
+    }
+    let chars_per_row = ((wrap_width / char_width) as usize).max(1);
+    let char_count = display_text.chars().count();
+    char_count.max(1).div_ceil(chars_per_row).max(1)
+}
+
+/// [`build_display_lines`] (see its own doc comment for the actual
+/// per-role dispatch logic) plus the real, expensive `shape_text` call —
+/// the full, painted-output version of that pure function. Only called for
+/// lines actually being rendered/hit-tested (the viewport's visible
+/// range), not every line in the document — see this module's own notes
+/// on viewport-bounded rendering.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn shape_display_line(
+    line: &str,
+    role: LineRole,
+    block_ctx: LineContext,
+    table_kind: TableLineKind,
+    table_active: bool,
+    callout: Option<&Callout>,
+    callout_is_header: bool,
+    active: bool,
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    available_width: Pixels,
+    window: &mut Window,
+) -> Vec<(WrappedLine, DisplayLine)> {
+    let (display_lines, wrap_width) = build_display_lines(
+        line, role, block_ctx, &table_kind, table_active, callout_is_header, active, font, font_size, text_color,
+        available_width, window,
+    );
 
     display_lines
         .into_iter()
-        .map(|mut display_line| {
-            // Fenced code content is never Markdown (see this function's
-            // own doc comment above) — so even if it happens to start with
-            // `>` or `- `, that's not a real blockquote/list line and
-            // shouldn't indent as one.
-            if matches!(role, LineRole::FenceContent) {
-                display_line.indent = LineIndent::None;
-            }
-
+        .map(|display_line| {
             let mut runs: Vec<TextRun> = display_line
                 .segments
                 .iter()
@@ -563,10 +716,16 @@ pub(super) fn render_editor(
         let width = scroll_handle.bounds().size.width;
         if width > px(0.) { width } else { Pixels::MAX }
     };
-    let (total_height, cursor_top, cursor_height, callout_ranges) = measure_document(
+    // One O(document) pass (cheap arithmetic, no real text-shaping — see
+    // `LineLayout`'s own doc comment) feeding `measure_document`'s sizing
+    // and `paint_lines`/`offset_for_position`/`register_mouse_handling`'s
+    // viewport-bounded windowing below — none of those re-walk the whole
+    // document themselves any more.
+    let layout = analyze_line_layout(
         &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor, focused,
         available_width, line_height, &font, font_size, text_color, window,
     );
+    let (total_height, cursor_top, cursor_height, callout_ranges) = measure_document(&layout, cursor, &callouts, line_height);
 
     div()
         .id("editor")
@@ -597,8 +756,10 @@ pub(super) fn render_editor(
                         autoscroll_to_cursor(&scroll_handle, bounds, cursor_top, cursor_height);
                         last_autoscrolled_cursor.set(Some(cursor));
                     }
+                    let viewport = scroll_handle.bounds();
                     paint_lines(
                         &text,
+                        &layout,
                         &line_roles,
                         &block_contexts,
                         &table_for_line,
@@ -610,6 +771,7 @@ pub(super) fn render_editor(
                         selection.clone(),
                         focused,
                         bounds,
+                        viewport,
                         line_height,
                         &font,
                         font_size,
@@ -621,6 +783,7 @@ pub(super) fn render_editor(
                     register_mouse_handling(
                         editor_entity.clone(),
                         text.clone(),
+                        layout.clone(),
                         line_roles.clone(),
                         block_contexts.clone(),
                         table_for_line.clone(),
@@ -630,6 +793,7 @@ pub(super) fn render_editor(
                         cursor,
                         focused,
                         bounds,
+                        viewport,
                         line_height,
                         font.clone(),
                         font_size,
@@ -659,6 +823,7 @@ pub(super) fn render_editor(
 fn register_mouse_handling(
     editor_entity: Entity<Editor>,
     text: String,
+    layout: LineLayout,
     line_roles: Vec<LineRole>,
     block_contexts: Vec<LineContext>,
     table_for_line: Vec<Option<usize>>,
@@ -668,6 +833,7 @@ fn register_mouse_handling(
     cursor: usize,
     focused: bool,
     bounds: Bounds<Pixels>,
+    viewport: Bounds<Pixels>,
     line_height: Pixels,
     font: Font,
     font_size: Pixels,
@@ -678,6 +844,7 @@ fn register_mouse_handling(
     window.on_mouse_event({
         let editor_entity = editor_entity.clone();
         let text = text.clone();
+        let layout = layout.clone();
         let line_roles = line_roles.clone();
         let block_contexts = block_contexts.clone();
         let table_for_line = table_for_line.clone();
@@ -702,8 +869,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor,
-                focused, event.position, bounds, line_height, &font, font_size, text_color, window,
+                &text, &layout, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts,
+                cursor, focused, event.position, bounds, viewport, line_height, &font, font_size, text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, false);
@@ -721,8 +888,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor,
-                focused, event.position, bounds, line_height, &font, font_size, text_color, window,
+                &text, &layout, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts,
+                cursor, focused, event.position, bounds, viewport, line_height, &font, font_size, text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, true);
@@ -754,12 +921,14 @@ fn register_mouse_handling(
 /// (through `WrappedLine`'s `Deref`, now taking a full `Point` rather than
 /// a bare `x`, since which *row* of a wrapped line matters too), mapped
 /// back to a raw buffer offset via `DisplayLine::raw_offset_for_display`.
-/// Still only reshapes each line once while searching for the target (same
-/// "cheap enough, no cross-frame shape cache needed" reasoning as before)
-/// rather than needing some separately persisted per-line height table.
+/// Only reshapes lines within `visible_line_range` (a click outside that —
+/// shouldn't happen in practice, since clicks land inside the visible
+/// viewport by construction — falls back to that range's own nearest
+/// edge rather than scanning the rest of the document).
 #[allow(clippy::too_many_arguments)]
 fn offset_for_position(
     text: &str,
+    layout: &LineLayout,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
     table_for_line: &[Option<usize>],
@@ -770,6 +939,7 @@ fn offset_for_position(
     focused: bool,
     position: Point<Pixels>,
     bounds: Bounds<Pixels>,
+    viewport: Bounds<Pixels>,
     line_height: Pixels,
     font: &Font,
     font_size: Pixels,
@@ -777,12 +947,15 @@ fn offset_for_position(
     window: &mut Window,
 ) -> usize {
     let relative_y = (position.y - bounds.origin.y).max(px(0.));
+    let range = visible_line_range(layout, bounds, viewport);
+    if range.is_empty() {
+        return 0;
+    }
 
-    let mut line_start = 0usize;
-    let mut y_offset = px(0.);
-    for (i, line_text) in text.split('\n').enumerate() {
-        let line_range = line_start..line_start + line_text.len();
-        let active = is_active_line(&line_range, cursor, focused);
+    let mut y_offset = layout.cumulative[range.start];
+    for i in range.clone() {
+        let line_text = &text[layout.line_range(i)];
+        let active = is_active_line(&layout.line_range(i), cursor, focused);
         let table_kind = table_line_kind(tables, table_for_line, i);
         let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
         let callout = callout_at_line(callouts, callout_for_line, i);
@@ -815,14 +988,17 @@ fn offset_for_position(
                 } else {
                     display_line.raw_offset_for_display(display_offset)
                 };
-                return line_start + raw_offset;
+                return layout.line_range(i).start + raw_offset;
             }
             y_offset += height;
         }
-        line_start = line_range.end + 1;
     }
-    // Past the last line (clicked below all the text): land at the very end.
-    text.len()
+    // Past the visible window's last line (clicked below all rendered
+    // text): land at the end of that window's last line, not the
+    // document's — the window already covers the whole viewport plus
+    // overscan, so this is only reachable by clicking well past the
+    // rendered content.
+    if range.end >= layout.line_count() { text.len() } else { layout.line_range(range.end - 1).end }
 }
 
 /// Accumulated while `paint_lines` walks one table's lines, top to bottom —
@@ -873,6 +1049,7 @@ fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, window: &mut Windo
 #[allow(clippy::too_many_arguments)]
 fn paint_lines(
     text: &str,
+    layout: &LineLayout,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
     table_for_line: &[Option<usize>],
@@ -884,6 +1061,7 @@ fn paint_lines(
     selection: Option<std::ops::Range<usize>>,
     show_cursor: bool,
     bounds: Bounds<Pixels>,
+    viewport: Bounds<Pixels>,
     line_height: Pixels,
     font: &Font,
     font_size: Pixels,
@@ -891,16 +1069,24 @@ fn paint_lines(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let range = visible_line_range(layout, bounds, viewport);
+
     // Every callout's background tint + accent bar, painted *before* any
     // line's text — unlike `TablePaint`'s grid lines (thin enough that
     // painting them after a row's own text is fine), a full-width
     // background fill painted afterward would paint right over and hide
-    // that text. `callout_ranges` (from `measure_document`'s own extra
-    // per-line pass, the same one that already produces `cursor_top`/
-    // `cursor_height`) gives each callout's already-known top/bottom
-    // extent, so this can run as a single pre-pass rather than needing to
-    // restructure the main per-line loop below at all.
+    // that text. `callout_ranges` (from `measure_document`'s own
+    // `layout.cumulative` lookups) gives each callout's already-known top/
+    // bottom extent without needing to have visited its lines at all, so
+    // this runs as its own pass, skipping any callout whose range doesn't
+    // intersect the viewport at all (cheap, and keeps this pass bounded
+    // even for a document with a huge number of callouts).
+    let viewport_top = viewport.origin.y - bounds.origin.y;
+    let viewport_bottom = viewport_top + viewport.size.height;
     for (callout, &(top, bottom)) in callouts.iter().zip(callout_ranges) {
+        if viewport.size.height > px(0.) && (bottom < viewport_top || top > viewport_bottom) {
+            continue;
+        }
         let color = callout_color(callout.kind);
         let background = Hsla { a: CALLOUT_BACKGROUND_ALPHA, ..color };
         let top = bounds.origin.y + top;
@@ -915,16 +1101,45 @@ fn paint_lines(
         ));
     }
 
-    let mut line_start = 0usize;
-    let mut y_offset = px(0.);
+    if range.is_empty() {
+        return;
+    }
+
+    let mut y_offset = layout.cumulative[range.start];
     // Accumulated across a table's own lines, then painted and cleared
     // once its last line is reached — see `TablePaint`/`paint_table_grid_
     // lines`. Never started at all for a table that's rendering raw
     // (`table_active`), matching every other construct's own "border
-    // disappears while active" behavior.
+    // disappears while active" behavior. Pre-seeded from the estimate
+    // (`layout.cumulative`) if this window starts *inside* a table whose
+    // header row is off-screen — the main loop below only ever discovers
+    // a table's start by actually visiting its header row, which doesn't
+    // happen if that row is outside `range`.
     let mut table_paint: Option<TablePaint> = None;
-    for (i, line_text) in text.split('\n').enumerate() {
-        let line_range = line_start..line_start + line_text.len();
+    if let Some(idx) = table_for_line[range.start] {
+        let table = &tables[idx];
+        if table.start_line < range.start {
+            let max_chars = table_row_char_budget(bounds.size.width, font, font_size, text_color, window);
+            let widths = table_preview::resolve_widths(&table.columns, max_chars);
+            let char_width = mono_char_width(font, font_size, text_color, window);
+            // A table's own indent is always `None`, so its header row's
+            // `line_origin.x` (what the real `is_first_row` branch below
+            // would use) is always just `bounds.origin.x` — safe to use
+            // directly even though that row itself is off-screen.
+            let column_x: Vec<Pixels> = table_preview::column_divider_char_offsets(&widths)
+                .into_iter()
+                .map(|offset| bounds.origin.x + char_width * offset as f32)
+                .collect();
+            let delimiter_line = table.start_line + 1;
+            let divider_y = (delimiter_line < range.start)
+                .then(|| bounds.origin.y + layout.cumulative[delimiter_line] + layout.height(delimiter_line) / 2.);
+            table_paint = Some(TablePaint { top: bounds.origin.y + layout.cumulative[table.start_line], divider_y, column_x });
+        }
+    }
+
+    for i in range.clone() {
+        let line_range = layout.line_range(i);
+        let line_text = &text[line_range.clone()];
         let active = is_active_line(&line_range, cursor, show_cursor);
         let table_kind = table_line_kind(tables, table_for_line, i);
         let table_active = is_table_active(tables, table_for_line, i, cursor, show_cursor);
@@ -1052,10 +1267,10 @@ fn paint_lines(
                 let end = selection.end.min(line_range.end);
                 if start < end {
                     let start_pos = wrapped
-                        .position_for_index(display_line.display_offset_for_raw(start - line_start), line_height)
+                        .position_for_index(display_line.display_offset_for_raw(start - line_range.start), line_height)
                         .unwrap_or(point(px(0.), px(0.)));
                     let end_pos = wrapped
-                        .position_for_index(display_line.display_offset_for_raw(end - line_start), line_height)
+                        .position_for_index(display_line.display_offset_for_raw(end - line_range.start), line_height)
                         .unwrap_or(point(full_row_width, total_height - line_height));
                     let start_row = (start_pos.y / line_height) as i32;
                     let end_row = (end_pos.y / line_height) as i32;
@@ -1097,7 +1312,7 @@ fn paint_lines(
 
             if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
                 let pos = wrapped
-                    .position_for_index(display_line.display_offset_for_raw(cursor - line_start), line_height)
+                    .position_for_index(display_line.display_offset_for_raw(cursor - line_range.start), line_height)
                     .unwrap_or(point(px(0.), px(0.)));
                 window.paint_quad(fill(
                     Bounds { origin: line_origin + pos, size: size(px(1.), line_height) },
@@ -1107,7 +1322,6 @@ fn paint_lines(
         }
 
         y_offset += total_height;
-        line_start = line_range.end + 1; // +1 for the '\n' this line was split on
     }
 }
 
