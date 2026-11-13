@@ -811,4 +811,58 @@ mod tests {
             text = new_text;
         }
     }
+
+    /// Diagnostic, not a correctness test — measures (via `crate::test_
+    /// alloc`'s counting allocator, not OS-level RSS) how much of
+    /// `DocumentCache::new`'s own allocation cost on the 320K-line stress
+    /// fixture is specifically `live_preview::classify_block_context`'s
+    /// `OpenBlock::List(Vec<usize>)` tracking — every line inside an open
+    /// list clones the whole nesting-depth stack (`open = next.clone()` in
+    /// `classify_block_context_from`'s loop), a *separate heap allocation
+    /// per line*, not shared via `Rc`, persisted forever in `DocumentCache::
+    /// open_block_states`. Added after a real user report of surprisingly
+    /// high RSS (189MB baseline -> 3xxMB with the stress fixture open, no
+    /// edits made) — see HISTORY.md for the measured numbers this produced
+    /// and what they did/didn't explain.
+    #[test]
+    fn block_context_list_tracking_allocation_cost_on_the_stress_fixture() {
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(text) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let line_count = text.split('\n').count();
+
+        crate::test_alloc::reset();
+        let before = crate::test_alloc::snapshot();
+        let block_context_results = live_preview::classify_block_context_from(&text, OpenBlock::None);
+        let list_lines = block_context_results.iter().filter(|(_, state)| matches!(state, OpenBlock::List(_))).count();
+        let after_block_context = crate::test_alloc::snapshot();
+        drop(block_context_results);
+
+        crate::test_alloc::reset();
+        let before_full = crate::test_alloc::snapshot();
+        let cache = DocumentCache::new(&text);
+        let after_full_retained = crate::test_alloc::snapshot();
+        drop(cache);
+        let after_full_dropped = crate::test_alloc::snapshot();
+
+        eprintln!(
+            "block_context_list_tracking_allocation_cost_on_the_stress_fixture: \
+             {line_count} lines, {list_lines} inside an open list ({:.1}%) | \
+             classify_block_context_from alone: {} allocations, peak +{} bytes ({:.1} bytes/line) | \
+             full DocumentCache::new (all four classifiers): {} allocations, peak +{} bytes, \
+             {} bytes still retained right after construction ({} bytes of transient garbage \
+             freed once construction finished, {} bytes correctly freed on drop)",
+            100.0 * list_lines as f64 / line_count as f64,
+            after_block_context.count - before.count,
+            after_block_context.peak - before.peak,
+            (after_block_context.peak - before.peak) as f64 / line_count as f64,
+            after_full_retained.count - before_full.count,
+            after_full_retained.peak - before_full.peak,
+            after_full_retained.current - before_full.current,
+            (after_full_retained.peak - before_full.peak).saturating_sub(after_full_retained.current - before_full.current),
+            after_full_retained.current - after_full_dropped.current,
+        );
+    }
 }

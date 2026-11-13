@@ -1,6 +1,14 @@
 use std::path::PathBuf;
 
 mod text_editor;
+#[cfg(test)]
+mod test_alloc;
+
+/// Test-build-only — see `test_alloc`'s own module doc for why. No effect
+/// on release/`cargo run` (this whole item is `#[cfg(test)]`-gated).
+#[cfg(test)]
+#[global_allocator]
+static GLOBAL_ALLOC: test_alloc::CountingAllocator = test_alloc::CountingAllocator;
 
 use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
@@ -1557,6 +1565,85 @@ mod tests {
             };
             eprintln!(
                 "typing_in_a_huge_file_after_it_is_open_is_fast: edit={edit_elapsed:?} render={render_elapsed:?}"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn opening_and_repainting_a_huge_file_does_not_leak_per_paint_clones(cx: &mut TestAppContext) {
+        // Diagnostic, not a correctness test — a real user reported ~189MB
+        // RSS at startup vs. ~3xxMB with the 320K-line stress fixture open
+        // (no edits made, just opened and looked at). `document_cache.rs`'s
+        // own `block_context_list_tracking_allocation_cost_on_the_stress_
+        // fixture` test accounts for part of the gap (`OpenBlock::List`'s
+        // per-line clone, ~18MB/98K allocations) via a pure-Rust allocation
+        // count. This test instead isolates a *different* candidate:
+        // `render_editor`/`register_mouse_handling` clone the whole buffer
+        // text (and `DocumentCache`'s six per-line `Vec`s) multiple times
+        // on *every single paint*, purely to satisfy `window.on_mouse_
+        // event`'s `'static` closure requirement — the question this test
+        // actually answers is whether that's just wasteful *churn*
+        // (allocate-then-free every paint, inflating the allocator's own
+        // peak/high-water-mark but not actually leaking) or a genuine
+        // *leak* (`current` bytes climbing without bound across repeated,
+        // otherwise-identical repaints with no edits in between).
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Big.md"), &content).unwrap();
+
+        // Open the app and let it fully settle (window/font/UI-framework
+        // one-time setup, plus the vault scan) *before* resetting the
+        // counters — isolates the cost actually attributable to this one
+        // document, matching the user's real comparison (an already-running
+        // app, then opening the big file), rather than conflating it with
+        // GPUI/font/window bootstrap cost that would happen regardless of
+        // which note gets opened.
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+
+            crate::test_alloc::reset();
+            let before = crate::test_alloc::snapshot();
+            window.click("Big", cx);
+            window.render_frame(cx);
+            let after_first_render = crate::test_alloc::snapshot();
+
+            // Ten more repaints of the exact same, unchanged document —
+            // nothing here should allocate anything that outlives the
+            // paint it was allocated in.
+            for _ in 0..10 {
+                window.render_frame(cx);
+            }
+            let after_many_renders = crate::test_alloc::snapshot();
+
+            eprintln!(
+                "opening_and_repainting_a_huge_file_does_not_leak_per_paint_clones: \
+                 opening this one file (app already running): current={} peak=+{} allocations={} | \
+                 after 10 more unchanged renders: current={} peak=+{} allocations={}",
+                after_first_render.current - before.current,
+                after_first_render.peak - before.peak,
+                after_first_render.count - before.count,
+                after_many_renders.current - before.current,
+                after_many_renders.peak - before.peak,
+                after_many_renders.count - before.count,
+            );
+
+            // The real question: does `current` (live bytes right now, not
+            // peak) keep growing across repeated identical repaints? A
+            // generous slack (half the first render's own `current`) since
+            // some GPUI-internal caches (shaped-glyph caches etc.) legitimately
+            // grow a little as more of the document's distinct line shapes
+            // get touched — this is a leak check, not a tight budget.
+            assert!(
+                after_many_renders.current < after_first_render.current + after_first_render.current / 2,
+                "current live bytes grew from {} to {} across 10 unchanged repaints — looks like a real leak, not just per-paint churn",
+                after_first_render.current,
+                after_many_renders.current
             );
         })
         .unwrap();
