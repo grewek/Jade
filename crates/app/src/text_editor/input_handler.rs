@@ -3,7 +3,8 @@ use std::ops::Range;
 use gpui_kit::*;
 
 use super::block_preview::classify_lines;
-use super::element::{indent_px, is_active_line, is_table_active, shape_display_line, table_line_kind};
+use super::callout::classify_callouts;
+use super::element::{callout_at_line, indent_px, is_active_line, is_table_active, shape_display_line, table_line_kind};
 use super::live_preview::classify_block_context;
 use super::table_preview::classify_tables;
 use super::Editor;
@@ -167,6 +168,7 @@ impl EntityInputHandler for Editor {
         let line_roles = classify_lines(&text);
         let block_contexts = classify_block_context(&text);
         let (table_for_line, tables) = classify_tables(&text);
+        let (callout_for_line, callouts) = classify_callouts(&text);
 
         let mut line_start = 0usize;
         let mut y_offset = px(0.);
@@ -176,9 +178,11 @@ impl EntityInputHandler for Editor {
             let active = is_active_line(&line_range, cursor, focused);
             let table_kind = table_line_kind(&tables, &table_for_line, i);
             let table_active = is_table_active(&tables, &table_for_line, i, cursor, focused);
+            let callout = callout_at_line(&callouts, &callout_for_line, i);
+            let callout_is_header = callout.is_some_and(|c| c.is_header(i));
             let results = shape_display_line(
-                line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, &font, font_size,
-                text_color, element_bounds.size.width, window,
+                line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header,
+                active, &font, font_size, text_color, element_bounds.size.width, window,
             );
             // Usually one entry; more than one only for a table row whose
             // cells had to wrap — same "which sub-row is this byte

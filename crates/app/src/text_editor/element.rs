@@ -1,12 +1,20 @@
 use gpui_kit::*;
 
 use super::block_preview::LineRole;
+use super::callout::{classify_callouts, Callout, CalloutType};
 use super::live_preview::{
-    build_display_line, build_display_line_in_context, build_table_row, classify_block_context, hidden_line, is_thematic_break,
-    DisplayLine, InlineStyle, LineContext, LineIndent,
+    build_callout_header_line, build_display_line, build_display_line_in_context, build_table_row, classify_block_context, hidden_line,
+    is_thematic_break, DisplayLine, InlineStyle, LineContext, LineIndent,
 };
 use super::table_preview::{self, classify_tables, Table};
 use super::Editor;
+
+/// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
+/// `classify_callouts`' per-line lookup (`callout_for_line`) and the
+/// resolved `callouts` themselves — same shape as `table_line_kind`.
+pub(super) fn callout_at_line<'a>(callouts: &'a [Callout], callout_for_line: &[Option<usize>], line_index: usize) -> Option<&'a Callout> {
+    callout_for_line[line_index].map(|idx| &callouts[idx])
+}
 
 /// Which table-related rendering a `LineRole::Plain` line needs, resolved
 /// by the caller (which already knows the line's absolute index, needed to
@@ -65,6 +73,36 @@ const WIKILINK_COLOR: Hsla = Hsla { h: 0.58, s: 0.65, l: 0.6, a: 1.0 };
 /// different kinds of thing.
 const LINK_COLOR: Hsla = Hsla { h: 0.5, s: 0.65, l: 0.55, a: 1.0 };
 const MUTED_COLOR: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.6, a: 1.0 };
+
+/// One accent `Hsla` per callout type group — Obsidian's own rough color
+/// families (blue for Note/Info, purple for Summary, cyan for Tip, green
+/// for Success/Todo, orange for Question/Warning, red for Failure/Danger/
+/// Bug, gray for Example/Quote). Same "flat constant, not yet pulled from
+/// the theme" Phase 1 compromise as every other color in this file —
+/// `callout::callout_icon` (deliberately kept in `callout.rs`, not here —
+/// a plain `&str` has no GPUI dependency, unlike `Hsla`) picks the glyph,
+/// this picks the color.
+fn callout_color(kind: CalloutType) -> Hsla {
+    match kind {
+        CalloutType::Note | CalloutType::Info => Hsla { h: 0.58, s: 0.65, l: 0.6, a: 1.0 },
+        CalloutType::Summary => Hsla { h: 0.78, s: 0.55, l: 0.62, a: 1.0 },
+        CalloutType::Tip => Hsla { h: 0.5, s: 0.6, l: 0.55, a: 1.0 },
+        CalloutType::Todo | CalloutType::Success => Hsla { h: 0.35, s: 0.55, l: 0.5, a: 1.0 },
+        CalloutType::Question | CalloutType::Warning => Hsla { h: 0.09, s: 0.75, l: 0.55, a: 1.0 },
+        CalloutType::Failure | CalloutType::Danger | CalloutType::Bug => Hsla { h: 0.0, s: 0.65, l: 0.55, a: 1.0 },
+        CalloutType::Example | CalloutType::Quote => Hsla { h: 0.0, s: 0.0, l: 0.55, a: 1.0 },
+    }
+}
+
+/// Alpha for a callout's background tint — low enough that body text
+/// (painted in the ambient `text_color`, not the accent) stays easily
+/// readable over it.
+const CALLOUT_BACKGROUND_ALPHA: f32 = 0.1;
+
+/// Pixel width of a callout's left accent bar — thicker than a plain
+/// blockquote's own `QUOTE_BAR_WIDTH`, so a callout reads as a distinct,
+/// heavier element even before its background tint is noticed.
+const CALLOUT_BAR_WIDTH: Pixels = px(3.);
 
 /// Pixel width of one structural indent level (see
 /// `live_preview::LineIndent`) — applied identically by `paint_lines`,
@@ -165,6 +203,8 @@ fn measure_document(
     block_contexts: &[LineContext],
     table_for_line: &[Option<usize>],
     tables: &[Table],
+    callout_for_line: &[Option<usize>],
+    callouts: &[Callout],
     cursor: usize,
     focused: bool,
     available_width: Pixels,
@@ -173,24 +213,42 @@ fn measure_document(
     font_size: Pixels,
     text_color: Hsla,
     window: &mut Window,
-) -> (Pixels, Pixels, Pixels) {
+) -> (Pixels, Pixels, Pixels, Vec<(Pixels, Pixels)>) {
     let mut total = px(0.);
     let mut cursor_top = px(0.);
     let mut cursor_height = line_height;
+    // Each callout's accumulated `(top, bottom)` pixel range, parallel to
+    // `callouts` — `top` is set when its header line (the first in its
+    // range) is reached, `bottom` is just kept updated to "wherever we are
+    // after this line" on every line that belongs to it, ending up correct
+    // once its last line has been processed. Consumed by `paint_lines`'
+    // background/accent-bar pre-pass — see that function's own doc comment
+    // for why it can't just accumulate this itself the way `TablePaint`
+    // does (a background fill needs to be painted *before* that range's
+    // text, not after).
+    let mut callout_ranges = vec![(px(0.), px(0.)); callouts.len()];
     let mut line_start = 0usize;
     for (i, line_text) in text.split('\n').enumerate() {
         let line_range = line_start..line_start + line_text.len();
         let active = is_active_line(&line_range, cursor, focused);
         let table_kind = table_line_kind(tables, table_for_line, i);
         let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
+        let callout = callout_at_line(callouts, callout_for_line, i);
+        let callout_is_header = callout.is_some_and(|c| c.is_header(i));
         let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size, text_color,
-            available_width, window,
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header, active,
+            font, font_size, text_color, available_width, window,
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment) —
         // the raw line's total height is their combined height either way.
         let height: Pixels = results.iter().map(|(wrapped, _)| wrapped.size(line_height).height).sum();
+        if let Some(idx) = callout_for_line[i] {
+            if callout_is_header {
+                callout_ranges[idx].0 = total;
+            }
+            callout_ranges[idx].1 = total + height;
+        }
         if cursor >= line_range.start && cursor <= line_range.end {
             cursor_top = total;
             cursor_height = height;
@@ -198,7 +256,7 @@ fn measure_document(
         total += height;
         line_start = line_range.end + 1;
     }
-    (total, cursor_top, cursor_height)
+    (total, cursor_top, cursor_height, callout_ranges)
 }
 
 /// The `Font` to paint a [`DisplaySegment`](super::live_preview::DisplaySegment)'s
@@ -208,7 +266,7 @@ fn measure_document(
 fn font_for_style(style: InlineStyle, base: &Font) -> Font {
     let mut font = base.clone();
     match style {
-        InlineStyle::Bold | InlineStyle::Heading(_) => font.weight = FontWeight::BOLD,
+        InlineStyle::Bold | InlineStyle::Heading(_) | InlineStyle::CalloutTitle => font.weight = FontWeight::BOLD,
         InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
         InlineStyle::Plain | InlineStyle::Code | InlineStyle::Strikethrough | InlineStyle::WikiLink | InlineStyle::Link | InlineStyle::ListMarker => {}
     }
@@ -217,13 +275,23 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
 
 /// The color to paint a visible segment's text in — distinct colors for
 /// inline code, wikilinks, and blockquote/list-marker text; `base` (the
-/// editor's ambient text color) otherwise.
-fn color_for_style(style: InlineStyle, base: Hsla) -> Hsla {
+/// editor's ambient text color) otherwise. `callout` is the line's own
+/// callout, if it belongs to one: a header's title is colored with that
+/// callout's own accent (`callout_color`) rather than the generic
+/// `CalloutTitle` default of `base`, and a callout's *body* text — still
+/// styled plain `Blockquote`/`ListMarker` by `live_preview.rs`, which has
+/// no idea callouts exist — uses `base` instead of the usual muted
+/// blockquote gray, since the background tint already carries the visual
+/// distinction a plain quote's dimmer text otherwise provides.
+fn color_for_style(style: InlineStyle, base: Hsla, callout: Option<&Callout>) -> Hsla {
     match style {
         InlineStyle::Code => CODE_COLOR,
         InlineStyle::WikiLink => WIKILINK_COLOR,
         InlineStyle::Link => LINK_COLOR,
-        InlineStyle::Blockquote(_) | InlineStyle::ListMarker => MUTED_COLOR,
+        InlineStyle::CalloutTitle => callout.map_or(base, |c| callout_color(c.kind)),
+        InlineStyle::Blockquote(_) | InlineStyle::ListMarker => {
+            if callout.is_some() { base } else { MUTED_COLOR }
+        }
         InlineStyle::Plain | InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Heading(_) | InlineStyle::Strikethrough => base,
     }
 }
@@ -271,11 +339,17 @@ fn wrap_width_for(table_kind: &TableLineKind, table_active: bool, available_widt
 /// - [`LineRole::FenceDelimiter`]: raw when `active`, else [`hidden_line`]
 ///   — the fence marker itself has no "remainder" to show once hidden,
 ///   unlike every other hidden-prefix case in `live_preview.rs`.
-/// - [`LineRole::Plain`]: a thematic break (`is_thematic_break`, `---`/
-///   `***`/`___`) outside any table and not the active line is [`hidden_line`]
-///   too — `paint_lines` paints it as a real vector rule directly over the
-///   gap, same reasoning as a table's own grid lines. Otherwise, a line that
-///   isn't part of a table renders via
+/// - [`LineRole::Plain`]: a callout header line (`callout_is_header`, from
+///   `callout::classify_callouts`) outside any table renders via
+///   `build_callout_header_line` instead — see that function's own doc
+///   comment; a callout's *body* lines need no special dispatch here at
+///   all, rendering as ordinary blockquote content exactly like any other
+///   blockquote (only their *color* differs, resolved by `color_for_style`
+///   from the `callout` parameter at paint time). A thematic break
+///   (`is_thematic_break`, `---`/`***`/`___`) outside any table and not the
+///   active line is [`hidden_line`] too — `paint_lines` paints it as a real
+///   vector rule directly over the gap, same reasoning as a table's own
+///   grid lines. Otherwise, a line that isn't part of a table renders via
 ///   `build_display_line_in_context(line, active, block_ctx)` — `block_ctx`
 ///   (from `live_preview::classify_block_context`, also computed once per
 ///   document) resolves nested-list depth and lazy continuation, neither
@@ -296,6 +370,8 @@ pub(super) fn shape_display_line(
     block_ctx: LineContext,
     table_kind: TableLineKind,
     table_active: bool,
+    callout: Option<&Callout>,
+    callout_is_header: bool,
     active: bool,
     font: &Font,
     font_size: Pixels,
@@ -310,6 +386,7 @@ pub(super) fn shape_display_line(
         LineRole::Plain if table_active && !matches!(table_kind, TableLineKind::None) => {
             vec![build_display_line(line, true)]
         }
+        LineRole::Plain if callout_is_header => vec![build_callout_header_line(line, active)],
         LineRole::Plain => match table_kind {
             TableLineKind::None if !active && is_thematic_break(line) => vec![hidden_line(line)],
             TableLineKind::None => vec![build_display_line_in_context(line, active, block_ctx)],
@@ -343,7 +420,7 @@ pub(super) fn shape_display_line(
                 .iter()
                 .filter(|seg| !seg.is_hidden())
                 .map(|seg| {
-                    let color = color_for_style(seg.style, text_color);
+                    let color = color_for_style(seg.style, text_color, callout);
                     TextRun {
                         len: seg.display.len(),
                         font: font_for_style(seg.style, font),
@@ -450,6 +527,11 @@ pub(super) fn render_editor(
     // Same reasoning again — a table's column widths/alignment depend on
     // every row together, see `table_preview`'s own module doc.
     let (table_for_line, tables) = classify_tables(&text);
+    // Same reasoning again — telling a callout's header line apart from a
+    // body line that also starts with `>` needs to know whether the
+    // blockquote block just opened here or is continuing, see `callout`'s
+    // own module doc.
+    let (callout_for_line, callouts) = classify_callouts(&text);
 
     let line_height = window.line_height();
     let focused = focus_handle.is_focused(window);
@@ -480,9 +562,9 @@ pub(super) fn render_editor(
         let width = scroll_handle.bounds().size.width;
         if width > px(0.) { width } else { Pixels::MAX }
     };
-    let (total_height, cursor_top, cursor_height) = measure_document(
-        &text, &line_roles, &block_contexts, &table_for_line, &tables, cursor, focused, available_width,
-        line_height, &font, font_size, text_color, window,
+    let (total_height, cursor_top, cursor_height, callout_ranges) = measure_document(
+        &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor, focused,
+        available_width, line_height, &font, font_size, text_color, window,
     );
 
     div()
@@ -520,6 +602,9 @@ pub(super) fn render_editor(
                         &block_contexts,
                         &table_for_line,
                         &tables,
+                        &callout_for_line,
+                        &callouts,
+                        &callout_ranges,
                         cursor,
                         selection.clone(),
                         focused,
@@ -539,6 +624,8 @@ pub(super) fn render_editor(
                         block_contexts.clone(),
                         table_for_line.clone(),
                         tables.clone(),
+                        callout_for_line.clone(),
+                        callouts.clone(),
                         cursor,
                         focused,
                         bounds,
@@ -575,6 +662,8 @@ fn register_mouse_handling(
     block_contexts: Vec<LineContext>,
     table_for_line: Vec<Option<usize>>,
     tables: Vec<Table>,
+    callout_for_line: Vec<Option<usize>>,
+    callouts: Vec<Callout>,
     cursor: usize,
     focused: bool,
     bounds: Bounds<Pixels>,
@@ -592,6 +681,8 @@ fn register_mouse_handling(
         let block_contexts = block_contexts.clone();
         let table_for_line = table_for_line.clone();
         let tables = tables.clone();
+        let callout_for_line = callout_for_line.clone();
+        let callouts = callouts.clone();
         let font = font.clone();
         move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble
@@ -601,8 +692,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, &line_roles, &block_contexts, &table_for_line, &tables, cursor, focused, event.position,
-                bounds, line_height, &font, font_size, text_color, window,
+                &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor,
+                focused, event.position, bounds, line_height, &font, font_size, text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, false);
@@ -620,8 +711,8 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &text, &line_roles, &block_contexts, &table_for_line, &tables, cursor, focused, event.position,
-                bounds, line_height, &font, font_size, text_color, window,
+                &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor,
+                focused, event.position, bounds, line_height, &font, font_size, text_color, window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, true);
@@ -663,6 +754,8 @@ fn offset_for_position(
     block_contexts: &[LineContext],
     table_for_line: &[Option<usize>],
     tables: &[Table],
+    callout_for_line: &[Option<usize>],
+    callouts: &[Callout],
     cursor: usize,
     focused: bool,
     position: Point<Pixels>,
@@ -682,9 +775,11 @@ fn offset_for_position(
         let active = is_active_line(&line_range, cursor, focused);
         let table_kind = table_line_kind(tables, table_for_line, i);
         let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
+        let callout = callout_at_line(callouts, callout_for_line, i);
+        let callout_is_header = callout.is_some_and(|c| c.is_header(i));
         let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size, text_color,
-            bounds.size.width, window,
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header, active,
+            font, font_size, text_color, bounds.size.width, window,
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap, each entry then its own (unwrapped, since
@@ -772,6 +867,9 @@ fn paint_lines(
     block_contexts: &[LineContext],
     table_for_line: &[Option<usize>],
     tables: &[Table],
+    callout_for_line: &[Option<usize>],
+    callouts: &[Callout],
+    callout_ranges: &[(Pixels, Pixels)],
     cursor: usize,
     selection: Option<std::ops::Range<usize>>,
     show_cursor: bool,
@@ -783,6 +881,30 @@ fn paint_lines(
     window: &mut Window,
     cx: &mut App,
 ) {
+    // Every callout's background tint + accent bar, painted *before* any
+    // line's text — unlike `TablePaint`'s grid lines (thin enough that
+    // painting them after a row's own text is fine), a full-width
+    // background fill painted afterward would paint right over and hide
+    // that text. `callout_ranges` (from `measure_document`'s own extra
+    // per-line pass, the same one that already produces `cursor_top`/
+    // `cursor_height`) gives each callout's already-known top/bottom
+    // extent, so this can run as a single pre-pass rather than needing to
+    // restructure the main per-line loop below at all.
+    for (callout, &(top, bottom)) in callouts.iter().zip(callout_ranges) {
+        let color = callout_color(callout.kind);
+        let background = Hsla { a: CALLOUT_BACKGROUND_ALPHA, ..color };
+        let top = bounds.origin.y + top;
+        let bottom = bounds.origin.y + bottom;
+        window.paint_quad(fill(
+            Bounds { origin: point(bounds.origin.x, top), size: size(bounds.size.width, bottom - top) },
+            background,
+        ));
+        window.paint_quad(fill(
+            Bounds { origin: point(bounds.origin.x + QUOTE_BAR_INSET, top), size: size(CALLOUT_BAR_WIDTH, bottom - top) },
+            color,
+        ));
+    }
+
     let mut line_start = 0usize;
     let mut y_offset = px(0.);
     // Accumulated across a table's own lines, then painted and cleared
@@ -796,10 +918,12 @@ fn paint_lines(
         let active = is_active_line(&line_range, cursor, show_cursor);
         let table_kind = table_line_kind(tables, table_for_line, i);
         let table_active = is_table_active(tables, table_for_line, i, cursor, show_cursor);
+        let callout = callout_at_line(callouts, callout_for_line, i);
+        let callout_is_header = callout.is_some_and(|c| c.is_header(i));
 
         let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, active, font, font_size, text_color,
-            bounds.size.width, window,
+            line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header, active,
+            font, font_size, text_color, bounds.size.width, window,
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
@@ -867,7 +991,13 @@ fn paint_lines(
             }
         }
 
-        if let LineIndent::Blockquote(depth) = results[0].1.indent {
+        // A callout's own accent bar (painted in the pre-pass above, at
+        // this same gutter position since a callout is always depth-1)
+        // already covers this line — painting the plain muted bar too
+        // would paint right over it, hiding the color.
+        if callout.is_none()
+            && let LineIndent::Blockquote(depth) = results[0].1.indent
+        {
             for level in 0..depth {
                 let bar_x = bounds.origin.x + indent_px(level) + QUOTE_BAR_INSET;
                 window.paint_quad(fill(
@@ -1058,7 +1188,7 @@ mod tests {
 
             let (unwrapped, _) = {
             let mut results = shape_display_line(
-                &line, LineRole::Plain, LineContext::Plain, TableLineKind::None, false, false, &font, font_size,
+                &line, LineRole::Plain, LineContext::Plain, TableLineKind::None, false, None, false, false, &font, font_size,
                 text_style.color, Pixels::MAX, window,
             );
             assert_eq!(results.len(), 1, "expected exactly one entry");
@@ -1071,7 +1201,7 @@ mod tests {
 
             let (wrapped, _) = {
             let mut results = shape_display_line(
-                &line, LineRole::Plain, LineContext::Plain, TableLineKind::None, false, false, &font, font_size,
+                &line, LineRole::Plain, LineContext::Plain, TableLineKind::None, false, None, false, false, &font, font_size,
                 text_style.color, px(100.), window,
             );
             assert_eq!(results.len(), 1, "expected exactly one entry");
@@ -1107,7 +1237,7 @@ mod tests {
             let table = &tables[0];
 
             let results = shape_display_line(
-                "| Alice | 30 |", LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false, &font,
+                "| Alice | 30 |", LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, None, false, false, &font,
                 font_size, text_style.color, px(10.), window,
             );
             for (wrapped, _) in &results {
@@ -1139,7 +1269,7 @@ mod tests {
             let row = "| Alice | A very long biography that does not fit |";
 
             let narrow = shape_display_line(
-                row, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false, &font, font_size,
+                row, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, None, false, false, &font, font_size,
                 text_style.color, px(150.), window,
             );
             assert!(narrow.len() > 1, "a cell too wide for a 150px budget should split into multiple sub-rows");
@@ -1155,7 +1285,7 @@ mod tests {
             }
 
             let wide = shape_display_line(
-                row, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false, &font, font_size,
+                row, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, None, false, false, &font, font_size,
                 text_style.color, Pixels::MAX, window,
             );
             assert_eq!(wide.len(), 1, "an effectively unbounded width should never need to wrap a cell");
@@ -1576,6 +1706,28 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn renders_callouts_without_panicking(cx: &mut TestAppContext) {
+        let text = concat!(
+            "> [!info]\n",
+            "> Some additional information.\n",
+            "\n",
+            "> [!warning]+ Custom Title\n",
+            "> body with a nested quote:\n",
+            ">> [!note]\n",
+            ">> this nested header is just plain nested-blockquote text\n",
+            "\n",
+            "active line"
+        );
+        let (window, editor) = open_editor(cx, text);
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(text.len(), false));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("editor").is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn clicking_a_previewed_heading_lands_past_its_hidden_marker_and_activates_it(cx: &mut TestAppContext) {
         let text = "first line\n# Heading";
         let (window, editor) = open_editor(cx, text);
@@ -1796,7 +1948,7 @@ mod tests {
 
             let (_, grid) = {
             let mut results = shape_display_line(
-                header, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, false, &font, font_size, text_style.color,
+                header, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, None, false, false, &font, font_size, text_style.color,
                 Pixels::MAX, window,
             );
             assert_eq!(results.len(), 1, "expected exactly one entry");
@@ -1811,7 +1963,7 @@ mod tests {
 
             let (_, raw) = {
             let mut results = shape_display_line(
-                header, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), true, false, &font, font_size, text_style.color,
+                header, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), true, None, false, false, &font, font_size, text_style.color,
                 Pixels::MAX, window,
             );
             assert_eq!(results.len(), 1, "expected exactly one entry");
@@ -1871,7 +2023,7 @@ mod tests {
             // active or not.
             let (_, display_line) = {
             let mut results = shape_display_line(
-                line, LineRole::FenceContent, LineContext::Plain, TableLineKind::None, false, true, &font, font_size, text_style.color,
+                line, LineRole::FenceContent, LineContext::Plain, TableLineKind::None, false, None, false, true, &font, font_size, text_style.color,
                 Pixels::MAX, window,
             );
             assert_eq!(results.len(), 1, "expected exactly one entry");
@@ -1893,7 +2045,7 @@ mod tests {
             for line in ["> looks like a quote", "- looks like a list item"] {
                 let (_, display_line) = {
             let mut results = shape_display_line(
-                line, LineRole::FenceContent, LineContext::Plain, TableLineKind::None, false, false, &font, font_size, text_style.color,
+                line, LineRole::FenceContent, LineContext::Plain, TableLineKind::None, false, None, false, false, &font, font_size, text_style.color,
                 Pixels::MAX, window,
             );
             assert_eq!(results.len(), 1, "expected exactly one entry");
@@ -1920,7 +2072,7 @@ mod tests {
             let font_size = text_style.font_size.to_pixels(window.rem_size());
             let (_, display_line) = {
             let mut results = shape_display_line(
-                line, LineRole::FenceDelimiter, LineContext::Plain, TableLineKind::None, false, false, &font, font_size, text_style.color,
+                line, LineRole::FenceDelimiter, LineContext::Plain, TableLineKind::None, false, None, false, false, &font, font_size, text_style.color,
                 Pixels::MAX, window,
             );
             assert_eq!(results.len(), 1, "expected exactly one entry");
@@ -1930,7 +2082,7 @@ mod tests {
 
             let (_, active_display_line) = {
             let mut results = shape_display_line(
-                line, LineRole::FenceDelimiter, LineContext::Plain, TableLineKind::None, false, true, &font, font_size, text_style.color,
+                line, LineRole::FenceDelimiter, LineContext::Plain, TableLineKind::None, false, None, false, true, &font, font_size, text_style.color,
                 Pixels::MAX, window,
             );
             assert_eq!(results.len(), 1, "expected exactly one entry");

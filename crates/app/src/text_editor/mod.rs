@@ -5,6 +5,7 @@
 
 mod block_preview;
 mod buffer;
+mod callout;
 mod editor;
 mod element;
 mod input_handler;

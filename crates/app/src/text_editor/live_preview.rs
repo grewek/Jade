@@ -57,6 +57,7 @@
 
 use std::ops::Range;
 
+use super::callout::{self, callout_header_prefix};
 use super::table_preview::{self, Column};
 
 /// How a visible [`DisplaySegment`] should be painted. Plain data —
@@ -83,6 +84,14 @@ pub enum InlineStyle {
     /// — see [`DisplaySegment::is_replaced`]. Not applied to a list item's
     /// actual text content, only to these replacement glyphs.
     ListMarker,
+    /// A callout header's title — either a custom title's own text (still
+    /// inline-scanned, so it can itself contain `**bold**`/links/etc.) or
+    /// the capitalized type name standing in for one, via
+    /// [`build_callout_header_line`]. Carries no color/weight of its own
+    /// here — `element.rs` resolves both from the line's actual
+    /// [`callout::Callout`](super::callout::Callout), keeping this module
+    /// GPUI-free.
+    CalloutTitle,
 }
 
 /// One contiguous run of a line: the byte range it occupies in the *raw*
@@ -969,6 +978,85 @@ fn push_replaced(
     display_text.push_str(replacement);
     let display_end = display_text.len();
     segments.push(DisplaySegment { raw, display: display_start..display_end, style, replaced: true });
+}
+
+/// Builds a callout header line's Live Preview rendering — the `> [!type]`
+/// (plus optional fold marker/custom title) line itself, not its body
+/// (which renders as ordinary blockquote content via
+/// `build_display_line_in_context`, unchanged — see `callout.rs`'s own
+/// module doc for why only the header needs this). Raw/unstyled if
+/// `active`, same as every other construct's active line; otherwise hides
+/// `> [!type]+/-` (and one separating space) entirely, then either
+/// inline-scans a custom title (so it can itself contain `**bold**`/links/
+/// etc., styled [`InlineStyle::CalloutTitle`]) or, if there isn't one,
+/// shows the raw type name as typed — capitalized, matching Obsidian's own
+/// behavior — as synthetic replacement text in the same style. Falls back
+/// to plain `build_display_line` if `line` doesn't actually start with a
+/// blockquote prefix or a callout header after it (shouldn't happen for a
+/// line `callout::classify_callouts` identified as a header, but cheaper
+/// and simpler than unwrapping).
+pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
+    let indent = line_indent(line);
+
+    if active || line.is_empty() {
+        return DisplayLine {
+            display_text: line.to_string(),
+            segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain, replaced: false }],
+            indent,
+        };
+    }
+
+    let Some((_, prefix_len)) = blockquote_prefix(line) else {
+        return build_display_line(line, active);
+    };
+    let content = &line[prefix_len..];
+    let Some(header) = callout_header_prefix(content) else {
+        return build_display_line(line, active);
+    };
+
+    let mut segments = Vec::new();
+    let mut display_text = String::new();
+
+    let icon = callout::callout_icon(header.kind);
+
+    match header.title {
+        Some(title_range) => {
+            let title_start = prefix_len + title_range.start;
+            push_hidden(&mut segments, &display_text, 0..title_start);
+            // A zero-width raw insertion point for the icon prefix — there's
+            // no raw byte "spent" on it, same as how `scan_inline` has
+            // nothing in `raw` to spend on markup it hides either, just the
+            // reverse (showing synthetic text with no raw backing instead of
+            // hiding real text with no display backing). `push_replaced`
+            // doesn't require a non-empty `raw` in practice, and both
+            // `DisplayLine` offset-mapping functions already treat any
+            // `is_replaced()` segment as a single collapse point regardless
+            // of its raw width, so a click landing on the icon simply
+            // resolves to the title's own start, right after it.
+            push_replaced(&mut segments, &mut display_text, title_start..title_start, &format!("{icon} "), InlineStyle::CalloutTitle);
+            scan_inline(line, title_start, line.len(), InlineStyle::CalloutTitle, &mut segments, &mut display_text);
+        }
+        None => {
+            let marker_end = prefix_len + header.marker_end;
+            push_hidden(&mut segments, &display_text, 0..marker_end);
+            let type_name = &content[header.type_name.clone()];
+            let fallback_title = format!("{icon} {}", capitalize(type_name));
+            push_replaced(&mut segments, &mut display_text, marker_end..line.len(), &fallback_title, InlineStyle::CalloutTitle);
+        }
+    }
+
+    DisplayLine { display_text, segments, indent }
+}
+
+/// Capitalizes just the first character of `text`, leaving the rest as-is
+/// — used for a callout's fallback title (the raw type name as typed,
+/// e.g. `important` → `Important`), matching Obsidian's own display.
+fn capitalize(text: &str) -> String {
+    let mut chars = text.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 /// A line whose entire raw text is hidden (zero display width) — used by
@@ -2293,5 +2381,53 @@ mod tests {
     fn a_list_item_without_a_checkbox_is_unaffected() {
         let dl = build_display_line("- [not a checkbox] text", false);
         assert_eq!(dl.display_text, "• [not a checkbox] text");
+    }
+
+    #[test]
+    fn callout_header_active_line_is_raw() {
+        let line = "> [!info] Custom Title";
+        let dl = build_callout_header_line(line, true);
+        assert_eq!(dl.display_text, line);
+    }
+
+    #[test]
+    fn callout_header_without_a_title_shows_the_capitalized_type_name() {
+        let dl = build_callout_header_line("> [!warning]", false);
+        assert_eq!(dl.display_text, format!("{} Warning", callout::callout_icon(callout::CalloutType::Warning)));
+        assert_eq!(visible_styles(&dl), vec![(dl.display_text.clone(), InlineStyle::CalloutTitle)]);
+    }
+
+    #[test]
+    fn callout_header_with_a_custom_title_shows_it_instead() {
+        let dl = build_callout_header_line("> [!info] Custom Title", false);
+        assert_eq!(dl.display_text, format!("{} Custom Title", callout::callout_icon(callout::CalloutType::Info)));
+    }
+
+    #[test]
+    fn callout_header_hides_the_fold_marker() {
+        let dl = build_callout_header_line("> [!info]+ Title", false);
+        assert_eq!(dl.display_text, format!("{} Title", callout::callout_icon(callout::CalloutType::Info)));
+    }
+
+    #[test]
+    fn callout_header_title_can_itself_contain_bold() {
+        let dl = build_callout_header_line("> [!info] a **bold** title", false);
+        assert_eq!(dl.display_text, format!("{} a bold title", callout::callout_icon(callout::CalloutType::Info)));
+        assert_eq!(
+            visible_styles(&dl),
+            vec![
+                (format!("{} ", callout::callout_icon(callout::CalloutType::Info)), InlineStyle::CalloutTitle),
+                ("a ".to_string(), InlineStyle::CalloutTitle),
+                ("bold".to_string(), InlineStyle::Bold),
+                (" title".to_string(), InlineStyle::CalloutTitle),
+            ]
+        );
+    }
+
+    #[test]
+    fn callout_header_falls_back_to_plain_blockquote_rendering_when_not_actually_a_header() {
+        let dl = build_callout_header_line("> just a regular quote", false);
+        assert_eq!(dl.display_text, "just a regular quote");
+        assert_eq!(visible_styles(&dl), vec![("just a regular quote".to_string(), InlineStyle::Blockquote(1))]);
     }
 }
