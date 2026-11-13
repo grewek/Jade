@@ -1495,6 +1495,65 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn typing_in_a_huge_file_after_it_is_open_is_fast(cx: &mut TestAppContext) {
+        // Diagnostic/regression test for Part 2 of the performance fix
+        // (incremental classification caching, see CLAUDE.md's Backlog):
+        // once the file is open (Part 1's viewport-bounded rendering
+        // already covers that cost), a single keystroke's cost is what
+        // this measures — the actual per-frame/per-keystroke steady-state
+        // cost the 16.66ms (60fps) bar applies to, not cold-open.
+        //
+        // Deliberately *not* `window.input(...)` — `gpui_kit::test`'s own
+        // `input_text` helper bundles a `render_frame` both before *and*
+        // after dispatching each character, which would silently fold two
+        // renders into whatever this measured as "the edit" itself. A
+        // direct `dispatch_keystroke` isolates the actual edit path
+        // (`EntityInputHandler::replace_text_in_range` ->
+        // `EditorBuffer::insert` -> `DocumentCache::record_edit`) from the
+        // render that follows it, so each can be attributed honestly.
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Big.md"), &content).unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Big", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+
+        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor should be open"));
+        cx.update_window(window, |_, window, cx| {
+            editor.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+
+            // Typing a character edits a single line deep inside a huge
+            // document (no newline added/removed) — exactly the case
+            // `DocumentCache`'s incremental patch functions exist for.
+            let mut keystroke = gpui_kit::Keystroke::parse("x").unwrap();
+            keystroke.key_char = Some("x".to_string());
+            let edit_elapsed = {
+                let start = std::time::Instant::now();
+                window.dispatch_keystroke(keystroke, cx);
+                start.elapsed()
+            };
+            let render_elapsed = {
+                let start = std::time::Instant::now();
+                window.render_frame(cx);
+                start.elapsed()
+            };
+            eprintln!(
+                "typing_in_a_huge_file_after_it_is_open_is_fast: edit={edit_elapsed:?} render={render_elapsed:?}"
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn ctrl_p_opens_the_command_palette(cx: &mut TestAppContext) {
         // Deliberately nothing clicked first — this is the actual
         // regression case: a plain element-attached `.on_action` would
