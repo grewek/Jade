@@ -1,10 +1,30 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::ops::Range;
 use std::rc::Rc;
 
 use gpui_kit::*;
 
+use super::document_cache::{DocumentCache, TextEdit};
 use super::element::render_editor;
 use super::EditorBuffer;
+
+/// The `TextEdit` for a plain insertion of `inserted_len` bytes replacing
+/// `old_range` (the selection, or the collapsed cursor if none) — call sites
+/// capture `old_range` via `buffer.selection()`/`cursor()` *before* calling
+/// `EditorBuffer::insert`, since nothing after that call can recover it.
+fn edit_for_insertion(old_range: Range<usize>, inserted_len: usize) -> TextEdit {
+    TextEdit { start_byte: old_range.start, old_end_byte: old_range.end, new_end_byte: old_range.start + inserted_len }
+}
+
+/// The `TextEdit` for deleting `old_selection`, or `None` if there wasn't
+/// one — the no-selection case (delete one char before/after the cursor)
+/// has no range to report here at all, since without a selection there's
+/// nothing to read before the mutating call; callers derive that case
+/// themselves from before/after `cursor()`/`text().len()` reads instead
+/// (see `Editor::handle_key_down`'s own `"backspace"`/`"delete"` arms).
+fn edit_for_deletion(old_selection: Option<Range<usize>>) -> Option<TextEdit> {
+    old_selection.map(|range| TextEdit { start_byte: range.start, old_end_byte: range.end, new_end_byte: range.start })
+}
 
 /// Emitted whenever a buffer-mutating operation changes the text (typing,
 /// IME commit, paste, cut, undo/redo) — not for cursor-only movement or
@@ -58,17 +78,30 @@ pub struct Editor {
     /// directly — no need to read/update the entity itself from inside
     /// paint, where that isn't guaranteed safe.
     pub(super) last_autoscrolled_cursor: Rc<Cell<Option<usize>>>,
+    /// Persisted classification results for the buffer's current text —
+    /// see `document_cache`'s own module doc. `Rc<RefCell<_>>` for the same
+    /// reason `scroll_handle`/`last_autoscrolled_cursor` are: `render_editor`
+    /// clones it out of `&Editor` synchronously, then reads it (so far —
+    /// nothing inside the paint closure mutates it yet) from inside the
+    /// `'static` canvas paint closure without touching the entity.
+    pub(super) document_cache: Rc<RefCell<DocumentCache>>,
 }
 
 impl Editor {
     pub fn new(text: impl Into<String>, cx: &mut Context<Self>) -> Self {
+        let buffer = EditorBuffer::new(text);
+        // Eager, one-time cost at open — same decision already made for
+        // Part 1's viewport-rendering fix (see CLAUDE.md), not a new one
+        // for this cache specifically.
+        let document_cache = Rc::new(RefCell::new(DocumentCache::new(buffer.text())));
         Self {
-            buffer: EditorBuffer::new(text),
+            buffer,
             focus_handle: cx.focus_handle(),
             is_dragging: false,
             marked_range: None,
             scroll_handle: ScrollHandle::new(),
             last_autoscrolled_cursor: Rc::new(Cell::new(None)),
+            document_cache,
         }
     }
 
@@ -93,6 +126,26 @@ impl Editor {
     pub(super) fn notify_changed(&self, cx: &mut Context<Self>) {
         cx.emit(EditorEvent::Changed);
         cx.notify();
+    }
+
+    /// Patches `document_cache` for a precisely-known edit and emits
+    /// `EditorEvent::Changed` — the call every text-mutating call site in
+    /// this file and `input_handler.rs` makes instead of a plain
+    /// `notify_changed(cx)`, right after the `buffer` mutation itself.
+    pub(super) fn record_edit(&mut self, edit: TextEdit, cx: &mut Context<Self>) {
+        self.document_cache.borrow_mut().record_edit(self.buffer.text(), edit);
+        self.notify_changed(cx);
+    }
+
+    /// For undo/redo: a `Snapshot` swap gives no derivable `TextEdit` at all
+    /// (the edit it undoes/redoes could have touched anything), so this
+    /// always falls back to a full recompute rather than guessing at a
+    /// range. Not on the hot per-keystroke path — see `document_cache.rs`'s
+    /// own module doc and CLAUDE.md's Backlog entry for why this is an
+    /// accepted, explicitly-scoped gap rather than an oversight.
+    pub(super) fn invalidate_all(&mut self, cx: &mut Context<Self>) {
+        self.document_cache.borrow_mut().recompute_all(self.buffer.text());
+        self.notify_changed(cx);
     }
 
     /// Navigation/editing keys only (arrows, Home/End, Backspace/Delete,
@@ -130,23 +183,30 @@ impl Editor {
                     return;
                 }
                 "x" => {
-                    if let Some(text) = self.buffer.cut() {
+                    if let Some(edit) = edit_for_deletion(self.buffer.selection())
+                        && let Some(text) = self.buffer.cut()
+                    {
                         cx.write_to_clipboard(ClipboardItem::new_string(text));
-                        self.notify_changed(cx);
+                        self.record_edit(edit, cx);
                     }
                     return;
                 }
                 "v" => {
                     if let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) {
+                        let old_range = self.buffer.selection().unwrap_or_else(|| {
+                            let c = self.buffer.cursor();
+                            c..c
+                        });
+                        let edit = edit_for_insertion(old_range, text.len());
                         self.buffer.insert(&text);
-                        self.notify_changed(cx);
+                        self.record_edit(edit, cx);
                     }
                     return;
                 }
                 "z" => {
                     let changed = if shift { self.buffer.redo() } else { self.buffer.undo() };
                     if changed {
-                        self.notify_changed(cx);
+                        self.invalidate_all(cx);
                     }
                     return;
                 }
@@ -164,23 +224,87 @@ impl Editor {
             }
         }
 
-        let mutates = matches!(keystroke.key.as_str(), "backspace" | "delete" | "enter");
         match keystroke.key.as_str() {
-            "left" => self.buffer.move_left(shift),
-            "right" => self.buffer.move_right(shift),
-            "up" => self.buffer.move_up(shift),
-            "down" => self.buffer.move_down(shift),
-            "home" => self.buffer.move_to_line_start(shift),
-            "end" => self.buffer.move_to_line_end(shift),
-            "backspace" => self.buffer.delete_backward(),
-            "delete" => self.buffer.delete_forward(),
-            "enter" => self.buffer.insert("\n"),
-            _ => return,
-        }
-        if mutates {
-            self.notify_changed(cx);
-        } else {
-            cx.notify();
+            "left" => {
+                self.buffer.move_left(shift);
+                cx.notify();
+            }
+            "right" => {
+                self.buffer.move_right(shift);
+                cx.notify();
+            }
+            "up" => {
+                self.buffer.move_up(shift);
+                cx.notify();
+            }
+            "down" => {
+                self.buffer.move_down(shift);
+                cx.notify();
+            }
+            "home" => {
+                self.buffer.move_to_line_start(shift);
+                cx.notify();
+            }
+            "end" => {
+                self.buffer.move_to_line_end(shift);
+                cx.notify();
+            }
+            // Deletion with an active selection always has a precise
+            // `TextEdit` (the selection itself) available *before* the
+            // mutating call. Without one, only `delete_backward`'s own
+            // before/after `cursor()` reads (it moves; `delete_forward`
+            // doesn't) can recover the single removed char's range — no
+            // private `EditorBuffer` helper is exposed for it, and none is
+            // needed.
+            "backspace" => {
+                if let Some(edit) = edit_for_deletion(self.buffer.selection()) {
+                    self.buffer.delete_backward();
+                    self.record_edit(edit, cx);
+                } else {
+                    let old_cursor = self.buffer.cursor();
+                    self.buffer.delete_backward();
+                    let new_cursor = self.buffer.cursor();
+                    if new_cursor != old_cursor {
+                        self.record_edit(
+                            TextEdit { start_byte: new_cursor, old_end_byte: old_cursor, new_end_byte: new_cursor },
+                            cx,
+                        );
+                    }
+                }
+            }
+            // `delete_forward`'s cursor never moves, so the removed range's
+            // end has to come from the byte-length delta instead.
+            "delete" => {
+                if let Some(edit) = edit_for_deletion(self.buffer.selection()) {
+                    self.buffer.delete_forward();
+                    self.record_edit(edit, cx);
+                } else {
+                    let old_cursor = self.buffer.cursor();
+                    let old_len = self.buffer.text().len();
+                    self.buffer.delete_forward();
+                    let new_len = self.buffer.text().len();
+                    if new_len != old_len {
+                        self.record_edit(
+                            TextEdit {
+                                start_byte: old_cursor,
+                                old_end_byte: old_cursor + (old_len - new_len),
+                                new_end_byte: old_cursor,
+                            },
+                            cx,
+                        );
+                    }
+                }
+            }
+            "enter" => {
+                let old_range = self.buffer.selection().unwrap_or_else(|| {
+                    let c = self.buffer.cursor();
+                    c..c
+                });
+                let edit = edit_for_insertion(old_range, 1);
+                self.buffer.insert("\n");
+                self.record_edit(edit, cx);
+            }
+            _ => {}
         }
     }
 
@@ -198,8 +322,13 @@ impl Editor {
     /// just here needing to actually out-rank a default binding rather
     /// than just adding a new one.
     pub(super) fn handle_insert_tab(&mut self, _: &InsertTab, _window: &mut Window, cx: &mut Context<Self>) {
+        let old_range = self.buffer.selection().unwrap_or_else(|| {
+            let c = self.buffer.cursor();
+            c..c
+        });
+        let edit = edit_for_insertion(old_range, 1);
         self.buffer.insert("\t");
-        self.notify_changed(cx);
+        self.record_edit(edit, cx);
     }
 }
 

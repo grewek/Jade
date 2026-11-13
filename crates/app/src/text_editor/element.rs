@@ -2,12 +2,12 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::*;
 
 use super::block_preview::LineRole;
-use super::callout::{classify_callouts, Callout, CalloutType};
+use super::callout::{Callout, CalloutType};
 use super::live_preview::{
-    build_callout_header_line, build_display_line, build_display_line_in_context, build_table_row, classify_block_context, hidden_line,
+    build_callout_header_line, build_display_line, build_display_line_in_context, build_table_row, hidden_line,
     is_thematic_break, DisplayLine, InlineStyle, LineContext, LineIndent,
 };
-use super::table_preview::{self, classify_tables, Table};
+use super::table_preview::{self, Table};
 use super::Editor;
 
 /// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
@@ -670,22 +670,24 @@ pub(super) fn render_editor(
     let focus_handle = editor.focus_handle.clone();
     let scroll_handle = editor.scroll_handle.clone();
     let last_autoscrolled_cursor = editor.last_autoscrolled_cursor.clone();
-    // Computed once per paint (not per line) since it needs the whole
-    // document to tell whether a given line sits inside an open code
-    // fence — see `block_preview`'s module doc.
-    let line_roles = super::block_preview::classify_lines(&text);
-    // Same "whole document, once per paint" reasoning as `line_roles` above
-    // — nested-list depth and lazy continuation both depend on prior lines,
-    // see `live_preview::classify_block_context`'s own doc comment.
-    let block_contexts = classify_block_context(&text);
-    // Same reasoning again — a table's column widths/alignment depend on
-    // every row together, see `table_preview`'s own module doc.
-    let (table_for_line, tables) = classify_tables(&text);
-    // Same reasoning again — telling a callout's header line apart from a
-    // body line that also starts with `>` needs to know whether the
-    // blockquote block just opened here or is continuing, see `callout`'s
-    // own module doc.
-    let (callout_for_line, callouts) = classify_callouts(&text);
+    // Reads the persisted `DocumentCache` (see that module's own doc
+    // comment) instead of re-running all four classify_* passes fresh on
+    // every paint — every mutation already patched it via `record_edit`/
+    // `invalidate_all` before this render could even happen. Cloned into
+    // owned `Vec`s immediately: the `canvas` paint closure below is
+    // `'static` and needs to own this frame's data, same as it always has.
+    let document_cache = editor.document_cache.clone();
+    let (line_roles, block_contexts, table_for_line, tables, callout_for_line, callouts) = {
+        let cache = document_cache.borrow();
+        (
+            cache.line_roles().to_vec(),
+            cache.block_contexts().to_vec(),
+            cache.table_for_line().to_vec(),
+            cache.tables().to_vec(),
+            cache.callout_for_line().to_vec(),
+            cache.callouts().to_vec(),
+        )
+    };
 
     let line_height = window.line_height();
     let focused = focus_handle.is_focused(window);

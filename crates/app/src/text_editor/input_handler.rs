@@ -2,14 +2,11 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
-use super::block_preview::classify_lines;
-use super::callout::classify_callouts;
+use super::document_cache::TextEdit;
 use super::element::{
     analyze_line_layout, callout_at_line, indent_px, is_active_line, is_table_active, shape_display_line,
     table_line_kind, visible_line_range,
 };
-use super::live_preview::classify_block_context;
-use super::table_preview::classify_tables;
 use super::Editor;
 
 /// The byte offset in `text` after `utf16_offset` UTF-16 code units.
@@ -103,11 +100,16 @@ impl EntityInputHandler for Editor {
                 let cursor = self.buffer.cursor();
                 self.buffer.selection().unwrap_or(cursor..cursor)
             });
+        let edit = TextEdit {
+            start_byte: replace_range.start,
+            old_end_byte: replace_range.end,
+            new_end_byte: replace_range.start + text.len(),
+        };
         self.buffer.set_cursor(replace_range.start, false);
         self.buffer.set_cursor(replace_range.end, true);
         self.buffer.insert(text);
         self.marked_range = None;
-        self.notify_changed(cx);
+        self.record_edit(edit, cx);
     }
 
     fn replace_and_mark_text_in_range(
@@ -127,6 +129,11 @@ impl EntityInputHandler for Editor {
                 self.buffer.selection().unwrap_or(cursor..cursor)
             });
 
+        let edit = TextEdit {
+            start_byte: replace_range.start,
+            old_end_byte: replace_range.end,
+            new_end_byte: replace_range.start + new_text.len(),
+        };
         self.buffer.set_cursor(replace_range.start, false);
         self.buffer.set_cursor(replace_range.end, true);
         self.buffer.insert(new_text);
@@ -145,7 +152,7 @@ impl EntityInputHandler for Editor {
             }
             None => self.buffer.set_cursor(marked_end, false),
         }
-        self.notify_changed(cx);
+        self.record_edit(edit, cx);
     }
 
     fn bounds_for_range(
@@ -168,10 +175,17 @@ impl EntityInputHandler for Editor {
         font.family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let text_color = text_style.color;
-        let line_roles = classify_lines(&text);
-        let block_contexts = classify_block_context(&text);
-        let (table_for_line, tables) = classify_tables(&text);
-        let (callout_for_line, callouts) = classify_callouts(&text);
+        // Reads the same persisted cache every edit already updated via
+        // `record_edit`/`invalidate_all` — this used to independently rerun
+        // all four classify_* passes on every call, not just once per
+        // paint like `render_editor`; see `document_cache`'s own module doc.
+        let cache_ref = self.document_cache.borrow();
+        let line_roles = cache_ref.line_roles();
+        let block_contexts = cache_ref.block_contexts();
+        let table_for_line = cache_ref.table_for_line();
+        let tables = cache_ref.tables();
+        let callout_for_line = cache_ref.callout_for_line();
+        let callouts = cache_ref.callouts();
         let focused = self.focus_handle.is_focused(window);
 
         // Same viewport-bounded approach `element.rs`'s `paint_lines`/
@@ -181,7 +195,7 @@ impl EntityInputHandler for Editor {
         // avoids the same O(document) real-shaping cost those functions
         // used to pay on every call, not just on every paint.
         let layout = analyze_line_layout(
-            &text, &line_roles, &block_contexts, &table_for_line, &tables, &callout_for_line, &callouts, cursor,
+            &text, line_roles, block_contexts, table_for_line, tables, callout_for_line, callouts, cursor,
             focused, element_bounds.size.width, line_height, &font, font_size, text_color, window,
         );
         let viewport = self.scroll_handle.bounds();
@@ -195,9 +209,9 @@ impl EntityInputHandler for Editor {
             let line_range = layout.line_range(i);
             let line_text = &text[line_range.clone()];
             let active = is_active_line(&line_range, cursor, focused);
-            let table_kind = table_line_kind(&tables, &table_for_line, i);
-            let table_active = is_table_active(&tables, &table_for_line, i, cursor, focused);
-            let callout = callout_at_line(&callouts, &callout_for_line, i);
+            let table_kind = table_line_kind(tables, table_for_line, i);
+            let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
+            let callout = callout_at_line(callouts, callout_for_line, i);
             let callout_is_header = callout.is_some_and(|c| c.is_header(i));
             let results = shape_display_line(
                 line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header,

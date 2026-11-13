@@ -6,8 +6,10 @@
 mod block_preview;
 mod buffer;
 mod callout;
+mod document_cache;
 mod editor;
 mod element;
+mod fenwick;
 mod input_handler;
 mod live_preview;
 mod table_preview;

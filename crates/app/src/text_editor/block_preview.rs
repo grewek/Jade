@@ -30,36 +30,73 @@ pub enum LineRole {
     FenceContent,
 }
 
+/// Whether a fence is open entering a line, and if so, which character and
+/// how long its opening run was — the *entire* cross-line state this
+/// classifier carries (see [`step`]), which is what makes it resumable from
+/// any line given just this one small value.
+pub(super) type FenceState = Option<(u8, usize)>;
+
+/// The one per-line transition [`classify_lines`] and [`classify_lines_from`]
+/// both fold over: given the fence state entering `line`, returns its
+/// [`LineRole`] and the fence state *after* it (i.e. entering the next
+/// line). Pulled out as its own function so an incremental caller
+/// (`document_cache.rs`) can resume classification from an arbitrary line's
+/// cached entering state instead of only ever starting fresh from the
+/// document's first line.
+pub(super) fn step(state: FenceState, line: &str) -> (LineRole, FenceState) {
+    match state {
+        None => match fence_delimiter(line) {
+            Some(fence) => (LineRole::FenceDelimiter, Some(fence)),
+            None => (LineRole::Plain, None),
+        },
+        Some((fence_char, min_len)) => {
+            if closes_fence(line, fence_char, min_len) {
+                (LineRole::FenceDelimiter, None)
+            } else {
+                (LineRole::FenceContent, Some((fence_char, min_len)))
+            }
+        }
+    }
+}
+
 /// Classifies every `\n`-delimited line in `source` by [`LineRole`], via a
 /// single sequential pass tracking whether a fence is currently open. A
 /// fence left unclosed at the end of `source` (e.g. while the user is still
 /// typing it) just treats every remaining line as content — there's no
-/// later line to notice the fence never closed.
-pub fn classify_lines(source: &str) -> Vec<LineRole> {
-    let mut roles = Vec::with_capacity(source.split('\n').count());
-    let mut open_fence: Option<(u8, usize)> = None;
+/// later line to notice the fence never closed. A thin fold over [`step`]
+/// starting from the empty state — see [`classify_lines_from`] for the
+/// incremental counterpart that can start anywhere else.
+///
+/// `document_cache.rs`'s production path calls `classify_lines_from`
+/// directly (it needs the per-line states too, to seed `fence_states`), so
+/// this whole-document, roles-only entry point is only still reachable from
+/// tests now — kept as the oracle every classify_lines_from-based test
+/// (including the incremental path's own) checks itself against, rather
+/// than removed once production stopped calling it directly.
+#[cfg(test)]
+pub(super) fn classify_lines(source: &str) -> Vec<LineRole> {
+    classify_lines_from(source, None).into_iter().map(|(role, _)| role).collect()
+}
 
-    for line in source.split('\n') {
-        match open_fence {
-            None => {
-                if let Some(fence) = fence_delimiter(line) {
-                    open_fence = Some(fence);
-                    roles.push(LineRole::FenceDelimiter);
-                } else {
-                    roles.push(LineRole::Plain);
-                }
-            }
-            Some((fence_char, min_len)) => {
-                if closes_fence(line, fence_char, min_len) {
-                    open_fence = None;
-                    roles.push(LineRole::FenceDelimiter);
-                } else {
-                    roles.push(LineRole::FenceContent);
-                }
-            }
-        }
-    }
-    roles
+/// Resumes classification from `state` (the fence state *entering* the
+/// first line of `source`), which is normally a suffix of the whole
+/// document starting at some line, not necessarily the document's actual
+/// first line. Returns each line's [`LineRole`] paired with the fence state
+/// *after* it, so an incremental caller can compare that against a
+/// previously cached entering state for the corresponding later line to
+/// know the moment it's safe to stop and reuse the old cached suffix
+/// unchanged, rather than re-walking the rest of the document — see
+/// `document_cache.rs`.
+pub(super) fn classify_lines_from(source: &str, state: FenceState) -> Vec<(LineRole, FenceState)> {
+    let mut state = state;
+    source
+        .split('\n')
+        .map(|line| {
+            let (role, next) = step(state, line);
+            state = next;
+            (role, next)
+        })
+        .collect()
 }
 
 /// `line`'s fence character and run length, if it opens a code fence: 3 or
@@ -184,5 +221,33 @@ mod tests {
     fn two_backticks_is_not_a_fence() {
         let roles = classify_lines("``\nnot a fence");
         assert_eq!(roles, vec![LineRole::Plain, LineRole::Plain]);
+    }
+
+    /// `classify_lines_from` resuming from an arbitrary line's real entering
+    /// state must match `classify_lines`'s own whole-document answer for
+    /// that same suffix — the property `document_cache.rs`'s incremental
+    /// path actually relies on. Checked for every possible split point
+    /// across several documents that exercise open/closed fences, not just
+    /// one hand-picked line.
+    #[test]
+    fn classify_lines_from_resuming_mid_document_matches_a_fresh_whole_document_classification() {
+        let documents = [
+            "before\n```\nfn main() {}\n```\nafter",
+            "```\na\n```\nplain\n```\nb\n```",
+            "````\ncode\n```\nstill inside\n````",
+            "no fences anywhere\njust\nplain\ntext",
+            "~~~\ntilde fence\n~~~\nafter",
+        ];
+        for source in documents {
+            let whole = classify_lines_from(source, None);
+            let lines: Vec<&str> = source.split('\n').collect();
+            for split in 0..lines.len() {
+                let state_entering_split = if split == 0 { None } else { whole[split - 1].1 };
+                let suffix = lines[split..].join("\n");
+                let resumed = classify_lines_from(&suffix, state_entering_split);
+                let expected = &whole[split..];
+                assert_eq!(resumed, expected, "source={source:?}, split={split}");
+            }
+        }
     }
 }
