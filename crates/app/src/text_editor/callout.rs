@@ -242,58 +242,122 @@ fn looks_like_heading(line: &str) -> bool {
 /// non-continuing blockquote line closes the block, mirroring
 /// `live_preview::classify_block_context`'s own closing rules for
 /// `Open::Blockquote`.
-pub fn classify_callouts(source: &str) -> (Vec<Option<usize>>, Vec<Callout>) {
-    let lines: Vec<&str> = source.split('\n').collect();
-    let mut callout_for_line = vec![None; lines.len()];
-    let mut callouts: Vec<Callout> = Vec::new();
+///
+/// `document_cache.rs`'s production path calls `classify_callouts_from`
+/// directly (it needs the per-line states and running callout count too,
+/// to seed its own cache) — this whole-document entry point is only still
+/// reachable from tests now, kept as the oracle every classify_callouts_
+/// from-based test (including the incremental path's own) checks itself
+/// against, same role `block_preview::classify_lines` now plays there.
+#[cfg(test)]
+pub(super) fn classify_callouts(source: &str) -> (Vec<Option<usize>>, Vec<Callout>) {
+    let mut callouts = Vec::new();
+    let results = classify_callouts_from(source, CalloutState::default(), 0, &mut callouts);
+    let callout_for_line = results.into_iter().map(|(callout, _, _)| callout).collect();
+    (callout_for_line, callouts)
+}
 
-    let mut block_open = false;
-    let mut current: Option<usize> = None;
+/// The cross-line state [`step`] carries: `block_open` (was the *previous*
+/// line part of an open blockquote block at all) and `current` (the index
+/// into the caller's `callouts` of the currently-open callout, if the open
+/// block happens to be one). The *entire* state this classifier needs,
+/// which — together with `callouts.len()` itself, since a resumed walk's
+/// freshly assigned indices need to agree with what the original run would
+/// have assigned at the same point — is what makes it resumable; see
+/// `document_cache.rs`'s own `patch_callouts`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct CalloutState {
+    block_open: bool,
+    pub(super) current: Option<usize>,
+}
 
-    for (i, &line) in lines.iter().enumerate() {
-        if line.trim().is_empty() || looks_like_heading(line) {
-            if let Some(idx) = current.take() {
-                callouts[idx].end_line = i;
-            }
-            block_open = false;
-            continue;
+/// The one per-line transition [`classify_callouts`]/[`classify_callouts_from`]
+/// both fold over — pulled out of the original single sequential loop the
+/// same way `block_preview::step` was, so an incremental caller can resume
+/// from an arbitrary line's cached entering state instead of only ever
+/// starting fresh from line 0. `i` is the line's *absolute* index (needed
+/// for `Callout::start_line`/`end_line`, unlike `block_preview::step`,
+/// which never needed to know where it was). `callouts` is mutated in
+/// place — a freshly opened callout is pushed with index `callouts.len()`,
+/// and a continuing one has its `end_line` bumped — so a resumed caller
+/// that's already pre-seeded `callouts` with a kept prefix assigns new
+/// indices continuing on from that prefix, not colliding with it.
+pub(super) fn step(state: CalloutState, line: &str, i: usize, callouts: &mut Vec<Callout>) -> (Option<usize>, CalloutState) {
+    let CalloutState { block_open, mut current } = state;
+
+    if line.trim().is_empty() || looks_like_heading(line) {
+        if let Some(idx) = current.take() {
+            callouts[idx].end_line = i;
         }
-
-        if let Some((depth, prefix_len)) = blockquote_depth(line) {
-            if depth == 1 && !block_open {
-                // A fresh depth-1 start: check whether it opens a callout.
-                current = None;
-                if let Some(header) = callout_header_prefix(&line[prefix_len..]) {
-                    let idx = callouts.len();
-                    callouts.push(Callout { kind: header.kind, start_line: i, end_line: i + 1 });
-                    callout_for_line[i] = Some(idx);
-                    current = Some(idx);
-                }
-            } else if let Some(idx) = current {
-                // Continuing an already-open callout's body, at any depth.
-                callouts[idx].end_line = i + 1;
-                callout_for_line[i] = Some(idx);
-            }
-            block_open = true;
-            continue;
-        }
-
-        // No `>` prefix of its own: a lazy continuation if a block is open,
-        // otherwise an ordinary line that closes whatever was open.
-        if block_open {
-            if let Some(idx) = current {
-                callouts[idx].end_line = i + 1;
-                callout_for_line[i] = Some(idx);
-            }
-        } else {
-            if let Some(idx) = current.take() {
-                callouts[idx].end_line = i;
-            }
-            current = None;
-        }
+        return (None, CalloutState { block_open: false, current });
     }
 
-    (callout_for_line, callouts)
+    if let Some((depth, prefix_len)) = blockquote_depth(line) {
+        let mut callout_for_this_line = None;
+        if depth == 1 && !block_open {
+            // A fresh depth-1 start: check whether it opens a callout.
+            current = None;
+            if let Some(header) = callout_header_prefix(&line[prefix_len..]) {
+                let idx = callouts.len();
+                callouts.push(Callout { kind: header.kind, start_line: i, end_line: i + 1 });
+                callout_for_this_line = Some(idx);
+                current = Some(idx);
+            }
+        } else if let Some(idx) = current {
+            // Continuing an already-open callout's body, at any depth.
+            callouts[idx].end_line = i + 1;
+            callout_for_this_line = Some(idx);
+        }
+        return (callout_for_this_line, CalloutState { block_open: true, current });
+    }
+
+    // No `>` prefix of its own: a lazy continuation if a block is open,
+    // otherwise an ordinary line that closes whatever was open.
+    let callout_for_this_line = if block_open {
+        if let Some(idx) = current {
+            callouts[idx].end_line = i + 1;
+            Some(idx)
+        } else {
+            None
+        }
+    } else {
+        if let Some(idx) = current.take() {
+            callouts[idx].end_line = i;
+        }
+        current = None;
+        None
+    };
+    (callout_for_this_line, CalloutState { block_open, current })
+}
+
+/// Resumes classification from `state` (the state *entering* the first
+/// line of `source`, whose absolute document line index is `start_line`)
+/// — `source` is normally a suffix of the whole document, not necessarily
+/// its actual start. `callouts` should already hold whatever prefix of
+/// callouts a resumed caller is keeping unchanged — new ones are appended
+/// starting at `callouts.len()`. Returns each line's own callout index
+/// (if any), the state *after* it, and `callouts.len()` *after* it — the
+/// latter is what an incremental caller needs on top of the state itself
+/// to know a resumed line's freshly assigned index actually lines up with
+/// a previously cached one (see `document_cache.rs`'s own `patch_callouts`
+/// doc comment for why state equality alone isn't enough here, unlike
+/// `block_preview`'s simpler case).
+pub(super) fn classify_callouts_from(
+    source: &str,
+    state: CalloutState,
+    start_line: usize,
+    callouts: &mut Vec<Callout>,
+) -> Vec<(Option<usize>, CalloutState, usize)> {
+    let mut state = state;
+    source
+        .split('\n')
+        .enumerate()
+        .map(|(k, line)| {
+            let (callout, next_state) = step(state, line, start_line + k, callouts);
+            state = next_state;
+            (callout, next_state, callouts.len())
+        })
+        .collect()
 }
 
 #[cfg(test)]

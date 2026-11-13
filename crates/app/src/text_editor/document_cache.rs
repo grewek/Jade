@@ -6,20 +6,28 @@
 //! scratch on every paint cost ~420ms combined on the 320K-line stress
 //! fixture, re-paid on every keystroke, nowhere near the 16.66ms/60fps bar.
 //!
-//! **First real incremental path landed for `block_preview` only** — see
-//! `patch_block_preview`. The other three classifiers are still fully
-//! recomputed on every edit (`recompute_rest`) — later increments replace
-//! each one's piece the same way, one at a time, without needing to change
-//! this module's public shape or any caller again.
+//! **Real incremental paths landed for `block_preview` and `callout`** —
+//! see `patch_block_preview`/`patch_callouts`. `live_preview`'s block
+//! context and `table_preview`'s tables are still fully recomputed on every
+//! edit (`recompute_rest`) — later increments replace each one's piece the
+//! same way, one at a time, without needing to change this module's public
+//! shape or any caller again.
 //!
 //! `line_index` (a [`Fenwick`] tree over per-line byte strides) is the
 //! shared piece every incremental classifier needs and none of the four
 //! `classify_*` passes themselves care about: mapping an edit's byte offset
 //! to a line index in O(log n), without counting newlines from the start of
 //! the document — see `fenwick.rs`'s own doc comment for why that matters.
+//! Every patch function below also walks forward from the edited line
+//! using a running byte cursor and `text[cursor..].find('\n')` rather than
+//! ever materializing the whole document's lines into a `Vec<&str>` first —
+//! that materialization alone would be an O(document) pass, re-introducing
+//! on every keystroke exactly the cost this cache exists to remove, even
+//! though every patch function is only *looking* at the handful of lines it
+//! actually walks.
 
 use super::block_preview::{self, FenceState, LineRole};
-use super::callout::{self, Callout};
+use super::callout::{self, Callout, CalloutState};
 use super::fenwick::Fenwick;
 use super::live_preview::{self, LineContext};
 use super::table_preview::{self, Table};
@@ -41,6 +49,17 @@ pub(super) struct TextEdit {
     pub new_end_byte: usize,
 }
 
+/// Where an edit falls in line terms — shared bookkeeping every per-
+/// classifier patch function needs, computed once in [`DocumentCache::
+/// record_edit`] rather than once per classifier.
+struct EditSpan {
+    /// The old line index `edit.start_byte` falls on.
+    start_line: usize,
+    /// How many old lines the edit's old byte range spanned across (0 if
+    /// it never crossed a newline at all).
+    lines_removed: usize,
+}
+
 /// The persisted result of the four classify_* passes over the buffer's
 /// current text — see this module's own doc comment.
 pub(super) struct DocumentCache {
@@ -51,15 +70,28 @@ pub(super) struct DocumentCache {
     /// when it can stop walking forward. Parallel to `line_roles`.
     fence_states: Vec<FenceState>,
     /// Per-line byte strides (`line_text.len() + 1` for every line but the
-    /// last, which has no trailing `\n`) — lets `patch_block_preview` map
-    /// an edit's byte offset to a line index in O(log n) instead of
+    /// last, which has no trailing `\n`) — lets every patch function below
+    /// map an edit's byte offset to a line index in O(log n) instead of
     /// counting newlines from the start of the document. See `fenwick.rs`.
+    /// Shared across classifiers — there's only one true line layout.
     line_index: Fenwick,
     block_contexts: Vec<LineContext>,
     table_for_line: Vec<Option<usize>>,
     tables: Vec<Table>,
     callout_for_line: Vec<Option<usize>>,
     callouts: Vec<Callout>,
+    /// `callout_states[i]` is the `CalloutState` *entering* line `i`.
+    /// Parallel to `callout_for_line`.
+    callout_states: Vec<CalloutState>,
+    /// `callout_counts[i]` is `callouts.len()` *entering* line `i` (i.e.
+    /// how many callouts had already been created by the time line `i` was
+    /// about to be processed) — `patch_callouts` needs this on top of
+    /// `callout_states` alone, since a resumed walk's freshly assigned
+    /// callout indices only agree with the old cached ones if it's created
+    /// the *same number* of callouts by the same point, not just reached
+    /// an equal `(block_open, current)` state — see that function's own
+    /// doc comment.
+    callout_counts: Vec<usize>,
 }
 
 impl DocumentCache {
@@ -77,6 +109,8 @@ impl DocumentCache {
             tables: Vec::new(),
             callout_for_line: Vec::new(),
             callouts: Vec::new(),
+            callout_states: Vec::new(),
+            callout_counts: Vec::new(),
         };
         cache.recompute_all(text);
         cache
@@ -106,23 +140,33 @@ impl DocumentCache {
         &self.callouts
     }
 
-    /// Full whole-document recompute of every classifier, `block_preview`
-    /// included — the cold-open path, and the fallback whenever
-    /// `patch_block_preview` can't cheaply resolve a particular edit.
+    /// Full whole-document recompute of every classifier — the cold-open
+    /// path, and the fallback whenever a patch function can't cheaply
+    /// resolve a particular edit.
     pub(super) fn recompute_all(&mut self, text: &str) {
         self.recompute_block_preview(text);
+        self.recompute_callouts(text);
         self.recompute_rest(text);
     }
 
     /// Patches the cache for a precisely-ranged edit: the real incremental
-    /// path for `block_preview` (falling back to a full recompute of just
-    /// that classifier when it can't cheaply apply — see
-    /// `patch_block_preview`), full recompute for everything else (not
-    /// incremental yet — see this module's own doc comment).
+    /// path for `block_preview`/`callout` (falling back to a full recompute
+    /// of just that classifier when it can't cheaply apply), full recompute
+    /// for everything else (not incremental yet — see this module's own
+    /// doc comment).
     pub(super) fn record_edit(&mut self, text: &str, edit: TextEdit) {
-        if !self.patch_block_preview(text, edit) {
+        let span = self.edit_span(text, edit);
+
+        let patched_block_preview = span.as_ref().is_some_and(|span| self.patch_block_preview(text, span));
+        if !patched_block_preview {
             self.recompute_block_preview(text);
         }
+
+        let patched_callouts = span.as_ref().is_some_and(|span| self.patch_callouts(text, span));
+        if !patched_callouts {
+            self.recompute_callouts(text);
+        }
+
         self.recompute_rest(text);
     }
 
@@ -136,14 +180,25 @@ impl DocumentCache {
         self.line_index = build_line_index(text);
     }
 
+    fn recompute_callouts(&mut self, text: &str) {
+        let mut callouts = Vec::new();
+        let results = callout::classify_callouts_from(text, CalloutState::default(), 0, &mut callouts);
+        let n = results.len();
+        self.callout_for_line = results.iter().map(|(callout, _, _)| *callout).collect();
+        self.callout_states = Vec::with_capacity(n);
+        self.callout_states.push(CalloutState::default());
+        self.callout_states.extend(results.iter().take(n.saturating_sub(1)).map(|(_, state, _)| *state));
+        self.callout_counts = Vec::with_capacity(n);
+        self.callout_counts.push(0);
+        self.callout_counts.extend(results.iter().take(n.saturating_sub(1)).map(|(_, _, count)| *count));
+        self.callouts = callouts;
+    }
+
     fn recompute_rest(&mut self, text: &str) {
         self.block_contexts = live_preview::classify_block_context(text);
         let (table_for_line, tables) = table_preview::classify_tables(text);
         self.table_for_line = table_for_line;
         self.tables = tables;
-        let (callout_for_line, callouts) = callout::classify_callouts(text);
-        self.callout_for_line = callout_for_line;
-        self.callouts = callouts;
     }
 
     /// The line index whose byte-stride range contains `byte_offset`,
@@ -158,85 +213,160 @@ impl DocumentCache {
         self.line_index.find(byte_offset as i64).unwrap_or(0)
     }
 
-    /// The real incremental path: resumes from the edited line's cached
-    /// entering fence state, walks forward over the *new* text re-running
-    /// [`block_preview::step`] one line at a time, and stops the moment a
-    /// freshly computed exit state matches what was already cached for the
-    /// next line — everything after that point is provably identical to
-    /// before (same state in, same unchanged text, same result), so it's
-    /// reused as-is rather than recomputed. Returns `false` (meaning the
-    /// caller should fall back to `recompute_block_preview`) whenever the
-    /// edit changed the document's total line count: `line_index` is a
-    /// fixed-size [`Fenwick`] tree with no insert/remove operation, and
-    /// once line indices shift there's no single old "corresponding line"
-    /// left to compare a resumed line's state against. This is an accepted,
-    /// explicitly-scoped gap (see CLAUDE.md's Backlog), not an oversight —
-    /// Enter, a multi-line paste, or deleting across a newline all still
-    /// work correctly, just via the slower fallback for now.
-    fn patch_block_preview(&mut self, text: &str, edit: TextEdit) -> bool {
+    /// Resolves `edit`'s [`EditSpan`] against the *old* `line_index`, or
+    /// `None` whenever the edit changed the document's total line count:
+    /// `line_index` (and every per-classifier entering-state array) is a
+    /// fixed-size structure indexed by old line number, with no insert/
+    /// remove operation — once line indices shift there's no single old
+    /// "corresponding line" left for a patch function to compare a resumed
+    /// line's state against. An accepted, explicitly-scoped gap (see
+    /// CLAUDE.md's Backlog), not an oversight — Enter, a multi-line paste,
+    /// or deleting across a newline all still work correctly, just via the
+    /// slower whole-classifier recompute for now.
+    fn edit_span(&self, text: &str, edit: TextEdit) -> Option<EditSpan> {
         if self.line_roles.is_empty() {
-            return false;
+            return None;
         }
-        let old_line_count = self.line_roles.len();
         let start_line = self.line_at(edit.start_byte);
         let end_line = self.line_at(edit.old_end_byte);
         let lines_removed = end_line.saturating_sub(start_line);
         let lines_added = text[edit.start_byte..edit.new_end_byte].matches('\n').count();
-        if lines_added != lines_removed {
-            return false;
-        }
+        (lines_added == lines_removed).then_some(EditSpan { start_line, lines_removed })
+    }
 
-        let new_lines: Vec<&str> = text.split('\n').collect();
-        if new_lines.len() != old_line_count {
-            // Shouldn't happen given the check above, but this is a
-            // correctness-critical path — fall back rather than risk
-            // silently corrupting the cache on a derived invariant alone.
-            return false;
-        }
-
+    /// The real incremental path for `block_preview`: resumes from the
+    /// edited line's cached entering fence state, walks forward over the
+    /// *new* text (one line at a time, via [`lines_from`] — never
+    /// materializing the whole document's lines, see this module's own doc
+    /// comment) re-running [`block_preview::step`], and stops the moment a
+    /// freshly computed exit state matches what was already cached for the
+    /// next line — everything after that point is provably identical to
+    /// before (same state in, same unchanged text, same result), so it's
+    /// reused as-is rather than recomputed.
+    fn patch_block_preview(&mut self, text: &str, span: &EditSpan) -> bool {
+        let old_line_count = self.line_roles.len();
+        let start_line = span.start_line;
         // The last *old* line index the edit actually replaced — every new
         // line up to and including this one is guaranteed genuinely new
         // content (part of the inserted text, however the state machine
         // happens to classify it), even if a state coincidentally matches
         // the old cached one somewhere in between. Only once the walk
         // passes this point is a matching state actually trustworthy
-        // evidence that "the rest is identical to before," because only
-        // then is the line's own *text* (not just the machine's state)
-        // guaranteed byte-identical to what produced that cached state
-        // last time. Skipping this check and reconverging early on a
-        // coincidental state match is exactly what caused this path to
-        // keep *stale, wrong* cached roles for the lines actually replaced
-        // by a multi-line, same-line-count-delta edit — caught by the
-        // randomized property test below, not reasoned out in advance.
-        let last_touched_line = start_line + lines_removed;
+        // evidence that "the rest is identical to before" — skipping this
+        // check and reconverging on a merely coincidental state match is
+        // exactly what an earlier version of this function got wrong on a
+        // multi-line, same-line-count-delta edit, caught by this module's
+        // own randomized property test, not reasoned out in advance.
+        let last_touched_line = start_line + span.lines_removed;
 
+        let start_byte = self.line_index.prefix_sum(start_line) as usize;
         let mut state = self.fence_states[start_line];
-        let mut i = start_line;
-        loop {
-            let (role, next_state) = block_preview::step(state, new_lines[i]);
+        for (i, (line, line_len, has_next_line)) in (start_line..).zip(lines_from(text, start_byte)) {
+            let (role, next_state) = block_preview::step(state, line);
             self.line_roles[i] = role;
+
+            let old_len = self.line_index.prefix_sum(i + 1) - self.line_index.prefix_sum(i);
+            let new_len = line_len as i64 + if has_next_line { 1 } else { 0 };
+            self.line_index.add_at(i, new_len - old_len);
+
             let has_next = i + 1 < old_line_count;
             let reconverged = has_next && i >= last_touched_line && self.fence_states[i + 1] == next_state;
             if has_next {
                 self.fence_states[i + 1] = next_state;
             }
             if reconverged || !has_next {
-                break;
+                return true;
             }
             state = next_state;
-            i += 1;
-        }
-
-        // Only lines actually revisited above could have a changed byte
-        // length (same total line count, so every other line's own text —
-        // and therefore its stride — is untouched).
-        for j in start_line..=i {
-            let new_len = new_lines[j].len() as i64 + if j + 1 < new_lines.len() { 1 } else { 0 };
-            let old_len = self.line_index.prefix_sum(j + 1) - self.line_index.prefix_sum(j);
-            self.line_index.add_at(j, new_len - old_len);
         }
         true
     }
+
+    /// The real incremental path for `callout`: the same resumable-walk
+    /// shape as `patch_block_preview`, with two extra wrinkles:
+    ///
+    /// 1. A callout's index into `self.callouts` is only meaningful
+    ///    relative to how many callouts exist *before* it, so reconvergence
+    ///    needs the resumed walk's running `callouts.len()` to match what
+    ///    the old cached `callout_counts` recorded at the same line, not
+    ///    just a matching `CalloutState`. Two states can coincidentally be
+    ///    equal (e.g. both `(block_open: false, current: None)`) while a
+    ///    different number of callouts were created to reach them, which
+    ///    would otherwise splice a stale tail with every index off by
+    ///    however many callouts diverged.
+    /// 2. If the callout that's still open *at* the reconvergence point
+    ///    continues (unchanged) into the lines being skipped, its `end_line`
+    ///    as this walk left it only reflects the lines actually walked, not
+    ///    its true full extent — `old_snapshot` (captured before any
+    ///    mutation) is what restores that one field to its real value,
+    ///    since the untouched tail beyond the reconvergence point is what
+    ///    would otherwise have kept extending it. Caught by this module's
+    ///    own randomized property test, not reasoned out in advance.
+    fn patch_callouts(&mut self, text: &str, span: &EditSpan) -> bool {
+        let old_line_count = self.callout_for_line.len();
+        let start_line = span.start_line;
+        let last_touched_line = start_line + span.lines_removed;
+
+        let prefix_callout_count = self.callout_counts[start_line];
+        let old_snapshot: Vec<Callout> = self.callouts.clone();
+        self.callouts.truncate(prefix_callout_count);
+
+        let start_byte = self.line_index.prefix_sum(start_line) as usize;
+        let mut state = self.callout_states[start_line];
+        for (i, (line, ..)) in (start_line..).zip(lines_from(text, start_byte)) {
+            let (callout_idx, next_state) = callout::step(state, line, i, &mut self.callouts);
+            self.callout_for_line[i] = callout_idx;
+
+            let has_next = i + 1 < old_line_count;
+            let reconverged = has_next
+                && i >= last_touched_line
+                && self.callout_states[i + 1] == next_state
+                && self.callouts.len() == self.callout_counts[i + 1];
+            if has_next {
+                self.callout_states[i + 1] = next_state;
+                self.callout_counts[i + 1] = self.callouts.len();
+            }
+            if reconverged {
+                if let Some(idx) = next_state.current {
+                    self.callouts[idx].end_line = old_snapshot[idx].end_line;
+                }
+                self.callouts.extend_from_slice(&old_snapshot[self.callouts.len()..]);
+                return true;
+            }
+            if !has_next {
+                // Walked to the document's actual last line with no
+                // reconvergence — `self.callouts` is already the complete,
+                // freshly computed result, and `old_snapshot` (everything
+                // that used to follow) is correctly discarded.
+                return true;
+            }
+            state = next_state;
+        }
+        true
+    }
+}
+
+/// Yields `(line_text, line_len, has_next_line)` starting at `start_byte`
+/// (which must be a real line-start byte offset in `text`), walking
+/// forward via a running cursor and `text[cursor..].find('\n')` rather
+/// than ever materializing the whole document's lines — the technique
+/// every patch function above relies on to stay bounded by how far it
+/// actually walks, not by the document's total length. The same bounded-
+/// scan idea `buffer.rs`'s own `line_start`/`line_end` already use, just
+/// walking forward instead of from a single point.
+fn lines_from(text: &str, start_byte: usize) -> impl Iterator<Item = (&str, usize, bool)> {
+    let mut cursor = start_byte;
+    std::iter::from_fn(move || {
+        if cursor > text.len() {
+            return None;
+        }
+        let rest = &text[cursor..];
+        let line_len = rest.find('\n').unwrap_or(rest.len());
+        let line = &rest[..line_len];
+        let has_next_line = cursor + line_len < text.len();
+        cursor += line_len + 1;
+        Some((line, line_len, has_next_line))
+    })
 }
 
 /// Per-line byte strides for `text` — `line_text.len() + 1` for every line
@@ -308,24 +438,40 @@ mod tests {
     /// Same property, exercised over many pseudo-random edits — deliberate
     /// coverage of positions/fragments a hand-picked sequence wouldn't
     /// think to try, same "fuzz the invariant against the oracle" approach
-    /// `fenwick.rs`'s own random test uses.
+    /// `fenwick.rs`'s own random test uses. Covers both `line_roles` and
+    /// `callout_for_line`/`callouts` together, since every edit exercises
+    /// both patch functions at once via the same `record_edit` call.
     #[test]
-    fn incremental_block_preview_matches_the_oracle_across_many_randomized_edits() {
+    fn incremental_classification_matches_the_oracle_across_many_randomized_edits() {
         let mut seed: u64 = 0xC0FF_EE15_EA5E_D00Du64;
         let mut next = move || {
             seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
             seed
         };
 
-        let mut text =
-            String::from("intro\n```\ncode\n```\nplain\n> q\n- item\nmore plain text here\n~~~\ntilde\n~~~\nend");
+        let mut text = String::from(
+            "intro\n```\ncode\n```\nplain\n> q\n- item\nmore plain text here\n~~~\ntilde\n~~~\nend\n\
+             > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter",
+        );
         let mut cache = DocumentCache::new(&text);
 
         // ASCII-only, so every random byte offset below is guaranteed a
         // valid char boundary too.
-        let fragments = ["", "x", "\n", "```\n", "~~~\n", "a\nb\nc", "```rust\ncode\n```", " "];
+        let fragments = [
+            "",
+            "x",
+            "\n",
+            "```\n",
+            "~~~\n",
+            "a\nb\nc",
+            "```rust\ncode\n```",
+            " ",
+            "> [!note]\n",
+            "> [!tip]+ title\n> body\n",
+            "\n\n",
+        ];
 
-        for step in 0..300 {
+        for step in 0..400 {
             let start = (next() as usize) % (text.len() + 1);
             let max_delete = text.len() - start;
             let delete_len = if max_delete == 0 { 0 } else { (next() as usize) % (max_delete + 1) };
@@ -333,12 +479,26 @@ mod tests {
             let old_end = start + delete_len;
             let (new_text, edit) = apply_edit(&text, start, old_end, fragment);
             cache.record_edit(&new_text, edit);
-            let expected = block_preview::classify_lines(&new_text);
+
+            let expected_roles = block_preview::classify_lines(&new_text);
             assert_eq!(
                 cache.line_roles(),
-                expected.as_slice(),
-                "step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
+                expected_roles.as_slice(),
+                "line_roles step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
             );
+
+            let (expected_callout_for_line, expected_callouts) = callout::classify_callouts(&new_text);
+            assert_eq!(
+                cache.callout_for_line(),
+                expected_callout_for_line.as_slice(),
+                "callout_for_line step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
+            );
+            assert_eq!(
+                cache.callouts(),
+                expected_callouts.as_slice(),
+                "callouts step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
+            );
+
             text = new_text;
         }
     }
