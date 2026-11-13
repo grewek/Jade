@@ -432,63 +432,95 @@ pub enum LineContext {
 ///   continuation already is, not CommonMark's stricter per-list-item
 ///   content-column alignment rule, since this module doesn't track each
 ///   level's content-start column, only where its marker began.
-pub fn classify_block_context(source: &str) -> Vec<LineContext> {
-    enum Open {
-        None,
-        Blockquote(u8),
-        /// Indentation column of each currently-open list level, outermost
-        /// first. Never empty while this variant is current — see the
-        /// marker-line branch below, which always leaves at least one entry.
-        List(Vec<usize>),
+///
+/// `document_cache.rs`'s production path calls `classify_block_context_from`
+/// directly (it needs the per-line states too, to seed its own cache) — this
+/// whole-document entry point is only still reachable from tests now, kept
+/// as the oracle every classify_block_context_from-based test (including
+/// the incremental path's own) checks itself against, same role
+/// `block_preview::classify_lines`/`callout::classify_callouts` now play
+/// there.
+#[cfg(test)]
+pub(super) fn classify_block_context(source: &str) -> Vec<LineContext> {
+    classify_block_context_from(source, OpenBlock::None).into_iter().map(|(ctx, _)| ctx).collect()
+}
+
+/// The cross-line state [`block_context_step`] carries — see
+/// [`classify_block_context`]'s own doc comment for what each variant
+/// means. Pulled out to module scope (rather than kept as a function-local
+/// `enum`, which is what it originally was) so an incremental caller
+/// (`document_cache.rs`) can store and compare it across paints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum OpenBlock {
+    None,
+    Blockquote(u8),
+    /// Indentation column of each currently-open list level, outermost
+    /// first. Never empty while this variant is current — see the
+    /// marker-line branch below, which always leaves at least one entry.
+    List(Vec<usize>),
+}
+
+/// The one per-line transition [`classify_block_context`]/
+/// [`classify_block_context_from`] both fold over — pulled out of the
+/// original single sequential loop the same way `block_preview::step`/
+/// `callout::step` were, so an incremental caller can resume from an
+/// arbitrary line's cached entering state instead of only ever starting
+/// fresh from line 0.
+pub(super) fn block_context_step(open: OpenBlock, line: &str) -> (LineContext, OpenBlock) {
+    if line.trim().is_empty() {
+        return (LineContext::Plain, OpenBlock::None);
     }
 
-    let mut open = Open::None;
-    let mut result = Vec::with_capacity(source.matches('\n').count() + 1);
-
-    for line in source.split('\n') {
-        if line.trim().is_empty() {
-            open = Open::None;
-            result.push(LineContext::Plain);
-            continue;
-        }
-
-        if heading_prefix(line).is_some() {
-            open = Open::None;
-            result.push(LineContext::Plain);
-            continue;
-        }
-
-        if let Some((depth, _)) = blockquote_prefix(line) {
-            open = Open::Blockquote(depth);
-            result.push(LineContext::Plain);
-            continue;
-        }
-
-        if let Some((_, indent, _)) = indented_list_marker(line) {
-            if !matches!(open, Open::List(_)) {
-                open = Open::List(Vec::new());
-            }
-            let Open::List(stack) = &mut open else { unreachable!() };
-            while matches!(stack.last(), Some(&top) if top > indent) {
-                stack.pop();
-            }
-            if stack.last() != Some(&indent) {
-                stack.push(indent);
-            }
-            result.push(LineContext::ListMarkerLine(stack.len() as u8));
-            continue;
-        }
-
-        result.push(match &open {
-            Open::Blockquote(depth) => LineContext::LazyContinuation(LineIndent::Blockquote(*depth)),
-            Open::List(stack) if !stack.is_empty() => {
-                LineContext::LazyContinuation(LineIndent::List(stack.len() as u8))
-            }
-            _ => LineContext::Plain,
-        });
+    if heading_prefix(line).is_some() {
+        return (LineContext::Plain, OpenBlock::None);
     }
 
-    result
+    if let Some((depth, _)) = blockquote_prefix(line) {
+        return (LineContext::Plain, OpenBlock::Blockquote(depth));
+    }
+
+    if let Some((_, indent, _)) = indented_list_marker(line) {
+        let mut stack = match open {
+            OpenBlock::List(stack) => stack,
+            _ => Vec::new(),
+        };
+        while matches!(stack.last(), Some(&top) if top > indent) {
+            stack.pop();
+        }
+        if stack.last() != Some(&indent) {
+            stack.push(indent);
+        }
+        let depth = stack.len() as u8;
+        return (LineContext::ListMarkerLine(depth), OpenBlock::List(stack));
+    }
+
+    let ctx = match &open {
+        OpenBlock::Blockquote(depth) => LineContext::LazyContinuation(LineIndent::Blockquote(*depth)),
+        OpenBlock::List(stack) if !stack.is_empty() => LineContext::LazyContinuation(LineIndent::List(stack.len() as u8)),
+        _ => LineContext::Plain,
+    };
+    (ctx, open)
+}
+
+/// Resumes classification from `open` (the state *entering* the first line
+/// of `source`), which is normally a suffix of the whole document starting
+/// at some line, not necessarily the document's actual first line. Returns
+/// each line's [`LineContext`] paired with the state *after* it, so an
+/// incremental caller can compare that against a previously cached
+/// entering state for the corresponding later line to know the moment it's
+/// safe to stop and reuse the old cached suffix unchanged — see
+/// `document_cache.rs`.
+pub(super) fn classify_block_context_from(source: &str, open: OpenBlock) -> Vec<(LineContext, OpenBlock)> {
+    let mut open = open;
+    source
+        .split('\n')
+        .map(|line| {
+            let current = std::mem::replace(&mut open, OpenBlock::None);
+            let (ctx, next) = block_context_step(current, line);
+            open = next.clone();
+            (ctx, next)
+        })
+        .collect()
 }
 
 /// [`build_display_line`], but overridden by whole-document context

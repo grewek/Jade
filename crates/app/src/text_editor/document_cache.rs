@@ -29,7 +29,7 @@
 use super::block_preview::{self, FenceState, LineRole};
 use super::callout::{self, Callout, CalloutState};
 use super::fenwick::Fenwick;
-use super::live_preview::{self, LineContext};
+use super::live_preview::{self, LineContext, OpenBlock};
 use super::table_preview::{self, Table};
 
 /// A tree-sitter-`InputEdit`-style description of what just changed in the
@@ -76,6 +76,10 @@ pub(super) struct DocumentCache {
     /// Shared across classifiers — there's only one true line layout.
     line_index: Fenwick,
     block_contexts: Vec<LineContext>,
+    /// `open_block_states[i]` is the `OpenBlock` *entering* line `i`.
+    /// Parallel to `block_contexts`, same role `fence_states` plays for
+    /// `line_roles`.
+    open_block_states: Vec<OpenBlock>,
     table_for_line: Vec<Option<usize>>,
     tables: Vec<Table>,
     callout_for_line: Vec<Option<usize>>,
@@ -105,6 +109,7 @@ impl DocumentCache {
             fence_states: Vec::new(),
             line_index: Fenwick::new(&[]),
             block_contexts: Vec::new(),
+            open_block_states: Vec::new(),
             table_for_line: Vec::new(),
             tables: Vec::new(),
             callout_for_line: Vec::new(),
@@ -146,14 +151,15 @@ impl DocumentCache {
     pub(super) fn recompute_all(&mut self, text: &str) {
         self.recompute_block_preview(text);
         self.recompute_callouts(text);
+        self.recompute_block_context(text);
         self.recompute_rest(text);
     }
 
     /// Patches the cache for a precisely-ranged edit: the real incremental
-    /// path for `block_preview`/`callout` (falling back to a full recompute
-    /// of just that classifier when it can't cheaply apply), full recompute
-    /// for everything else (not incremental yet — see this module's own
-    /// doc comment).
+    /// path for `block_preview`/`callout`/`live_preview`'s block context
+    /// (falling back to a full recompute of just that classifier when it
+    /// can't cheaply apply), full recompute for everything else (not
+    /// incremental yet — see this module's own doc comment).
     pub(super) fn record_edit(&mut self, text: &str, edit: TextEdit) {
         let span = self.edit_span(text, edit);
 
@@ -165,6 +171,11 @@ impl DocumentCache {
         let patched_callouts = span.as_ref().is_some_and(|span| self.patch_callouts(text, span));
         if !patched_callouts {
             self.recompute_callouts(text);
+        }
+
+        let patched_block_context = span.as_ref().is_some_and(|span| self.patch_block_context(text, span));
+        if !patched_block_context {
+            self.recompute_block_context(text);
         }
 
         self.recompute_rest(text);
@@ -194,8 +205,16 @@ impl DocumentCache {
         self.callouts = callouts;
     }
 
+    fn recompute_block_context(&mut self, text: &str) {
+        let results = live_preview::classify_block_context_from(text, OpenBlock::None);
+        let n = results.len();
+        self.block_contexts = results.iter().map(|(ctx, _)| *ctx).collect();
+        self.open_block_states = Vec::with_capacity(n);
+        self.open_block_states.push(OpenBlock::None);
+        self.open_block_states.extend(results.into_iter().take(n.saturating_sub(1)).map(|(_, state)| state));
+    }
+
     fn recompute_rest(&mut self, text: &str) {
-        self.block_contexts = live_preview::classify_block_context(text);
         let (table_for_line, tables) = table_preview::classify_tables(text);
         self.table_for_line = table_for_line;
         self.tables = tables;
@@ -344,6 +363,35 @@ impl DocumentCache {
         }
         true
     }
+
+    /// The real incremental path for `live_preview`'s block context: the
+    /// same resumable-walk shape as `patch_block_preview` — `OpenBlock`
+    /// never references an external index the way a callout's state does,
+    /// so (unlike `patch_callouts`) a plain state-equality check at
+    /// reconvergence is enough on its own.
+    fn patch_block_context(&mut self, text: &str, span: &EditSpan) -> bool {
+        let old_line_count = self.block_contexts.len();
+        let start_line = span.start_line;
+        let last_touched_line = start_line + span.lines_removed;
+
+        let start_byte = self.line_index.prefix_sum(start_line) as usize;
+        let mut state = self.open_block_states[start_line].clone();
+        for (i, (line, ..)) in (start_line..).zip(lines_from(text, start_byte)) {
+            let (ctx, next_state) = live_preview::block_context_step(state, line);
+            self.block_contexts[i] = ctx;
+
+            let has_next = i + 1 < old_line_count;
+            let reconverged = has_next && i >= last_touched_line && self.open_block_states[i + 1] == next_state;
+            if has_next {
+                self.open_block_states[i + 1] = next_state.clone();
+            }
+            if reconverged || !has_next {
+                return true;
+            }
+            state = next_state;
+        }
+        true
+    }
 }
 
 /// Yields `(line_text, line_len, has_next_line)` starting at `start_byte`
@@ -450,7 +498,7 @@ mod tests {
         };
 
         let mut text = String::from(
-            "intro\n```\ncode\n```\nplain\n> q\n- item\nmore plain text here\n~~~\ntilde\n~~~\nend\n\
+            "intro\n```\ncode\n```\nplain\n> q\n- item\n  - nested\n    - deeper\nmore plain text here\n~~~\ntilde\n~~~\nend\n\
              > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter",
         );
         let mut cache = DocumentCache::new(&text);
@@ -469,6 +517,11 @@ mod tests {
             "> [!note]\n",
             "> [!tip]+ title\n> body\n",
             "\n\n",
+            "- item\n",
+            "  - nested item\n",
+            "    - even deeper\n",
+            "> quoted\n",
+            "# Heading\n",
         ];
 
         for step in 0..400 {
@@ -497,6 +550,13 @@ mod tests {
                 cache.callouts(),
                 expected_callouts.as_slice(),
                 "callouts step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
+            );
+
+            let expected_contexts = live_preview::classify_block_context(&new_text);
+            assert_eq!(
+                cache.block_contexts(),
+                expected_contexts.as_slice(),
+                "block_contexts step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
             );
 
             text = new_text;
