@@ -2,8 +2,8 @@ use gpui_kit::*;
 
 use super::block_preview::LineRole;
 use super::live_preview::{
-    build_display_line, build_display_line_in_context, build_table_row, classify_block_context, hidden_line, DisplayLine, InlineStyle,
-    LineContext, LineIndent,
+    build_display_line, build_display_line_in_context, build_table_row, classify_block_context, hidden_line, is_thematic_break,
+    DisplayLine, InlineStyle, LineContext, LineIndent,
 };
 use super::table_preview::{self, classify_tables, Table};
 use super::Editor;
@@ -60,6 +60,10 @@ const SELECTION_HIGHLIGHT: Hsla = Hsla { h: 0.6, s: 0.9, l: 0.6, a: 0.35 };
 /// compromise as `SELECTION_HIGHLIGHT` above.
 const CODE_COLOR: Hsla = Hsla { h: 0.75, s: 0.2, l: 0.55, a: 1.0 };
 const WIKILINK_COLOR: Hsla = Hsla { h: 0.58, s: 0.65, l: 0.6, a: 1.0 };
+/// Distinct hue from `WIKILINK_COLOR` so an internal `[[wikilink]]` and an
+/// external/inline `[text](url)` link or autolink read as visually
+/// different kinds of thing.
+const LINK_COLOR: Hsla = Hsla { h: 0.5, s: 0.65, l: 0.55, a: 1.0 };
 const MUTED_COLOR: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.6, a: 1.0 };
 
 /// Pixel width of one structural indent level (see
@@ -206,7 +210,7 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
     match style {
         InlineStyle::Bold | InlineStyle::Heading(_) => font.weight = FontWeight::BOLD,
         InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
-        InlineStyle::Plain | InlineStyle::Code | InlineStyle::Strikethrough | InlineStyle::WikiLink | InlineStyle::ListMarker => {}
+        InlineStyle::Plain | InlineStyle::Code | InlineStyle::Strikethrough | InlineStyle::WikiLink | InlineStyle::Link | InlineStyle::ListMarker => {}
     }
     font
 }
@@ -218,6 +222,7 @@ fn color_for_style(style: InlineStyle, base: Hsla) -> Hsla {
     match style {
         InlineStyle::Code => CODE_COLOR,
         InlineStyle::WikiLink => WIKILINK_COLOR,
+        InlineStyle::Link => LINK_COLOR,
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => MUTED_COLOR,
         InlineStyle::Plain | InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Heading(_) | InlineStyle::Strikethrough => base,
     }
@@ -266,7 +271,11 @@ fn wrap_width_for(table_kind: &TableLineKind, table_active: bool, available_widt
 /// - [`LineRole::FenceDelimiter`]: raw when `active`, else [`hidden_line`]
 ///   — the fence marker itself has no "remainder" to show once hidden,
 ///   unlike every other hidden-prefix case in `live_preview.rs`.
-/// - [`LineRole::Plain`]: a line that isn't part of a table renders via
+/// - [`LineRole::Plain`]: a thematic break (`is_thematic_break`, `---`/
+///   `***`/`___`) outside any table and not the active line is [`hidden_line`]
+///   too — `paint_lines` paints it as a real vector rule directly over the
+///   gap, same reasoning as a table's own grid lines. Otherwise, a line that
+///   isn't part of a table renders via
 ///   `build_display_line_in_context(line, active, block_ctx)` — `block_ctx`
 ///   (from `live_preview::classify_block_context`, also computed once per
 ///   document) resolves nested-list depth and lazy continuation, neither
@@ -302,6 +311,7 @@ pub(super) fn shape_display_line(
             vec![build_display_line(line, true)]
         }
         LineRole::Plain => match table_kind {
+            TableLineKind::None if !active && is_thematic_break(line) => vec![hidden_line(line)],
             TableLineKind::None => vec![build_display_line_in_context(line, active, block_ctx)],
             TableLineKind::Delimiter(_) => vec![hidden_line(line)],
             TableLineKind::Row(table) => {
@@ -803,6 +813,29 @@ fn paint_lines(
         // selection continues past it onto the next row — the same budget
         // `wrap_width_for` gave this line to wrap within.
         let full_row_width = bounds.size.width - indent_px(indent_level);
+
+        // A thematic break (`---`/`***`/`___`) renders as a real vector
+        // line, same "quad over a blank `hidden_line` gap" technique a
+        // table's own grid lines use — a monospace rule glyph repeated
+        // across the line wouldn't reliably abut pixel-for-pixel either.
+        // Only for a `LineRole::Plain` line outside any table (matching
+        // `shape_display_line`'s own gating) and not the active line (which
+        // renders the raw `---` text instead, same as every other construct).
+        // `table_kind` was already moved into `shape_display_line` above —
+        // cheap to resolve again rather than restructuring this loop just
+        // to keep the first value alive (same reasoning as
+        // `table_kind_for_geometry` below).
+        if !active
+            && matches!(line_roles[i], LineRole::Plain)
+            && matches!(table_line_kind(tables, table_for_line, i), TableLineKind::None)
+            && is_thematic_break(line_text)
+        {
+            let mid_y = bounds.origin.y + y_offset + total_height / 2.;
+            window.paint_quad(fill(
+                Bounds { origin: point(bounds.origin.x, mid_y), size: size(bounds.size.width, TABLE_LINE_WIDTH) },
+                MUTED_COLOR,
+            ));
+        }
 
         if !table_active {
             // `table_kind` was already moved into `shape_display_line`
@@ -1515,6 +1548,25 @@ mod tests {
         let (window, editor) = open_editor(cx, text);
         // Cursor on the last line, so every other line renders previewed
         // (hidden markup) rather than raw.
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(text.len(), false));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("editor").is_some());
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn renders_the_new_spec_gap_fill_constructs_without_panicking(cx: &mut TestAppContext) {
+        let text = concat!(
+            "escaped \\*star\\* and entity &amp; &#39;\n",
+            "---\n",
+            "a [link](https://example.com) and <https://example.com> and bare https://example.com\n",
+            "- [ ] todo\n",
+            "- [x] done\n",
+            "active line"
+        );
+        let (window, editor) = open_editor(cx, text);
         editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(text.len(), false));
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);

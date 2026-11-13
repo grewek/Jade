@@ -71,12 +71,17 @@ pub enum InlineStyle {
     Code,
     Strikethrough,
     WikiLink,
+    /// An inline link's visible text (`[text](url)`), or an autolink's
+    /// visible URL/email (`<https://x>`, bare `https://x`) — the `(url)`/
+    /// `<>` part is always hidden, never styled itself.
+    Link,
     /// Content after a hidden blockquote `>` prefix; carries nesting depth
     /// (1 for `>`, 2 for `>>` or `> >`, ...).
     Blockquote(u8),
-    /// The bullet/number glyph standing in for a hidden list marker — see
-    /// [`DisplaySegment::is_replaced`]. Not applied to a list item's actual
-    /// text content, only to the marker's own replacement glyph.
+    /// The bullet/number glyph standing in for a hidden list marker, or a
+    /// task-list checkbox glyph standing in for `[ ]`/`[x]` right after one
+    /// — see [`DisplaySegment::is_replaced`]. Not applied to a list item's
+    /// actual text content, only to these replacement glyphs.
     ListMarker,
 }
 
@@ -301,12 +306,7 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
 
     if let Some((marker, leading_ws, marker_len)) = indented_list_marker(line) {
         push_hidden(&mut segments, &display_text, 0..leading_ws);
-        let replacement = match marker {
-            ListMarker::Unordered => "• ".to_string(),
-            ListMarker::Ordered { number } => format!("{number}. "),
-        };
-        let marker_end = leading_ws + marker_len;
-        push_replaced(&mut segments, &mut display_text, leading_ws..marker_end, &replacement, InlineStyle::ListMarker);
+        let marker_end = push_list_marker(line, leading_ws, &marker, marker_len, &mut segments, &mut display_text);
         let (content_start, style) =
             compound_inner(line, marker_end, false, true, InlineStyle::Plain, &mut segments, &mut display_text);
         scan_inline(line, content_start, line.len(), style, &mut segments, &mut display_text);
@@ -354,12 +354,8 @@ fn compound_inner(
     }
 
     if check_list && let Some((marker, marker_len)) = list_marker(rest) {
-        let replacement = match marker {
-            ListMarker::Unordered => "• ".to_string(),
-            ListMarker::Ordered { number } => format!("{number}. "),
-        };
-        push_replaced(segments, display_text, offset..offset + marker_len, &replacement, InlineStyle::ListMarker);
-        return (offset + marker_len, InlineStyle::Plain);
+        let content_start = push_list_marker(line, offset, &marker, marker_len, segments, display_text);
+        return (content_start, InlineStyle::Plain);
     }
 
     if check_blockquote && let Some((depth, inner_len)) = blockquote_prefix(rest) {
@@ -547,12 +543,59 @@ fn heading_prefix(line: &str) -> Option<(u8, usize)> {
     Some((hashes as u8, end))
 }
 
+/// Whether `line` is a thematic break (`---`, `***`, `___`, optionally with
+/// spaces between the repeated characters, e.g. `- - -`): every non-space
+/// byte the same one of `-`/`*`/`_`, with at least 3 of them. Block-level
+/// and resolved from a single line alone, unlike fenced code/tables — see
+/// this module's doc comment. Checked by `element.rs` (`shape_display_line`/
+/// `paint_lines`) only for a `LineRole::Plain` line outside any table, so a
+/// `---` inside a fenced code block or a table's own delimiter row (which
+/// has `|` characters mixed in, failing the "all one char" check here
+/// anyway) is never mistaken for one.
+pub fn is_thematic_break(line: &str) -> bool {
+    let trimmed = line.trim();
+    let mut marker: Option<u8> = None;
+    let mut count = 0;
+    for b in trimmed.bytes() {
+        if b == b' ' {
+            continue;
+        }
+        if !matches!(b, b'-' | b'*' | b'_') {
+            return false;
+        }
+        match marker {
+            Some(m) if m != b => return false,
+            Some(_) => {}
+            None => marker = Some(b),
+        }
+        count += 1;
+    }
+    count >= 3
+}
+
 enum ConstructKind {
     Code,
     Strong,
     Emphasis,
     Strikethrough,
     WikiLink,
+    /// `\` followed by an ASCII punctuation character — a one-shot match
+    /// (no closer to search for), handled directly in `scan_inline`.
+    Escape,
+    /// `&name;` / `&#NNN;` / `&#xHHH;` — a one-shot match like `Escape`,
+    /// resolved by [`parse_entity`].
+    Entity,
+    /// `[text](url)` — resolved by [`parse_link`]. Not matched at all when
+    /// immediately preceded by `!` (an image, deliberately out of scope —
+    /// see `scan_inline`'s own handling).
+    Link,
+    /// `<https://x>` / `<mailto:a@b.com>` / `<a@b.com>` — resolved by
+    /// [`parse_autolink_bracket`].
+    AutolinkBracket,
+    /// A bare `http://`/`https://` URL with no surrounding delimiters (GFM
+    /// extended autolinks) — a one-shot match, resolved directly in
+    /// `scan_inline` since there's no closer to search for.
+    BareUrl,
 }
 
 struct Construct {
@@ -564,7 +607,8 @@ struct Construct {
 }
 
 /// The next inline construct's opener in `rest`, if any — a backtick, a
-/// doubled or single `*`/`_` run, a doubled `~` run, or `[[`. A lone `~` (not
+/// doubled or single `*`/`_` run, a doubled `~` run, `[[`, a backslash escape,
+/// an entity's `&`, a lone `[`, `<`, or a bare `http(s)://`. A lone `~` (not
 /// doubled) isn't a construct at all — unlike `*`/`_`, which have both a
 /// doubled (strong) and single (emphasis) form, strikethrough only
 /// recognizes the doubled form, so a single `~` is simply skipped over, same
@@ -577,6 +621,9 @@ fn find_construct(rest: &str) -> Option<Construct> {
     let mut i = 0;
     while i < bytes.len() {
         match bytes[i] {
+            b'\\' if bytes.get(i + 1).is_some_and(u8::is_ascii_punctuation) => {
+                return Some(Construct { offset: i, opener_len: 2, kind: ConstructKind::Escape });
+            }
             b'`' => return Some(Construct { offset: i, opener_len: 1, kind: ConstructKind::Code }),
             b'*' | b'_' => {
                 let c = bytes[i];
@@ -592,6 +639,12 @@ fn find_construct(rest: &str) -> Option<Construct> {
             b'[' if bytes.get(i + 1) == Some(&b'[') => {
                 return Some(Construct { offset: i, opener_len: 2, kind: ConstructKind::WikiLink });
             }
+            b'[' => return Some(Construct { offset: i, opener_len: 1, kind: ConstructKind::Link }),
+            b'<' => return Some(Construct { offset: i, opener_len: 1, kind: ConstructKind::AutolinkBracket }),
+            b'&' => return Some(Construct { offset: i, opener_len: 1, kind: ConstructKind::Entity }),
+            b'h' if rest[i..].starts_with("http://") || rest[i..].starts_with("https://") => {
+                return Some(Construct { offset: i, opener_len: 0, kind: ConstructKind::BareUrl });
+            }
             _ => i += 1,
         }
     }
@@ -599,9 +652,22 @@ fn find_construct(rest: &str) -> Option<Construct> {
 }
 
 /// The absolute byte offset of the first occurrence of `delim` in
-/// `line[start..end]`, if any.
+/// `line[start..end]`, if any — skipping any occurrence immediately preceded
+/// by a backslash (an escaped delimiter, see [`ConstructKind::Escape`],
+/// doesn't count as a real closer). A multi-backslash run (`\\*`, a literal
+/// backslash followed by a real `*`) isn't specially handled — treated as
+/// escaped regardless, a deliberate simplification consistent with every
+/// other edge case this module already accepts rather than chasing.
 fn find_closing(line: &str, start: usize, end: usize, delim: &str) -> Option<usize> {
-    line[start..end].find(delim).map(|ix| start + ix)
+    let mut search_start = start;
+    loop {
+        let abs = search_start + line[search_start..end].find(delim)?;
+        if abs > 0 && line.as_bytes()[abs - 1] == b'\\' {
+            search_start = abs + 1;
+            continue;
+        }
+        return Some(abs);
+    }
 }
 
 struct WikiLinkMatch {
@@ -644,6 +710,126 @@ fn parse_wikilink(line: &str, start: usize, end: usize) -> Option<WikiLinkMatch>
         }
     };
     Some(WikiLinkMatch { visible, close_end })
+}
+
+/// Common named HTML entities this module decodes — not the full ~2000-entry
+/// HTML5 named character reference table (a deliberate v1 scope cut, same
+/// category as strikethrough's GFM-only doubled-tilde): just a subset
+/// plausible in a note's prose.
+const NAMED_ENTITIES: &[(&str, char)] = &[
+    ("amp", '&'), ("lt", '<'), ("gt", '>'), ("quot", '"'), ("apos", '\''),
+    ("nbsp", '\u{00A0}'), ("mdash", '\u{2014}'), ("ndash", '\u{2013}'),
+    ("hellip", '\u{2026}'), ("copy", '\u{00A9}'), ("reg", '\u{00AE}'),
+    ("trade", '\u{2122}'), ("laquo", '\u{00AB}'), ("raquo", '\u{00BB}'),
+    ("ldquo", '\u{201C}'), ("rdquo", '\u{201D}'), ("lsquo", '\u{2018}'),
+    ("rsquo", '\u{2019}'), ("deg", '\u{00B0}'), ("plusmn", '\u{00B1}'),
+    ("times", '\u{00D7}'), ("divide", '\u{00F7}'), ("sect", '\u{00A7}'),
+    ("para", '\u{00B6}'), ("bull", '\u{2022}'), ("euro", '\u{20AC}'),
+    ("pound", '\u{00A3}'), ("yen", '\u{00A5}'), ("cent", '\u{00A2}'),
+];
+
+/// Parses an HTML entity reference (`&amp;`, `&#39;`, `&#x27;`) starting at
+/// `start` (pointing at `&`), if `line[start..end]` contains a recognized
+/// one — returns its raw span (including `&`/`;`) and the decoded
+/// character. Numeric references decode any valid Unicode scalar value;
+/// named references are looked up in [`NAMED_ENTITIES`]. An unrecognized
+/// name or invalid numeric value is `None` — the usual "leave it as plain
+/// text" fallback every other unmatched construct in this module gets, so
+/// e.g. a bare `&` in "Bob & Alice" is untouched.
+fn parse_entity(line: &str, start: usize, end: usize) -> Option<(Range<usize>, char)> {
+    let rest = &line[start..end];
+    let semi_rel = rest.find(';')?;
+    let body = &rest[1..semi_rel];
+    let raw_end = start + semi_rel + 1;
+
+    let ch = if let Some(hex) = body.strip_prefix('#').and_then(|b| b.strip_prefix('x').or_else(|| b.strip_prefix('X'))) {
+        if hex.is_empty() || hex.len() > 6 {
+            return None;
+        }
+        char::from_u32(u32::from_str_radix(hex, 16).ok()?)?
+    } else if let Some(dec) = body.strip_prefix('#') {
+        if dec.is_empty() || dec.len() > 7 {
+            return None;
+        }
+        char::from_u32(dec.parse().ok()?)?
+    } else {
+        NAMED_ENTITIES.iter().find(|(name, _)| *name == body).map(|(_, c)| *c)?
+    };
+    Some((start..raw_end, ch))
+}
+
+struct LinkMatch {
+    /// The link text (between `[` and `]`) — shown, styled [`InlineStyle::Link`].
+    text: Range<usize>,
+    /// Absolute offset right after the closing `)`.
+    close_end: usize,
+}
+
+/// Parses `[text](url)` starting at `start` (pointing at the first `[`), if
+/// `line[start..end]` contains one. `text` may be empty (CommonMark allows
+/// it). The URL itself is never inspected beyond finding its closing `)`
+/// (escape-aware via [`find_closing`]; no nested-paren balancing — a known,
+/// not regressive, limitation for a URL containing an unescaped `)`, same
+/// category as this module's other simplifications). An optional
+/// `"title"` inside the parens isn't parsed specially — the whole `(...)`
+/// span is just hidden regardless of what's inside it.
+fn parse_link(line: &str, start: usize, end: usize) -> Option<LinkMatch> {
+    let text_start = start + 1;
+    let text_close = find_closing(line, text_start, end, "]")?;
+    if line.as_bytes().get(text_close + 1) != Some(&b'(') {
+        return None;
+    }
+    let url_start = text_close + 2;
+    let url_close = find_closing(line, url_start, end, ")")?;
+    Some(LinkMatch { text: text_start..text_close, close_end: url_close + 1 })
+}
+
+/// Parses `<...>` starting at `start` (pointing at `<`) as a CommonMark
+/// autolink — a URI (contains `://`, or starts with `mailto:`) or a bare
+/// email (contains `@`) — if `line[start..end]` contains one. Returns the
+/// inner text's range (shown, styled [`InlineStyle::Link`]); `<`/`>`
+/// themselves are hidden by the caller. Anything else inside angle brackets
+/// (ordinary `<div>`-style raw HTML, explicitly out of scope — see this
+/// module's doc comment) falls through to plain text via the usual
+/// no-match path.
+fn parse_autolink_bracket(line: &str, start: usize, end: usize) -> Option<Range<usize>> {
+    let inner_start = start + 1;
+    let close = find_closing(line, inner_start, end, ">")?;
+    let inner = &line[inner_start..close];
+    if inner.is_empty() || inner.chars().any(char::is_whitespace) {
+        return None;
+    }
+    let is_uri = inner.contains("://") || inner.starts_with("mailto:");
+    let is_email = !is_uri && inner.contains('@');
+    (is_uri || is_email).then_some(inner_start..close)
+}
+
+/// A byte plausible inside a bare URL — used by [`bare_url_end`] to decide
+/// how far a GFM extended autolink extends.
+fn is_url_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric()
+        || matches!(
+            b,
+            b'-' | b'.' | b'_' | b'~' | b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=' | b'%'
+        )
+}
+
+/// How far a bare `http://`/`https://` autolink (GFM extended autolinks)
+/// extends from its scheme at `start`: every following byte that's a
+/// plausible URL character ([`is_url_byte`]), then one single trailing
+/// `.`/`,`/`;`/`:`/`!`/`?` trimmed back off if present — a simplified
+/// stand-in for GFM's own fuller trailing-punctuation/paren-balance
+/// trimming rules.
+fn bare_url_end(line: &str, start: usize, end: usize) -> usize {
+    let bytes = line.as_bytes();
+    let mut i = start;
+    while i < end && is_url_byte(bytes[i]) {
+        i += 1;
+    }
+    if i > start && matches!(bytes[i - 1], b'.' | b',' | b';' | b':' | b'!' | b'?') {
+        i -= 1;
+    }
+    i
 }
 
 /// Scans `line[pos..end]` for inline constructs, appending hidden/visible
@@ -697,6 +883,38 @@ fn scan_inline(
                 push_hidden(segments, display_text, link.visible.end..link.close_end);
                 link.close_end
             }),
+            ConstructKind::Escape => {
+                push_hidden(segments, display_text, construct_start..construct_start + 1);
+                push_visible(line, segments, display_text, construct_start + 1..construct_start + 2, default_style);
+                Some(construct_start + 2)
+            }
+            ConstructKind::Entity => parse_entity(line, construct_start, end).map(|(raw, ch)| {
+                let mut buf = [0u8; 4];
+                let decoded = ch.encode_utf8(&mut buf);
+                push_replaced(segments, display_text, raw.clone(), decoded, default_style);
+                raw.end
+            }),
+            // `![...]` is an image, explicitly deferred (see this module's
+            // doc comment) — left as plain text, same as any other
+            // unmatched opener.
+            ConstructKind::Link if construct_start > 0 && line.as_bytes()[construct_start - 1] == b'!' => None,
+            ConstructKind::Link => parse_link(line, construct_start, end).map(|link| {
+                push_hidden(segments, display_text, construct_start..link.text.start);
+                push_visible(line, segments, display_text, link.text.clone(), InlineStyle::Link);
+                push_hidden(segments, display_text, link.text.end..link.close_end);
+                link.close_end
+            }),
+            ConstructKind::AutolinkBracket => parse_autolink_bracket(line, construct_start, end).map(|visible| {
+                push_hidden(segments, display_text, construct_start..visible.start);
+                push_visible(line, segments, display_text, visible.clone(), InlineStyle::Link);
+                push_hidden(segments, display_text, visible.end..visible.end + 1);
+                visible.end + 1
+            }),
+            ConstructKind::BareUrl => {
+                let url_end = bare_url_end(line, construct_start, end);
+                push_visible(line, segments, display_text, construct_start..url_end, InlineStyle::Link);
+                Some(url_end)
+            }
         };
 
         match matched {
@@ -1038,6 +1256,68 @@ fn indented_list_marker(line: &str) -> Option<(ListMarker, usize, usize)> {
     let indent = line.bytes().take_while(|&b| b == b' ').count();
     let (marker, marker_len) = list_marker(&line[indent..])?;
     Some((marker, indent, marker_len))
+}
+
+/// Whether `line[offset..]` starts with a GFM task-list checkbox
+/// (`[ ] `/`[x] `/`[X] `) — `Some(checked)` if so, else `None`. Pure
+/// detector; [`push_list_marker`] does the actual rendering decision.
+fn task_checkbox_prefix(line: &str, offset: usize) -> Option<bool> {
+    let bytes = line.as_bytes();
+    match (bytes.get(offset), bytes.get(offset + 1), bytes.get(offset + 2), bytes.get(offset + 3)) {
+        (Some(b'['), Some(b' '), Some(b']'), Some(b' ')) => Some(false),
+        (Some(b'['), Some(b'x' | b'X'), Some(b']'), Some(b' ')) => Some(true),
+        _ => None,
+    }
+}
+
+/// Pushes a list item's marker, folding in a GFM task-list checkbox
+/// ([`task_checkbox_prefix`]) right after it if present — returns the
+/// offset inline scanning should resume from (past the marker, and the
+/// checkbox if there was one).
+///
+/// An **unordered** marker with a checkbox collapses to a *single*
+/// replacement covering both (`"☐ "`/`"☑ "` stands in for the whole
+/// `- [ ] `, not `"• " + "☐ "`) — matching Obsidian/GitHub's own task-list
+/// rendering, where the checkbox *is* the marker, there's no separate
+/// bullet dot alongside it. An **ordered** marker keeps its own number
+/// (`"1. "`) and gets the checkbox glyph appended right after
+/// (`"1. ☐ "`) — the number still carries meaning a checkbox alone
+/// doesn't, so GFM task items on an ordered list keep it.
+///
+/// Render-only: nothing wires a click on the glyph back to toggling/
+/// persisting checked state (deliberately out of scope for this pass, same
+/// category as deferred WYSIWYG table editing).
+fn push_list_marker(
+    line: &str,
+    marker_start: usize,
+    marker: &ListMarker,
+    marker_len: usize,
+    segments: &mut Vec<DisplaySegment>,
+    display_text: &mut String,
+) -> usize {
+    let marker_end = marker_start + marker_len;
+    let checkbox = task_checkbox_prefix(line, marker_end);
+
+    if let (ListMarker::Unordered, Some(checked)) = (marker, checkbox) {
+        let glyph = if checked { "☑ " } else { "☐ " };
+        push_replaced(segments, display_text, marker_start..marker_end + 4, glyph, InlineStyle::ListMarker);
+        return marker_end + 4;
+    }
+
+    let replacement = match marker {
+        ListMarker::Unordered => "• ".to_string(),
+        ListMarker::Ordered { number } => format!("{number}. "),
+    };
+    push_replaced(segments, display_text, marker_start..marker_end, &replacement, InlineStyle::ListMarker);
+
+    match checkbox {
+        Some(checked) => {
+            let glyph = if checked { "☑ " } else { "☐ " };
+            push_replaced(segments, display_text, marker_end..marker_end + 4, glyph, InlineStyle::ListMarker);
+            marker_end + 4
+        }
+        None => marker_end,
+    }
 }
 
 #[cfg(test)]
@@ -1831,5 +2111,187 @@ mod tests {
                 assert_eq!(dl.nearest_segment_raw_start(display_start), col0_raw_start);
             }
         }
+    }
+
+    #[test]
+    fn backslash_escapes_a_delimiter_and_hides_the_backslash() {
+        let line = r"a \*literal\* asterisk";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, "a *literal* asterisk");
+        assert_contiguous(&dl, line.len());
+    }
+
+    #[test]
+    fn an_escaped_delimiter_does_not_falsely_close_emphasis() {
+        // The real closer is the final `*`, not the escaped `\*` in the
+        // middle — `find_closing` must skip past it. The emphasis content
+        // itself isn't recursively re-scanned for escapes (no construct's
+        // content is, in this module — the same simplification that also
+        // keeps bold/italic from compounding with each other), so the
+        // backslash stays visible verbatim inside it; that's expected, not
+        // a bug.
+        let line = r"*italic \* still italic*";
+        let dl = build_display_line(line, false);
+        assert_eq!(visible_styles(&dl), vec![(r"italic \* still italic".to_string(), InlineStyle::Italic)]);
+    }
+
+    #[test]
+    fn named_entity_decodes_to_its_character() {
+        let line = "Bob &amp; Alice";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, "Bob & Alice");
+        assert_contiguous(&dl, line.len());
+    }
+
+    #[test]
+    fn numeric_and_hex_entities_decode() {
+        assert_eq!(build_display_line("&#39;", false).display_text, "'");
+        assert_eq!(build_display_line("&#x27;", false).display_text, "'");
+    }
+
+    #[test]
+    fn unknown_entity_falls_back_to_plain_text() {
+        let line = "a & b &notreal; c";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, line);
+    }
+
+    #[test]
+    fn thematic_break_is_recognized_in_its_three_forms() {
+        assert!(is_thematic_break("---"));
+        assert!(is_thematic_break("***"));
+        assert!(is_thematic_break("___"));
+        assert!(is_thematic_break("- - -"));
+    }
+
+    #[test]
+    fn thematic_break_does_not_match_a_list_item_or_short_run() {
+        assert!(!is_thematic_break("- item"));
+        assert!(!is_thematic_break("--"));
+        assert!(!is_thematic_break("- -* _"));
+    }
+
+    #[test]
+    fn inline_link_hides_the_url_and_shows_the_text() {
+        let line = "see [github](https://github.com) now";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, "see github now");
+        assert_eq!(
+            visible_styles(&dl),
+            vec![
+                ("see ".to_string(), InlineStyle::Plain),
+                ("github".to_string(), InlineStyle::Link),
+                (" now".to_string(), InlineStyle::Plain),
+            ]
+        );
+        assert_contiguous(&dl, line.len());
+    }
+
+    #[test]
+    fn unterminated_link_falls_back_to_plain_text() {
+        let line = "[no closing paren](https://x";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, line);
+        assert_contiguous(&dl, line.len());
+    }
+
+    #[test]
+    fn image_syntax_is_left_untouched() {
+        // Images are explicitly deferred (no bitmap-paint pipeline) — the
+        // leading `!` must suppress the link match entirely, not render
+        // "alt" as a styled link.
+        let line = "![alt](https://example.com/x.png)";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, line);
+    }
+
+    #[test]
+    fn bracketed_autolink_shows_the_url_and_hides_the_angle_brackets() {
+        let line = "see <https://example.com> now";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, "see https://example.com now");
+        assert_eq!(
+            visible_styles(&dl),
+            vec![
+                ("see ".to_string(), InlineStyle::Plain),
+                ("https://example.com".to_string(), InlineStyle::Link),
+                (" now".to_string(), InlineStyle::Plain),
+            ]
+        );
+        assert_contiguous(&dl, line.len());
+    }
+
+    #[test]
+    fn bracketed_email_autolink_is_recognized() {
+        let dl = build_display_line("<a@b.com>", false);
+        assert_eq!(dl.display_text, "a@b.com");
+        assert_eq!(visible_styles(&dl), vec![("a@b.com".to_string(), InlineStyle::Link)]);
+    }
+
+    #[test]
+    fn angle_brackets_around_ordinary_text_are_left_untouched() {
+        // Raw HTML (`<div>`) is explicitly declined — this must not be
+        // mistaken for an autolink.
+        let line = "a <div> tag";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, line);
+    }
+
+    #[test]
+    fn bare_url_autolinks_without_any_delimiter() {
+        let line = "visit https://example.com/page today";
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.display_text, line);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![
+                ("visit ".to_string(), InlineStyle::Plain),
+                ("https://example.com/page".to_string(), InlineStyle::Link),
+                (" today".to_string(), InlineStyle::Plain),
+            ]
+        );
+        assert_contiguous(&dl, line.len());
+    }
+
+    #[test]
+    fn bare_url_trims_one_trailing_punctuation_character() {
+        let line = "see https://example.com.";
+        let dl = build_display_line(line, false);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![
+                ("see ".to_string(), InlineStyle::Plain),
+                ("https://example.com".to_string(), InlineStyle::Link),
+                (".".to_string(), InlineStyle::Plain),
+            ]
+        );
+    }
+
+    #[test]
+    fn task_checkbox_renders_unchecked_and_checked_glyphs() {
+        let unchecked = build_display_line("- [ ] todo", false);
+        assert_eq!(unchecked.display_text, "☐ todo");
+        let checked = build_display_line("- [x] done", false);
+        assert_eq!(checked.display_text, "☑ done");
+        let checked_upper = build_display_line("- [X] done", false);
+        assert_eq!(checked_upper.display_text, "☑ done");
+    }
+
+    #[test]
+    fn task_checkbox_works_on_an_ordered_marker_too() {
+        let dl = build_display_line("1. [ ] todo", false);
+        assert_eq!(dl.display_text, "1. ☐ todo");
+    }
+
+    #[test]
+    fn task_checkbox_works_inside_a_compounding_blockquote() {
+        let dl = build_display_line("> - [ ] todo", false);
+        assert_eq!(dl.display_text, "☐ todo");
+    }
+
+    #[test]
+    fn a_list_item_without_a_checkbox_is_unaffected() {
+        let dl = build_display_line("- [not a checkbox] text", false);
+        assert_eq!(dl.display_text, "• [not a checkbox] text");
     }
 }
