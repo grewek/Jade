@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It's deliberately minimal — standing rules and commands only, since this file is reloaded in full on every turn.
 
 - **`ARCHITECTURE.md`** — non-obvious invariants, GPUI/test gotchas, and the Backlog. Not auto-loaded; read before touching the editor, dialogs, or UI tests.
-- **`STYLE.md`** — Tigerstyle-derived coding rules (safety, performance, style), adapted for Rust/GPUI. Not auto-loaded; read on demand when writing or reviewing code.
+- **`STYLE.md`** — Tigerstyle-derived coding rules plus documentation/comment rules. Not auto-loaded, but **mandatory: read it before writing or reviewing any code, docs, or comments, and always follow it.**
 
 ## Vision
 
@@ -18,11 +18,6 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 **Do not add dependencies to any `Cargo.toml` without first asking the user for explicit approval** — this applies even to crates already agreed upon in principle (e.g. `gpui`, `gpui-kit`), ask again at the point of actually adding them.
 
 **`ARCHITECTURE.md`'s Backlog section lists deliberately deferred follow-ups — don't pick one up without checking in with the user first.**
-
-## Documentation & Comments
-
-- **Don't over-document.** Keep API documentation (doc comments, `ARCHITECTURE.md` entries) small and concise.
-- **Keep code comments short and concise.** Never explain code whose behavior is obvious from reading it; comment only the non-obvious *why*.
 
 ## Performance
 

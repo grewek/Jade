@@ -1,6 +1,6 @@
 # STYLE.md
 
-Coding rules derived from [Tigerstyle](https://tigerstyle.dev) (TigerBeetle's engineering philosophy), adapted for Jade's stack (Rust, GPUI, a third-party UI dependency Jade does not fork). Not auto-loaded — read on demand when writing or reviewing code, not on every turn.
+Coding rules derived from [Tigerstyle](https://tigerstyle.dev) (TigerBeetle's engineering philosophy), adapted for Jade's stack (Rust, GPUI, a third-party UI dependency Jade does not fork). Not auto-loaded, but mandatory: `CLAUDE.md` requires reading and following it whenever writing or reviewing code, docs, or comments.
 
 Several of these overlap with standing rules already in `CLAUDE.md`; where that's the case it's noted rather than duplicated as a new requirement.
 
@@ -22,7 +22,8 @@ Several of these overlap with standing rules already in `CLAUDE.md`; where that'
 ## Developer experience / style
 
 10. **Length limits as a guideline**: functions roughly ≤ 70 lines, lines ≤ ~100 columns. Can be enforced with `clippy::too_many_lines` where it's worth the friction.
-11. **Comments explain why, not what.** Already Jade's standing rule in `CLAUDE.md`.
+11. **Comments explain why, not what.** Keep code comments short; never explain behavior that's obvious from reading the code, only the non-obvious *why*.
+11a. **Don't over-document.** Keep API docs (doc comments, `ARCHITECTURE.md` entries) small and concise.
 12. **Small, atomic commits with the rationale in the message**, not just a description of the diff.
 13. **Consistent naming across parallel structures** (e.g. `*_cache`, `*_stack` named the same way across modules). Lowest priority of this list — cosmetic, not load-bearing.
 
