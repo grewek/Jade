@@ -56,14 +56,14 @@ pub(super) fn table_line_kind(tables: &[Table], line_index: usize) -> TableLineK
 /// it goes raw — the whole table becomes the unit of "active," same
 /// `focused`-gating as `is_active_line`.
 pub(super) fn is_table_active(
-    tables: &[Table],
+    doc: &DocumentCache,
     line_index: usize,
     cursor: usize,
     focused: bool,
 ) -> bool {
     focused
-        && table_index_at(tables, line_index).is_some_and(|idx| {
-            let range = &tables[idx].byte_range;
+        && table_index_at(doc.tables(), line_index).is_some_and(|idx| {
+            let range = doc.table_byte_range(&doc.tables()[idx]);
             cursor >= range.start && cursor <= range.end
         })
 }
@@ -633,7 +633,7 @@ fn row_count_for_line(
     let line_text = &text[line_range.clone()];
     let active = is_active_line(&line_range, cursor, focused);
     let table_kind = table_line_kind(doc.tables(), i);
-    let table_active = is_table_active(doc.tables(), i, cursor, focused);
+    let table_active = is_table_active(doc, i, cursor, focused);
     let callout = callout_at_line(doc.callouts(), i);
     let callout_is_header = callout.is_some_and(|c| c.is_header(i));
     let (display_lines, wrap_width) = build_display_lines(
@@ -689,6 +689,10 @@ impl LineLayout {
     /// Estimated height of line `i` alone.
     pub(super) fn height(&self, i: usize) -> Pixels {
         self.cumulative_at(i + 1) - self.cumulative_at(i)
+    }
+
+    pub(super) fn is_table_active(&self, i: usize, cursor: usize, focused: bool) -> bool {
+        is_table_active(&self.doc_cache.borrow(), i, cursor, focused)
     }
 
     pub(super) fn line_range(&self, i: usize) -> std::ops::Range<usize> {
@@ -1598,7 +1602,7 @@ fn offset_for_position(
         let line_text = &text[layout.line_range(i)];
         let active = is_active_line(&layout.line_range(i), cursor, focused);
         let table_kind = table_line_kind(tables, i);
-        let table_active = is_table_active(tables, i, cursor, focused);
+        let table_active = layout.is_table_active(i, cursor, focused);
         let callout = callout_at_line(callouts, i);
         let callout_is_header = callout.is_some_and(|c| c.is_header(i));
         let results = shape_display_line(
@@ -1838,7 +1842,7 @@ fn paint_lines(
         let line_text = &text[line_range.clone()];
         let active = is_active_line(&line_range, cursor, show_cursor);
         let table_kind = table_line_kind(tables, i);
-        let table_active = is_table_active(tables, i, cursor, show_cursor);
+        let table_active = layout.is_table_active(i, cursor, show_cursor);
         let callout = callout_at_line(callouts, i);
         let callout_is_header = callout.is_some_and(|c| c.is_header(i));
 

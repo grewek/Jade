@@ -1978,6 +1978,39 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn typing_a_character_in_a_huge_file_allocates_almost_nothing(cx: &mut TestAppContext) {
+        // The edit path (buffer + cache patching, no render) used to copy
+        // the callout list and every table per key: ~300KB each. Cost per
+        // key must not scale with the number of callouts/tables.
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let (_dir, window, _editor) = open_stress_fixture(cx, &content);
+        cx.update_window(window, |_, window, cx| {
+            for i in 0..4 {
+                let mut keystroke = gpui_kit::Keystroke::parse("x").unwrap();
+                keystroke.key_char = Some("x".to_string());
+                crate::test_alloc::reset();
+                window.dispatch_keystroke(keystroke, cx);
+                let snap = crate::test_alloc::snapshot();
+                // The first key may still warm scratch buffers.
+                if i > 0 {
+                    assert!(
+                        snap.total < 16 * 1024,
+                        "key {i} allocated {} bytes in {} allocations",
+                        snap.total,
+                        snap.count
+                    );
+                }
+                window.render_frame(cx);
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn line_count_changing_edits_do_not_rebuild_the_document(cx: &mut TestAppContext) {
         // Enter, a line-joining Backspace and undo/redo of them used to recompute every
         // per-line cache (~165MB allocated, a 32MB peak, >150ms on the

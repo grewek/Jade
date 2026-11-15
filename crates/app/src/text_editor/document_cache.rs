@@ -136,6 +136,10 @@ pub(super) struct DocumentCache {
     open_block_states: Vec<OpenBlock>,
     tables: Vec<Table>,
     callouts: Vec<Callout>,
+    /// Reused by `patch_callouts` to hold the callouts after the edit point
+    /// while the walk rewrites the list (cloning the list per edit cost
+    /// 250KB on the stress fixture).
+    callout_tail_scratch: Vec<Callout>,
     /// `callout_states[i]` is the `CalloutState` *entering* line `i`.
     /// Parallel to `callout_for_line`.
     callout_states: Vec<u64>,
@@ -166,6 +170,7 @@ impl DocumentCache {
             callouts: Vec::new(),
             callout_states: Vec::new(),
             callout_counts: Vec::new(),
+            callout_tail_scratch: Vec::new(),
         };
         cache.recompute_all(text);
         cache
@@ -436,31 +441,8 @@ impl DocumentCache {
         // necessarily containing a `|`) the edit just created.
         let header_above = start_line > 0 && is_pipe_row(self.line_text_at(text, start_line - 1));
         if !pre.touched_old_table && !touched_new_pipe_row && !header_above {
-            // No table's own *content* could have changed, but an edit
-            // anywhere before a table still shifts every subsequent byte
-            // offset — `line_index` already reflects that (patched before
-            // `patch_tables` runs), so every table's `byte_range` still
-            // needs refreshing from it, even though nothing about which
-            // lines belong to which table changes. Caught by this
-            // module's own property test (the "far from any table" case),
-            // not reasoned out in advance — an earlier version of this
-            // function treated "nothing table-related touched" as a
-            // literal no-op and left every table's `byte_range` stale.
-            let new_ranges: Vec<_> = self
-                .tables
-                .iter()
-                .map(|t| {
-                    self.line_index.prefix_sum(t.start_line) as usize
-                        ..self.line_end_byte(t.end_line - 1)
-                })
-                .collect();
-            for (t, range) in self.tables.iter_mut().zip(new_ranges) {
-                t.byte_range = range;
-            }
-            // Table *membership* didn't change for any line here — only
-            // pre-existing tables' byte ranges were refreshed — so nothing
-            // beyond the minimal raw-text-changed span needs its row count
-            // re-derived on this classifier's account.
+            // No table's lines changed (byte ranges are derived, see
+            // `table_byte_range`), so only the raw-text-changed span is dirty.
             return start_line..(last_touched_line + 1);
         }
 
@@ -519,28 +501,23 @@ impl DocumentCache {
         let prefix_table_count = self.tables.partition_point(|t| t.end_line <= window_start);
         let suffix_start_idx = self.tables.partition_point(|t| t.start_line < window_end);
 
-        let mut new_tables: Vec<Table> = self.tables[..prefix_table_count].to_vec();
-        for t in &local_tables {
-            new_tables.push(Table {
+        // In place: untouched tables before and after the window are not
+        // copied (cloning each one's columns per keystroke cost ~0.4ms).
+        self.tables.splice(
+            prefix_table_count..suffix_start_idx,
+            local_tables.into_iter().map(|t| Table {
                 start_line: t.start_line + window_start,
                 end_line: t.end_line + window_start,
-                byte_range: (t.byte_range.start + window_start_byte)
-                    ..(t.byte_range.end + window_start_byte),
-                columns: t.columns.clone(),
-            });
-        }
-        for t in &self.tables[suffix_start_idx..] {
-            new_tables.push(Table {
-                start_line: t.start_line,
-                end_line: t.end_line,
-                byte_range: self.line_index.prefix_sum(t.start_line) as usize
-                    ..self.line_end_byte(t.end_line - 1),
-                columns: t.columns.clone(),
-            });
-        }
-
-        self.tables = new_tables;
+                columns: t.columns,
+            }),
+        );
         window_start..window_end
+    }
+
+    /// The bytes `table` spans, from its first line's start to its last
+    /// line's end. Derived from `line_index`, so it can't go stale.
+    pub(super) fn table_byte_range(&self, table: &Table) -> Range<usize> {
+        self.line_start_byte(table.start_line)..self.line_end_byte(table.end_line - 1)
     }
 
     /// The line index whose byte-stride range contains `byte_offset`,
@@ -652,8 +629,21 @@ impl DocumentCache {
         let last_touched_line = span.last_new_line();
 
         let prefix_callout_count = self.callout_counts[start_line] as usize;
-        let old_snapshot: Vec<Callout> = self.callouts.clone();
+        // The old list is needed only from `prefix_callout_count` on, plus
+        // the one prefix callout that may still be open across the edit
+        // (the walk only ever mutates that one).
+        let mut tail = std::mem::take(&mut self.callout_tail_scratch);
+        tail.clear();
+        tail.extend_from_slice(&self.callouts[prefix_callout_count..]);
         self.callouts.truncate(prefix_callout_count);
+        let open_prefix = CalloutState::unpack(self.callout_states[start_line])
+            .current
+            .filter(|&c| c < prefix_callout_count)
+            .map(|c| (c, self.callouts[c].end_line));
+        let old_end_line = |idx: usize| match open_prefix {
+            Some((c, end)) if c == idx => end,
+            _ => tail[idx - prefix_callout_count].end_line,
+        };
 
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
         let mut state = CalloutState::unpack(self.callout_states[start_line]);
@@ -675,25 +665,30 @@ impl DocumentCache {
                 // numbers move with it.
                 let delta = span.line_delta();
                 if let Some(idx) = next_state.current {
-                    self.callouts[idx].end_line = shift_line(old_snapshot[idx].end_line, delta);
+                    self.callouts[idx].end_line = shift_line(old_end_line(idx), delta);
                 }
-                let tail = old_snapshot[self.callouts.len()..].iter().map(|c| Callout {
-                    start_line: shift_line(c.start_line, delta),
-                    end_line: shift_line(c.end_line, delta),
-                    ..c.clone()
-                });
-                self.callouts.extend(tail);
+                let rest = tail[self.callouts.len() - prefix_callout_count..]
+                    .iter()
+                    .map(|c| Callout {
+                        start_line: shift_line(c.start_line, delta),
+                        end_line: shift_line(c.end_line, delta),
+                        ..c.clone()
+                    });
+                self.callouts.extend(rest);
+                self.callout_tail_scratch = tail;
                 return start_line..(i + 1);
             }
             if !has_next {
                 // Walked to the document's actual last line with no
                 // reconvergence — `self.callouts` is already the complete,
-                // freshly computed result, and `old_snapshot` (everything
-                // that used to follow) is correctly discarded.
+                // freshly computed result, and `tail` (everything that used
+                // to follow) is correctly discarded.
+                self.callout_tail_scratch = tail;
                 return start_line..(i + 1);
             }
             state = next_state;
         }
+        self.callout_tail_scratch = tail;
         start_line..old_line_count
     }
 

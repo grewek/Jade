@@ -4,8 +4,8 @@ use gpui_kit::*;
 
 use super::document_cache::TextEdit;
 use super::element::{
-    analyze_line_layout, callout_at_line, indent_px, is_active_line, is_table_active,
-    shape_display_line, table_line_kind, visible_line_range,
+    analyze_line_layout, callout_at_line, indent_px, is_active_line, shape_display_line,
+    table_line_kind, visible_line_range,
 };
 use super::{Editor, EditorBuffer};
 
@@ -206,7 +206,7 @@ impl EntityInputHandler for Editor {
             let line_text = &text[line_range.clone()];
             let active = is_active_line(&line_range, cursor, focused);
             let table_kind = table_line_kind(tables, i);
-            let table_active = is_table_active(tables, i, cursor, focused);
+            let table_active = layout.is_table_active(i, cursor, focused);
             let callout = callout_at_line(callouts, i);
             let callout_is_header = callout.is_some_and(|c| c.is_header(i));
             let results = shape_display_line(

@@ -43,7 +43,7 @@ pub struct Column {
 
 /// One detected table: its header row's line index, the line index right
 /// after its last body row, the byte range it spans in the whole document,
-/// and its resolved columns. The byte range is what `element.rs` checks the
+/// and its resolved columns. Its byte range (from `DocumentCache::table_byte_range`) is what `element.rs` checks the
 /// cursor against to decide whether the *whole* table should render raw —
 /// unlike every other construct's single "active line," a table's
 /// row/column alignment can't be resolved from one line in isolation, so
@@ -53,7 +53,6 @@ pub struct Column {
 pub struct Table {
     pub start_line: usize,
     pub end_line: usize,
-    pub byte_range: Range<usize>,
     pub columns: Vec<Column>,
 }
 
@@ -204,32 +203,22 @@ pub(super) fn is_pipe_row(line: &str) -> bool {
 /// materializing the document's lines or a per-line lookup (which cost
 /// ~12MB of transient allocation on the 320K-line stress fixture).
 pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
-    let mut offset = 0;
-    let mut lines = source
-        .split('\n')
-        .enumerate()
-        .map(|(i, line)| {
-            let start = offset;
-            offset += line.len() + 1;
-            (i, start, line)
-        })
-        .peekable();
+    let mut lines = source.split('\n').enumerate().peekable();
     let mut tables = Vec::new();
 
-    while let Some((start_line, start_byte, header)) = lines.next() {
+    while let Some((start_line, header)) = lines.next() {
         if !is_pipe_row(header) {
             continue;
         }
-        let Some(&(_, _, delimiter)) = lines.peek() else {
+        let Some(&(_, delimiter)) = lines.peek() else {
             break;
         };
         let header_row = scan_row(header);
         let Some(aligns) = parse_delimiter_row(delimiter, header_row.cells.len()) else {
             continue;
         };
-        let (_, delim_start, delim_line) = lines.next().unwrap_or((0, 0, ""));
+        lines.next();
         let mut end_line = start_line + 2;
-        let mut end_byte = delim_start + delim_line.len();
 
         let mut columns: Vec<Column> = header_row
             .cells
@@ -240,7 +229,7 @@ pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
                 align,
             })
             .collect();
-        while let Some(&(i, row_start, row)) = lines.peek() {
+        while let Some(&(i, row)) = lines.peek() {
             if !is_pipe_row(row) {
                 break;
             }
@@ -248,14 +237,12 @@ pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
                 column.width = column.width.max(cell.text.chars().count());
             }
             end_line = i + 1;
-            end_byte = row_start + row.len();
             lines.next();
         }
 
         tables.push(Table {
             start_line,
             end_line,
-            byte_range: start_byte..end_byte,
             columns,
         });
     }
@@ -274,14 +261,6 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
     let lines: Vec<&str> = source.split('\n').collect();
     let mut table_for_line = vec![None; lines.len()];
     let mut tables = Vec::new();
-
-    // Byte offset each line starts at, for `Table::byte_range`.
-    let mut line_starts = Vec::with_capacity(lines.len());
-    let mut offset = 0;
-    for line in &lines {
-        line_starts.push(offset);
-        offset += line.len() + 1; // +1 for the '\n' this line was split on
-    }
 
     let mut i = 0;
     while i < lines.len() {
@@ -316,14 +295,12 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
             }
         }
 
-        let byte_range = line_starts[start]..line_starts[end - 1] + lines[end - 1].len();
         for entry in &mut table_for_line[start..end] {
             *entry = Some(tables.len());
         }
         tables.push(Table {
             start_line: start,
             end_line: end,
-            byte_range,
             columns,
         });
         i = end;
