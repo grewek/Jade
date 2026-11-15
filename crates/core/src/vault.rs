@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::links::{WikiLink, extract_wikilinks, extract_wikilinks_from_file};
+use crate::links::{link_targets, link_targets_from_file};
 use crate::note::{Note, relative_id, relative_path_id};
 
 pub struct Vault {
@@ -9,10 +9,11 @@ pub struct Vault {
     pub notes: HashMap<String, Note>,
     /// Folder ids (relative paths, `/`-separated), including empty folders.
     pub folders: HashSet<String>,
-    /// Each note's extracted wikilinks, cached and kept in sync with `notes` on
-    /// every mutation. Note text is not kept in memory (see [`Note`]), so this
-    /// is also the only way `backlinks()` can know what a note links to.
-    wikilinks: HashMap<String, Vec<WikiLink>>,
+    /// Each note's distinct wikilink targets (sorted), cached and kept in sync
+    /// with `notes` on every mutation. Note text is not kept in memory (see
+    /// [`Note`]), so this is the only way `backlinks()` can know what a note
+    /// links to. Targets only: headings and aliases are never read here.
+    wikilinks: HashMap<String, Box<[Box<str>]>>,
 }
 
 impl Vault {
@@ -68,7 +69,7 @@ impl Vault {
         std::fs::write(&path, "")?;
         let note = Note::new(&self.root, path);
         let id = note.id.clone();
-        self.wikilinks.insert(id.clone(), Vec::new());
+        self.wikilinks.insert(id.clone(), Box::default());
         self.notes.insert(id.clone(), note);
         Ok(id)
     }
@@ -113,8 +114,7 @@ impl Vault {
     pub fn save_note(&mut self, id: &str, text: &str) -> std::io::Result<()> {
         let note = self.notes.get(id).ok_or_else(|| not_found(id))?;
         note.save(text)?;
-        self.wikilinks
-            .insert(id.to_string(), extract_wikilinks(text));
+        self.wikilinks.insert(id.to_string(), link_targets(text));
         Ok(())
     }
 
@@ -249,15 +249,21 @@ impl Vault {
         // Reads the cached `wikilinks` map instead of re-running `extract_wikilinks`
         // on every note's content here — that cache is what turns this from a full
         // re-parse of the whole vault into a cheap read on every keystroke.
-        for (note_id, links) in &self.wikilinks {
-            for link in links {
-                if let Some(target_id) = self.resolve(&link.target, &index) {
+        for (note_id, targets) in &self.wikilinks {
+            for target in targets.iter() {
+                if let Some(target_id) = self.resolve(target, &index) {
                     backlinks
                         .entry(target_id)
                         .or_default()
                         .push(note_id.clone());
                 }
             }
+        }
+        // Two targets can resolve to one note (`[[a]]`, `[[A]]`): list each
+        // source once.
+        for sources in backlinks.values_mut() {
+            sources.sort_unstable();
+            sources.dedup();
         }
         backlinks
     }
@@ -367,7 +373,7 @@ fn collect_entries(
     dir: &Path,
     notes: &mut HashMap<String, Note>,
     folders: &mut HashSet<String>,
-    wikilinks: &mut HashMap<String, Vec<WikiLink>>,
+    wikilinks: &mut HashMap<String, Box<[Box<str>]>>,
 ) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
@@ -376,7 +382,7 @@ fn collect_entries(
             collect_entries(root, &path, notes, folders, wikilinks)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             let note = Note::new(root, path);
-            wikilinks.insert(note.id.clone(), extract_wikilinks_from_file(&note.path)?);
+            wikilinks.insert(note.id.clone(), link_targets_from_file(&note.path)?);
             notes.insert(note.id.clone(), note);
         }
     }
@@ -741,5 +747,14 @@ mod tests {
         let results = vault.search("milk");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].title, "Groceries");
+    }
+
+    #[test]
+    fn a_source_is_listed_once_however_often_it_links() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("A.md"), "[[B]] [[B]] [[b]]\n[[B#x]]").unwrap();
+        std::fs::write(dir.path().join("B.md"), "").unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        assert_eq!(vault.backlinks().get("B"), Some(&vec!["A".to_string()]));
     }
 }

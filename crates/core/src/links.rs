@@ -17,6 +17,21 @@ pub fn extract_wikilinks(content: &str) -> Vec<WikiLink> {
 
 /// The wikilinks in one `line` (no line break inside), appended to `links`.
 pub fn extract_wikilinks_in_line(line: &str, links: &mut Vec<WikiLink>) {
+    for_each_wikilink_in_line(line, |target, heading, alias| {
+        links.push(WikiLink {
+            target: target.to_string(),
+            heading: heading.map(str::to_string),
+            alias: alias.map(str::to_string),
+        });
+    });
+}
+
+/// Calls `f(target, heading, alias)` for each wikilink in `line`, borrowing
+/// from it so callers that need less than a whole [`WikiLink`] allocate less.
+fn for_each_wikilink_in_line<'a>(
+    line: &'a str,
+    mut f: impl FnMut(&'a str, Option<&'a str>, Option<&'a str>),
+) {
     let mut i = 0;
     while let Some(start) = line[i..].find("[[") {
         let abs_start = i + start + 2;
@@ -32,39 +47,55 @@ pub fn extract_wikilinks_in_line(line: &str, links: &mut Vec<WikiLink>) {
         }
 
         let (target_part, alias) = match inner.split_once('|') {
-            Some((t, a)) => (t, Some(a.trim().to_string())),
+            Some((t, a)) => (t, Some(a.trim())),
             None => (inner, None),
         };
         let (target, heading) = match target_part.split_once('#') {
-            Some((t, h)) => (t.trim().to_string(), Some(h.trim().to_string())),
-            None => (target_part.trim().to_string(), None),
+            Some((t, h)) => (t.trim(), Some(h.trim())),
+            None => (target_part.trim(), None),
         };
 
         if !target.is_empty() {
-            links.push(WikiLink {
-                target,
-                heading,
-                alias,
-            });
+            f(target, heading, alias);
         }
     }
 }
 
-/// The wikilinks in the file at `path`, read line by line so memory stays
-/// bounded by the longest line instead of the file size (an 11.8MB note
-/// otherwise costs ~11MiB of transient buffer at vault open).
-pub fn extract_wikilinks_from_file(path: &std::path::Path) -> std::io::Result<Vec<WikiLink>> {
+/// The distinct link targets in the file at `path`, sorted. This is all the
+/// vault's backlink index needs (not headings or aliases), and notes
+/// typically repeat a few targets many times, so it stores far less than
+/// every [`WikiLink`]. Read line by line, so memory is bounded by the longest
+/// line, not the file (an 11.8MB note otherwise costs a ~14MiB transient peak
+/// at vault open).
+pub fn link_targets_from_file(path: &std::path::Path) -> std::io::Result<Box<[Box<str>]>> {
     use std::io::BufRead;
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     let mut line = String::new();
-    let mut links = Vec::new();
+    let mut targets: std::collections::BTreeSet<Box<str>> = Default::default();
     loop {
         line.clear();
         if reader.read_line(&mut line)? == 0 {
-            return Ok(links);
+            return Ok(targets.into_iter().collect());
         }
-        extract_wikilinks_in_line(&line, &mut links);
+        for_each_wikilink_in_line(&line, |target, _, _| {
+            if !targets.contains(target) {
+                targets.insert(target.into());
+            }
+        });
     }
+}
+
+/// The distinct link targets in `text`, sorted (see [`link_targets_from_file`]).
+pub fn link_targets(text: &str) -> Box<[Box<str>]> {
+    let mut targets: std::collections::BTreeSet<Box<str>> = Default::default();
+    for line in text.lines() {
+        for_each_wikilink_in_line(line, |target, _, _| {
+            if !targets.contains(target) {
+                targets.insert(target.into());
+            }
+        });
+    }
+    targets.into_iter().collect()
 }
 
 #[cfg(test)]
@@ -133,14 +164,23 @@ mod tests {
     }
 
     #[test]
-    fn file_extraction_matches_in_memory_extraction() {
-        let text = "x [[A]] y\r\n[[B#h|al]] [[C]]\nno link\n[[unclosed\n[[D]]";
+    fn link_targets_are_distinct_sorted_and_match_the_full_extraction() {
+        let text = "[[b#h|x]] [[a]] [[b]]\n[[a|y]]\n[[ c ]]";
+        let expected: Vec<String> = {
+            let mut t: Vec<String> = extract_wikilinks(text)
+                .into_iter()
+                .map(|l| l.target)
+                .collect();
+            t.sort();
+            t.dedup();
+            t
+        };
+        let got: Vec<String> = link_targets(text).iter().map(|t| t.to_string()).collect();
+        assert_eq!(got, expected);
+        assert_eq!(got, ["a", "b", "c"]);
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("n.md");
         std::fs::write(&path, text).unwrap();
-        assert_eq!(
-            extract_wikilinks_from_file(&path).unwrap(),
-            extract_wikilinks(text)
-        );
+        assert_eq!(link_targets_from_file(&path).unwrap(), link_targets(text));
     }
 }
