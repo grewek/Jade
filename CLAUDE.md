@@ -20,6 +20,11 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 
 **`ARCHITECTURE.md`'s Backlog section lists deliberately deferred follow-ups — don't pick one up without checking in with the user first.**
 
+## Documentation & Comments
+
+- **Don't over-document.** Keep API documentation (doc comments, `ARCHITECTURE.md` entries) small and concise.
+- **Keep code comments short and concise.** Never explain code whose behavior is obvious from reading it; comment only the non-obvious *why*.
+
 ## Performance
 
 Performance is a standing, firm requirement, not an afterthought to clean up once something feels slow:
