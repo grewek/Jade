@@ -111,7 +111,11 @@ impl EditorBuffer {
         if anchor == self.cursor {
             return None;
         }
-        Some(if anchor < self.cursor { anchor..self.cursor } else { self.cursor..anchor })
+        Some(if anchor < self.cursor {
+            anchor..self.cursor
+        } else {
+            self.cursor..anchor
+        })
     }
 
     pub fn has_selection(&self) -> bool {
@@ -159,14 +163,20 @@ impl EditorBuffer {
         // (no-selection) insert landing exactly where the last one in the
         // burst left the cursor — see `LastEdit`'s own doc comment.
         let continues = !had_selection
-            && self.last_edit == Some(LastEdit { kind: EditKind::Insert, continuation_point: range.start });
+            && self.last_edit
+                == Some(LastEdit {
+                    kind: EditKind::Insert,
+                    continuation_point: range.start,
+                });
         self.push_undo(continues);
         self.preferred_column = None;
         self.text.replace_range(range.clone(), s);
         self.cursor = range.start + s.len();
         self.anchor = None;
-        self.last_edit =
-            (!had_selection).then_some(LastEdit { kind: EditKind::Insert, continuation_point: self.cursor });
+        self.last_edit = (!had_selection).then_some(LastEdit {
+            kind: EditKind::Insert,
+            continuation_point: self.cursor,
+        });
     }
 
     /// Deletes the selection, or the one char before the cursor.
@@ -210,10 +220,18 @@ impl EditorBuffer {
     fn delete_range(&mut self, range: Range<usize>, kind: Option<EditKind>) {
         let continues = match kind {
             Some(EditKind::DeleteBackward) => {
-                self.last_edit == Some(LastEdit { kind: EditKind::DeleteBackward, continuation_point: range.end })
+                self.last_edit
+                    == Some(LastEdit {
+                        kind: EditKind::DeleteBackward,
+                        continuation_point: range.end,
+                    })
             }
             Some(EditKind::DeleteForward) => {
-                self.last_edit == Some(LastEdit { kind: EditKind::DeleteForward, continuation_point: range.start })
+                self.last_edit
+                    == Some(LastEdit {
+                        kind: EditKind::DeleteForward,
+                        continuation_point: range.start,
+                    })
             }
             _ => false,
         };
@@ -222,7 +240,10 @@ impl EditorBuffer {
         self.text.replace_range(range.clone(), "");
         self.cursor = range.start;
         self.anchor = None;
-        self.last_edit = kind.map(|kind| LastEdit { kind, continuation_point: range.start });
+        self.last_edit = kind.map(|kind| LastEdit {
+            kind,
+            continuation_point: range.start,
+        });
     }
 
     pub fn move_left(&mut self, extend: bool) {
@@ -341,7 +362,11 @@ impl EditorBuffer {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot { text: self.text.clone(), cursor: self.cursor, anchor: self.anchor }
+        Snapshot {
+            text: self.text.clone(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+        }
     }
 
     /// Records the state *before* a text-modifying operation, so `undo` can
@@ -382,7 +407,9 @@ impl EditorBuffer {
     /// Undoes the most recent text-modifying operation, if any. Returns
     /// whether there was one to undo.
     pub fn undo(&mut self) -> bool {
-        let Some(snapshot) = self.undo_stack.pop() else { return false };
+        let Some(snapshot) = self.undo_stack.pop() else {
+            return false;
+        };
         self.redo_stack.push(self.snapshot());
         self.restore(snapshot);
         true
@@ -391,7 +418,9 @@ impl EditorBuffer {
     /// Reapplies the most recently undone operation, if any. Returns whether
     /// there was one to redo.
     pub fn redo(&mut self) -> bool {
-        let Some(snapshot) = self.redo_stack.pop() else { return false };
+        let Some(snapshot) = self.redo_stack.pop() else {
+            return false;
+        };
         self.undo_stack.push(self.snapshot());
         self.restore(snapshot);
         true
@@ -484,7 +513,9 @@ fn word_boundary_backward(text: &str, pos: usize) -> usize {
 fn word_boundary_forward(text: &str, pos: usize) -> usize {
     let mut offset = pos;
     loop {
-        let Some(c) = text[offset..].chars().next() else { return offset };
+        let Some(c) = text[offset..].chars().next() else {
+            return offset;
+        };
         if char_class(c) != CharClass::Whitespace {
             break;
         }
@@ -492,7 +523,9 @@ fn word_boundary_forward(text: &str, pos: usize) -> usize {
     }
     let class = char_class(text[offset..].chars().next().unwrap());
     loop {
-        let Some(c) = text[offset..].chars().next() else { break };
+        let Some(c) = text[offset..].chars().next() else {
+            break;
+        };
         if char_class(c) != class {
             break;
         }
@@ -603,7 +636,11 @@ mod tests {
         let mut buf = EditorBuffer::new("a\u{00e9}b"); // a, é (2 bytes), b
         buf.set_cursor(1, false);
         buf.move_right(false);
-        assert_eq!(buf.cursor(), 3, "should land after the full 2-byte é, not inside it");
+        assert_eq!(
+            buf.cursor(),
+            3,
+            "should land after the full 2-byte é, not inside it"
+        );
         buf.move_left(false);
         assert_eq!(buf.cursor(), 1);
     }
@@ -644,7 +681,11 @@ mod tests {
         let mut buf = EditorBuffer::new("abcdef\nxy\nabcdef");
         buf.set_cursor(4, false); // column 4 on line 0
         buf.move_down(false);
-        assert_eq!(buf.cursor(), 9, "clamped to the end of the short middle line");
+        assert_eq!(
+            buf.cursor(),
+            9,
+            "clamped to the end of the short middle line"
+        );
         buf.move_down(false);
         assert_eq!(buf.cursor(), 14, "back to column 4 on the long last line");
         buf.move_up(false);
@@ -658,11 +699,19 @@ mod tests {
         let mut buf = EditorBuffer::new("abcdef\nxy\nabcdef");
         buf.set_cursor(4, false); // column 4 on line 0
         buf.move_down(false);
-        assert_eq!(buf.cursor(), 9, "clamped to the end of the short middle line");
+        assert_eq!(
+            buf.cursor(),
+            9,
+            "clamped to the end of the short middle line"
+        );
         buf.move_left(false); // now at column 1 on the short line, not 4
         assert_eq!(buf.cursor(), 8);
         buf.move_down(false);
-        assert_eq!(buf.cursor(), 11, "column 1 on the last line, not the long-forgotten 4");
+        assert_eq!(
+            buf.cursor(),
+            11,
+            "column 1 on the last line, not the long-forgotten 4"
+        );
     }
 
     #[test]
@@ -799,8 +848,15 @@ mod tests {
         }
         assert_eq!(buf.text(), "hello");
         assert!(buf.undo());
-        assert_eq!(buf.text(), "", "the whole burst undoes in one step, not one character at a time");
-        assert!(!buf.undo(), "nothing left to undo — the burst was a single entry");
+        assert_eq!(
+            buf.text(),
+            "",
+            "the whole burst undoes in one step, not one character at a time"
+        );
+        assert!(
+            !buf.undo(),
+            "nothing left to undo — the burst was a single entry"
+        );
     }
 
     #[test]
@@ -811,7 +867,11 @@ mod tests {
         buf.insert("b");
         assert_eq!(buf.text(), "ab");
         assert!(buf.undo());
-        assert_eq!(buf.text(), "a", "only the second insert undoes — the move broke the burst");
+        assert_eq!(
+            buf.text(),
+            "a",
+            "only the second insert undoes — the move broke the burst"
+        );
     }
 
     #[test]
@@ -823,7 +883,11 @@ mod tests {
         buf.insert("b"); // plain insert right after, same position a burst would continue from
         assert_eq!(buf.text(), "ab");
         assert!(buf.undo());
-        assert_eq!(buf.text(), "a", "the selection-replacing insert must not coalesce with what follows it");
+        assert_eq!(
+            buf.text(),
+            "a",
+            "the selection-replacing insert must not coalesce with what follows it"
+        );
         assert!(buf.undo());
         assert_eq!(buf.text(), "x");
     }
@@ -835,7 +899,11 @@ mod tests {
         buf.delete_backward();
         assert_eq!(buf.text(), "a");
         assert!(buf.undo());
-        assert_eq!(buf.text(), "ab", "only the delete undoes first, not the insert too");
+        assert_eq!(
+            buf.text(),
+            "ab",
+            "only the delete undoes first, not the insert too"
+        );
         assert!(buf.undo());
         assert_eq!(buf.text(), "");
     }
@@ -849,7 +917,11 @@ mod tests {
         }
         assert_eq!(buf.text(), "");
         assert!(buf.undo());
-        assert_eq!(buf.text(), "hello", "the whole backspace burst undoes in one step");
+        assert_eq!(
+            buf.text(),
+            "hello",
+            "the whole backspace burst undoes in one step"
+        );
     }
 
     #[test]
@@ -905,7 +977,10 @@ mod tests {
         while buf.undo() {
             undo_count += 1;
         }
-        assert_eq!(undo_count, UNDO_STACK_CAP, "the oldest entries beyond the cap should have been evicted");
+        assert_eq!(
+            undo_count, UNDO_STACK_CAP,
+            "the oldest entries beyond the cap should have been evicted"
+        );
     }
 
     #[test]
@@ -925,7 +1000,11 @@ mod tests {
         let mut buf = EditorBuffer::new("hello world");
         buf.set_cursor(2, false); // inside "hello"
         buf.move_word_right(false);
-        assert_eq!(buf.cursor(), 5, "should stop at the end of the current word, not jump past it");
+        assert_eq!(
+            buf.cursor(),
+            5,
+            "should stop at the end of the current word, not jump past it"
+        );
     }
 
     #[test]
@@ -933,7 +1012,11 @@ mod tests {
         let mut buf = EditorBuffer::new("hello world");
         buf.set_cursor(5, false); // right after "hello", before the space
         buf.move_word_right(false);
-        assert_eq!(buf.cursor(), 11, "should skip the space and land at the end of \"world\"");
+        assert_eq!(
+            buf.cursor(),
+            11,
+            "should skip the space and land at the end of \"world\""
+        );
     }
 
     #[test]
@@ -949,7 +1032,11 @@ mod tests {
         let mut buf = EditorBuffer::new("hello world");
         buf.set_cursor(5, false); // right after "hello"
         buf.move_word_left(false);
-        assert_eq!(buf.cursor(), 0, "should land at the start of \"hello\", not skip past it");
+        assert_eq!(
+            buf.cursor(),
+            0,
+            "should land at the start of \"hello\", not skip past it"
+        );
     }
 
     #[test]
@@ -975,7 +1062,11 @@ mod tests {
         let mut buf = EditorBuffer::new("foo, bar");
         buf.set_cursor(0, false);
         buf.move_word_right(false);
-        assert_eq!(buf.cursor(), 3, "stops at the end of \"foo\", before the comma");
+        assert_eq!(
+            buf.cursor(),
+            3,
+            "stops at the end of \"foo\", before the comma"
+        );
         buf.move_word_right(false);
         assert_eq!(buf.cursor(), 4, "the comma is its own punctuation word");
     }
@@ -996,7 +1087,11 @@ mod tests {
         buf.set_cursor(2, false);
         buf.set_cursor(9, true);
         buf.move_word_left(false);
-        assert_eq!(buf.cursor(), 2, "should collapse to the selection's start, like plain Left does");
+        assert_eq!(
+            buf.cursor(),
+            2,
+            "should collapse to the selection's start, like plain Left does"
+        );
         assert!(!buf.has_selection());
     }
 

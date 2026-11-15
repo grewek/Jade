@@ -73,7 +73,12 @@ fn record_grow(added: usize) {
     let mut current = CURRENT_BYTES.load(Ordering::Relaxed);
     let new_current = loop {
         let new = current.saturating_add(added);
-        match CURRENT_BYTES.compare_exchange_weak(current, new, Ordering::Relaxed, Ordering::Relaxed) {
+        match CURRENT_BYTES.compare_exchange_weak(
+            current,
+            new,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
             Ok(_) => break new,
             Err(actual) => current = actual,
         }
@@ -86,7 +91,12 @@ fn record_shrink(removed: usize) {
     let mut current = CURRENT_BYTES.load(Ordering::Relaxed);
     loop {
         let new = current.saturating_sub(removed);
-        match CURRENT_BYTES.compare_exchange_weak(current, new, Ordering::Relaxed, Ordering::Relaxed) {
+        match CURRENT_BYTES.compare_exchange_weak(
+            current,
+            new,
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+        ) {
             Ok(_) => break,
             Err(actual) => current = actual,
         }

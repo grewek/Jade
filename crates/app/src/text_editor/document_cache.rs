@@ -43,7 +43,7 @@ use super::block_preview::{self, FenceState, LineRole};
 use super::callout::{self, Callout, CalloutState};
 use super::fenwick::Fenwick;
 use super::live_preview::{self, LineContext, OpenBlock};
-use super::table_preview::{self, is_pipe_row, Table};
+use super::table_preview::{self, Table, is_pipe_row};
 
 /// A tree-sitter-`InputEdit`-style description of what just changed in the
 /// buffer: the byte range `start_byte..old_end_byte` in the *old* text was
@@ -212,7 +212,10 @@ impl DocumentCache {
         let r3 = self.patch_block_context(text, &span);
         let r4 = self.patch_tables(text, &span);
 
-        let touched = [minimal, r1, r2, r3, r4].into_iter().reduce(union_ranges).unwrap();
+        let touched = [minimal, r1, r2, r3, r4]
+            .into_iter()
+            .reduce(union_ranges)
+            .unwrap();
         Some(touched.start..touched.end.min(self.line_roles.len()))
     }
 
@@ -222,21 +225,37 @@ impl DocumentCache {
         self.line_roles = results.iter().map(|(role, _)| *role).collect();
         self.fence_states = Vec::with_capacity(n);
         self.fence_states.push(None);
-        self.fence_states.extend(results.iter().take(n.saturating_sub(1)).map(|(_, state)| *state));
+        self.fence_states.extend(
+            results
+                .iter()
+                .take(n.saturating_sub(1))
+                .map(|(_, state)| *state),
+        );
         self.line_index = build_line_index(text);
     }
 
     fn recompute_callouts(&mut self, text: &str) {
         let mut callouts = Vec::new();
-        let results = callout::classify_callouts_from(text, CalloutState::default(), 0, &mut callouts);
+        let results =
+            callout::classify_callouts_from(text, CalloutState::default(), 0, &mut callouts);
         let n = results.len();
         self.callout_for_line = results.iter().map(|(callout, _, _)| *callout).collect();
         self.callout_states = Vec::with_capacity(n);
         self.callout_states.push(CalloutState::default());
-        self.callout_states.extend(results.iter().take(n.saturating_sub(1)).map(|(_, state, _)| *state));
+        self.callout_states.extend(
+            results
+                .iter()
+                .take(n.saturating_sub(1))
+                .map(|(_, state, _)| *state),
+        );
         self.callout_counts = Vec::with_capacity(n);
         self.callout_counts.push(0);
-        self.callout_counts.extend(results.iter().take(n.saturating_sub(1)).map(|(_, _, count)| *count));
+        self.callout_counts.extend(
+            results
+                .iter()
+                .take(n.saturating_sub(1))
+                .map(|(_, _, count)| *count),
+        );
         self.callouts = callouts;
     }
 
@@ -246,7 +265,12 @@ impl DocumentCache {
         self.block_contexts = results.iter().map(|(ctx, _)| *ctx).collect();
         self.open_block_states = Vec::with_capacity(n);
         self.open_block_states.push(OpenBlock::None);
-        self.open_block_states.extend(results.into_iter().take(n.saturating_sub(1)).map(|(_, state)| state));
+        self.open_block_states.extend(
+            results
+                .into_iter()
+                .take(n.saturating_sub(1))
+                .map(|(_, state)| state),
+        );
     }
 
     fn recompute_tables(&mut self, text: &str) {
@@ -261,7 +285,11 @@ impl DocumentCache {
     /// byte`].
     pub(super) fn line_end_byte(&self, line: usize) -> usize {
         let next_start = self.line_index.prefix_sum(line + 1) as usize;
-        if line + 1 < self.line_roles.len() { next_start - 1 } else { next_start }
+        if line + 1 < self.line_roles.len() {
+            next_start - 1
+        } else {
+            next_start
+        }
     }
 
     /// `line`'s own text, sliced directly out of `text` via `line_index` —
@@ -303,10 +331,13 @@ impl DocumentCache {
     fn patch_tables(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
         let old_line_count = self.table_for_line.len();
         let start_line = span.start_line;
-        let last_touched_line = (start_line + span.lines_removed).min(old_line_count.saturating_sub(1));
+        let last_touched_line =
+            (start_line + span.lines_removed).min(old_line_count.saturating_sub(1));
 
-        let touched_old_table = (start_line..=last_touched_line).any(|i| self.table_for_line[i].is_some());
-        let touched_new_pipe_row = (start_line..=last_touched_line).any(|i| is_pipe_row(self.line_text_at(text, i)));
+        let touched_old_table =
+            (start_line..=last_touched_line).any(|i| self.table_for_line[i].is_some());
+        let touched_new_pipe_row =
+            (start_line..=last_touched_line).any(|i| is_pipe_row(self.line_text_at(text, i)));
         if !touched_old_table && !touched_new_pipe_row {
             // No table's own *content* could have changed, but an edit
             // anywhere before a table still shifts every subsequent byte
@@ -321,7 +352,10 @@ impl DocumentCache {
             let new_ranges: Vec<_> = self
                 .tables
                 .iter()
-                .map(|t| self.line_index.prefix_sum(t.start_line) as usize..self.line_end_byte(t.end_line - 1))
+                .map(|t| {
+                    self.line_index.prefix_sum(t.start_line) as usize
+                        ..self.line_end_byte(t.end_line - 1)
+                })
                 .collect();
             for (t, range) in self.tables.iter_mut().zip(new_ranges) {
                 t.byte_range = range;
@@ -361,7 +395,8 @@ impl DocumentCache {
             new_tables.push(Table {
                 start_line: t.start_line + window_start,
                 end_line: t.end_line + window_start,
-                byte_range: (t.byte_range.start + window_start_byte)..(t.byte_range.end + window_start_byte),
+                byte_range: (t.byte_range.start + window_start_byte)
+                    ..(t.byte_range.end + window_start_byte),
                 columns: t.columns.clone(),
             });
         }
@@ -370,7 +405,8 @@ impl DocumentCache {
             new_tables.push(Table {
                 start_line: t.start_line,
                 end_line: t.end_line,
-                byte_range: self.line_index.prefix_sum(t.start_line) as usize..self.line_end_byte(t.end_line - 1),
+                byte_range: self.line_index.prefix_sum(t.start_line) as usize
+                    ..self.line_end_byte(t.end_line - 1),
                 columns: t.columns.clone(),
             });
         }
@@ -418,8 +454,13 @@ impl DocumentCache {
         let start_line = self.line_at(edit.start_byte);
         let end_line = self.line_at(edit.old_end_byte);
         let lines_removed = end_line.saturating_sub(start_line);
-        let lines_added = text[edit.start_byte..edit.new_end_byte].matches('\n').count();
-        (lines_added == lines_removed).then_some(EditSpan { start_line, lines_removed })
+        let lines_added = text[edit.start_byte..edit.new_end_byte]
+            .matches('\n')
+            .count();
+        (lines_added == lines_removed).then_some(EditSpan {
+            start_line,
+            lines_removed,
+        })
     }
 
     /// The real incremental path for `block_preview`: resumes from the
@@ -449,7 +490,8 @@ impl DocumentCache {
 
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
         let mut state = self.fence_states[start_line];
-        for (i, (line, line_len, has_next_line)) in (start_line..).zip(lines_from(text, start_byte)) {
+        for (i, (line, line_len, has_next_line)) in (start_line..).zip(lines_from(text, start_byte))
+        {
             let (role, next_state) = block_preview::step(state, line);
             self.line_roles[i] = role;
 
@@ -458,7 +500,8 @@ impl DocumentCache {
             self.line_index.add_at(i, new_len - old_len);
 
             let has_next = i + 1 < old_line_count;
-            let reconverged = has_next && i >= last_touched_line && self.fence_states[i + 1] == next_state;
+            let reconverged =
+                has_next && i >= last_touched_line && self.fence_states[i + 1] == next_state;
             if has_next {
                 self.fence_states[i + 1] = next_state;
             }
@@ -518,7 +561,8 @@ impl DocumentCache {
                 if let Some(idx) = next_state.current {
                     self.callouts[idx].end_line = old_snapshot[idx].end_line;
                 }
-                self.callouts.extend_from_slice(&old_snapshot[self.callouts.len()..]);
+                self.callouts
+                    .extend_from_slice(&old_snapshot[self.callouts.len()..]);
                 return start_line..(i + 1);
             }
             if !has_next {
@@ -550,7 +594,8 @@ impl DocumentCache {
             self.block_contexts[i] = ctx;
 
             let has_next = i + 1 < old_line_count;
-            let reconverged = has_next && i >= last_touched_line && self.open_block_states[i + 1] == next_state;
+            let reconverged =
+                has_next && i >= last_touched_line && self.open_block_states[i + 1] == next_state;
             if has_next {
                 self.open_block_states[i + 1] = next_state.clone();
             }
@@ -622,7 +667,11 @@ mod tests {
         new_text.push_str(&text[..start]);
         new_text.push_str(insert);
         new_text.push_str(&text[old_end..]);
-        let edit = TextEdit { start_byte: start, old_end_byte: old_end, new_end_byte: start + insert.len() };
+        let edit = TextEdit {
+            start_byte: start,
+            old_end_byte: old_end,
+            new_end_byte: start + insert.len(),
+        };
         (new_text, edit)
     }
 
@@ -634,9 +683,14 @@ mod tests {
     /// now describes it as.
     #[test]
     fn incremental_block_preview_matches_the_oracle_after_a_hand_picked_sequence_of_edits() {
-        let mut text = String::from("intro\n```\ncode line one\ncode line two\n```\nplain again\n> quote\n- item");
+        let mut text = String::from(
+            "intro\n```\ncode line one\ncode line two\n```\nplain again\n> quote\n- item",
+        );
         let mut cache = DocumentCache::new(&text);
-        assert_eq!(cache.line_roles(), block_preview::classify_lines(&text).as_slice());
+        assert_eq!(
+            cache.line_roles(),
+            block_preview::classify_lines(&text).as_slice()
+        );
 
         // (start, delete_len, insert) — a mix of same-line-count edits
         // (exercising `patch_block_preview`'s real incremental path) and
@@ -655,7 +709,12 @@ mod tests {
             let (new_text, edit) = apply_edit(&text, start, old_end, insert);
             cache.record_edit(&new_text, edit);
             let expected = block_preview::classify_lines(&new_text);
-            assert_eq!(cache.line_roles(), expected.as_slice(), "after editing {:?}", (start, old_end, insert));
+            assert_eq!(
+                cache.line_roles(),
+                expected.as_slice(),
+                "after editing {:?}",
+                (start, old_end, insert)
+            );
             text = new_text;
         }
     }
@@ -672,7 +731,11 @@ mod tests {
             "before\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n| c | d |\n| --- | --- |\n| 3 | 4 |\n\nafter",
         );
         let mut cache = DocumentCache::new(&text);
-        assert_eq!(cache.tables().len(), 2, "sanity: two separate tables to start");
+        assert_eq!(
+            cache.tables().len(),
+            2,
+            "sanity: two separate tables to start"
+        );
 
         // Delete the blank line between the two tables — `classify_tables`
         // would now see one unbroken pipe-row run, but since "| 1 | 2 |"
@@ -725,7 +788,9 @@ mod tests {
     fn incremental_classification_matches_the_oracle_across_many_randomized_edits() {
         let mut seed: u64 = 0xC0FF_EE15_EA5E_D00Du64;
         let mut next = move || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             seed
         };
 
@@ -764,7 +829,11 @@ mod tests {
         for step in 0..400 {
             let start = (next() as usize) % (text.len() + 1);
             let max_delete = text.len() - start;
-            let delete_len = if max_delete == 0 { 0 } else { (next() as usize) % (max_delete + 1) };
+            let delete_len = if max_delete == 0 {
+                0
+            } else {
+                (next() as usize) % (max_delete + 1)
+            };
             let fragment = fragments[(next() as usize) % fragments.len()];
             let old_end = start + delete_len;
             let (new_text, edit) = apply_edit(&text, start, old_end, fragment);
@@ -777,7 +846,8 @@ mod tests {
                 "line_roles step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
             );
 
-            let (expected_callout_for_line, expected_callouts) = callout::classify_callouts(&new_text);
+            let (expected_callout_for_line, expected_callouts) =
+                callout::classify_callouts(&new_text);
             assert_eq!(
                 cache.callout_for_line(),
                 expected_callout_for_line.as_slice(),
@@ -796,7 +866,8 @@ mod tests {
                 "block_contexts step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
             );
 
-            let (expected_table_for_line, expected_tables) = table_preview::classify_tables(&new_text);
+            let (expected_table_for_line, expected_tables) =
+                table_preview::classify_tables(&new_text);
             assert_eq!(
                 cache.table_for_line(),
                 expected_table_for_line.as_slice(),
@@ -835,8 +906,12 @@ mod tests {
 
         crate::test_alloc::reset();
         let before = crate::test_alloc::snapshot();
-        let block_context_results = live_preview::classify_block_context_from(&text, OpenBlock::None);
-        let list_lines = block_context_results.iter().filter(|(_, state)| matches!(state, OpenBlock::List(_))).count();
+        let block_context_results =
+            live_preview::classify_block_context_from(&text, OpenBlock::None);
+        let list_lines = block_context_results
+            .iter()
+            .filter(|(_, state)| matches!(state, OpenBlock::List(_)))
+            .count();
         let after_block_context = crate::test_alloc::snapshot();
         drop(block_context_results);
 
@@ -861,7 +936,8 @@ mod tests {
             after_full_retained.count - before_full.count,
             after_full_retained.peak - before_full.peak,
             after_full_retained.current - before_full.current,
-            (after_full_retained.peak - before_full.peak).saturating_sub(after_full_retained.current - before_full.current),
+            (after_full_retained.peak - before_full.peak)
+                .saturating_sub(after_full_retained.current - before_full.current),
             after_full_retained.current - after_full_dropped.current,
         );
     }

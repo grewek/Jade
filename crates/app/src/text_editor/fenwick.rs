@@ -28,7 +28,9 @@ pub(super) struct Fenwick {
 
 impl Fenwick {
     pub(super) fn new(values: &[i64]) -> Self {
-        let mut fenwick = Self { tree: vec![0; values.len() + 1] };
+        let mut fenwick = Self {
+            tree: vec![0; values.len() + 1],
+        };
         for (i, &v) in values.iter().enumerate() {
             fenwick.add_at(i, v);
         }
@@ -152,8 +154,16 @@ mod tests {
     fn add_at_updates_every_downstream_prefix_sum() {
         let mut fenwick = Fenwick::new(&[1i64, 1, 1, 1, 1]);
         fenwick.add_at(2, 10);
-        assert_eq!(fenwick.prefix_sum(2), 2, "unaffected: before the updated index");
-        assert_eq!(fenwick.prefix_sum(3), 13, "includes the updated index's new value");
+        assert_eq!(
+            fenwick.prefix_sum(2),
+            2,
+            "unaffected: before the updated index"
+        );
+        assert_eq!(
+            fenwick.prefix_sum(3),
+            13,
+            "includes the updated index's new value"
+        );
         assert_eq!(fenwick.prefix_sum(5), 15);
     }
 
@@ -164,7 +174,11 @@ mod tests {
         let fenwick = Fenwick::new(&values);
         let reference = Reference(values.to_vec());
         for target in 0..values.iter().sum::<i64>() {
-            assert_eq!(fenwick.find(target), reference.find(target), "at target={target}");
+            assert_eq!(
+                fenwick.find(target),
+                reference.find(target),
+                "at target={target}"
+            );
         }
     }
 
@@ -172,7 +186,11 @@ mod tests {
     fn find_returns_none_past_the_total_or_for_a_negative_target() {
         let fenwick = Fenwick::new(&[1i64, 2, 3]);
         assert_eq!(fenwick.find(-1), None);
-        assert_eq!(fenwick.find(6), None, "6 is the total — one past the last valid index's range");
+        assert_eq!(
+            fenwick.find(6),
+            None,
+            "6 is the total — one past the last valid index's range"
+        );
         assert_eq!(fenwick.find(100), None);
     }
 
@@ -200,7 +218,9 @@ mod tests {
         // carry/borrow bit-manipulation across many tree shapes/sizes.
         let mut seed: u64 = 0x5EED_5EED_5EED_5EED;
         let mut next = move || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 33) as i64
         };
 
@@ -221,12 +241,20 @@ mod tests {
                 reference.0[i] += delta;
 
                 let check_i = (next().unsigned_abs() as usize) % (n + 1);
-                assert_eq!(fenwick.prefix_sum(check_i), reference.prefix_sum(check_i), "n={n}");
+                assert_eq!(
+                    fenwick.prefix_sum(check_i),
+                    reference.prefix_sum(check_i),
+                    "n={n}"
+                );
 
                 let total = reference.prefix_sum(n);
                 if total > 0 {
                     let target = (next().unsigned_abs() as i64) % total;
-                    assert_eq!(fenwick.find(target), reference.find(target), "n={n}, target={target}");
+                    assert_eq!(
+                        fenwick.find(target),
+                        reference.find(target),
+                        "n={n}, target={target}"
+                    );
                 }
             }
         }

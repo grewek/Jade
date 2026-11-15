@@ -285,7 +285,12 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
     if active || line.is_empty() {
         return DisplayLine {
             display_text: line.to_string(),
-            segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain, replaced: false }],
+            segments: vec![DisplaySegment {
+                raw: 0..line.len(),
+                display: 0..line.len(),
+                style: InlineStyle::Plain,
+                replaced: false,
+            }],
             indent,
         };
     }
@@ -295,8 +300,19 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
 
     if let Some((level, prefix_len)) = heading_prefix(line) {
         push_hidden(&mut segments, &display_text, 0..prefix_len);
-        scan_inline(line, prefix_len, line.len(), InlineStyle::Heading(level), &mut segments, &mut display_text);
-        return DisplayLine { display_text, segments, indent };
+        scan_inline(
+            line,
+            prefix_len,
+            line.len(),
+            InlineStyle::Heading(level),
+            &mut segments,
+            &mut display_text,
+        );
+        return DisplayLine {
+            display_text,
+            segments,
+            indent,
+        };
     }
 
     if let Some((depth, prefix_len)) = blockquote_prefix(line) {
@@ -310,21 +326,68 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
             &mut segments,
             &mut display_text,
         );
-        scan_inline(line, content_start, line.len(), style, &mut segments, &mut display_text);
-        return DisplayLine { display_text, segments, indent };
+        scan_inline(
+            line,
+            content_start,
+            line.len(),
+            style,
+            &mut segments,
+            &mut display_text,
+        );
+        return DisplayLine {
+            display_text,
+            segments,
+            indent,
+        };
     }
 
     if let Some((marker, leading_ws, marker_len)) = indented_list_marker(line) {
         push_hidden(&mut segments, &display_text, 0..leading_ws);
-        let marker_end = push_list_marker(line, leading_ws, &marker, marker_len, &mut segments, &mut display_text);
-        let (content_start, style) =
-            compound_inner(line, marker_end, false, true, InlineStyle::Plain, &mut segments, &mut display_text);
-        scan_inline(line, content_start, line.len(), style, &mut segments, &mut display_text);
-        return DisplayLine { display_text, segments, indent };
+        let marker_end = push_list_marker(
+            line,
+            leading_ws,
+            &marker,
+            marker_len,
+            &mut segments,
+            &mut display_text,
+        );
+        let (content_start, style) = compound_inner(
+            line,
+            marker_end,
+            false,
+            true,
+            InlineStyle::Plain,
+            &mut segments,
+            &mut display_text,
+        );
+        scan_inline(
+            line,
+            content_start,
+            line.len(),
+            style,
+            &mut segments,
+            &mut display_text,
+        );
+        return DisplayLine {
+            display_text,
+            segments,
+            indent,
+        };
     }
 
-    scan_inline(line, 0, line.len(), InlineStyle::Plain, &mut segments, &mut display_text);
-    DisplayLine { display_text, segments, indent }
+    scan_inline(
+        line,
+        0,
+        line.len(),
+        InlineStyle::Plain,
+        &mut segments,
+        &mut display_text,
+    );
+    DisplayLine {
+        display_text,
+        segments,
+        indent,
+    }
 }
 
 /// Checks `line[offset..]` (the content right after an outer blockquote `>`
@@ -364,7 +427,8 @@ fn compound_inner(
     }
 
     if check_list && let Some((marker, marker_len)) = list_marker(rest) {
-        let content_start = push_list_marker(line, offset, &marker, marker_len, segments, display_text);
+        let content_start =
+            push_list_marker(line, offset, &marker, marker_len, segments, display_text);
         return (content_start, InlineStyle::Plain);
     }
 
@@ -443,7 +507,10 @@ pub enum LineContext {
 /// there.
 #[cfg(test)]
 pub(super) fn classify_block_context(source: &str) -> Vec<LineContext> {
-    classify_block_context_from(source, OpenBlock::None).into_iter().map(|(ctx, _)| ctx).collect()
+    classify_block_context_from(source, OpenBlock::None)
+        .into_iter()
+        .map(|(ctx, _)| ctx)
+        .collect()
 }
 
 /// The cross-line state [`block_context_step`] carries — see
@@ -519,7 +586,11 @@ impl ListNode {
             Some(n) if n.indent == indent => n,
             other => {
                 let depth = other.as_ref().map_or(1, |n| n.depth + 1);
-                Rc::new(ListNode { indent, depth, parent: other })
+                Rc::new(ListNode {
+                    indent,
+                    depth,
+                    parent: other,
+                })
             }
         }
     }
@@ -555,7 +626,9 @@ pub(super) fn block_context_step(open: OpenBlock, line: &str) -> (LineContext, O
     }
 
     let ctx = match &open {
-        OpenBlock::Blockquote(depth) => LineContext::LazyContinuation(LineIndent::Blockquote(*depth)),
+        OpenBlock::Blockquote(depth) => {
+            LineContext::LazyContinuation(LineIndent::Blockquote(*depth))
+        }
         OpenBlock::List(top) => LineContext::LazyContinuation(LineIndent::List(top.depth)),
         OpenBlock::None => LineContext::Plain,
     };
@@ -570,7 +643,10 @@ pub(super) fn block_context_step(open: OpenBlock, line: &str) -> (LineContext, O
 /// entering state for the corresponding later line to know the moment it's
 /// safe to stop and reuse the old cached suffix unchanged — see
 /// `document_cache.rs`.
-pub(super) fn classify_block_context_from(source: &str, open: OpenBlock) -> Vec<(LineContext, OpenBlock)> {
+pub(super) fn classify_block_context_from(
+    source: &str,
+    open: OpenBlock,
+) -> Vec<(LineContext, OpenBlock)> {
     let mut open = open;
     source
         .split('\n')
@@ -607,7 +683,12 @@ pub fn build_display_line_in_context(line: &str, active: bool, ctx: LineContext)
             if active || line.is_empty() {
                 return DisplayLine {
                     display_text: line.to_string(),
-                    segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain, replaced: false }],
+                    segments: vec![DisplaySegment {
+                        raw: 0..line.len(),
+                        display: 0..line.len(),
+                        style: InlineStyle::Plain,
+                        replaced: false,
+                    }],
                     indent,
                 };
             }
@@ -618,7 +699,11 @@ pub fn build_display_line_in_context(line: &str, active: bool, ctx: LineContext)
             let mut segments = Vec::new();
             let mut display_text = String::new();
             scan_inline(line, 0, line.len(), style, &mut segments, &mut display_text);
-            DisplayLine { display_text, segments, indent }
+            DisplayLine {
+                display_text,
+                segments,
+                indent,
+            }
         }
     }
 }
@@ -723,28 +808,76 @@ fn find_construct(rest: &str) -> Option<Construct> {
     while i < bytes.len() {
         match bytes[i] {
             b'\\' if bytes.get(i + 1).is_some_and(u8::is_ascii_punctuation) => {
-                return Some(Construct { offset: i, opener_len: 2, kind: ConstructKind::Escape });
+                return Some(Construct {
+                    offset: i,
+                    opener_len: 2,
+                    kind: ConstructKind::Escape,
+                });
             }
-            b'`' => return Some(Construct { offset: i, opener_len: 1, kind: ConstructKind::Code }),
+            b'`' => {
+                return Some(Construct {
+                    offset: i,
+                    opener_len: 1,
+                    kind: ConstructKind::Code,
+                });
+            }
             b'*' | b'_' => {
                 let c = bytes[i];
                 return Some(if bytes.get(i + 1) == Some(&c) {
-                    Construct { offset: i, opener_len: 2, kind: ConstructKind::Strong }
+                    Construct {
+                        offset: i,
+                        opener_len: 2,
+                        kind: ConstructKind::Strong,
+                    }
                 } else {
-                    Construct { offset: i, opener_len: 1, kind: ConstructKind::Emphasis }
+                    Construct {
+                        offset: i,
+                        opener_len: 1,
+                        kind: ConstructKind::Emphasis,
+                    }
                 });
             }
             b'~' if bytes.get(i + 1) == Some(&b'~') => {
-                return Some(Construct { offset: i, opener_len: 2, kind: ConstructKind::Strikethrough });
+                return Some(Construct {
+                    offset: i,
+                    opener_len: 2,
+                    kind: ConstructKind::Strikethrough,
+                });
             }
             b'[' if bytes.get(i + 1) == Some(&b'[') => {
-                return Some(Construct { offset: i, opener_len: 2, kind: ConstructKind::WikiLink });
+                return Some(Construct {
+                    offset: i,
+                    opener_len: 2,
+                    kind: ConstructKind::WikiLink,
+                });
             }
-            b'[' => return Some(Construct { offset: i, opener_len: 1, kind: ConstructKind::Link }),
-            b'<' => return Some(Construct { offset: i, opener_len: 1, kind: ConstructKind::AutolinkBracket }),
-            b'&' => return Some(Construct { offset: i, opener_len: 1, kind: ConstructKind::Entity }),
+            b'[' => {
+                return Some(Construct {
+                    offset: i,
+                    opener_len: 1,
+                    kind: ConstructKind::Link,
+                });
+            }
+            b'<' => {
+                return Some(Construct {
+                    offset: i,
+                    opener_len: 1,
+                    kind: ConstructKind::AutolinkBracket,
+                });
+            }
+            b'&' => {
+                return Some(Construct {
+                    offset: i,
+                    opener_len: 1,
+                    kind: ConstructKind::Entity,
+                });
+            }
             b'h' if rest[i..].starts_with("http://") || rest[i..].starts_with("https://") => {
-                return Some(Construct { offset: i, opener_len: 0, kind: ConstructKind::BareUrl });
+                return Some(Construct {
+                    offset: i,
+                    opener_len: 0,
+                    kind: ConstructKind::BareUrl,
+                });
             }
             _ => i += 1,
         }
@@ -818,15 +951,35 @@ fn parse_wikilink(line: &str, start: usize, end: usize) -> Option<WikiLinkMatch>
 /// category as strikethrough's GFM-only doubled-tilde): just a subset
 /// plausible in a note's prose.
 const NAMED_ENTITIES: &[(&str, char)] = &[
-    ("amp", '&'), ("lt", '<'), ("gt", '>'), ("quot", '"'), ("apos", '\''),
-    ("nbsp", '\u{00A0}'), ("mdash", '\u{2014}'), ("ndash", '\u{2013}'),
-    ("hellip", '\u{2026}'), ("copy", '\u{00A9}'), ("reg", '\u{00AE}'),
-    ("trade", '\u{2122}'), ("laquo", '\u{00AB}'), ("raquo", '\u{00BB}'),
-    ("ldquo", '\u{201C}'), ("rdquo", '\u{201D}'), ("lsquo", '\u{2018}'),
-    ("rsquo", '\u{2019}'), ("deg", '\u{00B0}'), ("plusmn", '\u{00B1}'),
-    ("times", '\u{00D7}'), ("divide", '\u{00F7}'), ("sect", '\u{00A7}'),
-    ("para", '\u{00B6}'), ("bull", '\u{2022}'), ("euro", '\u{20AC}'),
-    ("pound", '\u{00A3}'), ("yen", '\u{00A5}'), ("cent", '\u{00A2}'),
+    ("amp", '&'),
+    ("lt", '<'),
+    ("gt", '>'),
+    ("quot", '"'),
+    ("apos", '\''),
+    ("nbsp", '\u{00A0}'),
+    ("mdash", '\u{2014}'),
+    ("ndash", '\u{2013}'),
+    ("hellip", '\u{2026}'),
+    ("copy", '\u{00A9}'),
+    ("reg", '\u{00AE}'),
+    ("trade", '\u{2122}'),
+    ("laquo", '\u{00AB}'),
+    ("raquo", '\u{00BB}'),
+    ("ldquo", '\u{201C}'),
+    ("rdquo", '\u{201D}'),
+    ("lsquo", '\u{2018}'),
+    ("rsquo", '\u{2019}'),
+    ("deg", '\u{00B0}'),
+    ("plusmn", '\u{00B1}'),
+    ("times", '\u{00D7}'),
+    ("divide", '\u{00F7}'),
+    ("sect", '\u{00A7}'),
+    ("para", '\u{00B6}'),
+    ("bull", '\u{2022}'),
+    ("euro", '\u{20AC}'),
+    ("pound", '\u{00A3}'),
+    ("yen", '\u{00A5}'),
+    ("cent", '\u{00A2}'),
 ];
 
 /// Parses an HTML entity reference (`&amp;`, `&#39;`, `&#x27;`) starting at
@@ -843,7 +996,10 @@ fn parse_entity(line: &str, start: usize, end: usize) -> Option<(Range<usize>, c
     let body = &rest[1..semi_rel];
     let raw_end = start + semi_rel + 1;
 
-    let ch = if let Some(hex) = body.strip_prefix('#').and_then(|b| b.strip_prefix('x').or_else(|| b.strip_prefix('X'))) {
+    let ch = if let Some(hex) = body
+        .strip_prefix('#')
+        .and_then(|b| b.strip_prefix('x').or_else(|| b.strip_prefix('X')))
+    {
         if hex.is_empty() || hex.len() > 6 {
             return None;
         }
@@ -854,7 +1010,10 @@ fn parse_entity(line: &str, start: usize, end: usize) -> Option<(Range<usize>, c
         }
         char::from_u32(dec.parse().ok()?)?
     } else {
-        NAMED_ENTITIES.iter().find(|(name, _)| *name == body).map(|(_, c)| *c)?
+        NAMED_ENTITIES
+            .iter()
+            .find(|(name, _)| *name == body)
+            .map(|(_, c)| *c)?
     };
     Some((start..raw_end, ch))
 }
@@ -882,7 +1041,10 @@ fn parse_link(line: &str, start: usize, end: usize) -> Option<LinkMatch> {
     }
     let url_start = text_close + 2;
     let url_close = find_closing(line, url_start, end, ")")?;
-    Some(LinkMatch { text: text_start..text_close, close_end: url_close + 1 })
+    Some(LinkMatch {
+        text: text_start..text_close,
+        close_end: url_close + 1,
+    })
 }
 
 /// Parses `<...>` starting at `start` (pointing at `<`) as a CommonMark
@@ -911,7 +1073,28 @@ fn is_url_byte(b: u8) -> bool {
     b.is_ascii_alphanumeric()
         || matches!(
             b,
-            b'-' | b'.' | b'_' | b'~' | b':' | b'/' | b'?' | b'#' | b'[' | b']' | b'@' | b'!' | b'$' | b'&' | b'\'' | b'(' | b')' | b'*' | b'+' | b',' | b';' | b'=' | b'%'
+            b'-' | b'.'
+                | b'_'
+                | b'~'
+                | b':'
+                | b'/'
+                | b'?'
+                | b'#'
+                | b'['
+                | b']'
+                | b'@'
+                | b'!'
+                | b'$'
+                | b'&'
+                | b'\''
+                | b'('
+                | b')'
+                | b'*'
+                | b'+'
+                | b','
+                | b';'
+                | b'='
+                | b'%'
         )
 }
 
@@ -948,45 +1131,93 @@ fn scan_inline(
 ) {
     let mut plain_start = pos;
     while pos < end {
-        let Some(construct) = find_construct(&line[pos..end]) else { break };
+        let Some(construct) = find_construct(&line[pos..end]) else {
+            break;
+        };
         let construct_start = pos + construct.offset;
 
-        push_visible(line, segments, display_text, plain_start..construct_start, default_style);
+        push_visible(
+            line,
+            segments,
+            display_text,
+            plain_start..construct_start,
+            default_style,
+        );
         plain_start = construct_start;
 
         let matched = match construct.kind {
             ConstructKind::Code => find_closing(line, construct_start + 1, end, "`").map(|close| {
                 push_hidden(segments, display_text, construct_start..construct_start + 1);
-                push_visible(line, segments, display_text, construct_start + 1..close, InlineStyle::Code);
+                push_visible(
+                    line,
+                    segments,
+                    display_text,
+                    construct_start + 1..close,
+                    InlineStyle::Code,
+                );
                 push_hidden(segments, display_text, close..close + 1);
                 close + 1
             }),
             ConstructKind::Strong | ConstructKind::Emphasis => {
                 let delim_len = construct.opener_len;
                 let delim = &line[construct_start..construct_start + delim_len];
-                let style = if matches!(construct.kind, ConstructKind::Strong) { InlineStyle::Bold } else { InlineStyle::Italic };
+                let style = if matches!(construct.kind, ConstructKind::Strong) {
+                    InlineStyle::Bold
+                } else {
+                    InlineStyle::Italic
+                };
                 find_closing(line, construct_start + delim_len, end, delim).map(|close| {
-                    push_hidden(segments, display_text, construct_start..construct_start + delim_len);
-                    push_visible(line, segments, display_text, construct_start + delim_len..close, style);
+                    push_hidden(
+                        segments,
+                        display_text,
+                        construct_start..construct_start + delim_len,
+                    );
+                    push_visible(
+                        line,
+                        segments,
+                        display_text,
+                        construct_start + delim_len..close,
+                        style,
+                    );
                     push_hidden(segments, display_text, close..close + delim_len);
                     close + delim_len
                 })
             }
-            ConstructKind::Strikethrough => find_closing(line, construct_start + 2, end, "~~").map(|close| {
-                push_hidden(segments, display_text, construct_start..construct_start + 2);
-                push_visible(line, segments, display_text, construct_start + 2..close, InlineStyle::Strikethrough);
-                push_hidden(segments, display_text, close..close + 2);
-                close + 2
-            }),
+            ConstructKind::Strikethrough => {
+                find_closing(line, construct_start + 2, end, "~~").map(|close| {
+                    push_hidden(segments, display_text, construct_start..construct_start + 2);
+                    push_visible(
+                        line,
+                        segments,
+                        display_text,
+                        construct_start + 2..close,
+                        InlineStyle::Strikethrough,
+                    );
+                    push_hidden(segments, display_text, close..close + 2);
+                    close + 2
+                })
+            }
             ConstructKind::WikiLink => parse_wikilink(line, construct_start, end).map(|link| {
                 push_hidden(segments, display_text, construct_start..link.visible.start);
-                push_visible(line, segments, display_text, link.visible.clone(), InlineStyle::WikiLink);
+                push_visible(
+                    line,
+                    segments,
+                    display_text,
+                    link.visible.clone(),
+                    InlineStyle::WikiLink,
+                );
                 push_hidden(segments, display_text, link.visible.end..link.close_end);
                 link.close_end
             }),
             ConstructKind::Escape => {
                 push_hidden(segments, display_text, construct_start..construct_start + 1);
-                push_visible(line, segments, display_text, construct_start + 1..construct_start + 2, default_style);
+                push_visible(
+                    line,
+                    segments,
+                    display_text,
+                    construct_start + 1..construct_start + 2,
+                    default_style,
+                );
                 Some(construct_start + 2)
             }
             ConstructKind::Entity => parse_entity(line, construct_start, end).map(|(raw, ch)| {
@@ -998,22 +1229,45 @@ fn scan_inline(
             // `![...]` is an image, explicitly deferred (see this module's
             // doc comment) — left as plain text, same as any other
             // unmatched opener.
-            ConstructKind::Link if construct_start > 0 && line.as_bytes()[construct_start - 1] == b'!' => None,
+            ConstructKind::Link
+                if construct_start > 0 && line.as_bytes()[construct_start - 1] == b'!' =>
+            {
+                None
+            }
             ConstructKind::Link => parse_link(line, construct_start, end).map(|link| {
                 push_hidden(segments, display_text, construct_start..link.text.start);
-                push_visible(line, segments, display_text, link.text.clone(), InlineStyle::Link);
+                push_visible(
+                    line,
+                    segments,
+                    display_text,
+                    link.text.clone(),
+                    InlineStyle::Link,
+                );
                 push_hidden(segments, display_text, link.text.end..link.close_end);
                 link.close_end
             }),
-            ConstructKind::AutolinkBracket => parse_autolink_bracket(line, construct_start, end).map(|visible| {
-                push_hidden(segments, display_text, construct_start..visible.start);
-                push_visible(line, segments, display_text, visible.clone(), InlineStyle::Link);
-                push_hidden(segments, display_text, visible.end..visible.end + 1);
-                visible.end + 1
-            }),
+            ConstructKind::AutolinkBracket => parse_autolink_bracket(line, construct_start, end)
+                .map(|visible| {
+                    push_hidden(segments, display_text, construct_start..visible.start);
+                    push_visible(
+                        line,
+                        segments,
+                        display_text,
+                        visible.clone(),
+                        InlineStyle::Link,
+                    );
+                    push_hidden(segments, display_text, visible.end..visible.end + 1);
+                    visible.end + 1
+                }),
             ConstructKind::BareUrl => {
                 let url_end = bare_url_end(line, construct_start, end);
-                push_visible(line, segments, display_text, construct_start..url_end, InlineStyle::Link);
+                push_visible(
+                    line,
+                    segments,
+                    display_text,
+                    construct_start..url_end,
+                    InlineStyle::Link,
+                );
                 Some(url_end)
             }
         };
@@ -1028,7 +1282,13 @@ fn scan_inline(
             None => pos = construct_start + construct.opener_len,
         }
     }
-    push_visible(line, segments, display_text, plain_start..end, default_style);
+    push_visible(
+        line,
+        segments,
+        display_text,
+        plain_start..end,
+        default_style,
+    );
 }
 
 fn push_hidden(segments: &mut Vec<DisplaySegment>, display_text: &str, raw: Range<usize>) {
@@ -1036,7 +1296,12 @@ fn push_hidden(segments: &mut Vec<DisplaySegment>, display_text: &str, raw: Rang
         return;
     }
     let at = display_text.len();
-    segments.push(DisplaySegment { raw, display: at..at, style: InlineStyle::Plain, replaced: false });
+    segments.push(DisplaySegment {
+        raw,
+        display: at..at,
+        style: InlineStyle::Plain,
+        replaced: false,
+    });
 }
 
 fn push_visible(
@@ -1052,7 +1317,12 @@ fn push_visible(
     let display_start = display_text.len();
     display_text.push_str(&line[raw.clone()]);
     let display_end = display_text.len();
-    segments.push(DisplaySegment { raw, display: display_start..display_end, style, replaced: false });
+    segments.push(DisplaySegment {
+        raw,
+        display: display_start..display_end,
+        style,
+        replaced: false,
+    });
 }
 
 /// Like [`push_visible`], but `replacement` is painted in place of `raw`
@@ -1069,7 +1339,12 @@ fn push_replaced(
     let display_start = display_text.len();
     display_text.push_str(replacement);
     let display_end = display_text.len();
-    segments.push(DisplaySegment { raw, display: display_start..display_end, style, replaced: true });
+    segments.push(DisplaySegment {
+        raw,
+        display: display_start..display_end,
+        style,
+        replaced: true,
+    });
 }
 
 /// Builds a callout header line's Live Preview rendering — the `> [!type]`
@@ -1093,7 +1368,12 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
     if active || line.is_empty() {
         return DisplayLine {
             display_text: line.to_string(),
-            segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain, replaced: false }],
+            segments: vec![DisplaySegment {
+                raw: 0..line.len(),
+                display: 0..line.len(),
+                style: InlineStyle::Plain,
+                replaced: false,
+            }],
             indent,
         };
     }
@@ -1125,19 +1405,42 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
             // `is_replaced()` segment as a single collapse point regardless
             // of its raw width, so a click landing on the icon simply
             // resolves to the title's own start, right after it.
-            push_replaced(&mut segments, &mut display_text, title_start..title_start, &format!("{icon} "), InlineStyle::CalloutTitle);
-            scan_inline(line, title_start, line.len(), InlineStyle::CalloutTitle, &mut segments, &mut display_text);
+            push_replaced(
+                &mut segments,
+                &mut display_text,
+                title_start..title_start,
+                &format!("{icon} "),
+                InlineStyle::CalloutTitle,
+            );
+            scan_inline(
+                line,
+                title_start,
+                line.len(),
+                InlineStyle::CalloutTitle,
+                &mut segments,
+                &mut display_text,
+            );
         }
         None => {
             let marker_end = prefix_len + header.marker_end;
             push_hidden(&mut segments, &display_text, 0..marker_end);
             let type_name = &content[header.type_name.clone()];
             let fallback_title = format!("{icon} {}", capitalize(type_name));
-            push_replaced(&mut segments, &mut display_text, marker_end..line.len(), &fallback_title, InlineStyle::CalloutTitle);
+            push_replaced(
+                &mut segments,
+                &mut display_text,
+                marker_end..line.len(),
+                &fallback_title,
+                InlineStyle::CalloutTitle,
+            );
         }
     }
 
-    DisplayLine { display_text, segments, indent }
+    DisplayLine {
+        display_text,
+        segments,
+        indent,
+    }
 }
 
 /// Capitalizes just the first character of `text`, leaving the rest as-is
@@ -1164,7 +1467,12 @@ fn capitalize(text: &str) -> String {
 pub fn hidden_line(line: &str) -> DisplayLine {
     DisplayLine {
         display_text: String::new(),
-        segments: vec![DisplaySegment { raw: 0..line.len(), display: 0..0, style: InlineStyle::Plain, replaced: false }],
+        segments: vec![DisplaySegment {
+            raw: 0..line.len(),
+            display: 0..0,
+            style: InlineStyle::Plain,
+            replaced: false,
+        }],
         indent: LineIndent::None,
     }
 }
@@ -1218,7 +1526,11 @@ pub fn hidden_line(line: &str) -> DisplayLine {
 /// zero-width insertion stands in for it, same "synthetic, no raw
 /// counterpart" pattern — repeated on every returned line, so a wrapped
 /// cell still reads as one continuous block.
-pub fn build_table_row(line: &str, columns: &[Column], max_row_width_chars: Option<usize>) -> Vec<DisplayLine> {
+pub fn build_table_row(
+    line: &str,
+    columns: &[Column],
+    max_row_width_chars: Option<usize>,
+) -> Vec<DisplayLine> {
     let row = table_preview::scan_row(line);
     let widths: Vec<usize> = table_preview::resolve_widths(columns, max_row_width_chars);
 
@@ -1235,7 +1547,16 @@ pub fn build_table_row(line: &str, columns: &[Column], max_row_width_chars: Opti
     }
 
     (0..sub_rows)
-        .map(|sub_row| build_table_row_wrapped_line(&row, columns, &widths, &wrapped_cells, sub_row, line.len()))
+        .map(|sub_row| {
+            build_table_row_wrapped_line(
+                &row,
+                columns,
+                &widths,
+                &wrapped_cells,
+                sub_row,
+                line.len(),
+            )
+        })
         .collect()
 }
 
@@ -1245,12 +1566,23 @@ pub fn build_table_row(line: &str, columns: &[Column], max_row_width_chars: Opti
 /// tables, which fit without any cell needing to wrap) stays byte-exact —
 /// only [`build_table_row_wrapped_line`], used when it doesn't, pays for
 /// the less precise fallback.
-fn build_table_row_line(line: &str, row: &table_preview::Row, columns: &[Column], widths: &[usize]) -> DisplayLine {
+fn build_table_row_line(
+    line: &str,
+    row: &table_preview::Row,
+    columns: &[Column],
+    widths: &[usize],
+) -> DisplayLine {
     let mut segments = Vec::new();
     let mut display_text = String::new();
 
     let leading_raw = if row.has_leading_pipe { 0..1 } else { 0..0 };
-    push_replaced(&mut segments, &mut display_text, leading_raw, "  ", InlineStyle::Plain);
+    push_replaced(
+        &mut segments,
+        &mut display_text,
+        leading_raw,
+        "  ",
+        InlineStyle::Plain,
+    );
 
     let real_count = row.cells.len();
     let mut trailing_pipe_consumed = false;
@@ -1258,10 +1590,18 @@ fn build_table_row_line(line: &str, row: &table_preview::Row, columns: &[Column]
     for (i, &width) in widths.iter().enumerate() {
         let align = columns[i].align;
         match row.cells.get(i) {
-            Some(cell) => push_cell_content(line, &mut segments, &mut display_text, cell, width, align),
+            Some(cell) => {
+                push_cell_content(line, &mut segments, &mut display_text, cell, width, align)
+            }
             None => {
                 let padded = table_preview::pad("", width, align);
-                push_replaced(&mut segments, &mut display_text, line.len()..line.len(), &padded, InlineStyle::Plain);
+                push_replaced(
+                    &mut segments,
+                    &mut display_text,
+                    line.len()..line.len(),
+                    &padded,
+                    InlineStyle::Plain,
+                );
             }
         }
 
@@ -1280,10 +1620,20 @@ fn build_table_row_line(line: &str, row: &table_preview::Row, columns: &[Column]
         } else {
             line.len()..line.len()
         };
-        push_replaced(&mut segments, &mut display_text, sep_raw, sep_text, InlineStyle::Plain);
+        push_replaced(
+            &mut segments,
+            &mut display_text,
+            sep_raw,
+            sep_text,
+            InlineStyle::Plain,
+        );
     }
 
-    DisplayLine { display_text, segments, indent: LineIndent::None }
+    DisplayLine {
+        display_text,
+        segments,
+        indent: LineIndent::None,
+    }
 }
 
 /// One sub-row of a row that needed cell-wrapping: for each column, either
@@ -1304,7 +1654,13 @@ fn build_table_row_wrapped_line(
     let mut display_text = String::new();
 
     let leading_raw = if row.has_leading_pipe { 0..1 } else { 0..0 };
-    push_replaced(&mut segments, &mut display_text, leading_raw, "  ", InlineStyle::Plain);
+    push_replaced(
+        &mut segments,
+        &mut display_text,
+        leading_raw,
+        "  ",
+        InlineStyle::Plain,
+    );
 
     let real_count = row.cells.len();
     let mut trailing_pipe_consumed = false;
@@ -1312,8 +1668,17 @@ fn build_table_row_wrapped_line(
     for (i, &width) in widths.iter().enumerate() {
         let text = wrapped_cells[i].get(sub_row).map_or("", String::as_str);
         let padded = table_preview::pad(text, width, columns[i].align);
-        let raw = row.cells.get(i).map_or(line_len..line_len, |cell| cell.raw.clone());
-        push_replaced(&mut segments, &mut display_text, raw, &padded, InlineStyle::Plain);
+        let raw = row
+            .cells
+            .get(i)
+            .map_or(line_len..line_len, |cell| cell.raw.clone());
+        push_replaced(
+            &mut segments,
+            &mut display_text,
+            raw,
+            &padded,
+            InlineStyle::Plain,
+        );
 
         // Same real-pipe-position logic as `build_table_row_line`, so raw
         // coverage stays contiguous — this sub-row still only claims each
@@ -1330,10 +1695,20 @@ fn build_table_row_wrapped_line(
         } else {
             line_len..line_len
         };
-        push_replaced(&mut segments, &mut display_text, sep_raw, sep_text, InlineStyle::Plain);
+        push_replaced(
+            &mut segments,
+            &mut display_text,
+            sep_raw,
+            sep_text,
+            InlineStyle::Plain,
+        );
     }
 
-    DisplayLine { display_text, segments, indent: LineIndent::None }
+    DisplayLine {
+        display_text,
+        segments,
+        indent: LineIndent::None,
+    }
 }
 
 /// Pushes one cell's padded, alignment-adjusted content as (up to) three
@@ -1362,7 +1737,13 @@ fn push_cell_content(
     let raw_slice = &line[cell.raw.clone()];
     if raw_slice.contains('\\') {
         let padded = table_preview::pad(&cell.text, width, align);
-        push_replaced(segments, display_text, cell.raw.clone(), &padded, InlineStyle::Plain);
+        push_replaced(
+            segments,
+            display_text,
+            cell.raw.clone(),
+            &padded,
+            InlineStyle::Plain,
+        );
         return;
     }
 
@@ -1370,9 +1751,27 @@ fn push_cell_content(
     let content_end = cell.raw.start + raw_slice.trim_end().len();
     let (left_pad, right_pad) = table_preview::pad_amounts(cell.text.chars().count(), width, align);
 
-    push_replaced(segments, display_text, cell.raw.start..content_start, &" ".repeat(left_pad), InlineStyle::Plain);
-    push_visible(line, segments, display_text, content_start..content_end, InlineStyle::Plain);
-    push_replaced(segments, display_text, content_end..cell.raw.end, &" ".repeat(right_pad), InlineStyle::Plain);
+    push_replaced(
+        segments,
+        display_text,
+        cell.raw.start..content_start,
+        &" ".repeat(left_pad),
+        InlineStyle::Plain,
+    );
+    push_visible(
+        line,
+        segments,
+        display_text,
+        content_start..content_end,
+        InlineStyle::Plain,
+    );
+    push_replaced(
+        segments,
+        display_text,
+        content_end..cell.raw.end,
+        &" ".repeat(right_pad),
+        InlineStyle::Plain,
+    );
 }
 
 /// A blockquote prefix's nesting depth (1 for `>`, 2 for `>>` or `> >`, ...)
@@ -1443,7 +1842,12 @@ fn indented_list_marker(line: &str) -> Option<(ListMarker, usize, usize)> {
 /// detector; [`push_list_marker`] does the actual rendering decision.
 fn task_checkbox_prefix(line: &str, offset: usize) -> Option<bool> {
     let bytes = line.as_bytes();
-    match (bytes.get(offset), bytes.get(offset + 1), bytes.get(offset + 2), bytes.get(offset + 3)) {
+    match (
+        bytes.get(offset),
+        bytes.get(offset + 1),
+        bytes.get(offset + 2),
+        bytes.get(offset + 3),
+    ) {
         (Some(b'['), Some(b' '), Some(b']'), Some(b' ')) => Some(false),
         (Some(b'['), Some(b'x' | b'X'), Some(b']'), Some(b' ')) => Some(true),
         _ => None,
@@ -1480,7 +1884,13 @@ fn push_list_marker(
 
     if let (ListMarker::Unordered, Some(checked)) = (marker, checkbox) {
         let glyph = if checked { "☑ " } else { "☐ " };
-        push_replaced(segments, display_text, marker_start..marker_end + 4, glyph, InlineStyle::ListMarker);
+        push_replaced(
+            segments,
+            display_text,
+            marker_start..marker_end + 4,
+            glyph,
+            InlineStyle::ListMarker,
+        );
         return marker_end + 4;
     }
 
@@ -1488,12 +1898,24 @@ fn push_list_marker(
         ListMarker::Unordered => "• ".to_string(),
         ListMarker::Ordered { number } => format!("{number}. "),
     };
-    push_replaced(segments, display_text, marker_start..marker_end, &replacement, InlineStyle::ListMarker);
+    push_replaced(
+        segments,
+        display_text,
+        marker_start..marker_end,
+        &replacement,
+        InlineStyle::ListMarker,
+    );
 
     match checkbox {
         Some(checked) => {
             let glyph = if checked { "☑ " } else { "☐ " };
-            push_replaced(segments, display_text, marker_end..marker_end + 4, glyph, InlineStyle::ListMarker);
+            push_replaced(
+                segments,
+                display_text,
+                marker_end..marker_end + 4,
+                glyph,
+                InlineStyle::ListMarker,
+            );
             marker_end + 4
         }
         None => marker_end,
@@ -1516,8 +1938,16 @@ mod tests {
         let mut expected_raw = 0;
         let mut expected_display = 0;
         for seg in &dl.segments {
-            assert_eq!(seg.raw.start, expected_raw, "raw gap/overlap in {:?}", dl.segments);
-            assert_eq!(seg.display.start, expected_display, "display gap/overlap in {:?}", dl.segments);
+            assert_eq!(
+                seg.raw.start, expected_raw,
+                "raw gap/overlap in {:?}",
+                dl.segments
+            );
+            assert_eq!(
+                seg.display.start, expected_display,
+                "display gap/overlap in {:?}",
+                dl.segments
+            );
             expected_raw = seg.raw.end;
             expected_display = seg.display.end;
         }
@@ -1530,14 +1960,30 @@ mod tests {
         let line = "# **bold** [[Link]]";
         let dl = build_display_line(line, true);
         assert_eq!(dl.display_text, line);
-        assert_eq!(dl.segments, vec![DisplaySegment { raw: 0..line.len(), display: 0..line.len(), style: InlineStyle::Plain, replaced: false }]);
+        assert_eq!(
+            dl.segments,
+            vec![DisplaySegment {
+                raw: 0..line.len(),
+                display: 0..line.len(),
+                style: InlineStyle::Plain,
+                replaced: false
+            }]
+        );
     }
 
     #[test]
     fn empty_line_is_a_single_empty_segment() {
         let dl = build_display_line("", false);
         assert_eq!(dl.display_text, "");
-        assert_eq!(dl.segments, vec![DisplaySegment { raw: 0..0, display: 0..0, style: InlineStyle::Plain, replaced: false }]);
+        assert_eq!(
+            dl.segments,
+            vec![DisplaySegment {
+                raw: 0..0,
+                display: 0..0,
+                style: InlineStyle::Plain,
+                replaced: false
+            }]
+        );
     }
 
     #[test]
@@ -1550,15 +1996,30 @@ mod tests {
 
     #[test]
     fn blockquote_indent_matches_its_nesting_depth() {
-        assert_eq!(build_display_line("> one level", false).indent, LineIndent::Blockquote(1));
-        assert_eq!(build_display_line(">> two levels", false).indent, LineIndent::Blockquote(2));
-        assert_eq!(build_display_line("> > also two levels", false).indent, LineIndent::Blockquote(2));
+        assert_eq!(
+            build_display_line("> one level", false).indent,
+            LineIndent::Blockquote(1)
+        );
+        assert_eq!(
+            build_display_line(">> two levels", false).indent,
+            LineIndent::Blockquote(2)
+        );
+        assert_eq!(
+            build_display_line("> > also two levels", false).indent,
+            LineIndent::Blockquote(2)
+        );
     }
 
     #[test]
     fn list_item_indent_is_always_one_level() {
-        assert_eq!(build_display_line("- a dash item", false).indent, LineIndent::List(1));
-        assert_eq!(build_display_line("12. an ordered item", false).indent, LineIndent::List(1));
+        assert_eq!(
+            build_display_line("- a dash item", false).indent,
+            LineIndent::List(1)
+        );
+        assert_eq!(
+            build_display_line("12. an ordered item", false).indent,
+            LineIndent::List(1)
+        );
     }
 
     #[test]
@@ -1568,8 +2029,14 @@ mod tests {
         // structural property, not a Live Preview hiding choice — it must
         // still be set so `element.rs` keeps shifting the line right while
         // it's being edited.
-        assert_eq!(build_display_line("> quoted", true).indent, LineIndent::Blockquote(1));
-        assert_eq!(build_display_line("- item", true).indent, LineIndent::List(1));
+        assert_eq!(
+            build_display_line("> quoted", true).indent,
+            LineIndent::Blockquote(1)
+        );
+        assert_eq!(
+            build_display_line("- item", true).indent,
+            LineIndent::List(1)
+        );
     }
 
     #[test]
@@ -1584,7 +2051,10 @@ mod tests {
         let line = "## Section Title";
         let dl = build_display_line(line, false);
         assert_eq!(dl.display_text, "Section Title");
-        assert_eq!(visible_styles(&dl), vec![("Section Title".to_string(), InlineStyle::Heading(2))]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("Section Title".to_string(), InlineStyle::Heading(2))]
+        );
         assert_contiguous(&dl, line.len());
     }
 
@@ -1615,7 +2085,10 @@ mod tests {
     fn underscore_bold_is_also_recognized() {
         let dl = build_display_line("__bold__", false);
         assert_eq!(dl.display_text, "bold");
-        assert_eq!(visible_styles(&dl), vec![("bold".to_string(), InlineStyle::Bold)]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("bold".to_string(), InlineStyle::Bold)]
+        );
     }
 
     #[test]
@@ -1702,7 +2175,10 @@ mod tests {
         let line = "[[Other Note|here]]";
         let dl = build_display_line(line, false);
         assert_eq!(dl.display_text, "here");
-        assert_eq!(visible_styles(&dl), vec![("here".to_string(), InlineStyle::WikiLink)]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("here".to_string(), InlineStyle::WikiLink)]
+        );
         assert_contiguous(&dl, line.len());
     }
 
@@ -1711,7 +2187,10 @@ mod tests {
         let line = "[[Note#Section]]";
         let dl = build_display_line(line, false);
         assert_eq!(dl.display_text, "Note");
-        assert_eq!(visible_styles(&dl), vec![("Note".to_string(), InlineStyle::WikiLink)]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("Note".to_string(), InlineStyle::WikiLink)]
+        );
     }
 
     #[test]
@@ -1780,7 +2259,10 @@ mod tests {
         let line = "> a quoted line";
         let dl = build_display_line(line, false);
         assert_eq!(dl.display_text, "a quoted line");
-        assert_eq!(visible_styles(&dl), vec![("a quoted line".to_string(), InlineStyle::Blockquote(1))]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("a quoted line".to_string(), InlineStyle::Blockquote(1))]
+        );
         assert_contiguous(&dl, line.len());
     }
 
@@ -1788,11 +2270,17 @@ mod tests {
     fn nested_blockquote_prefixes_increase_depth() {
         let dl = build_display_line(">> deeper", false);
         assert_eq!(dl.display_text, "deeper");
-        assert_eq!(visible_styles(&dl), vec![("deeper".to_string(), InlineStyle::Blockquote(2))]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("deeper".to_string(), InlineStyle::Blockquote(2))]
+        );
 
         let dl = build_display_line("> > also deeper", false);
         assert_eq!(dl.display_text, "also deeper");
-        assert_eq!(visible_styles(&dl), vec![("also deeper".to_string(), InlineStyle::Blockquote(2))]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("also deeper".to_string(), InlineStyle::Blockquote(2))]
+        );
     }
 
     #[test]
@@ -1815,9 +2303,16 @@ mod tests {
         let line = "> # Quoted heading";
         let dl = build_display_line(line, false);
         assert_eq!(dl.display_text, "Quoted heading");
-        assert_eq!(visible_styles(&dl), vec![("Quoted heading".to_string(), InlineStyle::Heading(1))]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("Quoted heading".to_string(), InlineStyle::Heading(1))]
+        );
         assert_contiguous(&dl, line.len());
-        assert_eq!(dl.indent, LineIndent::Blockquote(1), "the line should still indent as a blockquote");
+        assert_eq!(
+            dl.indent,
+            LineIndent::Blockquote(1),
+            "the line should still indent as a blockquote"
+        );
     }
 
     #[test]
@@ -1844,7 +2339,10 @@ mod tests {
         let line = ">> deeper text";
         let dl = build_display_line(line, false);
         assert_eq!(dl.display_text, "deeper text");
-        assert_eq!(visible_styles(&dl), vec![("deeper text".to_string(), InlineStyle::Blockquote(2))]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("deeper text".to_string(), InlineStyle::Blockquote(2))]
+        );
     }
 
     #[test]
@@ -1862,7 +2360,10 @@ mod tests {
             assert_eq!(dl.display_text, "• first item", "marker {marker:?}");
             assert_eq!(
                 visible_styles(&dl),
-                vec![("• ".to_string(), InlineStyle::ListMarker), ("first item".to_string(), InlineStyle::Plain)],
+                vec![
+                    ("• ".to_string(), InlineStyle::ListMarker),
+                    ("first item".to_string(), InlineStyle::Plain)
+                ],
                 "marker {marker:?}"
             );
         }
@@ -1899,7 +2400,10 @@ mod tests {
         assert_eq!(dl.display_text, "• Heading item");
         assert_eq!(
             visible_styles(&dl),
-            vec![("• ".to_string(), InlineStyle::ListMarker), ("Heading item".to_string(), InlineStyle::Heading(1))]
+            vec![
+                ("• ".to_string(), InlineStyle::ListMarker),
+                ("Heading item".to_string(), InlineStyle::Heading(1))
+            ]
         );
         assert_contiguous(&dl, line.len());
         assert_eq!(dl.indent, LineIndent::List(1));
@@ -1912,10 +2416,17 @@ mod tests {
         assert_eq!(dl.display_text, "• quoted item");
         assert_eq!(
             visible_styles(&dl),
-            vec![("• ".to_string(), InlineStyle::ListMarker), ("quoted item".to_string(), InlineStyle::Blockquote(1))]
+            vec![
+                ("• ".to_string(), InlineStyle::ListMarker),
+                ("quoted item".to_string(), InlineStyle::Blockquote(1))
+            ]
         );
         assert_contiguous(&dl, line.len());
-        assert_eq!(dl.indent, LineIndent::List(1), "list indent wins over the inner (compounded, same-line) blockquote's");
+        assert_eq!(
+            dl.indent,
+            LineIndent::List(1),
+            "list indent wins over the inner (compounded, same-line) blockquote's"
+        );
     }
 
     #[test]
@@ -1930,7 +2441,10 @@ mod tests {
         assert_eq!(dl.display_text, "• - not nested");
         assert_eq!(
             visible_styles(&dl),
-            vec![("• ".to_string(), InlineStyle::ListMarker), ("- not nested".to_string(), InlineStyle::Plain)]
+            vec![
+                ("• ".to_string(), InlineStyle::ListMarker),
+                ("- not nested".to_string(), InlineStyle::Plain)
+            ]
         );
     }
 
@@ -1965,12 +2479,15 @@ mod tests {
     fn classify_block_context_resolves_nested_list_depth_by_indentation() {
         let source = "1. outer\n   - inner\n   - inner sibling\n2. outer sibling";
         let ctx = classify_block_context(source);
-        assert_eq!(ctx, vec![
-            LineContext::ListMarkerLine(1),
-            LineContext::ListMarkerLine(2),
-            LineContext::ListMarkerLine(2),
-            LineContext::ListMarkerLine(1),
-        ]);
+        assert_eq!(
+            ctx,
+            vec![
+                LineContext::ListMarkerLine(1),
+                LineContext::ListMarkerLine(2),
+                LineContext::ListMarkerLine(2),
+                LineContext::ListMarkerLine(1),
+            ]
+        );
     }
 
     #[test]
@@ -1979,7 +2496,11 @@ mod tests {
         let ctx = classify_block_context(source);
         assert_eq!(
             ctx,
-            vec![LineContext::ListMarkerLine(1), LineContext::ListMarkerLine(2), LineContext::ListMarkerLine(3)]
+            vec![
+                LineContext::ListMarkerLine(1),
+                LineContext::ListMarkerLine(2),
+                LineContext::ListMarkerLine(3)
+            ]
         );
     }
 
@@ -1992,7 +2513,11 @@ mod tests {
         let ctx = classify_block_context(source);
         assert_eq!(
             ctx,
-            vec![LineContext::ListMarkerLine(1), LineContext::ListMarkerLine(2), LineContext::ListMarkerLine(2)]
+            vec![
+                LineContext::ListMarkerLine(1),
+                LineContext::ListMarkerLine(2),
+                LineContext::ListMarkerLine(2)
+            ]
         );
     }
 
@@ -2007,37 +2532,58 @@ mod tests {
         // `Vec<usize>`s with identical contents already compared equal.
         let a = ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 2);
         let b = ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 2);
-        assert!(!Rc::ptr_eq(&a, &b), "sanity check: these really are two separate allocations");
+        assert!(
+            !Rc::ptr_eq(&a, &b),
+            "sanity check: these really are two separate allocations"
+        );
         assert_eq!(a, b);
         assert_eq!(OpenBlock::List(a), OpenBlock::List(b));
 
         let c = ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 3); // different inner indent
-        assert_ne!(ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 2), c);
+        assert_ne!(
+            ListNode::resume_or_push(Some(ListNode::resume_or_push(None, 0)), 2),
+            c
+        );
     }
 
     #[test]
     fn classify_block_context_pops_a_level_whose_indentation_is_no_longer_matched() {
         let source = "- one\n  - two\n- one sibling (back to depth 1)";
         let ctx = classify_block_context(source);
-        assert_eq!(ctx, vec![
-            LineContext::ListMarkerLine(1),
-            LineContext::ListMarkerLine(2),
-            LineContext::ListMarkerLine(1),
-        ]);
+        assert_eq!(
+            ctx,
+            vec![
+                LineContext::ListMarkerLine(1),
+                LineContext::ListMarkerLine(2),
+                LineContext::ListMarkerLine(1),
+            ]
+        );
     }
 
     #[test]
     fn classify_block_context_resolves_lazy_continuation_of_a_blockquote() {
         let source = "> first line\nsecond line, no \">\" of its own";
         let ctx = classify_block_context(source);
-        assert_eq!(ctx, vec![LineContext::Plain, LineContext::LazyContinuation(LineIndent::Blockquote(1))]);
+        assert_eq!(
+            ctx,
+            vec![
+                LineContext::Plain,
+                LineContext::LazyContinuation(LineIndent::Blockquote(1))
+            ]
+        );
     }
 
     #[test]
     fn classify_block_context_resolves_lazy_continuation_of_a_list_item() {
         let source = "- first line\nsecond line, no marker, not even indented";
         let ctx = classify_block_context(source);
-        assert_eq!(ctx, vec![LineContext::ListMarkerLine(1), LineContext::LazyContinuation(LineIndent::List(1))]);
+        assert_eq!(
+            ctx,
+            vec![
+                LineContext::ListMarkerLine(1),
+                LineContext::LazyContinuation(LineIndent::List(1))
+            ]
+        );
     }
 
     #[test]
@@ -2058,14 +2604,24 @@ mod tests {
     fn classify_block_context_a_blank_line_ends_lazy_continuation() {
         let source = "> quote\n\nnot part of the quote";
         let ctx = classify_block_context(source);
-        assert_eq!(ctx, vec![LineContext::Plain, LineContext::Plain, LineContext::Plain]);
+        assert_eq!(
+            ctx,
+            vec![LineContext::Plain, LineContext::Plain, LineContext::Plain]
+        );
     }
 
     #[test]
     fn classify_block_context_a_heading_ends_an_open_list_or_quote() {
         let source = "- item\n# Heading\nnot part of the list";
         let ctx = classify_block_context(source);
-        assert_eq!(ctx, vec![LineContext::ListMarkerLine(1), LineContext::Plain, LineContext::Plain]);
+        assert_eq!(
+            ctx,
+            vec![
+                LineContext::ListMarkerLine(1),
+                LineContext::Plain,
+                LineContext::Plain
+            ]
+        );
     }
 
     #[test]
@@ -2074,7 +2630,11 @@ mod tests {
         let ctx = classify_block_context(source);
         assert_eq!(
             ctx,
-            vec![LineContext::ListMarkerLine(1), LineContext::Plain, LineContext::LazyContinuation(LineIndent::Blockquote(1))]
+            vec![
+                LineContext::ListMarkerLine(1),
+                LineContext::Plain,
+                LineContext::LazyContinuation(LineIndent::Blockquote(1))
+            ]
         );
     }
 
@@ -2089,13 +2649,20 @@ mod tests {
     #[test]
     fn build_display_line_in_context_styles_a_lazy_blockquote_continuation() {
         let line = "no marker here, but **bold** still works";
-        let dl = build_display_line_in_context(line, false, LineContext::LazyContinuation(LineIndent::Blockquote(2)));
+        let dl = build_display_line_in_context(
+            line,
+            false,
+            LineContext::LazyContinuation(LineIndent::Blockquote(2)),
+        );
         assert_eq!(dl.display_text, "no marker here, but bold still works");
         assert_eq!(dl.indent, LineIndent::Blockquote(2));
         assert_eq!(
             visible_styles(&dl),
             vec![
-                ("no marker here, but ".to_string(), InlineStyle::Blockquote(2)),
+                (
+                    "no marker here, but ".to_string(),
+                    InlineStyle::Blockquote(2)
+                ),
                 ("bold".to_string(), InlineStyle::Bold),
                 (" still works".to_string(), InlineStyle::Blockquote(2)),
             ]
@@ -2105,18 +2672,33 @@ mod tests {
     #[test]
     fn build_display_line_in_context_styles_a_lazy_list_continuation_as_plain() {
         let line = "continues the list item";
-        let dl = build_display_line_in_context(line, false, LineContext::LazyContinuation(LineIndent::List(1)));
+        let dl = build_display_line_in_context(
+            line,
+            false,
+            LineContext::LazyContinuation(LineIndent::List(1)),
+        );
         assert_eq!(dl.display_text, line);
         assert_eq!(dl.indent, LineIndent::List(1));
-        assert_eq!(visible_styles(&dl), vec![(line.to_string(), InlineStyle::Plain)]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![(line.to_string(), InlineStyle::Plain)]
+        );
     }
 
     #[test]
     fn build_display_line_in_context_shows_a_lazy_continuation_raw_when_active() {
         let line = "being edited right now";
-        let dl = build_display_line_in_context(line, true, LineContext::LazyContinuation(LineIndent::Blockquote(1)));
+        let dl = build_display_line_in_context(
+            line,
+            true,
+            LineContext::LazyContinuation(LineIndent::Blockquote(1)),
+        );
         assert_eq!(dl.display_text, line);
-        assert_eq!(dl.indent, LineIndent::Blockquote(1), "indent still applies on the active line, same as everywhere else");
+        assert_eq!(
+            dl.indent,
+            LineIndent::Blockquote(1),
+            "indent still applies on the active line, same as everywhere else"
+        );
     }
 
     #[test]
@@ -2146,8 +2728,14 @@ mod tests {
 
     fn two_columns() -> Vec<Column> {
         vec![
-            Column { width: 5, align: table_preview::Align::Left },
-            Column { width: 3, align: table_preview::Align::Left },
+            Column {
+                width: 5,
+                align: table_preview::Align::Left,
+            },
+            Column {
+                width: 3,
+                align: table_preview::Align::Left,
+            },
         ]
     }
 
@@ -2167,12 +2755,19 @@ mod tests {
         // these blank gaps instead, so there's nothing left here to give a
         // distinct style to.
         let dl = &build_table_row("| Alice | 30 |", &two_columns(), None)[0];
-        assert!(visible_styles(dl).iter().all(|(_, style)| *style == InlineStyle::Plain));
+        assert!(
+            visible_styles(dl)
+                .iter()
+                .all(|(_, style)| *style == InlineStyle::Plain)
+        );
     }
 
     #[test]
     fn build_table_row_right_aligns_per_column_spec() {
-        let columns = vec![Column { width: 5, align: table_preview::Align::Right }];
+        let columns = vec![Column {
+            width: 5,
+            align: table_preview::Align::Right,
+        }];
         let dl = &build_table_row("| x |", &columns, None)[0];
         assert_eq!(dl.display_text, "      x  ");
     }
@@ -2202,7 +2797,10 @@ mod tests {
         let thirty_display_start = dl.display_text.find("30").unwrap();
         let raw = dl.raw_offset_for_display(thirty_display_start);
         let thirty_raw_start = line.find("30").unwrap();
-        assert_eq!(raw, thirty_raw_start, "clicking on the second cell should land in its raw byte range");
+        assert_eq!(
+            raw, thirty_raw_start,
+            "clicking on the second cell should land in its raw byte range"
+        );
     }
 
     #[test]
@@ -2210,13 +2808,24 @@ mod tests {
         let line = r"| a \| b | 30 |";
         let dl = &build_table_row(line, &two_columns(), None)[0];
         assert_contiguous(dl, line.len());
-        assert!(dl.display_text.contains("a | b"), "the escaped pipe should still unescape to a literal |");
+        assert!(
+            dl.display_text.contains("a | b"),
+            "the escaped pipe should still unescape to a literal |"
+        );
     }
 
     #[test]
     fn build_table_row_is_contiguous_with_real_alignment_padding() {
-        let columns =
-            vec![Column { width: 6, align: table_preview::Align::Right }, Column { width: 3, align: table_preview::Align::Center }];
+        let columns = vec![
+            Column {
+                width: 6,
+                align: table_preview::Align::Right,
+            },
+            Column {
+                width: 3,
+                align: table_preview::Align::Center,
+            },
+        ];
         let line = "|  x  |  y  |";
         let dl = &build_table_row(line, &columns, None)[0];
         assert_contiguous(dl, line.len());
@@ -2231,7 +2840,11 @@ mod tests {
         let dl = &build_table_row(line, &two_columns(), None)[0];
         let widths = table_preview::resolve_widths(&two_columns(), None);
         for offset in table_preview::column_divider_char_offsets(&widths) {
-            assert_eq!(dl.display_text.chars().nth(offset), Some(' '), "grid line position {offset} should be blank");
+            assert_eq!(
+                dl.display_text.chars().nth(offset),
+                Some(' '),
+                "grid line position {offset} should be blank"
+            );
         }
     }
 
@@ -2250,8 +2863,14 @@ mod tests {
     fn two_wide_columns() -> Vec<Column> {
         vec![
             // 21 chars — exactly fits "Alexandria Fitzgerald" unwrapped.
-            Column { width: 21, align: table_preview::Align::Left },
-            Column { width: 3, align: table_preview::Align::Left },
+            Column {
+                width: 21,
+                align: table_preview::Align::Left,
+            },
+            Column {
+                width: 3,
+                align: table_preview::Align::Left,
+            },
         ]
     }
 
@@ -2259,7 +2878,11 @@ mod tests {
     fn build_table_row_without_a_budget_never_wraps() {
         let line = "| Alexandria Fitzgerald | 41 |";
         let rows = build_table_row(line, &two_wide_columns(), None);
-        assert_eq!(rows.len(), 1, "no width budget at all means no capping/wrapping");
+        assert_eq!(
+            rows.len(),
+            1,
+            "no width budget at all means no capping/wrapping"
+        );
     }
 
     #[test]
@@ -2270,7 +2893,10 @@ mod tests {
         // (20-character) width, so "Alexandria Fitzgerald" no longer fits
         // on one line.
         let rows = build_table_row(line, &two_wide_columns(), Some(17));
-        assert!(rows.len() > 1, "a cell too wide for its capped column should wrap onto more than one sub-row");
+        assert!(
+            rows.len() > 1,
+            "a cell too wide for its capped column should wrap onto more than one sub-row"
+        );
         for dl in &rows {
             assert_contiguous(dl, line.len());
             assert_eq!(dl.indent, LineIndent::None);
@@ -2285,8 +2911,14 @@ mod tests {
         // Column 1's "41" fits on a single wrapped line (width 3) even
         // though column 0 needs several — it should show up on exactly
         // one sub-row, blank-padded on every other one.
-        let containing_41 = rows.iter().filter(|dl| dl.display_text.contains("41")).count();
-        assert_eq!(containing_41, 1, "a short cell's text should appear on exactly one sub-row");
+        let containing_41 = rows
+            .iter()
+            .filter(|dl| dl.display_text.contains("41"))
+            .count();
+        assert_eq!(
+            containing_41, 1,
+            "a short cell's text should appear on exactly one sub-row"
+        );
     }
 
     #[test]
@@ -2331,7 +2963,10 @@ mod tests {
         // a bug.
         let line = r"*italic \* still italic*";
         let dl = build_display_line(line, false);
-        assert_eq!(visible_styles(&dl), vec![(r"italic \* still italic".to_string(), InlineStyle::Italic)]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![(r"italic \* still italic".to_string(), InlineStyle::Italic)]
+        );
     }
 
     #[test]
@@ -2424,7 +3059,10 @@ mod tests {
     fn bracketed_email_autolink_is_recognized() {
         let dl = build_display_line("<a@b.com>", false);
         assert_eq!(dl.display_text, "a@b.com");
-        assert_eq!(visible_styles(&dl), vec![("a@b.com".to_string(), InlineStyle::Link)]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![("a@b.com".to_string(), InlineStyle::Link)]
+        );
     }
 
     #[test]
@@ -2504,30 +3142,60 @@ mod tests {
     #[test]
     fn callout_header_without_a_title_shows_the_capitalized_type_name() {
         let dl = build_callout_header_line("> [!warning]", false);
-        assert_eq!(dl.display_text, format!("{} Warning", callout::callout_icon(callout::CalloutType::Warning)));
-        assert_eq!(visible_styles(&dl), vec![(dl.display_text.clone(), InlineStyle::CalloutTitle)]);
+        assert_eq!(
+            dl.display_text,
+            format!(
+                "{} Warning",
+                callout::callout_icon(callout::CalloutType::Warning)
+            )
+        );
+        assert_eq!(
+            visible_styles(&dl),
+            vec![(dl.display_text.clone(), InlineStyle::CalloutTitle)]
+        );
     }
 
     #[test]
     fn callout_header_with_a_custom_title_shows_it_instead() {
         let dl = build_callout_header_line("> [!info] Custom Title", false);
-        assert_eq!(dl.display_text, format!("{} Custom Title", callout::callout_icon(callout::CalloutType::Info)));
+        assert_eq!(
+            dl.display_text,
+            format!(
+                "{} Custom Title",
+                callout::callout_icon(callout::CalloutType::Info)
+            )
+        );
     }
 
     #[test]
     fn callout_header_hides_the_fold_marker() {
         let dl = build_callout_header_line("> [!info]+ Title", false);
-        assert_eq!(dl.display_text, format!("{} Title", callout::callout_icon(callout::CalloutType::Info)));
+        assert_eq!(
+            dl.display_text,
+            format!(
+                "{} Title",
+                callout::callout_icon(callout::CalloutType::Info)
+            )
+        );
     }
 
     #[test]
     fn callout_header_title_can_itself_contain_bold() {
         let dl = build_callout_header_line("> [!info] a **bold** title", false);
-        assert_eq!(dl.display_text, format!("{} a bold title", callout::callout_icon(callout::CalloutType::Info)));
+        assert_eq!(
+            dl.display_text,
+            format!(
+                "{} a bold title",
+                callout::callout_icon(callout::CalloutType::Info)
+            )
+        );
         assert_eq!(
             visible_styles(&dl),
             vec![
-                (format!("{} ", callout::callout_icon(callout::CalloutType::Info)), InlineStyle::CalloutTitle),
+                (
+                    format!("{} ", callout::callout_icon(callout::CalloutType::Info)),
+                    InlineStyle::CalloutTitle
+                ),
                 ("a ".to_string(), InlineStyle::CalloutTitle),
                 ("bold".to_string(), InlineStyle::Bold),
                 (" title".to_string(), InlineStyle::CalloutTitle),
@@ -2539,6 +3207,12 @@ mod tests {
     fn callout_header_falls_back_to_plain_blockquote_rendering_when_not_actually_a_header() {
         let dl = build_callout_header_line("> just a regular quote", false);
         assert_eq!(dl.display_text, "just a regular quote");
-        assert_eq!(visible_styles(&dl), vec![("just a regular quote".to_string(), InlineStyle::Blockquote(1))]);
+        assert_eq!(
+            visible_styles(&dl),
+            vec![(
+                "just a regular quote".to_string(),
+                InlineStyle::Blockquote(1)
+            )]
+        );
     }
 }

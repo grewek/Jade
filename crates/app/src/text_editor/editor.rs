@@ -4,16 +4,20 @@ use std::rc::Rc;
 
 use gpui_kit::*;
 
-use super::document_cache::{DocumentCache, TextEdit};
-use super::element::{mono_char_width, render_editor, render_params, RowHeightCache};
 use super::EditorBuffer;
+use super::document_cache::{DocumentCache, TextEdit};
+use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
 
 /// The `TextEdit` for a plain insertion of `inserted_len` bytes replacing
 /// `old_range` (the selection, or the collapsed cursor if none) — call sites
 /// capture `old_range` via `buffer.selection()`/`cursor()` *before* calling
 /// `EditorBuffer::insert`, since nothing after that call can recover it.
 fn edit_for_insertion(old_range: Range<usize>, inserted_len: usize) -> TextEdit {
-    TextEdit { start_byte: old_range.start, old_end_byte: old_range.end, new_end_byte: old_range.start + inserted_len }
+    TextEdit {
+        start_byte: old_range.start,
+        old_end_byte: old_range.end,
+        new_end_byte: old_range.start + inserted_len,
+    }
 }
 
 /// The `TextEdit` for deleting `old_selection`, or `None` if there wasn't
@@ -23,7 +27,11 @@ fn edit_for_insertion(old_range: Range<usize>, inserted_len: usize) -> TextEdit 
 /// themselves from before/after `cursor()`/`text().len()` reads instead
 /// (see `Editor::handle_key_down`'s own `"backspace"`/`"delete"` arms).
 fn edit_for_deletion(old_selection: Option<Range<usize>>) -> Option<TextEdit> {
-    old_selection.map(|range| TextEdit { start_byte: range.start, old_end_byte: range.end, new_end_byte: range.start })
+    old_selection.map(|range| TextEdit {
+        start_byte: range.start,
+        old_end_byte: range.end,
+        new_end_byte: range.start,
+    })
 }
 
 /// Emitted whenever a buffer-mutating operation changes the text (typing,
@@ -148,7 +156,12 @@ impl Editor {
     /// `EditorEvent::Changed`. The call every text-mutating call site in
     /// this file and `input_handler.rs` makes instead of a plain
     /// `notify_changed(cx)`, right after the `buffer` mutation itself.
-    pub(super) fn record_edit(&mut self, edit: TextEdit, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn record_edit(
+        &mut self,
+        edit: TextEdit,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let text = self.buffer.text().to_string();
         let touched = self.document_cache.borrow_mut().record_edit(&text, edit);
 
@@ -160,10 +173,32 @@ impl Editor {
         let mut rows = self.row_height_cache.borrow_mut();
         match touched {
             Some(range) if !rows.needs_full_rebuild(&doc, params.available_width, char_width) => {
-                rows.patch_lines(&text, &doc, range, cursor, focused, char_width, &params.font, params.font_size, params.text_color, window);
+                rows.patch_lines(
+                    &text,
+                    &doc,
+                    range,
+                    cursor,
+                    focused,
+                    char_width,
+                    &params.font,
+                    params.font_size,
+                    params.text_color,
+                    window,
+                );
             }
             _ => {
-                rows.rebuild(&text, &doc, cursor, focused, params.available_width, char_width, &params.font, params.font_size, params.text_color, window);
+                rows.rebuild(
+                    &text,
+                    &doc,
+                    cursor,
+                    focused,
+                    params.available_width,
+                    char_width,
+                    &params.font,
+                    params.font_size,
+                    params.text_color,
+                    window,
+                );
             }
         }
         drop(rows);
@@ -188,8 +223,16 @@ impl Editor {
         let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
         let doc = self.document_cache.borrow();
         self.row_height_cache.borrow_mut().rebuild(
-            &text, &doc, cursor, focused, params.available_width, char_width, &params.font, params.font_size,
-            params.text_color, window,
+            &text,
+            &doc,
+            cursor,
+            focused,
+            params.available_width,
+            char_width,
+            &params.font,
+            params.font_size,
+            params.text_color,
+            window,
         );
         drop(doc);
 
@@ -212,7 +255,12 @@ impl Editor {
     /// platform's own Services-menu/drag-drop paste plumbing on some
     /// platforms, not guaranteed to fire for a plain Ctrl/Cmd+V keystroke, so
     /// explicit is the more predictable choice here.
-    pub(super) fn handle_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn handle_key_down(
+        &mut self,
+        event: &KeyDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let keystroke = &event.keystroke;
         let shift = keystroke.modifiers.shift;
         let command = keystroke.modifiers.control || keystroke.modifiers.platform;
@@ -252,7 +300,11 @@ impl Editor {
                     return;
                 }
                 "z" => {
-                    let changed = if shift { self.buffer.redo() } else { self.buffer.undo() };
+                    let changed = if shift {
+                        self.buffer.redo()
+                    } else {
+                        self.buffer.undo()
+                    };
                     if changed {
                         self.invalidate_all(window, cx);
                     }
@@ -314,7 +366,11 @@ impl Editor {
                     let new_cursor = self.buffer.cursor();
                     if new_cursor != old_cursor {
                         self.record_edit(
-                            TextEdit { start_byte: new_cursor, old_end_byte: old_cursor, new_end_byte: new_cursor },
+                            TextEdit {
+                                start_byte: new_cursor,
+                                old_end_byte: old_cursor,
+                                new_end_byte: new_cursor,
+                            },
                             window,
                             cx,
                         );
@@ -371,7 +427,12 @@ impl Editor {
     /// already uses for `RenameNote`/`DeleteNote` (`"NoteList"` context),
     /// just here needing to actually out-rank a default binding rather
     /// than just adding a new one.
-    pub(super) fn handle_insert_tab(&mut self, _: &InsertTab, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn handle_insert_tab(
+        &mut self,
+        _: &InsertTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let old_range = self.buffer.selection().unwrap_or_else(|| {
             let c = self.buffer.cursor();
             c..c

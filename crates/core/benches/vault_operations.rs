@@ -31,7 +31,9 @@ fn vault_with_notes(count: usize, words_per_note: usize) -> (TempDir, Vault) {
     let mut vault = Vault::open(dir.path()).unwrap();
     for i in 0..count {
         let id = vault.create_note(&format!("Note {i}"), None).unwrap();
-        vault.update_note_content(&id, synthetic_note(words_per_note, 20)).unwrap();
+        vault
+            .update_note_content(&id, synthetic_note(words_per_note, 20))
+            .unwrap();
     }
     (dir, vault)
 }
@@ -68,5 +70,10 @@ fn bench_search(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_extract_wikilinks, bench_backlinks, bench_search);
+criterion_group!(
+    benches,
+    bench_extract_wikilinks,
+    bench_backlinks,
+    bench_search
+);
 criterion_main!(benches);

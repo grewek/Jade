@@ -128,7 +128,11 @@ pub fn scan_row(line: &str) -> Row {
         cells.push(make_cell(line, cell_start..bytes.len()));
     }
 
-    Row { cells, has_leading_pipe, has_trailing_pipe }
+    Row {
+        cells,
+        has_leading_pipe,
+        has_trailing_pipe,
+    }
 }
 
 fn make_cell(line: &str, raw: Range<usize>) -> Cell {
@@ -173,7 +177,10 @@ fn parse_delimiter_row(line: &str, expected_columns: usize) -> Option<Vec<Align>
     if row.cells.len() != expected_columns {
         return None;
     }
-    row.cells.iter().map(|cell| delimiter_align(&cell.text)).collect()
+    row.cells
+        .iter()
+        .map(|cell| delimiter_align(&cell.text))
+        .collect()
 }
 
 /// A line is a plausible table row if it contains at least one `|` — the
@@ -226,7 +233,10 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
             .cells
             .iter()
             .zip(aligns)
-            .map(|(cell, align)| Column { width: cell.text.chars().count().max(3), align })
+            .map(|(cell, align)| Column {
+                width: cell.text.chars().count().max(3),
+                align,
+            })
             .collect();
         for &line in &lines[start + 2..end] {
             for (column, cell) in columns.iter_mut().zip(scan_row(line).cells.iter()) {
@@ -238,7 +248,12 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
         for entry in &mut table_for_line[start..end] {
             *entry = Some(tables.len());
         }
-        tables.push(Table { start_line: start, end_line: end, byte_range, columns });
+        tables.push(Table {
+            start_line: start,
+            end_line: end,
+            byte_range,
+            columns,
+        });
         i = end;
     }
 
@@ -308,12 +323,17 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
     }
 
     let shrinkable_budget = content_budget - floor_total;
-    let shrinkable_natural_total: usize = natural.iter().map(|&w| w.saturating_sub(MIN_COLUMN_WIDTH)).sum();
+    let shrinkable_natural_total: usize = natural
+        .iter()
+        .map(|&w| w.saturating_sub(MIN_COLUMN_WIDTH))
+        .sum();
     natural
         .iter()
         .map(|&w| {
             let shrinkable = w.saturating_sub(MIN_COLUMN_WIDTH);
-            let share = (shrinkable * shrinkable_budget).checked_div(shrinkable_natural_total).unwrap_or(0);
+            let share = (shrinkable * shrinkable_budget)
+                .checked_div(shrinkable_natural_total)
+                .unwrap_or(0);
             MIN_COLUMN_WIDTH + share
         })
         .collect()
@@ -394,7 +414,10 @@ pub fn wrap_cell_text(text: &str, width: usize) -> Vec<String> {
             // `remaining` alone doesn't fit on a fresh, empty line either —
             // hard-break it at `width` characters and keep going with what's
             // left.
-            let split_at = remaining.char_indices().nth(width).map_or(remaining.len(), |(i, _)| i);
+            let split_at = remaining
+                .char_indices()
+                .nth(width)
+                .map_or(remaining.len(), |(i, _)| i);
             if split_at == remaining.len() {
                 current.push_str(remaining);
                 break;
@@ -545,7 +568,10 @@ mod tests {
     fn classify_tables_recognizes_two_separate_tables() {
         let source = "| A |\n| --- |\n| 1 |\n\n| B |\n| --- |\n| 2 |";
         let (table_for_line, tables) = classify_tables(source);
-        assert_eq!(table_for_line, vec![Some(0), Some(0), Some(0), None, Some(1), Some(1), Some(1)]);
+        assert_eq!(
+            table_for_line,
+            vec![Some(0), Some(0), Some(0), None, Some(1), Some(1), Some(1)]
+        );
         assert_eq!(tables.len(), 2);
     }
 
@@ -570,7 +596,10 @@ mod tests {
     }
 
     fn col(width: usize) -> Column {
-        Column { width, align: Align::Left }
+        Column {
+            width,
+            align: Align::Left,
+        }
     }
 
     #[test]
@@ -637,7 +666,10 @@ mod tests {
 
     #[test]
     fn wrap_cell_text_packs_whole_words_greedily() {
-        assert_eq!(wrap_cell_text("Alexandria Fitzgerald", 10), vec!["Alexandria", "Fitzgerald"]);
+        assert_eq!(
+            wrap_cell_text("Alexandria Fitzgerald", 10),
+            vec!["Alexandria", "Fitzgerald"]
+        );
     }
 
     #[test]
@@ -652,7 +684,10 @@ mod tests {
 
     #[test]
     fn wrap_cell_text_hard_breaks_a_word_too_long_for_an_empty_line() {
-        assert_eq!(wrap_cell_text("Supercalifragilistic", 5), vec!["Super", "calif", "ragil", "istic"]);
+        assert_eq!(
+            wrap_cell_text("Supercalifragilistic", 5),
+            vec!["Super", "calif", "ragil", "istic"]
+        );
     }
 
     #[test]

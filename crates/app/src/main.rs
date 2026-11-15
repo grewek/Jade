@@ -1,8 +1,8 @@
 use std::path::PathBuf;
 
-mod text_editor;
 #[cfg(test)]
 mod test_alloc;
+mod text_editor;
 
 /// Test-build-only — see `test_alloc`'s own module doc for why. No effect
 /// on release/`cargo run` (this whole item is `#[cfg(test)]`-gated).
@@ -95,8 +95,7 @@ impl JadeApp {
     fn new(vault_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar_focus = cx.focus_handle();
 
-        let search_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search notes..."));
+        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search notes..."));
         let search_subscription = cx.subscribe(&search_input, |this, input, event, cx| {
             if matches!(event, InputEvent::Change) {
                 this.search_query = input.read(cx).value().to_string();
@@ -165,8 +164,7 @@ impl JadeApp {
     /// `EditorEvent::Changed`, and re-renders so e.g. the backlinks panel
     /// reflects newly-typed wikilinks live, not just on the next note switch.
     fn autosave_editor(&mut self, cx: &mut Context<Self>) {
-        let (Some(editor), Some(note_id)) = (self.editor.clone(), self.selected_id.clone())
-        else {
+        let (Some(editor), Some(note_id)) = (self.editor.clone(), self.selected_id.clone()) else {
             return;
         };
         let text = editor.read(cx).buffer().text().to_string();
@@ -193,7 +191,13 @@ impl JadeApp {
         cx.notify();
     }
 
-    fn rename_note(&mut self, id: &str, new_title: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn rename_note(
+        &mut self,
+        id: &str,
+        new_title: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Flush first: renaming moves the note to a new id, so a flush keyed on
         // its *old* id (which the editor's edits are still relative to) has to
         // happen before that, not after.
@@ -218,7 +222,13 @@ impl JadeApp {
         cx.notify();
     }
 
-    fn rename_folder(&mut self, id: &str, new_name: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn rename_folder(
+        &mut self,
+        id: &str,
+        new_name: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         // Flush the open note first (same reasoning as `open_note`'s own flush):
         // renaming the folder moves it to a new id, so a flush keyed on its *old*
         // id must happen before that, not after.
@@ -246,8 +256,13 @@ impl JadeApp {
     fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.vault.delete_folder(id).is_ok() {
             let prefix = format!("{id}/");
-            self.collapsed_folders.retain(|f| f != id && !f.starts_with(&prefix));
-            if self.selected_id.as_deref().is_some_and(|sel| sel.starts_with(&prefix)) {
+            self.collapsed_folders
+                .retain(|f| f != id && !f.starts_with(&prefix));
+            if self
+                .selected_id
+                .as_deref()
+                .is_some_and(|sel| sel.starts_with(&prefix))
+            {
                 self.selected_id = None;
                 self.editor = None;
                 self._editor_subscription = None;
@@ -326,19 +341,33 @@ impl JadeApp {
 
     fn rename_selected(&mut self, _: &RenameNote, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.selected_id.clone() {
-            let title = self.vault.note(&id).map(|n| n.title.clone()).unwrap_or_default();
+            let title = self
+                .vault
+                .note(&id)
+                .map(|n| n.title.clone())
+                .unwrap_or_default();
             Self::open_rename_dialog(id, title, cx.entity(), window, cx);
         }
     }
 
     fn delete_selected(&mut self, _: &DeleteNote, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(id) = self.selected_id.clone() {
-            let title = self.vault.note(&id).map(|n| n.title.clone()).unwrap_or_default();
+            let title = self
+                .vault
+                .note(&id)
+                .map(|n| n.title.clone())
+                .unwrap_or_default();
             Self::open_delete_dialog(id, title, cx.entity(), window, cx);
         }
     }
 
-    fn commit_rename(id: &str, input: &Entity<InputState>, app: &Entity<Self>, window: &mut Window, cx: &mut App) {
+    fn commit_rename(
+        id: &str,
+        input: &Entity<InputState>,
+        app: &Entity<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let new_title = input.read(cx).value().to_string();
         app.update(cx, |app, cx| {
             app.rename_note(id, &new_title, window, cx);
@@ -414,7 +443,13 @@ impl JadeApp {
         });
     }
 
-    fn commit_rename_folder(id: &str, input: &Entity<InputState>, app: &Entity<Self>, window: &mut Window, cx: &mut App) {
+    fn commit_rename_folder(
+        id: &str,
+        input: &Entity<InputState>,
+        app: &Entity<Self>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
         let new_name = input.read(cx).value().to_string();
         app.update(cx, |app, cx| {
             app.rename_folder(id, &new_name, window, cx);
@@ -454,12 +489,14 @@ impl JadeApp {
                                 .label("Cancel")
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(Button::new("confirm-rename-folder").label("Rename").on_click(
-                            move |_, window, cx| {
-                                Self::commit_rename_folder(&id, &input, &app, window, cx);
-                                window.close_dialog(cx);
-                            },
-                        )),
+                        .child(
+                            Button::new("confirm-rename-folder")
+                                .label("Rename")
+                                .on_click(move |_, window, cx| {
+                                    Self::commit_rename_folder(&id, &input, &app, window, cx);
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                 )
         });
     }
@@ -537,12 +574,14 @@ impl JadeApp {
                                 .label("Cancel")
                                 .on_click(|_, window, cx| window.close_dialog(cx)),
                         )
-                        .child(Button::new("confirm-create-folder").label("Create").on_click(
-                            move |_, window, cx| {
-                                Self::commit_create_folder(&parent, &input, &app, cx);
-                                window.close_dialog(cx);
-                            },
-                        )),
+                        .child(
+                            Button::new("confirm-create-folder")
+                                .label("Create")
+                                .on_click(move |_, window, cx| {
+                                    Self::commit_create_folder(&parent, &input, &app, cx);
+                                    window.close_dialog(cx);
+                                }),
+                        ),
                 )
         });
     }
@@ -555,8 +594,12 @@ impl JadeApp {
         depth: usize,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
-        let mut folder_ids: Vec<&String> =
-            self.vault.folders.iter().filter(|id| parent_of(id) == parent).collect();
+        let mut folder_ids: Vec<&String> = self
+            .vault
+            .folders
+            .iter()
+            .filter(|id| parent_of(id) == parent)
+            .collect();
         folder_ids.sort();
 
         let mut note_entries: Vec<(&String, &str)> = self
@@ -581,7 +624,12 @@ impl JadeApp {
         rows
     }
 
-    fn render_folder_row(&self, folder_id: &str, depth: usize, cx: &mut Context<Self>) -> AnyElement {
+    fn render_folder_row(
+        &self,
+        folder_id: &str,
+        depth: usize,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let collapsed = self.collapsed_folders.contains(folder_id);
         let name = folder_id.rsplit('/').next().unwrap_or(folder_id);
         let disclosure = if collapsed { "\u{25b8}" } else { "\u{25be}" };
@@ -613,19 +661,23 @@ impl JadeApp {
                 let delete_entity = app_entity.clone();
                 let delete_id = menu_parent.clone();
                 let delete_name = menu_name.clone();
-                menu.item(PopupMenuItem::new("New note").on_click(move |_, window, cx| {
-                    note_entity.update(cx, |app, cx| {
-                        app.create_note(Some(&note_parent), window, cx);
-                    });
-                }))
-                .item(PopupMenuItem::new("New folder").on_click(move |_, window, cx| {
-                    JadeApp::open_create_folder_dialog(
-                        Some(folder_parent.clone()),
-                        folder_entity.clone(),
-                        window,
-                        cx,
-                    );
-                }))
+                menu.item(
+                    PopupMenuItem::new("New note").on_click(move |_, window, cx| {
+                        note_entity.update(cx, |app, cx| {
+                            app.create_note(Some(&note_parent), window, cx);
+                        });
+                    }),
+                )
+                .item(
+                    PopupMenuItem::new("New folder").on_click(move |_, window, cx| {
+                        JadeApp::open_create_folder_dialog(
+                            Some(folder_parent.clone()),
+                            folder_entity.clone(),
+                            window,
+                            cx,
+                        );
+                    }),
+                )
                 .item(PopupMenuItem::new("Rename").on_click(move |_, window, cx| {
                     JadeApp::open_rename_folder_dialog(
                         rename_id.clone(),
@@ -767,8 +819,7 @@ impl JadeApp {
                     .child(format!("Results ({})", results.len())),
             );
             if results.is_empty() {
-                panel = panel
-                    .child(div().text_color(rgb(0x888888)).child("No matching notes."));
+                panel = panel.child(div().text_color(rgb(0x888888)).child("No matching notes."));
             } else {
                 for (id, title) in results {
                     let target_id = id.clone();
@@ -791,7 +842,6 @@ impl JadeApp {
         }
         panel.into_any_element()
     }
-
 }
 
 impl Render for JadeApp {
@@ -808,45 +858,42 @@ impl Render for JadeApp {
         // just the vault tree, not the whole sidebar — otherwise Backspace while
         // typing in the search input above would delete the selected note instead
         // of erasing a character.
-        let sidebar_content: AnyElement = match self.sidebar_tab {
-            SidebarTab::Vault => {
-                let tree_rows = self.render_tree_level(None, 0, cx);
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap_1()
-                    .key_context("NoteList")
-                    .track_focus(&self.sidebar_focus)
-                    .on_action(cx.listener(Self::rename_selected))
-                    .on_action(cx.listener(Self::delete_selected))
-                    .child(
-                        div()
-                            .flex()
-                            .flex_row()
-                            .gap_1()
-                            .child(
-                                Button::new("new-note")
-                                    .label("New note")
-                                    .on_click(cx.listener(|this, _event, window, cx| {
+        let sidebar_content: AnyElement =
+            match self.sidebar_tab {
+                SidebarTab::Vault => {
+                    let tree_rows = self.render_tree_level(None, 0, cx);
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap_1()
+                        .key_context("NoteList")
+                        .track_focus(&self.sidebar_focus)
+                        .on_action(cx.listener(Self::rename_selected))
+                        .on_action(cx.listener(Self::delete_selected))
+                        .child(
+                            div()
+                                .flex()
+                                .flex_row()
+                                .gap_1()
+                                .child(Button::new("new-note").label("New note").on_click(
+                                    cx.listener(|this, _event, window, cx| {
                                         this.create_note(None, window, cx);
-                                    })),
-                            )
-                            .child(
-                                Button::new("new-folder")
-                                    .label("New folder")
-                                    .on_click(cx.listener(|_this, _event, window, cx| {
+                                    }),
+                                ))
+                                .child(Button::new("new-folder").label("New folder").on_click(
+                                    cx.listener(|_this, _event, window, cx| {
                                         let app_entity = cx.entity();
                                         JadeApp::open_create_folder_dialog(
                                             None, app_entity, window, cx,
                                         );
-                                    })),
-                            ),
-                    )
-                    .children(tree_rows)
-                    .into_any_element()
-            }
-            SidebarTab::Search => self.render_search_panel(cx),
-        };
+                                    }),
+                                )),
+                        )
+                        .children(tree_rows)
+                        .into_any_element()
+                }
+                SidebarTab::Search => self.render_search_panel(cx),
+            };
 
         let sidebar = div()
             .flex()
@@ -859,7 +906,10 @@ impl Render for JadeApp {
             .child(sidebar_content);
 
         let content: AnyElement = if let Some(err) = &self.error {
-            div().p_4().child(format!("Could not open vault: {err}")).into_any_element()
+            div()
+                .p_4()
+                .child(format!("Could not open vault: {err}"))
+                .into_any_element()
         } else if let Some(note_id) = self.selected_id.clone() {
             let mut backlink_entries: Vec<(String, String)> = self
                 .vault
@@ -869,22 +919,18 @@ impl Render for JadeApp {
                 .unwrap_or_default()
                 .into_iter()
                 .filter_map(|source_id| {
-                    self.vault.note(&source_id).map(|n| (source_id, n.title.clone()))
+                    self.vault
+                        .note(&source_id)
+                        .map(|n| (source_id, n.title.clone()))
                 })
                 .collect();
             backlink_entries.sort_by(|a, b| a.1.cmp(&b.1));
 
-            let mut backlinks_panel = div()
-                .flex()
-                .flex_col()
-                .gap_1()
-                .p_2()
-                .border_t_1()
-                .child(
-                    div()
-                        .font_weight(FontWeight::BOLD)
-                        .child(format!("Backlinks ({})", backlink_entries.len())),
-                );
+            let mut backlinks_panel = div().flex().flex_col().gap_1().p_2().border_t_1().child(
+                div()
+                    .font_weight(FontWeight::BOLD)
+                    .child(format!("Backlinks ({})", backlink_entries.len())),
+            );
 
             if backlink_entries.is_empty() {
                 backlinks_panel = backlinks_panel
@@ -956,21 +1002,23 @@ fn main() {
     // `Button::icon(...)`, etc.) with GPUI's asset loader — without this,
     // every `IconName` renders as empty (the button itself still paints,
     // just with nothing inside it), not just the close button specifically.
-    gpui_kit::application().with_assets(gpui_kit::assets::Assets).run(move |cx| {
-        gpui_kit::init(cx);
-        install_fonts(cx);
-        cx.bind_keys([
-            KeyBinding::new("f2", RenameNote, Some("NoteList")),
-            KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
-            KeyBinding::new("tab", InsertTab, Some("TextEditor")),
-            KeyBinding::new("ctrl-p", OpenCommandPalette, None),
-        ]);
-        bind_open_command_palette(cx);
-        gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
-            cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
-        })
-        .expect("failed to open window");
-    });
+    gpui_kit::application()
+        .with_assets(gpui_kit::assets::Assets)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            install_fonts(cx);
+            cx.bind_keys([
+                KeyBinding::new("f2", RenameNote, Some("NoteList")),
+                KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
+                KeyBinding::new("tab", InsertTab, Some("TextEditor")),
+                KeyBinding::new("ctrl-p", OpenCommandPalette, None),
+            ]);
+            bind_open_command_palette(cx);
+            gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+                cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
+            })
+            .expect("failed to open window");
+        });
 }
 
 /// Registers `OpenCommandPalette`'s handler globally (`cx.on_action`, not an
@@ -990,7 +1038,9 @@ fn bind_open_command_palette(cx: &mut App) {
         // manager to ask), and not something to lean on for a single-window
         // app regardless. `cx.windows()` just lists every window GPUI
         // itself has open, with no OS-focus dependency at all.
-        let Some(window_handle) = cx.windows().into_iter().next() else { return };
+        let Some(window_handle) = cx.windows().into_iter().next() else {
+            return;
+        };
         cx.defer(move |cx| {
             _ = window_handle.update(cx, |_, window, cx| {
                 JadeApp::open_command_palette(window, cx);
@@ -1008,7 +1058,8 @@ mod tests {
     use gpui_kit::component::WindowExt;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
-        AnyWindowHandle, AppContext, Entity, Focusable, KeyBinding, TestAppContext, WindowOptions, point, px,
+        AnyWindowHandle, AppContext, Entity, Focusable, KeyBinding, TestAppContext, WindowOptions,
+        point, px,
     };
     use std::path::PathBuf;
     use tempfile::{TempDir, tempdir};
@@ -1017,7 +1068,10 @@ mod tests {
         tempdir().unwrap()
     }
 
-    fn open_app(cx: &mut TestAppContext, vault_path: PathBuf) -> (AnyWindowHandle, Entity<JadeApp>) {
+    fn open_app(
+        cx: &mut TestAppContext,
+        vault_path: PathBuf,
+    ) -> (AnyWindowHandle, Entity<JadeApp>) {
         cx.update(gpui_kit::init);
         cx.update(|cx| {
             cx.bind_keys([
@@ -1083,10 +1137,16 @@ mod tests {
         })
         .unwrap();
 
-        let editor = app.read_with(cx, |app, _| app.editor.clone()).expect("opening a note should create an editor");
+        let editor = app
+            .read_with(cx, |app, _| app.editor.clone())
+            .expect("opening a note should create an editor");
 
         let offset_before = editor.read_with(cx, |editor, _| editor.scroll_handle().offset());
-        assert_eq!(offset_before.y, px(0.), "a freshly opened note should start scrolled to the top");
+        assert_eq!(
+            offset_before.y,
+            px(0.),
+            "a freshly opened note should start scrolled to the top"
+        );
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -1158,7 +1218,9 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn clicking_a_wrapped_lines_second_row_in_the_real_app_lands_further_into_the_text(cx: &mut TestAppContext) {
+    fn clicking_a_wrapped_lines_second_row_in_the_real_app_lands_further_into_the_text(
+        cx: &mut TestAppContext,
+    ) {
         let dir = temp_vault();
         let long: &'static str = Box::leak("a".repeat(2000).into_boxed_str());
         std::fs::write(dir.path().join("Long Line.md"), long).unwrap();
@@ -1169,9 +1231,13 @@ mod tests {
             window.click("Long Line", cx);
         })
         .unwrap();
-        let editor = app.read_with(cx, |app, _| app.editor.clone()).expect("opening a note should create an editor");
+        let editor = app
+            .read_with(cx, |app, _| app.editor.clone())
+            .expect("opening a note should create an editor");
 
-        let line_height = cx.update_window(window, |_, window, _cx| window.line_height()).unwrap();
+        let line_height = cx
+            .update_window(window, |_, window, _cx| window.line_height())
+            .unwrap();
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -1216,7 +1282,9 @@ mod tests {
         })
         .unwrap();
 
-        let editor = app.read_with(cx, |app, _| app.editor.clone()).expect("opening a note should create an editor");
+        let editor = app
+            .read_with(cx, |app, _| app.editor.clone())
+            .expect("opening a note should create an editor");
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -1234,7 +1302,9 @@ mod tests {
         // Simulate the user then scrolling away from the cursor, back up
         // toward the top — same effect a mouse wheel would have.
         let scrolled_away = point(px(0.), px(0.));
-        editor.read_with(cx, |editor, _| editor.scroll_handle().set_offset(scrolled_away));
+        editor.read_with(cx, |editor, _| {
+            editor.scroll_handle().set_offset(scrolled_away)
+        });
 
         // A repaint with no cursor movement at all (e.g. the one a
         // mouse-wheel scroll itself triggers) must not fight the scroll
@@ -1313,7 +1383,11 @@ mod tests {
         .unwrap();
 
         let renamed_id = app.read_with(cx, |app, _| app.selected_id.clone());
-        assert_eq!(renamed_id, Some("Hello".to_string()), "rename should have taken effect");
+        assert_eq!(
+            renamed_id,
+            Some("Hello".to_string()),
+            "rename should have taken effect"
+        );
         assert!(dir.path().join("Hello.md").exists());
         assert!(!dir.path().join("Untitled.md").exists());
 
@@ -1334,7 +1408,11 @@ mod tests {
         .unwrap();
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
-        assert_eq!(selected, Some("Hello".to_string()), "Note A -> Hello backlink should navigate back");
+        assert_eq!(
+            selected,
+            Some("Hello".to_string()),
+            "Note A -> Hello backlink should navigate back"
+        );
 
         // And the reverse direction: from Note A, link to [[Hello]].
         cx.update_window(window, |_, window, cx| {
@@ -1354,7 +1432,11 @@ mod tests {
         .unwrap();
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
-        assert_eq!(selected, Some("Note A".to_string()), "Hello -> Note A backlink should navigate back");
+        assert_eq!(
+            selected,
+            Some("Note A".to_string()),
+            "Hello -> Note A backlink should navigate back"
+        );
     }
 
     #[gpui_kit::test]
@@ -1400,7 +1482,11 @@ mod tests {
     #[gpui_kit::test]
     fn opening_a_note_shows_its_editor_immediately(cx: &mut TestAppContext) {
         let dir = temp_vault();
-        std::fs::write(dir.path().join("Note.md"), "First paragraph.\n\nSecond paragraph.").unwrap();
+        std::fs::write(
+            dir.path().join("Note.md"),
+            "First paragraph.\n\nSecond paragraph.",
+        )
+        .unwrap();
 
         let (window, app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
@@ -1410,11 +1496,17 @@ mod tests {
         .unwrap();
 
         let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
-        assert!(has_editor, "the editor should be ready for input as soon as a note is opened");
+        assert!(
+            has_editor,
+            "the editor should be ready for input as soon as a note is opened"
+        );
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            assert!(window.try_find("editor").is_some(), "the editor should be rendered");
+            assert!(
+                window.try_find("editor").is_some(),
+                "the editor should be rendered"
+            );
         })
         .unwrap();
     }
@@ -1431,7 +1523,10 @@ mod tests {
         .unwrap();
 
         let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
-        assert!(has_editor, "a brand-new note has nothing to click, so its editor must be ready right away");
+        assert!(
+            has_editor,
+            "a brand-new note has nothing to click, so its editor must be ready right away"
+        );
     }
 
     #[gpui_kit::test]
@@ -1543,7 +1638,9 @@ mod tests {
         })
         .unwrap();
 
-        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor should be open"));
+        let editor = app.read_with(cx, |app, _| {
+            app.editor.clone().expect("editor should be open")
+        });
         cx.update_window(window, |_, window, cx| {
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
@@ -1703,7 +1800,10 @@ mod tests {
                 window.has_active_dialog(cx)
             })
             .unwrap();
-        assert!(dialog_open, "Ctrl+P should open the palette even while the editor has focus");
+        assert!(
+            dialog_open,
+            "Ctrl+P should open the palette even while the editor has focus"
+        );
     }
 
     #[gpui_kit::test]
@@ -1774,7 +1874,10 @@ mod tests {
                 window.has_active_dialog(cx)
             })
             .unwrap();
-        assert!(!dialog_open, "clicking the x should close the Settings dialog");
+        assert!(
+            !dialog_open,
+            "clicking the x should close the Settings dialog"
+        );
     }
 
     #[gpui_kit::test]
@@ -1829,9 +1932,14 @@ mod tests {
         })
         .unwrap();
 
-        let editor = app.read_with(cx, |app, _| app.editor.clone()).expect("note should still be open");
+        let editor = app
+            .read_with(cx, |app, _| app.editor.clone())
+            .expect("note should still be open");
         let selection = editor.read_with(cx, |editor, _| editor.buffer().selection());
-        assert!(selection.is_none(), "moving the mouse with no button held must not start/extend a selection, got {selection:?}");
+        assert!(
+            selection.is_none(),
+            "moving the mouse with no button held must not start/extend a selection, got {selection:?}"
+        );
     }
 
     #[gpui_kit::test]
@@ -1862,8 +1970,9 @@ mod tests {
         })
         .unwrap();
 
-        let dialog_still_open =
-            cx.update_window(window, |_, window, cx| window.has_active_dialog(cx)).unwrap();
+        let dialog_still_open = cx
+            .update_window(window, |_, window, cx| window.has_active_dialog(cx))
+            .unwrap();
         assert!(!dialog_still_open, "Enter should have closed the dialog");
 
         assert!(!dir.path().join("Note.md").exists());
@@ -1943,7 +2052,10 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.within("popup-menu").within("items").click(1usize, cx);
+            window
+                .within("popup-menu")
+                .within("items")
+                .click(1usize, cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -2006,7 +2118,10 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.within("popup-menu").within("items").click(0usize, cx);
+            window
+                .within("popup-menu")
+                .within("items")
+                .click(0usize, cx);
         })
         .unwrap();
 
@@ -2030,7 +2145,10 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.within("popup-menu").within("items").click(1usize, cx);
+            window
+                .within("popup-menu")
+                .within("items")
+                .click(1usize, cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -2064,7 +2182,10 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.within("popup-menu").within("items").click(2usize, cx);
+            window
+                .within("popup-menu")
+                .within("items")
+                .click(2usize, cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -2114,7 +2235,10 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.within("popup-menu").within("items").click(2usize, cx);
+            window
+                .within("popup-menu")
+                .within("items")
+                .click(2usize, cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -2134,7 +2258,10 @@ mod tests {
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Mathematics/Algebra".to_string()));
         let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
-        assert!(has_editor, "the note should still be open after its folder was renamed");
+        assert!(
+            has_editor,
+            "the note should still be open after its folder was renamed"
+        );
     }
 
     #[gpui_kit::test]
@@ -2152,7 +2279,10 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.within("popup-menu").within("items").click(2usize, cx);
+            window
+                .within("popup-menu")
+                .within("items")
+                .click(2usize, cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -2170,8 +2300,9 @@ mod tests {
         })
         .unwrap();
 
-        let dialog_still_open =
-            cx.update_window(window, |_, window, cx| window.has_active_dialog(cx)).unwrap();
+        let dialog_still_open = cx
+            .update_window(window, |_, window, cx| window.has_active_dialog(cx))
+            .unwrap();
         assert!(!dialog_still_open, "Enter should have closed the dialog");
         assert!(dir.path().join("Science").is_dir());
     }
@@ -2193,7 +2324,10 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.within("popup-menu").within("items").click(3usize, cx);
+            window
+                .within("popup-menu")
+                .within("items")
+                .click(3usize, cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -2228,7 +2362,10 @@ mod tests {
 
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.within("popup-menu").within("items").click(3usize, cx);
+            window
+                .within("popup-menu")
+                .within("items")
+                .click(3usize, cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -2259,7 +2396,10 @@ mod tests {
                 window.try_find("Math/Algebra").is_some()
             })
             .unwrap();
-        assert!(visible_before, "note should be visible while folder is expanded");
+        assert!(
+            visible_before,
+            "note should be visible while folder is expanded"
+        );
 
         cx.update_window(window, |_, window, cx| {
             window.click("folder-Math", cx);
@@ -2272,7 +2412,10 @@ mod tests {
                 window.try_find("Math/Algebra").is_some()
             })
             .unwrap();
-        assert!(!visible_after_collapse, "note should be hidden once folder is collapsed");
+        assert!(
+            !visible_after_collapse,
+            "note should be hidden once folder is collapsed"
+        );
 
         cx.update_window(window, |_, window, cx| {
             window.click("folder-Math", cx);
@@ -2285,7 +2428,10 @@ mod tests {
                 window.try_find("Math/Algebra").is_some()
             })
             .unwrap();
-        assert!(visible_after_expand, "note should reappear once folder is expanded again");
+        assert!(
+            visible_after_expand,
+            "note should reappear once folder is expanded again"
+        );
     }
 
     #[gpui_kit::test]
@@ -2322,7 +2468,11 @@ mod tests {
     fn search_tab_filters_notes_by_title_and_content(cx: &mut TestAppContext) {
         let dir = temp_vault();
         std::fs::write(dir.path().join("Apples.md"), "a fruit").unwrap();
-        std::fs::write(dir.path().join("Carrots.md"), "a vegetable, tasty with apples").unwrap();
+        std::fs::write(
+            dir.path().join("Carrots.md"),
+            "a vegetable, tasty with apples",
+        )
+        .unwrap();
         std::fs::write(dir.path().join("Oranges.md"), "a different fruit").unwrap();
 
         let (window, app) = open_app(cx, dir.path().to_path_buf());
@@ -2350,9 +2500,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn backspace_while_typing_in_search_does_not_delete_the_selected_note(
-        cx: &mut TestAppContext,
-    ) {
+    fn backspace_while_typing_in_search_does_not_delete_the_selected_note(cx: &mut TestAppContext) {
         let dir = temp_vault();
         std::fs::write(dir.path().join("Note.md"), "content").unwrap();
 
@@ -2376,7 +2524,10 @@ mod tests {
                 window.has_active_dialog(cx)
             })
             .unwrap();
-        assert!(!dialog_open, "backspace in the search input must not open the delete dialog");
+        assert!(
+            !dialog_open,
+            "backspace in the search input must not open the delete dialog"
+        );
 
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Note".to_string()));

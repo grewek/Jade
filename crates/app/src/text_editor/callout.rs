@@ -157,18 +157,30 @@ pub fn callout_header_prefix(content: &str) -> Option<CalloutHeader> {
     let type_name = 2..close;
 
     let mut marker_end = close + 1;
-    if bytes.get(marker_end).is_some_and(|&b| b == b'+' || b == b'-') {
+    if bytes
+        .get(marker_end)
+        .is_some_and(|&b| b == b'+' || b == b'-')
+    {
         marker_end += 1;
     }
 
     let title = if marker_end >= content.len() {
         None
     } else {
-        let title_start = if bytes.get(marker_end) == Some(&b' ') { marker_end + 1 } else { marker_end };
+        let title_start = if bytes.get(marker_end) == Some(&b' ') {
+            marker_end + 1
+        } else {
+            marker_end
+        };
         (title_start < content.len()).then_some(title_start..content.len())
     };
 
-    Some(CalloutHeader { kind, type_name, marker_end, title })
+    Some(CalloutHeader {
+        kind,
+        type_name,
+        marker_end,
+        title,
+    })
 }
 
 /// One detected callout: its type, and the line range (`end_line`
@@ -282,14 +294,28 @@ pub(super) struct CalloutState {
 /// and a continuing one has its `end_line` bumped — so a resumed caller
 /// that's already pre-seeded `callouts` with a kept prefix assigns new
 /// indices continuing on from that prefix, not colliding with it.
-pub(super) fn step(state: CalloutState, line: &str, i: usize, callouts: &mut Vec<Callout>) -> (Option<usize>, CalloutState) {
-    let CalloutState { block_open, mut current } = state;
+pub(super) fn step(
+    state: CalloutState,
+    line: &str,
+    i: usize,
+    callouts: &mut Vec<Callout>,
+) -> (Option<usize>, CalloutState) {
+    let CalloutState {
+        block_open,
+        mut current,
+    } = state;
 
     if line.trim().is_empty() || looks_like_heading(line) {
         if let Some(idx) = current.take() {
             callouts[idx].end_line = i;
         }
-        return (None, CalloutState { block_open: false, current });
+        return (
+            None,
+            CalloutState {
+                block_open: false,
+                current,
+            },
+        );
     }
 
     if let Some((depth, prefix_len)) = blockquote_depth(line) {
@@ -299,7 +325,11 @@ pub(super) fn step(state: CalloutState, line: &str, i: usize, callouts: &mut Vec
             current = None;
             if let Some(header) = callout_header_prefix(&line[prefix_len..]) {
                 let idx = callouts.len();
-                callouts.push(Callout { kind: header.kind, start_line: i, end_line: i + 1 });
+                callouts.push(Callout {
+                    kind: header.kind,
+                    start_line: i,
+                    end_line: i + 1,
+                });
                 callout_for_this_line = Some(idx);
                 current = Some(idx);
             }
@@ -308,7 +338,13 @@ pub(super) fn step(state: CalloutState, line: &str, i: usize, callouts: &mut Vec
             callouts[idx].end_line = i + 1;
             callout_for_this_line = Some(idx);
         }
-        return (callout_for_this_line, CalloutState { block_open: true, current });
+        return (
+            callout_for_this_line,
+            CalloutState {
+                block_open: true,
+                current,
+            },
+        );
     }
 
     // No `>` prefix of its own: a lazy continuation if a block is open,
@@ -327,7 +363,13 @@ pub(super) fn step(state: CalloutState, line: &str, i: usize, callouts: &mut Vec
         current = None;
         None
     };
-    (callout_for_this_line, CalloutState { block_open, current })
+    (
+        callout_for_this_line,
+        CalloutState {
+            block_open,
+            current,
+        },
+    )
 }
 
 /// Resumes classification from `state` (the state *entering* the first

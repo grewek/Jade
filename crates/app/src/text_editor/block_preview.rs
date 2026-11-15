@@ -75,7 +75,10 @@ pub(super) fn step(state: FenceState, line: &str) -> (LineRole, FenceState) {
 /// than removed once production stopped calling it directly.
 #[cfg(test)]
 pub(super) fn classify_lines(source: &str) -> Vec<LineRole> {
-    classify_lines_from(source, None).into_iter().map(|(role, _)| role).collect()
+    classify_lines_from(source, None)
+        .into_iter()
+        .map(|(role, _)| role)
+        .collect()
 }
 
 /// Resumes classification from `state` (the fence state *entering* the
@@ -134,7 +137,10 @@ mod tests {
     #[test]
     fn a_document_with_no_fence_is_all_plain() {
         let roles = classify_lines("first\nsecond\nthird");
-        assert_eq!(roles, vec![LineRole::Plain, LineRole::Plain, LineRole::Plain]);
+        assert_eq!(
+            roles,
+            vec![LineRole::Plain, LineRole::Plain, LineRole::Plain]
+        );
     }
 
     #[test]
@@ -157,21 +163,42 @@ mod tests {
     fn a_fence_with_a_language_info_string_is_still_a_delimiter() {
         let source = "```rust\ncode\n```";
         let roles = classify_lines(source);
-        assert_eq!(roles, vec![LineRole::FenceDelimiter, LineRole::FenceContent, LineRole::FenceDelimiter]);
+        assert_eq!(
+            roles,
+            vec![
+                LineRole::FenceDelimiter,
+                LineRole::FenceContent,
+                LineRole::FenceDelimiter
+            ]
+        );
     }
 
     #[test]
     fn tilde_fences_are_also_recognized() {
         let source = "~~~\ncode\n~~~";
         let roles = classify_lines(source);
-        assert_eq!(roles, vec![LineRole::FenceDelimiter, LineRole::FenceContent, LineRole::FenceDelimiter]);
+        assert_eq!(
+            roles,
+            vec![
+                LineRole::FenceDelimiter,
+                LineRole::FenceContent,
+                LineRole::FenceDelimiter
+            ]
+        );
     }
 
     #[test]
     fn an_unclosed_fence_treats_every_remaining_line_as_content() {
         let source = "```\nstill typing\nthe fence";
         let roles = classify_lines(source);
-        assert_eq!(roles, vec![LineRole::FenceDelimiter, LineRole::FenceContent, LineRole::FenceContent]);
+        assert_eq!(
+            roles,
+            vec![
+                LineRole::FenceDelimiter,
+                LineRole::FenceContent,
+                LineRole::FenceContent
+            ]
+        );
     }
 
     #[test]
@@ -214,7 +241,14 @@ mod tests {
     fn trailing_characters_after_the_closing_run_prevent_it_from_closing() {
         let source = "```\ncode\n```extra";
         let roles = classify_lines(source);
-        assert_eq!(roles, vec![LineRole::FenceDelimiter, LineRole::FenceContent, LineRole::FenceContent]);
+        assert_eq!(
+            roles,
+            vec![
+                LineRole::FenceDelimiter,
+                LineRole::FenceContent,
+                LineRole::FenceContent
+            ]
+        );
     }
 
     #[test]

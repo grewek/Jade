@@ -26,7 +26,12 @@ impl Vault {
             .values()
             .map(|note| (note.id.clone(), extract_wikilinks(&note.content)))
             .collect();
-        Ok(Self { root, notes, folders, wikilinks })
+        Ok(Self {
+            root,
+            notes,
+            folders,
+            wikilinks,
+        })
     }
 
     /// A vault with no notes or folders yet, e.g. as a fallback when `open` fails.
@@ -67,7 +72,8 @@ impl Vault {
         std::fs::write(&path, "")?;
         let note = Note::load(&self.root, path)?;
         let id = note.id.clone();
-        self.wikilinks.insert(id.clone(), extract_wikilinks(&note.content));
+        self.wikilinks
+            .insert(id.clone(), extract_wikilinks(&note.content));
         self.notes.insert(id.clone(), note);
         Ok(id)
     }
@@ -110,7 +116,12 @@ impl Vault {
     /// Renames a note's underlying file (keeping it in the same folder) and returns its new id.
     /// Dedupes against existing titles the same way `create_note` does.
     pub fn rename_note(&mut self, id: &str, new_title: &str) -> std::io::Result<String> {
-        let old_path = self.notes.get(id).ok_or_else(|| not_found(id))?.path.clone();
+        let old_path = self
+            .notes
+            .get(id)
+            .ok_or_else(|| not_found(id))?
+            .path
+            .clone();
         let parent = old_path.parent().unwrap_or(&self.root).to_path_buf();
 
         let mut candidate = new_title.to_string();
@@ -141,7 +152,12 @@ impl Vault {
 
     /// Deletes a note's underlying file and removes it from the vault.
     pub fn delete_note(&mut self, id: &str) -> std::io::Result<()> {
-        let path = self.notes.get(id).ok_or_else(|| not_found(id))?.path.clone();
+        let path = self
+            .notes
+            .get(id)
+            .ok_or_else(|| not_found(id))?
+            .path
+            .clone();
         std::fs::remove_file(&path)?;
         self.notes.remove(id);
         self.wikilinks.remove(id);
@@ -177,9 +193,12 @@ impl Vault {
         // their new ids, rather than hand-rewriting id prefixes for every nested
         // note/subfolder.
         let old_prefix = format!("{id}/");
-        self.folders.retain(|f| f != id && !f.starts_with(&old_prefix));
-        self.notes.retain(|note_id, _| !note_id.starts_with(&old_prefix));
-        self.wikilinks.retain(|note_id, _| !note_id.starts_with(&old_prefix));
+        self.folders
+            .retain(|f| f != id && !f.starts_with(&old_prefix));
+        self.notes
+            .retain(|note_id, _| !note_id.starts_with(&old_prefix));
+        self.wikilinks
+            .retain(|note_id, _| !note_id.starts_with(&old_prefix));
 
         let new_id = relative_path_id(&self.root, &new_path);
         self.folders.insert(new_id.clone());
@@ -189,8 +208,13 @@ impl Vault {
         // nested children — this only runs on a user-initiated folder rename, not
         // on every keystroke, so it doesn't need to be as tight as `backlinks()`.
         let new_prefix = format!("{new_id}/");
-        for note in self.notes.values().filter(|n| n.id.starts_with(&new_prefix)) {
-            self.wikilinks.insert(note.id.clone(), extract_wikilinks(&note.content));
+        for note in self
+            .notes
+            .values()
+            .filter(|n| n.id.starts_with(&new_prefix))
+        {
+            self.wikilinks
+                .insert(note.id.clone(), extract_wikilinks(&note.content));
         }
         Ok(new_id)
     }
@@ -206,8 +230,10 @@ impl Vault {
 
         let prefix = format!("{id}/");
         self.folders.retain(|f| f != id && !f.starts_with(&prefix));
-        self.notes.retain(|note_id, _| !note_id.starts_with(&prefix));
-        self.wikilinks.retain(|note_id, _| !note_id.starts_with(&prefix));
+        self.notes
+            .retain(|note_id, _| !note_id.starts_with(&prefix));
+        self.wikilinks
+            .retain(|note_id, _| !note_id.starts_with(&prefix));
         Ok(())
     }
 
@@ -225,7 +251,10 @@ impl Vault {
         for (note_id, links) in &self.wikilinks {
             for link in links {
                 if let Some(target_id) = self.resolve(&link.target, &index) {
-                    backlinks.entry(target_id).or_default().push(note_id.clone());
+                    backlinks
+                        .entry(target_id)
+                        .or_default()
+                        .push(note_id.clone());
                 }
             }
         }
@@ -237,8 +266,12 @@ impl Vault {
     fn title_index(&self) -> HashMap<String, String> {
         let mut index = HashMap::with_capacity(self.notes.len() * 2);
         for note in self.notes.values() {
-            index.entry(note.title.to_lowercase()).or_insert_with(|| note.id.clone());
-            index.entry(note.id.to_lowercase()).or_insert_with(|| note.id.clone());
+            index
+                .entry(note.title.to_lowercase())
+                .or_insert_with(|| note.id.clone());
+            index
+                .entry(note.id.to_lowercase())
+                .or_insert_with(|| note.id.clone());
         }
         index
     }
@@ -262,11 +295,17 @@ impl Vault {
 }
 
 fn not_found(id: &str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::NotFound, format!("note not found: {id}"))
+    std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("note not found: {id}"),
+    )
 }
 
 fn folder_not_found(id: &str) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::NotFound, format!("folder not found: {id}"))
+    std::io::Error::new(
+        std::io::ErrorKind::NotFound,
+        format!("folder not found: {id}"),
+    )
 }
 
 fn collect_entries(
@@ -307,7 +346,9 @@ mod tests {
         assert_eq!(vault.notes.len(), 2);
 
         let backlinks = vault.backlinks();
-        let b_backlinks = backlinks.get("Note B").expect("Note B should have backlinks");
+        let b_backlinks = backlinks
+            .get("Note B")
+            .expect("Note B should have backlinks");
         assert_eq!(b_backlinks, &vec!["Note A".to_string()]);
     }
 
@@ -507,13 +548,20 @@ mod tests {
         let dir = temp_vault();
         std::fs::write(dir.path().join("Target.md"), "content").unwrap();
         std::fs::create_dir_all(dir.path().join("Math")).unwrap();
-        std::fs::write(dir.path().join("Math").join("Source.md"), "Links to [[Target]].").unwrap();
+        std::fs::write(
+            dir.path().join("Math").join("Source.md"),
+            "Links to [[Target]].",
+        )
+        .unwrap();
         let mut vault = Vault::open(dir.path()).unwrap();
 
         vault.rename_folder("Math", "Mathematics").unwrap();
 
         let backlinks = vault.backlinks();
-        assert_eq!(backlinks.get("Target"), Some(&vec!["Mathematics/Source".to_string()]));
+        assert_eq!(
+            backlinks.get("Target"),
+            Some(&vec!["Mathematics/Source".to_string()])
+        );
     }
 
     #[test]

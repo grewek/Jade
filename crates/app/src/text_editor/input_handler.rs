@@ -4,8 +4,8 @@ use gpui_kit::*;
 
 use super::document_cache::TextEdit;
 use super::element::{
-    analyze_line_layout, callout_at_line, indent_px, is_active_line, is_table_active, shape_display_line,
-    table_line_kind, visible_line_range,
+    analyze_line_layout, callout_at_line, indent_px, is_active_line, is_table_active,
+    shape_display_line, table_line_kind, visible_line_range,
 };
 use super::{Editor, EditorBuffer};
 
@@ -46,7 +46,11 @@ pub(super) fn utf8_to_utf16(text: &str, byte_offset: usize) -> usize {
 /// ever needed it for) — the borrow only has to survive long enough to
 /// resolve `r`'s UTF-16 offsets, well before either caller's own first
 /// mutating `buffer` call.
-fn resolve_replace_range(buffer: &EditorBuffer, marked_range: &Option<Range<usize>>, range_utf16: Option<Range<usize>>) -> Range<usize> {
+fn resolve_replace_range(
+    buffer: &EditorBuffer,
+    marked_range: &Option<Range<usize>>,
+    range_utf16: Option<Range<usize>>,
+) -> Range<usize> {
     match range_utf16 {
         Some(r) => {
             let text = buffer.text();
@@ -94,7 +98,11 @@ impl EntityInputHandler for Editor {
         })
     }
 
-    fn marked_text_range(&self, _window: &mut Window, _cx: &mut Context<Self>) -> Option<Range<usize>> {
+    fn marked_text_range(
+        &self,
+        _window: &mut Window,
+        _cx: &mut Context<Self>,
+    ) -> Option<Range<usize>> {
         self.marked_range.clone()
     }
 
@@ -183,7 +191,9 @@ impl EntityInputHandler for Editor {
         // Bold/Italic faces, and this method must shape with the same font
         // that painting did or the IME candidate window lands slightly off.
         let mut font = text_style.font();
-        font.family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
+        font.family = gpui_kit::component::Theme::global(cx)
+            .mono_font_family
+            .clone();
         let font_size = text_style.font_size.to_pixels(window.rem_size());
         let text_color = text_style.color;
         let focused = self.focus_handle.is_focused(window);
@@ -198,8 +208,17 @@ impl EntityInputHandler for Editor {
         // cache` is — see `Editor::record_edit`) rather than re-deriving
         // every line's row count here too.
         let layout = analyze_line_layout(
-            &text, &self.document_cache, &self.row_height_cache, cursor, focused, element_bounds.size.width,
-            line_height, &font, font_size, text_color, window,
+            &text,
+            &self.document_cache,
+            &self.row_height_cache,
+            cursor,
+            focused,
+            element_bounds.size.width,
+            line_height,
+            &font,
+            font_size,
+            text_color,
+            window,
         );
         // Reads the same persisted classification cache every edit already
         // updated via `record_edit`/`invalidate_all` — this used to
@@ -229,8 +248,19 @@ impl EntityInputHandler for Editor {
             let callout = callout_at_line(callouts, callout_for_line, i);
             let callout_is_header = callout.is_some_and(|c| c.is_header(i));
             let results = shape_display_line(
-                line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header,
-                active, &font, font_size, text_color, element_bounds.size.width, window,
+                line_text,
+                line_roles[i],
+                block_contexts[i],
+                table_kind,
+                table_active,
+                callout,
+                callout_is_header,
+                active,
+                &font,
+                font_size,
+                text_color,
+                element_bounds.size.width,
+                window,
             );
             // Usually one entry; more than one only for a table row whose
             // cells had to wrap — same "which sub-row is this byte
@@ -238,11 +268,17 @@ impl EntityInputHandler for Editor {
             for (wrapped, display_line) in &results {
                 let height = wrapped.size(line_height).height;
                 if byte_offset <= line_range.end {
-                    let display_offset = display_line.display_offset_for_raw(byte_offset - line_range.start);
-                    let pos = wrapped.position_for_index(display_offset, line_height).unwrap_or(point(px(0.), px(0.)));
+                    let display_offset =
+                        display_line.display_offset_for_raw(byte_offset - line_range.start);
+                    let pos = wrapped
+                        .position_for_index(display_offset, line_height)
+                        .unwrap_or(point(px(0.), px(0.)));
                     let x = pos.x + indent_px(display_line.indent.level());
                     let origin = element_bounds.origin + point(x, y_offset + pos.y);
-                    return Some(Bounds { origin, size: size(px(1.), line_height) });
+                    return Some(Bounds {
+                        origin,
+                        size: size(px(1.), line_height),
+                    });
                 }
                 y_offset += height;
             }
@@ -267,7 +303,12 @@ impl EntityInputHandler for Editor {
         None
     }
 
-    fn set_selected_text_range(&mut self, range_utf16: Range<usize>, _window: &mut Window, cx: &mut Context<Self>) {
+    fn set_selected_text_range(
+        &mut self,
+        range_utf16: Range<usize>,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let text = self.buffer.text();
         let start = utf16_to_utf8(text, range_utf16.start);
         let end = utf16_to_utf8(text, range_utf16.end);
@@ -284,7 +325,7 @@ impl EntityInputHandler for Editor {
 // recurse infinitely (the same project-wide gotcha noted in `main.rs`).
 #[cfg(test)]
 mod tests {
-    use super::{utf16_to_utf8, utf8_to_utf16};
+    use super::{utf8_to_utf16, utf16_to_utf8};
 
     #[test]
     fn utf16_offsets_round_trip_through_ascii() {

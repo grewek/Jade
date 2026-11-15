@@ -4,21 +4,26 @@ use std::rc::Rc;
 use gpui_kit::component::WindowExt;
 use gpui_kit::*;
 
+use super::Editor;
 use super::block_preview::LineRole;
 use super::callout::{Callout, CalloutType};
 use super::document_cache::DocumentCache;
 use super::fenwick::Fenwick;
 use super::live_preview::{
-    build_callout_header_line, build_display_line, build_display_line_in_context, build_table_row, hidden_line,
-    is_thematic_break, line_indent, DisplayLine, InlineStyle, LineContext, LineIndent,
+    DisplayLine, InlineStyle, LineContext, LineIndent, build_callout_header_line,
+    build_display_line, build_display_line_in_context, build_table_row, hidden_line,
+    is_thematic_break, line_indent,
 };
 use super::table_preview::{self, Table};
-use super::Editor;
 
 /// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
 /// `classify_callouts`' per-line lookup (`callout_for_line`) and the
 /// resolved `callouts` themselves — same shape as `table_line_kind`.
-pub(super) fn callout_at_line<'a>(callouts: &'a [Callout], callout_for_line: &[Option<usize>], line_index: usize) -> Option<&'a Callout> {
+pub(super) fn callout_at_line<'a>(
+    callouts: &'a [Callout],
+    callout_for_line: &[Option<usize>],
+    line_index: usize,
+) -> Option<&'a Callout> {
     callout_for_line[line_index].map(|idx| &callouts[idx])
 }
 
@@ -34,7 +39,11 @@ pub(super) enum TableLineKind<'a> {
 
 /// Resolves `line_index`'s [`TableLineKind`] from `classify_tables`'
 /// per-line table-index lookup and the resolved `tables` themselves.
-pub(super) fn table_line_kind<'a>(tables: &'a [Table], table_for_line: &[Option<usize>], line_index: usize) -> TableLineKind<'a> {
+pub(super) fn table_line_kind<'a>(
+    tables: &'a [Table],
+    table_for_line: &[Option<usize>],
+    line_index: usize,
+) -> TableLineKind<'a> {
     match table_for_line[line_index] {
         None => TableLineKind::None,
         Some(idx) => {
@@ -56,7 +65,13 @@ pub(super) fn table_line_kind<'a>(tables: &'a [Table], table_for_line: &[Option<
 /// sensible way to keep the rest of the grid rendered while one row inside
 /// it goes raw — the whole table becomes the unit of "active," same
 /// `focused`-gating as `is_active_line`.
-pub(super) fn is_table_active(tables: &[Table], table_for_line: &[Option<usize>], line_index: usize, cursor: usize, focused: bool) -> bool {
+pub(super) fn is_table_active(
+    tables: &[Table],
+    table_for_line: &[Option<usize>],
+    line_index: usize,
+    cursor: usize,
+    focused: bool,
+) -> bool {
     focused
         && table_for_line[line_index].is_some_and(|idx| {
             let range = &tables[idx].byte_range;
@@ -67,18 +82,43 @@ pub(super) fn is_table_active(tables: &[Table], table_for_line: &[Option<usize>]
 /// A pale, half-transparent highlight — a reasonable Phase 1 default, not yet
 /// pulled from the app's theme (`ActiveTheme`/`cx.theme()`, as `gpui-component`
 /// itself does for its own selection color).
-const SELECTION_HIGHLIGHT: Hsla = Hsla { h: 0.6, s: 0.9, l: 0.6, a: 0.35 };
+const SELECTION_HIGHLIGHT: Hsla = Hsla {
+    h: 0.6,
+    s: 0.9,
+    l: 0.6,
+    a: 0.35,
+};
 
 /// Live Preview colors for inline code, wikilink, and blockquote/list-marker
 /// text — same "flat constant, not yet pulled from the theme" Phase 1
 /// compromise as `SELECTION_HIGHLIGHT` above.
-const CODE_COLOR: Hsla = Hsla { h: 0.75, s: 0.2, l: 0.55, a: 1.0 };
-const WIKILINK_COLOR: Hsla = Hsla { h: 0.58, s: 0.65, l: 0.6, a: 1.0 };
+const CODE_COLOR: Hsla = Hsla {
+    h: 0.75,
+    s: 0.2,
+    l: 0.55,
+    a: 1.0,
+};
+const WIKILINK_COLOR: Hsla = Hsla {
+    h: 0.58,
+    s: 0.65,
+    l: 0.6,
+    a: 1.0,
+};
 /// Distinct hue from `WIKILINK_COLOR` so an internal `[[wikilink]]` and an
 /// external/inline `[text](url)` link or autolink read as visually
 /// different kinds of thing.
-const LINK_COLOR: Hsla = Hsla { h: 0.5, s: 0.65, l: 0.55, a: 1.0 };
-const MUTED_COLOR: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.6, a: 1.0 };
+const LINK_COLOR: Hsla = Hsla {
+    h: 0.5,
+    s: 0.65,
+    l: 0.55,
+    a: 1.0,
+};
+const MUTED_COLOR: Hsla = Hsla {
+    h: 0.0,
+    s: 0.0,
+    l: 0.6,
+    a: 1.0,
+};
 
 /// One accent `Hsla` per callout type group — Obsidian's own rough color
 /// families (blue for Note/Info, purple for Summary, cyan for Tip, green
@@ -90,13 +130,48 @@ const MUTED_COLOR: Hsla = Hsla { h: 0.0, s: 0.0, l: 0.6, a: 1.0 };
 /// this picks the color.
 fn callout_color(kind: CalloutType) -> Hsla {
     match kind {
-        CalloutType::Note | CalloutType::Info => Hsla { h: 0.58, s: 0.65, l: 0.6, a: 1.0 },
-        CalloutType::Summary => Hsla { h: 0.78, s: 0.55, l: 0.62, a: 1.0 },
-        CalloutType::Tip => Hsla { h: 0.5, s: 0.6, l: 0.55, a: 1.0 },
-        CalloutType::Todo | CalloutType::Success => Hsla { h: 0.35, s: 0.55, l: 0.5, a: 1.0 },
-        CalloutType::Question | CalloutType::Warning => Hsla { h: 0.09, s: 0.75, l: 0.55, a: 1.0 },
-        CalloutType::Failure | CalloutType::Danger | CalloutType::Bug => Hsla { h: 0.0, s: 0.65, l: 0.55, a: 1.0 },
-        CalloutType::Example | CalloutType::Quote => Hsla { h: 0.0, s: 0.0, l: 0.55, a: 1.0 },
+        CalloutType::Note | CalloutType::Info => Hsla {
+            h: 0.58,
+            s: 0.65,
+            l: 0.6,
+            a: 1.0,
+        },
+        CalloutType::Summary => Hsla {
+            h: 0.78,
+            s: 0.55,
+            l: 0.62,
+            a: 1.0,
+        },
+        CalloutType::Tip => Hsla {
+            h: 0.5,
+            s: 0.6,
+            l: 0.55,
+            a: 1.0,
+        },
+        CalloutType::Todo | CalloutType::Success => Hsla {
+            h: 0.35,
+            s: 0.55,
+            l: 0.5,
+            a: 1.0,
+        },
+        CalloutType::Question | CalloutType::Warning => Hsla {
+            h: 0.09,
+            s: 0.75,
+            l: 0.55,
+            a: 1.0,
+        },
+        CalloutType::Failure | CalloutType::Danger | CalloutType::Bug => Hsla {
+            h: 0.0,
+            s: 0.65,
+            l: 0.55,
+            a: 1.0,
+        },
+        CalloutType::Example | CalloutType::Quote => Hsla {
+            h: 0.0,
+            s: 0.0,
+            l: 0.55,
+            a: 1.0,
+        },
     }
 }
 
@@ -140,7 +215,11 @@ pub(super) fn indent_px(level: u8) -> Pixels {
 /// happening) *and* `cursor` sits inside `line_range` (inclusive of both
 /// ends, so a cursor resting right at a line's last byte, before its `\n`,
 /// still counts).
-pub(super) fn is_active_line(line_range: &std::ops::Range<usize>, cursor: usize, focused: bool) -> bool {
+pub(super) fn is_active_line(
+    line_range: &std::ops::Range<usize>,
+    cursor: usize,
+    focused: bool,
+) -> bool {
     focused && cursor >= line_range.start && cursor <= line_range.end
 }
 
@@ -162,7 +241,12 @@ pub(super) fn is_active_line(line_range: &std::ops::Range<usize>, cursor: usize,
 /// A no-op if the cursor's line is already fully visible, or before the
 /// container has been laid out at least once (`scroll_handle.bounds()` is
 /// zero-sized until then).
-fn autoscroll_to_cursor(scroll_handle: &ScrollHandle, content_bounds: Bounds<Pixels>, cursor_top: Pixels, cursor_height: Pixels) {
+fn autoscroll_to_cursor(
+    scroll_handle: &ScrollHandle,
+    content_bounds: Bounds<Pixels>,
+    cursor_top: Pixels,
+    cursor_height: Pixels,
+) {
     let viewport = scroll_handle.bounds();
     if viewport.size.height <= px(0.) {
         return;
@@ -270,7 +354,12 @@ impl RowHeightCache {
     /// ever produces, so [`Self::needs_full_rebuild`] is unconditionally
     /// true until the first [`Self::rebuild`] call.
     pub(super) fn empty() -> Self {
-        Self { rows: Fenwick::new(&[]), active_line: None, available_width: px(0.), char_width: px(0.) }
+        Self {
+            rows: Fenwick::new(&[]),
+            active_line: None,
+            available_width: px(0.),
+            char_width: px(0.),
+        }
     }
 
     pub(super) fn line_count(&self) -> usize {
@@ -289,8 +378,15 @@ impl RowHeightCache {
     /// drifted out of sync with `doc` (a line-count-changing edit, or this
     /// cache never having been built at all), or the render context this
     /// cache's existing row counts were computed against has changed.
-    pub(super) fn needs_full_rebuild(&self, doc: &DocumentCache, available_width: Pixels, char_width: Pixels) -> bool {
-        self.line_count() != doc.line_count() || self.available_width != available_width || self.char_width != char_width
+    pub(super) fn needs_full_rebuild(
+        &self,
+        doc: &DocumentCache,
+        available_width: Pixels,
+        char_width: Pixels,
+    ) -> bool {
+        self.line_count() != doc.line_count()
+            || self.available_width != available_width
+            || self.char_width != char_width
     }
 
     /// Full O(document) rebuild — paid only when [`Self::needs_full_
@@ -325,13 +421,30 @@ impl RowHeightCache {
         let line_count = doc.line_count();
         let mut counts = Vec::with_capacity(line_count);
         for i in 0..line_count {
-            let count = estimate_row_count(text, doc, i, char_width, available_width).unwrap_or_else(|| {
-                row_count_for_line(text, doc, i, cursor, focused, char_width, font, font_size, text_color, available_width, window)
-            });
+            let count = estimate_row_count(text, doc, i, char_width, available_width)
+                .unwrap_or_else(|| {
+                    row_count_for_line(
+                        text,
+                        doc,
+                        i,
+                        cursor,
+                        focused,
+                        char_width,
+                        font,
+                        font_size,
+                        text_color,
+                        available_width,
+                        window,
+                    )
+                });
             counts.push(count as i64);
         }
         self.rows = Fenwick::new(&counts);
-        self.active_line = if focused { Some(doc.line_at(cursor)) } else { None };
+        self.active_line = if focused {
+            Some(doc.line_at(cursor))
+        } else {
+            None
+        };
         self.available_width = available_width;
         self.char_width = char_width;
     }
@@ -358,10 +471,26 @@ impl RowHeightCache {
     ) {
         for i in touched {
             let old = self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i);
-            let new = row_count_for_line(text, doc, i, cursor, focused, char_width, font, font_size, text_color, self.available_width, window);
+            let new = row_count_for_line(
+                text,
+                doc,
+                i,
+                cursor,
+                focused,
+                char_width,
+                font,
+                font_size,
+                text_color,
+                self.available_width,
+                window,
+            );
             self.rows.add_at(i, new as i64 - old);
         }
-        self.active_line = if focused { Some(doc.line_at(cursor)) } else { None };
+        self.active_line = if focused {
+            Some(doc.line_at(cursor))
+        } else {
+            None
+        };
     }
 
     /// Patches whichever of the previously-active and newly-active line (at
@@ -384,14 +513,30 @@ impl RowHeightCache {
         text_color: Hsla,
         window: &mut Window,
     ) {
-        let new_active = if focused { Some(doc.line_at(cursor)) } else { None };
+        let new_active = if focused {
+            Some(doc.line_at(cursor))
+        } else {
+            None
+        };
         if new_active == self.active_line {
             return;
         }
         for line in [self.active_line, new_active].into_iter().flatten() {
             if line < self.line_count() {
                 let old = self.rows.prefix_sum(line + 1) - self.rows.prefix_sum(line);
-                let new = row_count_for_line(text, doc, line, cursor, focused, char_width, font, font_size, text_color, self.available_width, window);
+                let new = row_count_for_line(
+                    text,
+                    doc,
+                    line,
+                    cursor,
+                    focused,
+                    char_width,
+                    font,
+                    font_size,
+                    text_color,
+                    self.available_width,
+                    window,
+                );
                 self.rows.add_at(line, new as i64 - old);
             }
         }
@@ -440,8 +585,17 @@ impl RowHeightCache {
 /// line_in_context` resolves it for real, except for fenced code content,
 /// whose indent is always forced to `None` regardless (see
 /// `build_display_lines`'s own fence-content override).
-fn estimate_row_count(text: &str, doc: &DocumentCache, i: usize, char_width: Pixels, available_width: Pixels) -> Option<usize> {
-    if !matches!(table_line_kind(doc.tables(), doc.table_for_line(), i), TableLineKind::None) {
+fn estimate_row_count(
+    text: &str,
+    doc: &DocumentCache,
+    i: usize,
+    char_width: Pixels,
+    available_width: Pixels,
+) -> Option<usize> {
+    if !matches!(
+        table_line_kind(doc.tables(), doc.table_for_line(), i),
+        TableLineKind::None
+    ) {
         return None;
     }
     let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
@@ -485,10 +639,24 @@ fn row_count_for_line(
     let callout = callout_at_line(doc.callouts(), doc.callout_for_line(), i);
     let callout_is_header = callout.is_some_and(|c| c.is_header(i));
     let (display_lines, wrap_width) = build_display_lines(
-        line_text, doc.line_roles()[i], doc.block_contexts()[i], &table_kind, table_active, callout_is_header, active,
-        font, font_size, text_color, available_width, window,
+        line_text,
+        doc.line_roles()[i],
+        doc.block_contexts()[i],
+        &table_kind,
+        table_active,
+        callout_is_header,
+        active,
+        font,
+        font_size,
+        text_color,
+        available_width,
+        window,
     );
-    display_lines.iter().map(|dl| wrapped_row_count(&dl.display_text, wrap_width, char_width)).sum::<usize>().max(1)
+    display_lines
+        .iter()
+        .map(|dl| wrapped_row_count(&dl.display_text, wrap_width, char_width))
+        .sum::<usize>()
+        .max(1)
 }
 
 /// Per-document, per-paint layout data that lets `measure_document`/
@@ -617,14 +785,20 @@ pub(super) struct RenderParams {
     pub(super) line_height: Pixels,
 }
 
-pub(super) fn render_params(editor: &Editor, window: &mut Window, cx: &mut Context<Editor>) -> RenderParams {
+pub(super) fn render_params(
+    editor: &Editor,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) -> RenderParams {
     let text_style = window.text_style();
     // The note editor's own font, not the ambient `text_style`'s — only the
     // bundled mono family has real Bold/Italic/BoldItalic faces (the Sans UI
     // family only has Regular/Italic), which Live Preview's bold/italic runs
     // need.
     let mut font = text_style.font();
-    font.family = gpui_kit::component::Theme::global(cx).mono_font_family.clone();
+    font.family = gpui_kit::component::Theme::global(cx)
+        .mono_font_family
+        .clone();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
     let text_color = text_style.color;
     // The editor's own on-screen width isn't known yet before the first
@@ -637,7 +811,13 @@ pub(super) fn render_params(editor: &Editor, window: &mut Window, cx: &mut Conte
         if width > px(0.) { width } else { Pixels::MAX }
     };
     let line_height = window.line_height();
-    RenderParams { font, font_size, text_color, available_width, line_height }
+    RenderParams {
+        font,
+        font_size,
+        text_color,
+        available_width,
+        line_height,
+    }
 }
 
 /// Makes sure `row_cache` is up to date (a cheap active-line sync in the
@@ -664,12 +844,29 @@ pub(super) fn analyze_line_layout(
         let doc = doc_cache.borrow();
         let mut rows = row_cache.borrow_mut();
         if rows.needs_full_rebuild(&doc, available_width, char_width) {
-            rows.rebuild(text, &doc, cursor, focused, available_width, char_width, font, font_size, text_color, window);
+            rows.rebuild(
+                text,
+                &doc,
+                cursor,
+                focused,
+                available_width,
+                char_width,
+                font,
+                font_size,
+                text_color,
+                window,
+            );
         } else {
-            rows.sync_active_line(text, &doc, cursor, focused, char_width, font, font_size, text_color, window);
+            rows.sync_active_line(
+                text, &doc, cursor, focused, char_width, font, font_size, text_color, window,
+            );
         }
     }
-    LineLayout { doc_cache: doc_cache.clone(), row_cache: row_cache.clone(), line_height }
+    LineLayout {
+        doc_cache: doc_cache.clone(),
+        row_cache: row_cache.clone(),
+        line_height,
+    }
 }
 
 /// The `[start, end)` line-index range actually relevant to paint/hit-test
@@ -683,7 +880,11 @@ pub(super) fn analyze_line_layout(
 /// viewport hasn't been laid out yet (`viewport.size.height <= 0`, e.g. the
 /// very first paint before `scroll_handle`'s tracked container has a size)
 /// — matches `autoscroll_to_cursor`'s own "nothing to do yet" guard.
-pub(super) fn visible_line_range(layout: &LineLayout, bounds: Bounds<Pixels>, viewport: Bounds<Pixels>) -> std::ops::Range<usize> {
+pub(super) fn visible_line_range(
+    layout: &LineLayout,
+    bounds: Bounds<Pixels>,
+    viewport: Bounds<Pixels>,
+) -> std::ops::Range<usize> {
     let line_count = layout.line_count();
     if line_count == 0 {
         return 0..0;
@@ -693,7 +894,9 @@ pub(super) fn visible_line_range(layout: &LineLayout, bounds: Bounds<Pixels>, vi
     }
     let doc_top = viewport.origin.y - bounds.origin.y;
     let doc_bottom = doc_top + viewport.size.height;
-    let start = layout.partition_point_cumulative(|c| c <= doc_top).saturating_sub(1);
+    let start = layout
+        .partition_point_cumulative(|c| c <= doc_top)
+        .saturating_sub(1);
     let end = layout.partition_point_cumulative(|c| c < doc_bottom);
     let start = start.saturating_sub(OVERSCAN_LINES);
     let end = (end + OVERSCAN_LINES).min(line_count);
@@ -710,7 +913,12 @@ pub(super) fn visible_line_range(layout: &LineLayout, bounds: Bounds<Pixels>, vi
 /// all — everything here is a handful of O(log n)/O(callouts.len()) lookups
 /// into `layout`, which (via `analyze_line_layout`) is almost always already
 /// up to date before this paint even starts.
-fn measure_document(layout: &LineLayout, cursor: usize, callouts: &[Callout], line_height: Pixels) -> (Pixels, Pixels, Pixels, Vec<(Pixels, Pixels)>) {
+fn measure_document(
+    layout: &LineLayout,
+    cursor: usize,
+    callouts: &[Callout],
+    line_height: Pixels,
+) -> (Pixels, Pixels, Pixels, Vec<(Pixels, Pixels)>) {
     let total = layout.cumulative_at(layout.line_count());
 
     let cursor_line = layout.line_at(cursor);
@@ -723,7 +931,15 @@ fn measure_document(layout: &LineLayout, cursor: usize, callouts: &[Callout], li
     // sequential accumulator would have required, which matters once
     // `paint_lines` stops visiting every line (see that function's own doc
     // comment).
-    let callout_ranges = callouts.iter().map(|c| (layout.cumulative_at(c.start_line), layout.cumulative_at(c.end_line))).collect();
+    let callout_ranges = callouts
+        .iter()
+        .map(|c| {
+            (
+                layout.cumulative_at(c.start_line),
+                layout.cumulative_at(c.end_line),
+            )
+        })
+        .collect();
 
     (total, cursor_top, cursor_height, callout_ranges)
 }
@@ -735,9 +951,16 @@ fn measure_document(layout: &LineLayout, cursor: usize, callouts: &[Callout], li
 fn font_for_style(style: InlineStyle, base: &Font) -> Font {
     let mut font = base.clone();
     match style {
-        InlineStyle::Bold | InlineStyle::Heading(_) | InlineStyle::CalloutTitle => font.weight = FontWeight::BOLD,
+        InlineStyle::Bold | InlineStyle::Heading(_) | InlineStyle::CalloutTitle => {
+            font.weight = FontWeight::BOLD
+        }
         InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
-        InlineStyle::Plain | InlineStyle::Code | InlineStyle::Strikethrough | InlineStyle::WikiLink | InlineStyle::Link | InlineStyle::ListMarker => {}
+        InlineStyle::Plain
+        | InlineStyle::Code
+        | InlineStyle::Strikethrough
+        | InlineStyle::WikiLink
+        | InlineStyle::Link
+        | InlineStyle::ListMarker => {}
     }
     font
 }
@@ -759,9 +982,17 @@ fn color_for_style(style: InlineStyle, base: Hsla, callout: Option<&Callout>) ->
         InlineStyle::Link => LINK_COLOR,
         InlineStyle::CalloutTitle => callout.map_or(base, |c| callout_color(c.kind)),
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => {
-            if callout.is_some() { base } else { MUTED_COLOR }
+            if callout.is_some() {
+                base
+            } else {
+                MUTED_COLOR
+            }
         }
-        InlineStyle::Plain | InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Heading(_) | InlineStyle::Strikethrough => base,
+        InlineStyle::Plain
+        | InlineStyle::Bold
+        | InlineStyle::Italic
+        | InlineStyle::Heading(_)
+        | InlineStyle::Strikethrough => base,
     }
 }
 
@@ -769,7 +1000,10 @@ fn color_for_style(style: InlineStyle, base: Hsla, callout: Option<&Callout>) ->
 /// for every style but [`InlineStyle::Strikethrough`] itself.
 fn strikethrough_for_style(style: InlineStyle, color: Hsla) -> Option<StrikethroughStyle> {
     match style {
-        InlineStyle::Strikethrough => Some(StrikethroughStyle { thickness: px(1.), color: Some(color) }),
+        InlineStyle::Strikethrough => Some(StrikethroughStyle {
+            thickness: px(1.),
+            color: Some(color),
+        }),
         _ => None,
     }
 }
@@ -783,7 +1017,12 @@ fn strikethrough_for_style(style: InlineStyle, color: Hsla) -> Option<Strikethro
 /// floored at `1px` so a pathologically narrow container can't make
 /// `shape_text` divide-by-zero or loop forever trying to fit even a single
 /// character.
-fn wrap_width_for(table_kind: &TableLineKind, table_active: bool, available_width: Pixels, indent_level: u8) -> Option<Pixels> {
+fn wrap_width_for(
+    table_kind: &TableLineKind,
+    table_active: bool,
+    available_width: Pixels,
+    indent_level: u8,
+) -> Option<Pixels> {
     if table_active {
         return Some((available_width - indent_px(indent_level)).max(px(1.)));
     }
@@ -871,7 +1110,8 @@ pub(super) fn build_display_lines(
             TableLineKind::None => vec![build_display_line_in_context(line, active, block_ctx)],
             TableLineKind::Delimiter(_) => vec![hidden_line(line)],
             TableLineKind::Row(table) => {
-                let max_chars = table_row_char_budget(available_width, font, font_size, text_color, window);
+                let max_chars =
+                    table_row_char_budget(available_width, font, font_size, text_color, window);
                 build_table_row(line, &table.columns, max_chars)
             }
         },
@@ -890,7 +1130,12 @@ pub(super) fn build_display_lines(
     // (possibly several, once cells wrap) returned lines, same as every
     // other case here only ever returning one — safe to read just the
     // first for the whole line's wrap width.
-    let wrap_width = wrap_width_for(table_kind, table_active, available_width, display_lines[0].indent.level());
+    let wrap_width = wrap_width_for(
+        table_kind,
+        table_active,
+        available_width,
+        display_lines[0].indent.level(),
+    );
     (display_lines, wrap_width)
 }
 
@@ -905,8 +1150,14 @@ pub(super) fn build_display_lines(
 /// long/short words, a deliberate v1 approximation (see this module's own
 /// notes on viewport-bounded rendering) rather than requiring the real
 /// shaping call this function exists specifically to avoid.
-pub(super) fn wrapped_row_count(display_text: &str, wrap_width: Option<Pixels>, char_width: Pixels) -> usize {
-    let Some(wrap_width) = wrap_width else { return 1 };
+pub(super) fn wrapped_row_count(
+    display_text: &str,
+    wrap_width: Option<Pixels>,
+    char_width: Pixels,
+) -> usize {
+    let Some(wrap_width) = wrap_width else {
+        return 1;
+    };
     if char_width <= px(0.) {
         return 1;
     }
@@ -938,8 +1189,18 @@ pub(super) fn shape_display_line(
     window: &mut Window,
 ) -> Vec<(WrappedLine, DisplayLine)> {
     let (display_lines, wrap_width) = build_display_lines(
-        line, role, block_ctx, &table_kind, table_active, callout_is_header, active, font, font_size, text_color,
-        available_width, window,
+        line,
+        role,
+        block_ctx,
+        &table_kind,
+        table_active,
+        callout_is_header,
+        active,
+        font,
+        font_size,
+        text_color,
+        available_width,
+        window,
     );
 
     display_lines
@@ -974,7 +1235,13 @@ pub(super) fn shape_display_line(
 
             let wrapped = window
                 .text_system()
-                .shape_text(display_line.display_text.clone().into(), font_size, &runs, wrap_width, None)
+                .shape_text(
+                    display_line.display_text.clone().into(),
+                    font_size,
+                    &runs,
+                    wrap_width,
+                    None,
+                )
                 .expect("shaping a single line of text should not fail")
                 .pop()
                 .expect("shape_text on a \\n-free string returns exactly one WrappedLine");
@@ -994,9 +1261,24 @@ pub(super) fn shape_display_line(
 /// call. Shared by `table_row_char_budget` (converts it to a *character*
 /// budget) and `paint_table_grid_lines` (converts a *character offset* to
 /// an actual pixel x) — both need the same measurement to agree.
-pub(super) fn mono_char_width(font: &Font, font_size: Pixels, text_color: Hsla, window: &mut Window) -> Pixels {
-    let run = TextRun { len: 1, font: font.clone(), color: text_color, background_color: None, underline: None, strikethrough: None };
-    window.text_system().shape_line("0".into(), font_size, &[run], None).width
+pub(super) fn mono_char_width(
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    window: &mut Window,
+) -> Pixels {
+    let run = TextRun {
+        len: 1,
+        font: font.clone(),
+        color: text_color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    window
+        .text_system()
+        .shape_line("0".into(), font_size, &[run], None)
+        .width
 }
 
 /// The character budget a table row/rule should fit within, given
@@ -1004,7 +1286,13 @@ pub(super) fn mono_char_width(font: &Font, font_size: Pixels, text_color: Hsla, 
 /// practice, but a column-width budget of `0` would make
 /// `table_preview::cap_column_widths` collapse every column uselessly) or
 /// [`mono_char_width`] can't be measured for some reason.
-fn table_row_char_budget(available_width: Pixels, font: &Font, font_size: Pixels, text_color: Hsla, window: &mut Window) -> Option<usize> {
+fn table_row_char_budget(
+    available_width: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    window: &mut Window,
+) -> Option<usize> {
     if available_width <= px(0.) {
         return None;
     }
@@ -1074,7 +1362,13 @@ pub(super) fn render_editor(
 
     let focused = focus_handle.is_focused(window);
     let params = render_params(editor, window, cx);
-    let RenderParams { font, font_size, text_color, available_width, line_height } = params;
+    let RenderParams {
+        font,
+        font_size,
+        text_color,
+        available_width,
+        line_height,
+    } = params;
 
     // Makes sure `row_height_cache` is up to date (almost always a cheap
     // active-line check — see `RowHeightCache`'s own doc comment, and
@@ -1084,10 +1378,20 @@ pub(super) fn render_editor(
     // `offset_for_position`/`register_mouse_handling`'s viewport-bounded
     // windowing below.
     let layout = analyze_line_layout(
-        &snapshot.text, &document_cache, &row_height_cache, cursor, focused, available_width, line_height, &font,
-        font_size, text_color, window,
+        &snapshot.text,
+        &document_cache,
+        &row_height_cache,
+        cursor,
+        focused,
+        available_width,
+        line_height,
+        &font,
+        font_size,
+        text_color,
+        window,
     );
-    let (total_height, cursor_top, cursor_height, callout_ranges) = measure_document(&layout, cursor, &snapshot.callouts, line_height);
+    let (total_height, cursor_top, cursor_height, callout_ranges) =
+        measure_document(&layout, cursor, &snapshot.callouts, line_height);
 
     div()
         .id("editor")
@@ -1163,7 +1467,11 @@ pub(super) fn render_editor(
                     // editor as the platform's text input target so typing
                     // and IME composition reach `input_handler.rs` instead of
                     // (or before falling through to) `.on_key_down`.
-                    window.handle_input(&focus_handle, ElementInputHandler::new(bounds, editor_entity.clone()), cx);
+                    window.handle_input(
+                        &focus_handle,
+                        ElementInputHandler::new(bounds, editor_entity.clone()),
+                        cx,
+                    );
                 },
             )
             .size_full(),
@@ -1217,9 +1525,24 @@ fn register_mouse_handling(
                 return;
             }
             let offset = offset_for_position(
-                &snapshot.text, &layout, &snapshot.line_roles, &snapshot.block_contexts, &snapshot.table_for_line,
-                &snapshot.tables, &snapshot.callout_for_line, &snapshot.callouts, cursor, focused, event.position,
-                bounds, viewport, line_height, &font, font_size, text_color, window,
+                &snapshot.text,
+                &layout,
+                &snapshot.line_roles,
+                &snapshot.block_contexts,
+                &snapshot.table_for_line,
+                &snapshot.tables,
+                &snapshot.callout_for_line,
+                &snapshot.callouts,
+                cursor,
+                focused,
+                event.position,
+                bounds,
+                viewport,
+                line_height,
+                &font,
+                font_size,
+                text_color,
+                window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, false);
@@ -1233,13 +1556,31 @@ fn register_mouse_handling(
     window.on_mouse_event({
         let editor_entity = editor_entity.clone();
         move |event: &MouseMoveEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble || !editor_entity.read(cx).is_dragging || window.has_active_dialog(cx) {
+            if phase != DispatchPhase::Bubble
+                || !editor_entity.read(cx).is_dragging
+                || window.has_active_dialog(cx)
+            {
                 return;
             }
             let offset = offset_for_position(
-                &snapshot.text, &layout, &snapshot.line_roles, &snapshot.block_contexts, &snapshot.table_for_line,
-                &snapshot.tables, &snapshot.callout_for_line, &snapshot.callouts, cursor, focused, event.position,
-                bounds, viewport, line_height, &font, font_size, text_color, window,
+                &snapshot.text,
+                &layout,
+                &snapshot.line_roles,
+                &snapshot.block_contexts,
+                &snapshot.table_for_line,
+                &snapshot.tables,
+                &snapshot.callout_for_line,
+                &snapshot.callouts,
+                cursor,
+                focused,
+                event.position,
+                bounds,
+                viewport,
+                line_height,
+                &font,
+                font_size,
+                text_color,
+                window,
             );
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, true);
@@ -1311,8 +1652,19 @@ fn offset_for_position(
         let callout = callout_at_line(callouts, callout_for_line, i);
         let callout_is_header = callout.is_some_and(|c| c.is_header(i));
         let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header, active,
-            font, font_size, text_color, bounds.size.width, window,
+            line_text,
+            line_roles[i],
+            block_contexts[i],
+            table_kind,
+            table_active,
+            callout,
+            callout_is_header,
+            active,
+            font,
+            font_size,
+            text_color,
+            bounds.size.width,
+            window,
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap, each entry then its own (unwrapped, since
@@ -1322,9 +1674,13 @@ fn offset_for_position(
         for (wrapped, display_line) in &results {
             let height = wrapped.size(line_height).height;
             if relative_y < y_offset + height {
-                let relative_x = (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
+                let relative_x =
+                    (position.x - bounds.origin.x - indent_px(display_line.indent.level()))
+                        .max(px(0.));
                 let local_y = (relative_y - y_offset).max(px(0.));
-                let display_offset = match wrapped.closest_index_for_position(point(relative_x, local_y), line_height) {
+                let display_offset = match wrapped
+                    .closest_index_for_position(point(relative_x, local_y), line_height)
+                {
                     Ok(ix) | Err(ix) => ix,
                 };
                 // A wrapped table sub-row has no genuinely visible segment
@@ -1348,7 +1704,11 @@ fn offset_for_position(
     // document's — the window already covers the whole viewport plus
     // overscan, so this is only reachable by clicking well past the
     // rendered content.
-    if range.end >= layout.line_count() { text.len() } else { layout.line_range(range.end - 1).end }
+    if range.end >= layout.line_count() {
+        text.len()
+    } else {
+        layout.line_range(range.end - 1).end
+    }
 }
 
 /// Accumulated while `paint_lines` walks one table's lines, top to bottom —
@@ -1381,18 +1741,39 @@ struct TablePaint {
 /// uses a painted quad for, rather than a vertical-bar character.
 fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, window: &mut Window) {
     for &x in &paint.column_x {
-        window.paint_quad(fill(Bounds { origin: point(x, paint.top), size: size(TABLE_LINE_WIDTH, bottom - paint.top) }, MUTED_COLOR));
+        window.paint_quad(fill(
+            Bounds {
+                origin: point(x, paint.top),
+                size: size(TABLE_LINE_WIDTH, bottom - paint.top),
+            },
+            MUTED_COLOR,
+        ));
     }
     let left = paint.column_x.first().copied().unwrap_or(px(0.));
     let right = paint.column_x.last().copied().unwrap_or(px(0.));
     let width = right - left;
-    window.paint_quad(fill(Bounds { origin: point(left, paint.top), size: size(width, TABLE_LINE_WIDTH) }, MUTED_COLOR));
     window.paint_quad(fill(
-        Bounds { origin: point(left, bottom - TABLE_LINE_WIDTH), size: size(width, TABLE_LINE_WIDTH) },
+        Bounds {
+            origin: point(left, paint.top),
+            size: size(width, TABLE_LINE_WIDTH),
+        },
+        MUTED_COLOR,
+    ));
+    window.paint_quad(fill(
+        Bounds {
+            origin: point(left, bottom - TABLE_LINE_WIDTH),
+            size: size(width, TABLE_LINE_WIDTH),
+        },
         MUTED_COLOR,
     ));
     if let Some(divider_y) = paint.divider_y {
-        window.paint_quad(fill(Bounds { origin: point(left, divider_y), size: size(width, TABLE_LINE_WIDTH) }, MUTED_COLOR));
+        window.paint_quad(fill(
+            Bounds {
+                origin: point(left, divider_y),
+                size: size(width, TABLE_LINE_WIDTH),
+            },
+            MUTED_COLOR,
+        ));
     }
 }
 
@@ -1438,15 +1819,24 @@ fn paint_lines(
             continue;
         }
         let color = callout_color(callout.kind);
-        let background = Hsla { a: CALLOUT_BACKGROUND_ALPHA, ..color };
+        let background = Hsla {
+            a: CALLOUT_BACKGROUND_ALPHA,
+            ..color
+        };
         let top = bounds.origin.y + top;
         let bottom = bounds.origin.y + bottom;
         window.paint_quad(fill(
-            Bounds { origin: point(bounds.origin.x, top), size: size(bounds.size.width, bottom - top) },
+            Bounds {
+                origin: point(bounds.origin.x, top),
+                size: size(bounds.size.width, bottom - top),
+            },
             background,
         ));
         window.paint_quad(fill(
-            Bounds { origin: point(bounds.origin.x + QUOTE_BAR_INSET, top), size: size(CALLOUT_BAR_WIDTH, bottom - top) },
+            Bounds {
+                origin: point(bounds.origin.x + QUOTE_BAR_INSET, top),
+                size: size(CALLOUT_BAR_WIDTH, bottom - top),
+            },
             color,
         ));
     }
@@ -1469,7 +1859,8 @@ fn paint_lines(
     if let Some(idx) = table_for_line[range.start] {
         let table = &tables[idx];
         if table.start_line < range.start {
-            let max_chars = table_row_char_budget(bounds.size.width, font, font_size, text_color, window);
+            let max_chars =
+                table_row_char_budget(bounds.size.width, font, font_size, text_color, window);
             let widths = table_preview::resolve_widths(&table.columns, max_chars);
             let char_width = mono_char_width(font, font_size, text_color, window);
             // A table's own indent is always `None`, so its header row's
@@ -1481,9 +1872,16 @@ fn paint_lines(
                 .map(|offset| bounds.origin.x + char_width * offset as f32)
                 .collect();
             let delimiter_line = table.start_line + 1;
-            let divider_y = (delimiter_line < range.start)
-                .then(|| bounds.origin.y + layout.cumulative_at(delimiter_line) + layout.height(delimiter_line) / 2.);
-            table_paint = Some(TablePaint { top: bounds.origin.y + layout.cumulative_at(table.start_line), divider_y, column_x });
+            let divider_y = (delimiter_line < range.start).then(|| {
+                bounds.origin.y
+                    + layout.cumulative_at(delimiter_line)
+                    + layout.height(delimiter_line) / 2.
+            });
+            table_paint = Some(TablePaint {
+                top: bounds.origin.y + layout.cumulative_at(table.start_line),
+                divider_y,
+                column_x,
+            });
         }
     }
 
@@ -1497,12 +1895,26 @@ fn paint_lines(
         let callout_is_header = callout.is_some_and(|c| c.is_header(i));
 
         let results = shape_display_line(
-            line_text, line_roles[i], block_contexts[i], table_kind, table_active, callout, callout_is_header, active,
-            font, font_size, text_color, bounds.size.width, window,
+            line_text,
+            line_roles[i],
+            block_contexts[i],
+            table_kind,
+            table_active,
+            callout,
+            callout_is_header,
+            active,
+            font,
+            font_size,
+            text_color,
+            bounds.size.width,
+            window,
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
-        let total_height: Pixels = results.iter().map(|(wrapped, _)| wrapped.size(line_height).height).sum();
+        let total_height: Pixels = results
+            .iter()
+            .map(|(wrapped, _)| wrapped.size(line_height).height)
+            .sum();
         // Upgrades a cold-rebuild estimate (see `RowHeightCache::rebuild`)
         // to the truth using the real shaping this line's painting already
         // needed — zero extra cost, and idempotent (a no-op once this line
@@ -1534,12 +1946,18 @@ fn paint_lines(
         // `table_kind_for_geometry` below).
         if !active
             && matches!(line_roles[i], LineRole::Plain)
-            && matches!(table_line_kind(tables, table_for_line, i), TableLineKind::None)
+            && matches!(
+                table_line_kind(tables, table_for_line, i),
+                TableLineKind::None
+            )
             && is_thematic_break(line_text)
         {
             let mid_y = bounds.origin.y + y_offset + total_height / 2.;
             window.paint_quad(fill(
-                Bounds { origin: point(bounds.origin.x, mid_y), size: size(bounds.size.width, TABLE_LINE_WIDTH) },
+                Bounds {
+                    origin: point(bounds.origin.x, mid_y),
+                    size: size(bounds.size.width, TABLE_LINE_WIDTH),
+                },
                 MUTED_COLOR,
             ));
         }
@@ -1550,16 +1968,28 @@ fn paint_lines(
             // than restructuring this loop just to keep the first value
             // alive.
             let table_kind_for_geometry = table_line_kind(tables, table_for_line, i);
-            if let TableLineKind::Row(table) | TableLineKind::Delimiter(table) = &table_kind_for_geometry {
+            if let TableLineKind::Row(table) | TableLineKind::Delimiter(table) =
+                &table_kind_for_geometry
+            {
                 if table.is_first_row(i) {
-                    let max_chars = table_row_char_budget(bounds.size.width, font, font_size, text_color, window);
+                    let max_chars = table_row_char_budget(
+                        bounds.size.width,
+                        font,
+                        font_size,
+                        text_color,
+                        window,
+                    );
                     let widths = table_preview::resolve_widths(&table.columns, max_chars);
                     let char_width = mono_char_width(font, font_size, text_color, window);
                     let column_x = table_preview::column_divider_char_offsets(&widths)
                         .into_iter()
                         .map(|offset| line_origin.x + char_width * offset as f32)
                         .collect();
-                    table_paint = Some(TablePaint { top: bounds.origin.y + y_offset, divider_y: None, column_x });
+                    table_paint = Some(TablePaint {
+                        top: bounds.origin.y + y_offset,
+                        divider_y: None,
+                        column_x,
+                    });
                 }
                 if table.is_delimiter(i)
                     && let Some(paint) = table_paint.as_mut()
@@ -1569,7 +1999,11 @@ fn paint_lines(
                 if table.is_last_line(i)
                     && let Some(paint) = table_paint.take()
                 {
-                    paint_table_grid_lines(&paint, bounds.origin.y + y_offset + total_height, window);
+                    paint_table_grid_lines(
+                        &paint,
+                        bounds.origin.y + y_offset + total_height,
+                        window,
+                    );
                 }
             }
         }
@@ -1584,7 +2018,10 @@ fn paint_lines(
             for level in 0..depth {
                 let bar_x = bounds.origin.x + indent_px(level) + QUOTE_BAR_INSET;
                 window.paint_quad(fill(
-                    Bounds { origin: point(bar_x, bounds.origin.y + y_offset), size: size(QUOTE_BAR_WIDTH, total_height) },
+                    Bounds {
+                        origin: point(bar_x, bounds.origin.y + y_offset),
+                        size: size(QUOTE_BAR_WIDTH, total_height),
+                    },
                     MUTED_COLOR,
                 ));
             }
@@ -1602,18 +2039,31 @@ fn paint_lines(
                 && selection.start.max(line_range.start) < selection.end.min(line_range.end)
             {
                 window.paint_quad(fill(
-                    Bounds { origin: line_origin, size: size(full_row_width, total_height) },
+                    Bounds {
+                        origin: line_origin,
+                        size: size(full_row_width, total_height),
+                    },
                     SELECTION_HIGHLIGHT,
                 ));
             }
             let mut row_y = y_offset;
             for (wrapped, _) in &results {
-                let _ = wrapped.paint(bounds.origin + point(indent_px(indent_level), row_y), line_height, TextAlign::Left, None, window, cx);
+                let _ = wrapped.paint(
+                    bounds.origin + point(indent_px(indent_level), row_y),
+                    line_height,
+                    TextAlign::Left,
+                    None,
+                    window,
+                    cx,
+                );
                 row_y += wrapped.size(line_height).height;
             }
             if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
                 window.paint_quad(fill(
-                    Bounds { origin: line_origin, size: size(px(1.), line_height) },
+                    Bounds {
+                        origin: line_origin,
+                        size: size(px(1.), line_height),
+                    },
                     text_color,
                 ));
             }
@@ -1625,16 +2075,25 @@ fn paint_lines(
                 let end = selection.end.min(line_range.end);
                 if start < end {
                     let start_pos = wrapped
-                        .position_for_index(display_line.display_offset_for_raw(start - line_range.start), line_height)
+                        .position_for_index(
+                            display_line.display_offset_for_raw(start - line_range.start),
+                            line_height,
+                        )
                         .unwrap_or(point(px(0.), px(0.)));
                     let end_pos = wrapped
-                        .position_for_index(display_line.display_offset_for_raw(end - line_range.start), line_height)
+                        .position_for_index(
+                            display_line.display_offset_for_raw(end - line_range.start),
+                            line_height,
+                        )
                         .unwrap_or(point(full_row_width, total_height - line_height));
                     let start_row = (start_pos.y / line_height) as i32;
                     let end_row = (end_pos.y / line_height) as i32;
                     if start_row == end_row {
                         window.paint_quad(fill(
-                            Bounds { origin: line_origin + start_pos, size: size(end_pos.x - start_pos.x, line_height) },
+                            Bounds {
+                                origin: line_origin + start_pos,
+                                size: size(end_pos.x - start_pos.x, line_height),
+                            },
                             SELECTION_HIGHLIGHT,
                         ));
                     } else {
@@ -1670,10 +2129,16 @@ fn paint_lines(
 
             if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
                 let pos = wrapped
-                    .position_for_index(display_line.display_offset_for_raw(cursor - line_range.start), line_height)
+                    .position_for_index(
+                        display_line.display_offset_for_raw(cursor - line_range.start),
+                        line_height,
+                    )
                     .unwrap_or(point(px(0.), px(0.)));
                 window.paint_quad(fill(
-                    Bounds { origin: line_origin + pos, size: size(px(1.), line_height) },
+                    Bounds {
+                        origin: line_origin + pos,
+                        size: size(px(1.), line_height),
+                    },
                     text_color,
                 ));
             }
@@ -1693,14 +2158,17 @@ mod tests {
     use super::super::live_preview::{LineContext, LineIndent};
     use super::super::table_preview::classify_tables;
     use super::super::{Editor, InsertTab};
-    use super::{is_active_line, row_count_for_line, shape_display_line, TableLineKind};
+    use super::{TableLineKind, is_active_line, row_count_for_line, shape_display_line};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         AnyWindowHandle, AppContext, Entity, EntityInputHandler, KeyBinding, Pixels, Point,
         TestAppContext, WindowOptions, point, px,
     };
 
-    fn open_editor(cx: &mut TestAppContext, text: &'static str) -> (AnyWindowHandle, Entity<Editor>) {
+    fn open_editor(
+        cx: &mut TestAppContext,
+        text: &'static str,
+    ) -> (AnyWindowHandle, Entity<Editor>) {
         cx.update(gpui_kit::init);
         cx.update(|cx| {
             // Must out-rank `gpui_kit::init`'s own global "tab" binding —
@@ -1743,7 +2211,11 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(three_line_height, one_line_height * 3., "three lines should be exactly 3x as tall as one");
+        assert_eq!(
+            three_line_height,
+            one_line_height * 3.,
+            "three lines should be exactly 3x as tall as one"
+        );
     }
 
     #[gpui_kit::test]
@@ -1769,26 +2241,49 @@ mod tests {
             let line_height = window.line_height();
 
             let (unwrapped, _) = {
-            let mut results = shape_display_line(
-                &line, LineRole::Plain, LineContext::Plain, TableLineKind::None, false, None, false, false, &font, font_size,
-                text_style.color, Pixels::MAX, window,
-            );
-            assert_eq!(results.len(), 1, "expected exactly one entry");
-            results.remove(0)
-        };
+                let mut results = shape_display_line(
+                    &line,
+                    LineRole::Plain,
+                    LineContext::Plain,
+                    TableLineKind::None,
+                    false,
+                    None,
+                    false,
+                    false,
+                    &font,
+                    font_size,
+                    text_style.color,
+                    Pixels::MAX,
+                    window,
+                );
+                assert_eq!(results.len(), 1, "expected exactly one entry");
+                results.remove(0)
+            };
             assert_eq!(
-                unwrapped.size(line_height).height, line_height,
+                unwrapped.size(line_height).height,
+                line_height,
                 "an effectively unbounded width should never wrap"
             );
 
             let (wrapped, _) = {
-            let mut results = shape_display_line(
-                &line, LineRole::Plain, LineContext::Plain, TableLineKind::None, false, None, false, false, &font, font_size,
-                text_style.color, px(100.), window,
-            );
-            assert_eq!(results.len(), 1, "expected exactly one entry");
-            results.remove(0)
-        };
+                let mut results = shape_display_line(
+                    &line,
+                    LineRole::Plain,
+                    LineContext::Plain,
+                    TableLineKind::None,
+                    false,
+                    None,
+                    false,
+                    false,
+                    &font,
+                    font_size,
+                    text_style.color,
+                    px(100.),
+                    window,
+                );
+                assert_eq!(results.len(), 1, "expected exactly one entry");
+                results.remove(0)
+            };
             assert!(
                 wrapped.size(line_height).height > line_height,
                 "a line far wider than a 100px budget should wrap onto more than one row"
@@ -1798,7 +2293,9 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn shape_display_line_never_gpui_wraps_a_table_row_even_at_a_narrow_width(cx: &mut TestAppContext) {
+    fn shape_display_line_never_gpui_wraps_a_table_row_even_at_a_narrow_width(
+        cx: &mut TestAppContext,
+    ) {
         // GPUI's own character-level line-wrapping is never applied to a
         // table row's *entries* (`wrap_width_for`'s table exception) —
         // doing that would break column alignment. A row too wide for a
@@ -1819,12 +2316,24 @@ mod tests {
             let table = &tables[0];
 
             let results = shape_display_line(
-                "| Alice | 30 |", LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, None, false, false, &font,
-                font_size, text_style.color, px(10.), window,
+                "| Alice | 30 |",
+                LineRole::Plain,
+                LineContext::Plain,
+                TableLineKind::Row(table),
+                false,
+                None,
+                false,
+                false,
+                &font,
+                font_size,
+                text_style.color,
+                px(10.),
+                window,
             );
             for (wrapped, _) in &results {
                 assert_eq!(
-                    wrapped.size(line_height).height, line_height,
+                    wrapped.size(line_height).height,
+                    line_height,
                     "no individual entry should itself further (GPUI-level) wrap"
                 );
             }
@@ -1833,12 +2342,15 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn shape_display_line_wraps_a_table_rows_cells_within_their_own_column(cx: &mut TestAppContext) {
+    fn shape_display_line_wraps_a_table_rows_cells_within_their_own_column(
+        cx: &mut TestAppContext,
+    ) {
         // The actual fix: a cell too wide for the editor's own width wraps
         // *within its column* (multiple `shape_display_line` entries for
         // the one raw row) rather than letting the row overflow past the
         // editor's right edge.
-        let text = "| Name | Bio |\n| --- | --- |\n| Alice | A very long biography that does not fit |";
+        let text =
+            "| Name | Bio |\n| --- | --- |\n| Alice | A very long biography that does not fit |";
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -1851,10 +2363,24 @@ mod tests {
             let row = "| Alice | A very long biography that does not fit |";
 
             let narrow = shape_display_line(
-                row, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, None, false, false, &font, font_size,
-                text_style.color, px(150.), window,
+                row,
+                LineRole::Plain,
+                LineContext::Plain,
+                TableLineKind::Row(table),
+                false,
+                None,
+                false,
+                false,
+                &font,
+                font_size,
+                text_style.color,
+                px(150.),
+                window,
             );
-            assert!(narrow.len() > 1, "a cell too wide for a 150px budget should split into multiple sub-rows");
+            assert!(
+                narrow.len() > 1,
+                "a cell too wide for a 150px budget should split into multiple sub-rows"
+            );
 
             // None of those sub-rows' own rendered width should exceed the
             // budget they were wrapped to fit.
@@ -1867,10 +2393,25 @@ mod tests {
             }
 
             let wide = shape_display_line(
-                row, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, None, false, false, &font, font_size,
-                text_style.color, Pixels::MAX, window,
+                row,
+                LineRole::Plain,
+                LineContext::Plain,
+                TableLineKind::Row(table),
+                false,
+                None,
+                false,
+                false,
+                &font,
+                font_size,
+                text_style.color,
+                Pixels::MAX,
+                window,
             );
-            assert_eq!(wide.len(), 1, "an effectively unbounded width should never need to wrap a cell");
+            assert_eq!(
+                wide.len(),
+                1,
+                "an effectively unbounded width should never need to wrap a cell"
+            );
         })
         .unwrap();
     }
@@ -1916,14 +2457,19 @@ mod tests {
         })
         .unwrap();
 
-        let focused = cx.update_window(window, |_, window, cx| {
-            window.render_frame(cx);
-            window.find("editor").focused()
-        }).unwrap();
+        let focused = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("editor").focused()
+            })
+            .unwrap();
         assert_eq!(focused, Some(true), "clicking the editor should focus it");
 
         let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
-        assert!(cursor <= 2, "clicking near the start should place the cursor near byte 0, got {cursor}");
+        assert!(
+            cursor <= 2,
+            "clicking near the start should place the cursor near byte 0, got {cursor}"
+        );
     }
 
     #[gpui_kit::test]
@@ -2031,7 +2577,10 @@ mod tests {
         .unwrap();
 
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
-        assert_eq!(text, "hello\t", "tab should insert a tab character, not fall through to a no-op");
+        assert_eq!(
+            text, "hello\t",
+            "tab should insert a tab character, not fall through to a no-op"
+        );
 
         let focused = cx
             .update_window(window, |_, window, cx| {
@@ -2039,7 +2588,11 @@ mod tests {
                 window.find("editor").focused()
             })
             .unwrap();
-        assert_eq!(focused, Some(true), "tab must not move focus out of the editor");
+        assert_eq!(
+            focused,
+            Some(true),
+            "tab must not move focus out of the editor"
+        );
     }
 
     #[gpui_kit::test]
@@ -2104,7 +2657,10 @@ mod tests {
         })
         .unwrap();
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
-        assert_eq!(text, "hello world", "pasting should bring the cut text back");
+        assert_eq!(
+            text, "hello world",
+            "pasting should bring the cut text back"
+        );
     }
 
     #[gpui_kit::test]
@@ -2124,7 +2680,10 @@ mod tests {
         .unwrap();
 
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
-        assert_eq!(text, "hello worl", "ctrl-z should undo only the last-typed character");
+        assert_eq!(
+            text, "hello worl",
+            "ctrl-z should undo only the last-typed character"
+        );
     }
 
     #[gpui_kit::test]
@@ -2143,7 +2702,10 @@ mod tests {
         })
         .unwrap();
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
-        assert_eq!(text, "hello", "ctrl-z should undo the whole pasted insert in one step");
+        assert_eq!(
+            text, "hello",
+            "ctrl-z should undo the whole pasted insert in one step"
+        );
 
         cx.update_window(window, |_, window, cx| {
             window.press("ctrl-shift-z", cx);
@@ -2173,7 +2735,10 @@ mod tests {
         .unwrap();
 
         let marked_preview = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
-        assert_eq!(marked_preview, "^", "the dead-key preview should appear immediately");
+        assert_eq!(
+            marked_preview, "^",
+            "the dead-key preview should appear immediately"
+        );
 
         cx.update_window(window, |_, window, cx| {
             editor.update(cx, |editor, cx| {
@@ -2183,7 +2748,10 @@ mod tests {
         .unwrap();
 
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
-        assert_eq!(text, "^", "committing the composition must replace the preview, not duplicate it");
+        assert_eq!(
+            text, "^",
+            "committing the composition must replace the preview, not duplicate it"
+        );
     }
 
     #[gpui_kit::test]
@@ -2225,7 +2793,11 @@ mod tests {
         .unwrap();
 
         let selection = editor.read_with(cx, |editor, _| editor.buffer().selection());
-        assert_eq!(selection, Some(0..5), "ctrl-shift-right should select through the end of \"hello\"");
+        assert_eq!(
+            selection,
+            Some(0..5),
+            "ctrl-shift-right should select through the end of \"hello\""
+        );
     }
 
     #[gpui_kit::test]
@@ -2260,7 +2832,9 @@ mod tests {
         let (window, editor) = open_editor(cx, text);
         // Cursor on the last line, so every other line renders previewed
         // (hidden markup) rather than raw.
-        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(text.len(), false));
+        editor.update(cx, |editor, _| {
+            editor.buffer_mut().set_cursor(text.len(), false)
+        });
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("editor").is_some());
@@ -2279,7 +2853,9 @@ mod tests {
             "active line"
         );
         let (window, editor) = open_editor(cx, text);
-        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(text.len(), false));
+        editor.update(cx, |editor, _| {
+            editor.buffer_mut().set_cursor(text.len(), false)
+        });
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("editor").is_some());
@@ -2301,7 +2877,9 @@ mod tests {
             "active line"
         );
         let (window, editor) = open_editor(cx, text);
-        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(text.len(), false));
+        editor.update(cx, |editor, _| {
+            editor.buffer_mut().set_cursor(text.len(), false)
+        });
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("editor").is_some());
@@ -2310,7 +2888,9 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn clicking_a_previewed_heading_lands_past_its_hidden_marker_and_activates_it(cx: &mut TestAppContext) {
+    fn clicking_a_previewed_heading_lands_past_its_hidden_marker_and_activates_it(
+        cx: &mut TestAppContext,
+    ) {
         let text = "first line\n# Heading";
         let (window, editor) = open_editor(cx, text);
         // Cursor starts on line 0, so line 1 ("# Heading") renders previewed
@@ -2346,7 +2926,9 @@ mod tests {
         .unwrap();
         // The click also focused the editor (covered separately by
         // `clicking_focuses_the_editor_and_places_the_cursor_near_the_click`).
-        let active = editor.read_with(cx, |editor, _| is_active_line(&(11..text.len()), editor.buffer().cursor(), true));
+        let active = editor.read_with(cx, |editor, _| {
+            is_active_line(&(11..text.len()), editor.buffer().cursor(), true)
+        });
         assert!(active, "the line the cursor landed on should now be active");
     }
 
@@ -2425,7 +3007,9 @@ mod tests {
         // on top of `live_preview`'s own exhaustive pure-logic tests.
         let text = "1. outer\n   - inner\n     still inner, lazy continuation\n> quoted\nlazy quote continuation";
         let (window, editor) = open_editor(cx, text);
-        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(text.len(), false));
+        editor.update(cx, |editor, _| {
+            editor.buffer_mut().set_cursor(text.len(), false)
+        });
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             assert!(window.try_find("editor").is_some());
@@ -2505,8 +3089,13 @@ mod tests {
         // actual width — exercising `paint_lines`'s table-geometry tracking
         // finalizing the bottom border/divider from a *multi-entry* last
         // line's combined height, not just a plain single-entry one.
-        let long_bio: &'static str =
-            Box::leak(format!("| Name | Bio |\n| --- | --- |\n| Alice | {} |", "word ".repeat(100)).into_boxed_str());
+        let long_bio: &'static str = Box::leak(
+            format!(
+                "| Name | Bio |\n| --- | --- |\n| Alice | {} |",
+                "word ".repeat(100)
+            )
+            .into_boxed_str(),
+        );
         let (window, _editor) = open_editor(cx, long_bio);
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -2516,7 +3105,9 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_table_renders_as_a_grid_until_the_cursor_enters_it_then_renders_raw(cx: &mut TestAppContext) {
+    fn a_table_renders_as_a_grid_until_the_cursor_enters_it_then_renders_raw(
+        cx: &mut TestAppContext,
+    ) {
         let text = "| Name | Age |\n| --- | --- |\n| Alice | 30 |";
         let (window, _editor) = open_editor(cx, text);
         cx.update_window(window, |_, window, cx| {
@@ -2529,13 +3120,24 @@ mod tests {
             let header = "| Name | Age |";
 
             let (_, grid) = {
-            let mut results = shape_display_line(
-                header, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), false, None, false, false, &font, font_size, text_style.color,
-                Pixels::MAX, window,
-            );
-            assert_eq!(results.len(), 1, "expected exactly one entry");
-            results.remove(0)
-        };
+                let mut results = shape_display_line(
+                    header,
+                    LineRole::Plain,
+                    LineContext::Plain,
+                    TableLineKind::Row(table),
+                    false,
+                    None,
+                    false,
+                    false,
+                    &font,
+                    font_size,
+                    text_style.color,
+                    Pixels::MAX,
+                    window,
+                );
+                assert_eq!(results.len(), 1, "expected exactly one entry");
+                results.remove(0)
+            };
             // Columns resolve to width 5 ("Alice" is the widest cell in
             // column 0) and width 3 ("Age"/"Age" is widest in column 1).
             // The blank gaps at the border positions aren't drawn as text —
@@ -2544,14 +3146,28 @@ mod tests {
             assert_eq!(grid.display_text, "  Name    Age  ");
 
             let (_, raw) = {
-            let mut results = shape_display_line(
-                header, LineRole::Plain, LineContext::Plain, TableLineKind::Row(table), true, None, false, false, &font, font_size, text_style.color,
-                Pixels::MAX, window,
+                let mut results = shape_display_line(
+                    header,
+                    LineRole::Plain,
+                    LineContext::Plain,
+                    TableLineKind::Row(table),
+                    true,
+                    None,
+                    false,
+                    false,
+                    &font,
+                    font_size,
+                    text_style.color,
+                    Pixels::MAX,
+                    window,
+                );
+                assert_eq!(results.len(), 1, "expected exactly one entry");
+                results.remove(0)
+            };
+            assert_eq!(
+                raw.display_text, header,
+                "once the cursor is anywhere in the table, it must render raw"
             );
-            assert_eq!(results.len(), 1, "expected exactly one entry");
-            results.remove(0)
-        };
-            assert_eq!(raw.display_text, header, "once the cursor is anywhere in the table, it must render raw");
         })
         .unwrap();
     }
@@ -2585,11 +3201,16 @@ mod tests {
 
         let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
         let name_start = text.find("Name").unwrap();
-        assert_eq!(cursor, name_start, "clicking near the table's left border should land at the first cell's content");
+        assert_eq!(
+            cursor, name_start,
+            "clicking near the table's left border should land at the first cell's content"
+        );
     }
 
     #[gpui_kit::test]
-    fn fenced_code_content_is_never_inline_scanned_even_on_the_active_line(cx: &mut TestAppContext) {
+    fn fenced_code_content_is_never_inline_scanned_even_on_the_active_line(
+        cx: &mut TestAppContext,
+    ) {
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -2604,20 +3225,36 @@ mod tests {
             // code line must never have its content inline-scanned at all,
             // active or not.
             let (_, display_line) = {
-            let mut results = shape_display_line(
-                line, LineRole::FenceContent, LineContext::Plain, TableLineKind::None, false, None, false, true, &font, font_size, text_style.color,
-                Pixels::MAX, window,
+                let mut results = shape_display_line(
+                    line,
+                    LineRole::FenceContent,
+                    LineContext::Plain,
+                    TableLineKind::None,
+                    false,
+                    None,
+                    false,
+                    true,
+                    &font,
+                    font_size,
+                    text_style.color,
+                    Pixels::MAX,
+                    window,
+                );
+                assert_eq!(results.len(), 1, "expected exactly one entry");
+                results.remove(0)
+            };
+            assert_eq!(
+                display_line.display_text, line,
+                "fenced code content must never be treated as Markdown"
             );
-            assert_eq!(results.len(), 1, "expected exactly one entry");
-            results.remove(0)
-        };
-            assert_eq!(display_line.display_text, line, "fenced code content must never be treated as Markdown");
         })
         .unwrap();
     }
 
     #[gpui_kit::test]
-    fn fenced_code_content_starting_with_quote_or_list_syntax_is_never_indented(cx: &mut TestAppContext) {
+    fn fenced_code_content_starting_with_quote_or_list_syntax_is_never_indented(
+        cx: &mut TestAppContext,
+    ) {
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -2653,24 +3290,52 @@ mod tests {
             let font = text_style.font();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
             let (_, display_line) = {
-            let mut results = shape_display_line(
-                line, LineRole::FenceDelimiter, LineContext::Plain, TableLineKind::None, false, None, false, false, &font, font_size, text_style.color,
-                Pixels::MAX, window,
+                let mut results = shape_display_line(
+                    line,
+                    LineRole::FenceDelimiter,
+                    LineContext::Plain,
+                    TableLineKind::None,
+                    false,
+                    None,
+                    false,
+                    false,
+                    &font,
+                    font_size,
+                    text_style.color,
+                    Pixels::MAX,
+                    window,
+                );
+                assert_eq!(results.len(), 1, "expected exactly one entry");
+                results.remove(0)
+            };
+            assert_eq!(
+                display_line.display_text, "",
+                "an inactive fence delimiter line should show nothing"
             );
-            assert_eq!(results.len(), 1, "expected exactly one entry");
-            results.remove(0)
-        };
-            assert_eq!(display_line.display_text, "", "an inactive fence delimiter line should show nothing");
 
             let (_, active_display_line) = {
-            let mut results = shape_display_line(
-                line, LineRole::FenceDelimiter, LineContext::Plain, TableLineKind::None, false, None, false, true, &font, font_size, text_style.color,
-                Pixels::MAX, window,
+                let mut results = shape_display_line(
+                    line,
+                    LineRole::FenceDelimiter,
+                    LineContext::Plain,
+                    TableLineKind::None,
+                    false,
+                    None,
+                    false,
+                    true,
+                    &font,
+                    font_size,
+                    text_style.color,
+                    Pixels::MAX,
+                    window,
+                );
+                assert_eq!(results.len(), 1, "expected exactly one entry");
+                results.remove(0)
+            };
+            assert_eq!(
+                active_display_line.display_text, line,
+                "the active fence delimiter line should show its raw text"
             );
-            assert_eq!(results.len(), 1, "expected exactly one entry");
-            results.remove(0)
-        };
-            assert_eq!(active_display_line.display_text, line, "the active fence delimiter line should show its raw text");
         })
         .unwrap();
     }
@@ -2680,12 +3345,21 @@ mod tests {
     /// it — same shape as `document_cache.rs`'s own test helper of the same
     /// name, duplicated rather than shared since that one is private to
     /// that module.
-    fn apply_edit(text: &str, start: usize, old_end: usize, insert: &str) -> (String, super::super::document_cache::TextEdit) {
+    fn apply_edit(
+        text: &str,
+        start: usize,
+        old_end: usize,
+        insert: &str,
+    ) -> (String, super::super::document_cache::TextEdit) {
         let mut new_text = String::with_capacity(text.len() - (old_end - start) + insert.len());
         new_text.push_str(&text[..start]);
         new_text.push_str(insert);
         new_text.push_str(&text[old_end..]);
-        let edit = super::super::document_cache::TextEdit { start_byte: start, old_end_byte: old_end, new_end_byte: start + insert.len() };
+        let edit = super::super::document_cache::TextEdit {
+            start_byte: start,
+            old_end_byte: old_end,
+            new_end_byte: start + insert.len(),
+        };
         (new_text, edit)
     }
 
@@ -2693,7 +3367,9 @@ mod tests {
     /// Fenwick-backed prefix sums — what every assertion below compares
     /// between an incrementally-patched cache and an exact oracle.
     fn row_counts(rows: &super::RowHeightCache) -> Vec<i64> {
-        (0..rows.line_count()).map(|i| rows.prefix_sum(i + 1) - rows.prefix_sum(i)).collect()
+        (0..rows.line_count())
+            .map(|i| rows.prefix_sum(i + 1) - rows.prefix_sum(i))
+            .collect()
     }
 
     /// The true, never-estimated row count for every line, computed
@@ -2721,7 +3397,19 @@ mod tests {
     ) -> Vec<i64> {
         (0..doc.line_count())
             .map(|i| {
-                super::row_count_for_line(text, doc, i, cursor, focused, char_width, font, font_size, text_color, available_width, window) as i64
+                super::row_count_for_line(
+                    text,
+                    doc,
+                    i,
+                    cursor,
+                    focused,
+                    char_width,
+                    font,
+                    font_size,
+                    text_color,
+                    available_width,
+                    window,
+                ) as i64
             })
             .collect()
     }
@@ -2748,9 +3436,11 @@ mod tests {
     /// a deliberately separate, narrower mechanism, covered by its own test
     /// below instead of complicating this one.
     #[gpui_kit::test]
-    fn row_height_cache_patch_lines_matches_the_exact_row_counts_after_a_sequence_of_edits(cx: &mut TestAppContext) {
+    fn row_height_cache_patch_lines_matches_the_exact_row_counts_after_a_sequence_of_edits(
+        cx: &mut TestAppContext,
+    ) {
         use super::super::document_cache::DocumentCache;
-        use super::{mono_char_width, RowHeightCache};
+        use super::{RowHeightCache, mono_char_width};
 
         let mut text = String::from(
             "intro\n```\ncode line one\ncode line two\n```\nplain\n> quote\n- item\n  - nested\nmore plain text here\n\
@@ -2768,19 +3458,30 @@ mod tests {
 
             let mut doc_cache = DocumentCache::new(&text);
             let mut row_cache = RowHeightCache::empty();
-            row_cache.rebuild(&text, &doc_cache, 0, false, available_width, char_width, &font, font_size, text_color, window);
+            row_cache.rebuild(
+                &text,
+                &doc_cache,
+                0,
+                false,
+                available_width,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                window,
+            );
 
             // (start, delete_len, insert) — a mix of same-line-count edits
             // (exercising the real `patch_lines` incremental path) and
             // line-count-changing ones (exercising the full-rebuild fallback).
             let edits: &[(usize, usize, &str)] = &[
-                (0, 0, "x"),                         // insert at the very start
-                (5, 0, "!"),                          // insert mid-line, no newline
-                (0, 1, ""),                           // delete one char at the start
-                (0, 0, "a new unterminated line"),    // same-line-count edit far from any construct
-                (9, 0, "\n"),                         // insert a bare newline (line-count change)
-                (0, 0, "```\nmore code\n```\n"),       // insert a whole new fence block
-                (0, 3, ""),                            // delete across a newline (line-count change)
+                (0, 0, "x"),                       // insert at the very start
+                (5, 0, "!"),                       // insert mid-line, no newline
+                (0, 1, ""),                        // delete one char at the start
+                (0, 0, "a new unterminated line"), // same-line-count edit far from any construct
+                (9, 0, "\n"),                      // insert a bare newline (line-count change)
+                (0, 0, "```\nmore code\n```\n"),   // insert a whole new fence block
+                (0, 3, ""),                        // delete across a newline (line-count change)
             ];
 
             for &(start, delete_len, insert) in edits {
@@ -2788,16 +3489,47 @@ mod tests {
                 let (new_text, edit) = apply_edit(&text, start, old_end, insert);
                 let touched = doc_cache.record_edit(&new_text, edit);
                 match touched {
-                    Some(range) if !row_cache.needs_full_rebuild(&doc_cache, available_width, char_width) => {
-                        row_cache.patch_lines(&new_text, &doc_cache, range, 0, false, char_width, &font, font_size, text_color, window);
+                    Some(range)
+                        if !row_cache.needs_full_rebuild(
+                            &doc_cache,
+                            available_width,
+                            char_width,
+                        ) =>
+                    {
+                        row_cache.patch_lines(
+                            &new_text, &doc_cache, range, 0, false, char_width, &font, font_size,
+                            text_color, window,
+                        );
                     }
                     _ => {
-                        row_cache.rebuild(&new_text, &doc_cache, 0, false, available_width, char_width, &font, font_size, text_color, window);
+                        row_cache.rebuild(
+                            &new_text,
+                            &doc_cache,
+                            0,
+                            false,
+                            available_width,
+                            char_width,
+                            &font,
+                            font_size,
+                            text_color,
+                            window,
+                        );
                     }
                 }
 
                 let oracle_doc = DocumentCache::new(&new_text);
-                let expected = exact_row_counts(&new_text, &oracle_doc, 0, false, char_width, &font, font_size, text_color, available_width, window);
+                let expected = exact_row_counts(
+                    &new_text,
+                    &oracle_doc,
+                    0,
+                    false,
+                    char_width,
+                    &font,
+                    font_size,
+                    text_color,
+                    available_width,
+                    window,
+                );
 
                 assert_eq!(
                     row_counts(&row_cache),
@@ -2828,7 +3560,7 @@ mod tests {
     #[gpui_kit::test]
     fn row_height_cache_sync_active_line_matches_the_exact_row_counts(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
-        use super::{mono_char_width, RowHeightCache};
+        use super::{RowHeightCache, mono_char_width};
 
         // A line long enough that hiding/showing its `**bold**` markup
         // while active/inactive actually changes its row count at a narrow
@@ -2848,14 +3580,43 @@ mod tests {
 
             let doc_cache = DocumentCache::new(&text);
             let mut row_cache = RowHeightCache::empty();
-            row_cache.rebuild(&text, &doc_cache, 0, true, available_width, char_width, &font, font_size, text_color, window);
+            row_cache.rebuild(
+                &text,
+                &doc_cache,
+                0,
+                true,
+                available_width,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                window,
+            );
 
             // Move the cursor onto the bold line (line 1), then off it again
             // onto line 2 — each a pure cursor move, no edit at all.
-            for cursor in [text.find(&long_bold).unwrap(), text.rfind("another").unwrap(), 0] {
-                row_cache.sync_active_line(&text, &doc_cache, cursor, true, char_width, &font, font_size, text_color, window);
+            for cursor in [
+                text.find(&long_bold).unwrap(),
+                text.rfind("another").unwrap(),
+                0,
+            ] {
+                row_cache.sync_active_line(
+                    &text, &doc_cache, cursor, true, char_width, &font, font_size, text_color,
+                    window,
+                );
 
-                let expected = exact_row_counts(&text, &doc_cache, cursor, true, char_width, &font, font_size, text_color, available_width, window);
+                let expected = exact_row_counts(
+                    &text,
+                    &doc_cache,
+                    cursor,
+                    true,
+                    char_width,
+                    &font,
+                    font_size,
+                    text_color,
+                    available_width,
+                    window,
+                );
 
                 assert_eq!(row_counts(&row_cache), expected, "cursor at {cursor}");
             }
@@ -2877,9 +3638,11 @@ mod tests {
     /// everywhere — not just for the handful of lines a real viewport
     /// would reach.
     #[gpui_kit::test]
-    fn row_height_cache_converges_to_the_exact_row_counts_once_every_line_has_been_corrected(cx: &mut TestAppContext) {
+    fn row_height_cache_converges_to_the_exact_row_counts_once_every_line_has_been_corrected(
+        cx: &mut TestAppContext,
+    ) {
         use super::super::document_cache::DocumentCache;
-        use super::{mono_char_width, RowHeightCache};
+        use super::{RowHeightCache, mono_char_width};
 
         let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
         let Ok(text) = std::fs::read_to_string(fixture_path) else {
@@ -2898,14 +3661,48 @@ mod tests {
 
             let doc_cache = DocumentCache::new(&text);
             let mut row_cache = RowHeightCache::empty();
-            row_cache.rebuild(&text, &doc_cache, 0, false, available_width, char_width, &font, font_size, text_color, window);
+            row_cache.rebuild(
+                &text,
+                &doc_cache,
+                0,
+                false,
+                available_width,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                window,
+            );
 
             for i in 0..doc_cache.line_count() {
-                let real = row_count_for_line(&text, &doc_cache, i, 0, false, char_width, &font, font_size, text_color, available_width, window);
+                let real = row_count_for_line(
+                    &text,
+                    &doc_cache,
+                    i,
+                    0,
+                    false,
+                    char_width,
+                    &font,
+                    font_size,
+                    text_color,
+                    available_width,
+                    window,
+                );
                 row_cache.correct(i, real);
             }
 
-            let expected = exact_row_counts(&text, &doc_cache, 0, false, char_width, &font, font_size, text_color, available_width, window);
+            let expected = exact_row_counts(
+                &text,
+                &doc_cache,
+                0,
+                false,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                available_width,
+                window,
+            );
             assert_eq!(row_counts(&row_cache), expected);
         })
         .unwrap();
