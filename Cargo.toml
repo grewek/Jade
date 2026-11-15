@@ -2,6 +2,12 @@
 resolver = "2"
 members = ["crates/core", "crates/app"]
 
+# Mechanical STYLE.md rules (3: no unwrap/expect, 10: function length).
+[workspace.lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"
+too_many_lines = "warn"
+
 # Neither profile ships external debug symbols — `cargo build`'s own default
 # profile.dev (`debug = true`) is why an unstripped debug binary runs into the
 # hundreds of MB; `debug = false` stops rustc emitting that debug info at the
