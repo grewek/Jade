@@ -1788,21 +1788,22 @@ mod tests {
         cx.update_window(window, |_, window, cx| {
             crate::test_alloc::reset();
             let before = crate::test_alloc::snapshot();
-            for i in 0..KEYSTROKES {
+            let rss_before = crate::memory_probe::rss_kib();
+            for _ in 0..KEYSTROKES {
                 let mut keystroke = gpui_kit::Keystroke::parse("x").unwrap();
                 keystroke.key_char = Some("x".to_string());
                 window.dispatch_keystroke(keystroke, cx);
-                if i % 25 == 0 {
-                    window.render_frame(cx);
-                }
+                window.render_frame(cx); // like the real app: one paint per key
             }
             window.render_frame(cx);
             let after = crate::test_alloc::snapshot();
             let retained = after.current.saturating_sub(before.current);
             eprintln!(
                 "real_keystrokes_in_a_huge_file_keep_undo_memory_bounded: \
-                 {KEYSTROKES} keystrokes retained {retained} bytes (buffer is {})",
-                content.len()
+                 {KEYSTROKES} keystrokes retained {retained} bytes (buffer is {}), \
+                 rss {rss_before:?} -> {:?} KiB",
+                content.len(),
+                crate::memory_probe::rss_kib()
             );
             // One coalesced burst costs about one buffer clone; allow a few
             // for caches. An uncoalesced run would retain KEYSTROKES clones.
