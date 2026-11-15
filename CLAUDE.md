@@ -3,7 +3,6 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It's deliberately minimal — standing rules and commands only, since this file is reloaded in full on every turn.
 
 - **`ARCHITECTURE.md`** — the module map (files, types, functions, current limitations). Not auto-loaded; read the relevant section before working in a given area.
-- **`HISTORY.md`** — the detailed rationale, bug narratives, and measured-number history behind decisions in both files. Not auto-loaded; read on demand when the "why" actually matters.
 - **`STYLE.md`** — Tigerstyle-derived coding rules (safety, performance, style), adapted for Rust/GPUI. Not auto-loaded; read on demand when writing or reviewing code.
 
 ## Vision
@@ -42,12 +41,12 @@ Workspace-wide:
 - Build: `cargo build`
 - Run the app: `cargo run -p jade-app`
 - Release build: `cargo build --release` (~37MB stripped binary)
-- **A debug build (`cargo run -p jade-app` with no `--release`) can feel noticeably slow to open/render a note — this is expected GPU/compositor overhead from unoptimized codegen, not a code bug.** Don't try to "fix" a debug-build-only slowdown in the rendering code itself; verify against `--release` first (see HISTORY.md for the investigation that established this).
+- **A debug build (`cargo run -p jade-app` with no `--release`) can feel noticeably slow to open/render a note — this is expected GPU/compositor overhead from unoptimized codegen, not a code bug.** Don't try to "fix" a debug-build-only slowdown in the rendering code itself; verify against `--release` first.
 - Check (fast compile check without producing a binary): `cargo check`
 - Test all crates: `cargo test -- --test-threads=1`
 - Test a single crate: `cargo test -p jade-core` / `cargo test -p jade-app -- --test-threads=1`
 - Run a single test: `cargo test <test_name>`
-- **`jade-app`'s headless UI tests require `--test-threads=1`** — the parallel harness is non-deterministic under load (a confirmed concurrency bug in the vendored gpui/gpui-component test-support stack, not Jade's code; see HISTORY.md before re-enabling parallel runs).
+- **`jade-app`'s headless UI tests require `--test-threads=1`** — the parallel harness is non-deterministic under load (a confirmed concurrency bug in the vendored gpui/gpui-component test-support stack, not Jade's code).
 - Lint: `cargo clippy`
 - Format: `cargo fmt`
 - Benchmark: `cargo bench -p jade-core` (criterion; watch for a `change:`/`Performance has regressed` line, not just the absolute time). `jade-app` has no benchmarks currently (binary-only, no `[lib]` target — see `ARCHITECTURE.md`'s Backlog).
