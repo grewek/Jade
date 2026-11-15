@@ -20,6 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static CURRENT_BYTES: AtomicUsize = AtomicUsize::new(0);
 static PEAK_BYTES: AtomicUsize = AtomicUsize::new(0);
 static ALLOC_COUNT: AtomicUsize = AtomicUsize::new(0);
+static TOTAL_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// Delegates every call straight to [`System`], just adding atomic
 /// bookkeeping around each one — no behavioral difference from the plain
@@ -85,6 +86,7 @@ fn record_grow(added: usize) {
     };
     PEAK_BYTES.fetch_max(new_current, Ordering::Relaxed);
     ALLOC_COUNT.fetch_add(1, Ordering::Relaxed);
+    TOTAL_BYTES.fetch_add(added, Ordering::Relaxed);
 }
 
 fn record_shrink(removed: usize) {
@@ -114,6 +116,9 @@ pub(crate) struct AllocSnapshot {
     pub(crate) current: usize,
     pub(crate) peak: usize,
     pub(crate) count: usize,
+    /// Cumulative bytes requested since the last `reset`, frees not
+    /// subtracted: shows per-call churn that `current`/`peak` hide.
+    pub(crate) total: usize,
 }
 
 /// Rebases [`PEAK_BYTES`] to whatever's *actually* currently live, and
@@ -135,6 +140,7 @@ pub(crate) struct AllocSnapshot {
 pub(crate) fn reset() {
     PEAK_BYTES.store(CURRENT_BYTES.load(Ordering::Relaxed), Ordering::Relaxed);
     ALLOC_COUNT.store(0, Ordering::Relaxed);
+    TOTAL_BYTES.store(0, Ordering::Relaxed);
 }
 
 pub(crate) fn snapshot() -> AllocSnapshot {
@@ -142,5 +148,6 @@ pub(crate) fn snapshot() -> AllocSnapshot {
         current: CURRENT_BYTES.load(Ordering::Relaxed),
         peak: PEAK_BYTES.load(Ordering::Relaxed),
         count: ALLOC_COUNT.load(Ordering::Relaxed),
+        total: TOTAL_BYTES.load(Ordering::Relaxed),
     }
 }

@@ -157,8 +157,8 @@ impl EntityInputHandler for Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
-        let text = self.buffer.text().to_string();
-        let byte_offset = utf16_to_utf8(&text, range_utf16.start);
+        let text = self.buffer.text();
+        let byte_offset = utf16_to_utf8(text, range_utf16.start);
         let cursor = self.buffer.cursor();
         let line_height = window.line_height();
         let text_style = window.text_style();
@@ -175,7 +175,7 @@ impl EntityInputHandler for Editor {
         // Viewport-bounded like `paint_lines`: the IME target is near the
         // cursor, which is already scrolled into view.
         let layout = analyze_line_layout(
-            &text,
+            text,
             &self.document_cache,
             &self.row_height_cache,
             cursor,

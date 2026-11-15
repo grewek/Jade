@@ -740,37 +740,6 @@ impl LineLayout {
     }
 }
 
-/// Everything a single paint's `paint_lines`/mouse-hit-testing need that
-/// isn't already cheap to clone (`LineLayout` itself is just two `Rc`
-/// clones + a `Pixels`, so it stays a separate parameter rather than
-/// joining this bundle) — the buffer text plus `DocumentCache`'s six
-/// per-line `Vec`s, cloned *once* out of the live, still-mutating
-/// `DocumentCache`/`EditorBuffer` by `render_editor` and wrapped in one
-/// `Rc` here.
-///
-/// Exists specifically so `register_mouse_handling`'s two mouse-event
-/// closures can each hold their own handle to this frame's data (needed
-/// since `window.on_mouse_event` closures are `'static` and outlive the
-/// stack frame that registered them) by cloning the `Rc` — an O(1)
-/// refcount bump — instead of each doing its own deep clone of the text
-/// and six `Vec`s. Before this existed, `render_editor` cloned all seven
-/// once for its own `paint_lines` use, cloned them *again* to pass into
-/// `register_mouse_handling`, which cloned the text a *third* time for
-/// `MouseDownEvent`'s closure while moving the second copy into
-/// `MouseMoveEvent`'s — measured (`test_alloc.rs`) at ~47-48MB of standing
-/// duplication at rest between paints on the 320K-line stress fixture,
-/// since those closures stay registered until the *next* paint replaces
-/// them. See HISTORY.md for the measurement.
-pub(super) struct PaintSnapshot {
-    pub(super) text: String,
-    pub(super) line_roles: Vec<LineRole>,
-    pub(super) block_contexts: Vec<LineContext>,
-    pub(super) table_for_line: Vec<Option<usize>>,
-    pub(super) tables: Vec<Table>,
-    pub(super) callout_for_line: Vec<Option<usize>>,
-    pub(super) callouts: Vec<Callout>,
-}
-
 /// The render parameters [`analyze_line_layout`] needs, computed the same
 /// way both `render_editor` (every paint) and `Editor::record_edit`/
 /// `invalidate_all` (every edit, so [`RowHeightCache`] can be patched
@@ -1328,36 +1297,19 @@ pub(super) fn render_editor(
     // for the mouse closures below, which run later, once rendering has
     // finished and reading/updating the entity is safe again.
     let buffer = editor.buffer();
-    let text = buffer.text().to_string();
+    let text = buffer.text();
     let cursor = buffer.cursor();
     let selection = buffer.selection();
     let focus_handle = editor.focus_handle.clone();
     let scroll_handle = editor.scroll_handle.clone();
     let last_autoscrolled_cursor = editor.last_autoscrolled_cursor.clone();
     // Reads the persisted `DocumentCache` (see that module's own doc
-    // comment) instead of re-running all four classify_* passes fresh on
-    // every paint — every mutation already patched it via `record_edit`/
-    // `invalidate_all` before this render could even happen. Cloned into
-    // owned `Vec`s immediately: the `canvas` paint closure below is
-    // `'static` and needs to own this frame's data, same as it always has.
-    // Bundled into one `Rc<PaintSnapshot>` alongside `text` (see that
-    // struct's own doc comment) rather than left as separate owned values,
-    // so passing this frame's data to `register_mouse_handling`'s two
-    // closures is one cheap `Rc::clone()` each, not a second and third
-    // deep clone of all of it.
+    // comment) instead of re-running all four classify_* passes per paint.
+    // The paint and mouse closures below are `'static`, so they reach the
+    // text and cache through `editor_entity` when they run rather than
+    // holding per-frame copies (which cost ~25MB per frame on the stress
+    // fixture, the same on every scroll as on every keystroke).
     let document_cache = editor.document_cache.clone();
-    let snapshot = {
-        let cache = document_cache.borrow();
-        Rc::new(PaintSnapshot {
-            text,
-            line_roles: cache.line_roles().to_vec(),
-            block_contexts: cache.block_contexts().to_vec(),
-            table_for_line: cache.table_for_line().to_vec(),
-            tables: cache.tables().to_vec(),
-            callout_for_line: cache.callout_for_line().to_vec(),
-            callouts: cache.callouts().to_vec(),
-        })
-    };
     let row_height_cache = editor.row_height_cache.clone();
 
     let focused = focus_handle.is_focused(window);
@@ -1378,7 +1330,7 @@ pub(super) fn render_editor(
     // `offset_for_position`/`register_mouse_handling`'s viewport-bounded
     // windowing below.
     let layout = analyze_line_layout(
-        &snapshot.text,
+        text,
         &document_cache,
         &row_height_cache,
         cursor,
@@ -1390,8 +1342,12 @@ pub(super) fn render_editor(
         text_color,
         window,
     );
-    let (total_height, cursor_top, cursor_height, callout_ranges) =
-        measure_document(&layout, cursor, &snapshot.callouts, line_height);
+    let (total_height, cursor_top, cursor_height, callout_ranges) = measure_document(
+        &layout,
+        cursor,
+        document_cache.borrow().callouts(),
+        line_height,
+    );
 
     div()
         .id("editor")
@@ -1423,32 +1379,34 @@ pub(super) fn render_editor(
                         last_autoscrolled_cursor.set(Some(cursor));
                     }
                     let viewport = scroll_handle.bounds();
-                    paint_lines(
-                        &snapshot.text,
-                        &layout,
-                        &snapshot.line_roles,
-                        &snapshot.block_contexts,
-                        &snapshot.table_for_line,
-                        &snapshot.tables,
-                        &snapshot.callout_for_line,
-                        &snapshot.callouts,
-                        &callout_ranges,
-                        cursor,
-                        selection.clone(),
-                        focused,
-                        bounds,
-                        viewport,
-                        line_height,
-                        &font,
-                        font_size,
-                        text_color,
-                        window,
-                        cx,
-                    );
+                    editor_entity.update(cx, |editor, cx| {
+                        let doc = editor.document_cache.borrow();
+                        paint_lines(
+                            editor.buffer().text(),
+                            &layout,
+                            doc.line_roles(),
+                            doc.block_contexts(),
+                            doc.table_for_line(),
+                            doc.tables(),
+                            doc.callout_for_line(),
+                            doc.callouts(),
+                            &callout_ranges,
+                            cursor,
+                            selection.clone(),
+                            focused,
+                            bounds,
+                            viewport,
+                            line_height,
+                            &font,
+                            font_size,
+                            text_color,
+                            window,
+                            cx,
+                        );
+                    });
 
                     register_mouse_handling(
                         editor_entity.clone(),
-                        snapshot.clone(),
                         layout.clone(),
                         cursor,
                         focused,
@@ -1486,7 +1444,6 @@ pub(super) fn render_editor(
 #[allow(clippy::too_many_arguments)]
 fn register_mouse_handling(
     editor_entity: Entity<Editor>,
-    snapshot: Rc<PaintSnapshot>,
     layout: LineLayout,
     cursor: usize,
     focused: bool,
@@ -1501,11 +1458,6 @@ fn register_mouse_handling(
 ) {
     window.on_mouse_event({
         let editor_entity = editor_entity.clone();
-        // Each closure holds its own `Rc::clone()` — an O(1) refcount bump
-        // sharing the one `PaintSnapshot` `render_editor` already built,
-        // not a second/third deep clone of the text and six `Vec`s (see
-        // that struct's own doc comment for the duplication this replaced).
-        let snapshot = snapshot.clone();
         let layout = layout.clone();
         let font = font.clone();
         move |event: &MouseDownEvent, phase, window, cx| {
@@ -1524,26 +1476,30 @@ fn register_mouse_handling(
             {
                 return;
             }
-            let offset = offset_for_position(
-                &snapshot.text,
-                &layout,
-                &snapshot.line_roles,
-                &snapshot.block_contexts,
-                &snapshot.table_for_line,
-                &snapshot.tables,
-                &snapshot.callout_for_line,
-                &snapshot.callouts,
-                cursor,
-                focused,
-                event.position,
-                bounds,
-                viewport,
-                line_height,
-                &font,
-                font_size,
-                text_color,
-                window,
-            );
+            let offset = {
+                let editor = editor_entity.read(cx);
+                let doc = editor.document_cache.borrow();
+                offset_for_position(
+                    editor.buffer().text(),
+                    &layout,
+                    doc.line_roles(),
+                    doc.block_contexts(),
+                    doc.table_for_line(),
+                    doc.tables(),
+                    doc.callout_for_line(),
+                    doc.callouts(),
+                    cursor,
+                    focused,
+                    event.position,
+                    bounds,
+                    viewport,
+                    line_height,
+                    &font,
+                    font_size,
+                    text_color,
+                    window,
+                )
+            };
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, false);
                 editor.is_dragging = true;
@@ -1562,26 +1518,30 @@ fn register_mouse_handling(
             {
                 return;
             }
-            let offset = offset_for_position(
-                &snapshot.text,
-                &layout,
-                &snapshot.line_roles,
-                &snapshot.block_contexts,
-                &snapshot.table_for_line,
-                &snapshot.tables,
-                &snapshot.callout_for_line,
-                &snapshot.callouts,
-                cursor,
-                focused,
-                event.position,
-                bounds,
-                viewport,
-                line_height,
-                &font,
-                font_size,
-                text_color,
-                window,
-            );
+            let offset = {
+                let editor = editor_entity.read(cx);
+                let doc = editor.document_cache.borrow();
+                offset_for_position(
+                    editor.buffer().text(),
+                    &layout,
+                    doc.line_roles(),
+                    doc.block_contexts(),
+                    doc.table_for_line(),
+                    doc.tables(),
+                    doc.callout_for_line(),
+                    doc.callouts(),
+                    cursor,
+                    focused,
+                    event.position,
+                    bounds,
+                    viewport,
+                    line_height,
+                    &font,
+                    font_size,
+                    text_color,
+                    window,
+                )
+            };
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, true);
                 cx.notify();

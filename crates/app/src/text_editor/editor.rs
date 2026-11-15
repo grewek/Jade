@@ -162,8 +162,8 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let text = self.buffer.text().to_string();
-        let touched = self.document_cache.borrow_mut().record_edit(&text, edit);
+        let text = self.buffer.text();
+        let touched = self.document_cache.borrow_mut().record_edit(text, edit);
 
         let params = render_params(self, window, cx);
         let cursor = self.buffer.cursor();
@@ -174,7 +174,7 @@ impl Editor {
         match touched {
             Some(range) if !rows.needs_full_rebuild(&doc, params.available_width, char_width) => {
                 rows.patch_lines(
-                    &text,
+                    text,
                     &doc,
                     range,
                     cursor,
@@ -188,7 +188,7 @@ impl Editor {
             }
             _ => {
                 rows.rebuild(
-                    &text,
+                    text,
                     &doc,
                     cursor,
                     focused,
@@ -214,8 +214,8 @@ impl Editor {
     /// `document_cache.rs`'s own module doc for why this is an accepted,
     /// explicitly-scoped gap rather than an oversight.
     pub(super) fn invalidate_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.buffer.text().to_string();
-        self.document_cache.borrow_mut().recompute_all(&text);
+        let text = self.buffer.text();
+        self.document_cache.borrow_mut().recompute_all(text);
 
         let params = render_params(self, window, cx);
         let cursor = self.buffer.cursor();
@@ -223,7 +223,7 @@ impl Editor {
         let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
         let doc = self.document_cache.borrow();
         self.row_height_cache.borrow_mut().rebuild(
-            &text,
+            text,
             &doc,
             cursor,
             focused,

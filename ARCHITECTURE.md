@@ -35,7 +35,8 @@ Non-obvious invariants, gotchas, and the Backlog. Not auto-loaded. The code is t
 ## Verifying perf/memory fixes
 
 A fix isn't done until a test drives the real input path (`window.dispatch_keystroke`, `scroll_handle().set_offset` + `render_frame`), not just the underlying function. Calling `EditorBuffer::insert` directly hid a bug where `replace_text_in_range`'s `set_cursor` calls defeated undo coalescing (1.19GB retained over 150 keystrokes on the stress fixture, vs ~24MB fixed).
-- Guards: `real_keystrokes_in_a_huge_file_keep_undo_memory_bounded`, `scrolling_through_a_huge_file_does_not_leak` (`main.rs`; heap flat across 200 scroll steps, RSS ~160MB flat in the headless harness).
+- Autosave is debounced (`AUTOSAVE_DEBOUNCE`, 500ms; flushed on note switch and app quit): a save copies the note, rescans wikilinks and rewrites the file. Paint/mouse closures read text and `DocumentCache` through the editor entity, never per-frame copies.
+- Guards: `real_keystrokes_in_a_huge_file_do_not_churn_the_whole_document` (bytes allocated per key), `real_keystrokes_in_a_huge_file_keep_undo_memory_bounded`, `scrolling_through_a_huge_file_does_not_leak` (`main.rs`; heap flat across 200 scroll steps, RSS ~160MB flat in the headless harness).
 - Real app: `JADE_MEMORY_LOG=1 cargo run -p jade-app --release` logs RSS every 2s (`memory_probe.rs`).
 
 ## Backlog

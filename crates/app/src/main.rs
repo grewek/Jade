@@ -60,6 +60,9 @@ fn install_fonts(cx: &mut App) {
     theme.mono_font_family = IBM_PLEX_MONO.into();
 }
 
+/// Idle time after the last edit before the note is written to disk.
+const AUTOSAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(500);
+
 actions!(jade, [RenameNote, DeleteNote, OpenCommandPalette]);
 
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -79,6 +82,9 @@ struct JadeApp {
     /// per-block internally rather than swapping between separate widgets.
     editor: Option<Entity<Editor>>,
     _editor_subscription: Option<Subscription>,
+    /// Pending debounced save; dropping it cancels the wait.
+    autosave_task: Option<Task<()>>,
+    _quit_subscription: Subscription,
     error: Option<String>,
     sidebar_focus: FocusHandle,
     collapsed_folders: std::collections::HashSet<String>,
@@ -115,6 +121,12 @@ impl JadeApp {
             selected_id: None,
             editor: None,
             _editor_subscription: None,
+            autosave_task: None,
+            // Debounced saves can still be pending at quit.
+            _quit_subscription: cx.on_app_quit(|this, cx| {
+                this.save_open_editor(cx);
+                async {}
+            }),
             error,
             sidebar_focus,
             collapsed_folders: Default::default(),
@@ -158,14 +170,25 @@ impl JadeApp {
             return;
         };
         self._editor_subscription = None;
+        self.autosave_task = None;
         let text = editor.read(cx).buffer().text().to_string();
         let _ = self.vault.update_note_content(&note_id, text);
     }
 
-    /// Persists the open editor's current text to the vault on every
-    /// `EditorEvent::Changed`, and re-renders so e.g. the backlinks panel
-    /// reflects newly-typed wikilinks live, not just on the next note switch.
+    /// Schedules a save of the open editor, restarting the wait on every
+    /// call: saving copies the whole note, rescans it for wikilinks and
+    /// rewrites the file, which is far too much work to do per keystroke.
     fn autosave_editor(&mut self, cx: &mut Context<Self>) {
+        self.autosave_task = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
+            this.update(cx, |this, cx| this.save_open_editor(cx)).ok();
+        }));
+    }
+
+    /// Persists the open editor's current text to the vault, and re-renders
+    /// so e.g. the backlinks panel reflects newly-typed wikilinks.
+    fn save_open_editor(&mut self, cx: &mut Context<Self>) {
+        self.autosave_task = None;
         let (Some(editor), Some(note_id)) = (self.editor.clone(), self.selected_id.clone()) else {
             return;
         };
@@ -1478,6 +1501,14 @@ mod tests {
         })
         .unwrap();
 
+        // Debounced: nothing is written until the editor has been idle.
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("Note.md")).unwrap(),
+            "old content"
+        );
+        cx.executor().advance_clock(crate::AUTOSAVE_DEBOUNCE);
+        cx.run_until_parked();
+
         let on_disk = std::fs::read_to_string(dir.path().join("Note.md")).unwrap();
         assert_ne!(on_disk, "old content");
         assert!(on_disk.contains("appended"));
@@ -1813,6 +1844,45 @@ mod tests {
                 retained < 4 * content.len(),
                 "retained {retained} bytes after {KEYSTROKES} keystrokes in a {}-byte \
                  buffer: undo coalescing is not working on the real typing path",
+                content.len()
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn real_keystrokes_in_a_huge_file_do_not_churn_the_whole_document(cx: &mut TestAppContext) {
+        // Per-keystroke work must scale with the edit, not the document: a
+        // whole-document copy per key (~11MB here) fragments the allocator
+        // (RSS climbs while live heap stays flat) and costs CPU every key.
+        const KEYSTROKES: usize = 50;
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let (_dir, window, _editor) = open_stress_fixture(cx, &content);
+        cx.update_window(window, |_, window, cx| {
+            crate::test_alloc::reset();
+            let started = std::time::Instant::now();
+            for _ in 0..KEYSTROKES {
+                let mut keystroke = gpui_kit::Keystroke::parse("x").unwrap();
+                keystroke.key_char = Some("x".to_string());
+                window.dispatch_keystroke(keystroke, cx);
+                window.render_frame(cx);
+            }
+            let elapsed = started.elapsed();
+            let total = crate::test_alloc::snapshot().total;
+            let per_key = total / KEYSTROKES;
+            eprintln!(
+                "do_not_churn: {per_key} bytes allocated/keystroke (doc {}), {:?}/keystroke",
+                content.len(),
+                elapsed / KEYSTROKES as u32
+            );
+            assert!(
+                per_key < content.len() / 4,
+                "{per_key} bytes allocated per keystroke in a {}-byte document: \
+                 something copies the whole document per key",
                 content.len()
             );
         })

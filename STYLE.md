@@ -18,6 +18,7 @@ Several of these overlap with standing rules already in `CLAUDE.md`; where that'
 7. **Never optimize without measuring.** Already required by `CLAUDE.md`'s Performance section — restated here only because it's where Tigerstyle's version of the rule comes from.
 8. **Count allocations in hot-path benchmarks, not just elapsed time.** Use an allocation-counting `GlobalAlloc` wrapper in Criterion benches and assert an upper bound per frame/call, rather than assuming allocation behavior is bounded.
 9. **Keep one-time costs (startup, note-open, vault scan) explicitly separate from steady-state per-frame/per-call costs.** Already established in `CLAUDE.md`; restated here for completeness.
+14. **Clone sparingly in hot paths.** `.clone()`, `.to_string()`, `.to_owned()` and `.to_vec()` on document-sized data (note text, per-line cache vectors) never go in per-keystroke or per-frame code; borrow (`&str`, `&[T]`), or share with `Rc`/`Arc` where ownership is unavoidable. `Rc::clone`/handle clones (`Entity`, `FocusHandle`) are fine. A copy that exists only to satisfy the borrow checker is a smell: restructure the borrows instead. Measure with `test_alloc`'s `total` (cumulative bytes) per call, not just live bytes. Precedent: a per-frame snapshot plus per-key text copies cost 37MB/keystroke on the stress fixture (now 1.4MB).
 
 ## Developer experience / style
 
