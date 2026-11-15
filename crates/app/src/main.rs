@@ -19,7 +19,7 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::{Theme, WindowExt};
 use gpui_kit::*;
-use jade_core::Vault;
+use jade_core::{Vault, search_targets};
 use text_editor::{Editor, EditorEvent, InsertTab};
 
 /// IBM Plex — the typeface Zed itself uses — bundled under the SIL Open Font
@@ -96,6 +96,11 @@ struct JadeApp {
     /// `search_stale` and `render` recomputes when the tab is showing.
     search_results: Vec<(String, String)>,
     search_stale: bool,
+    /// Bumped per started search; a finished one whose generation is no
+    /// longer current is dropped.
+    search_generation: u64,
+    /// The in-flight background search; dropping it cancels the wait.
+    search_task: Option<Task<()>>,
     _search_subscription: Subscription,
 }
 
@@ -141,6 +146,8 @@ impl JadeApp {
             search_query: String::new(),
             search_results: Vec::new(),
             search_stale: true,
+            search_generation: 0,
+            search_task: None,
             _search_subscription: search_subscription,
         }
     }
@@ -835,31 +842,44 @@ impl JadeApp {
         .into_any_element()
     }
 
-    /// Recomputes `search_results` if anything it depends on changed since
-    /// the last call: `Vault::search` reads every note file.
-    fn refresh_search(&mut self) {
+    /// Starts a background search if anything `search_results` depends on
+    /// changed since the last call: searching reads every note file, so it
+    /// must not block the UI thread. The previous results stay on screen
+    /// until the new ones arrive.
+    fn refresh_search(&mut self, cx: &mut Context<Self>) {
         if !self.search_stale {
             return;
         }
         self.search_stale = false;
-        let query = self.search_query.trim();
-        let mut results: Vec<(String, String)> = if query.is_empty() {
-            Vec::new()
-        } else {
-            self.vault
-                .search(query)
-                .into_iter()
-                .map(|note| (note.id.clone(), note.title.clone()))
-                .collect()
-        };
-        results.sort_by(|a, b| a.1.cmp(&b.1));
-        self.search_results = results;
+        self.search_generation += 1;
+        let generation = self.search_generation;
+        let query = self.search_query.trim().to_string();
+        if query.is_empty() {
+            self.search_task = None;
+            self.search_results.clear();
+            return;
+        }
+        let targets = self.vault.search_targets();
+        self.search_task = Some(cx.spawn(async move |this, cx| {
+            let mut results = cx
+                .background_spawn(async move { search_targets(&targets, &query) })
+                .await;
+            results.sort_by(|a, b| a.1.cmp(&b.1));
+            this.update(cx, |this, cx| {
+                if this.search_generation == generation {
+                    this.search_results = results;
+                    this.search_task = None;
+                    cx.notify();
+                }
+            })
+            .ok();
+        }));
     }
 
     /// The "Search" sidebar tab: a live-filtered list of notes matching the
     /// query, by title or content substring (via `Vault::search`).
     fn render_search_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
-        self.refresh_search();
+        self.refresh_search(cx);
         let mut panel = div()
             .flex()
             .flex_col()
@@ -2100,28 +2120,58 @@ mod tests {
 
     #[gpui_kit::test]
     fn search_results_are_cached_until_something_changes(cx: &mut TestAppContext) {
-        // `Vault::search` reads every note file, so `render` must not call
-        // it per frame: results are recomputed only when marked stale.
+        // Searching reads every note file, so `render` must not trigger it per
+        // frame: results are recomputed only when marked stale, and off the
+        // UI thread.
         let dir = temp_vault();
         std::fs::write(dir.path().join("Note.md"), "alpha").unwrap();
         let (_window, app) = open_app(cx, dir.path().to_path_buf());
-        app.update(cx, |app, _| {
+        let refresh = |cx: &mut TestAppContext| {
+            app.update(cx, |app, cx| app.refresh_search(cx));
+            cx.run_until_parked();
+        };
+        app.update(cx, |app, _| app.search_query = "alpha".to_string());
+        refresh(cx);
+        assert_eq!(app.read_with(cx, |a, _| a.search_results.len()), 1);
+
+        std::fs::write(dir.path().join("Note.md"), "beta").unwrap();
+        refresh(cx);
+        assert_eq!(
+            app.read_with(cx, |a, _| a.search_results.len()),
+            1,
+            "cached: no re-read when not stale"
+        );
+
+        app.update(cx, |app, _| app.search_stale = true);
+        refresh(cx);
+        assert!(
+            app.read_with(cx, |a, _| a.search_results.is_empty()),
+            "stale: re-read from disk"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn a_superseded_search_does_not_overwrite_newer_results(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Alpha.md"), "x").unwrap();
+        std::fs::write(dir.path().join("Beta.md"), "x").unwrap();
+        let (_window, app) = open_app(cx, dir.path().to_path_buf());
+        // Two searches started back to back; only the second may land.
+        app.update(cx, |app, cx| {
             app.search_query = "alpha".to_string();
-            app.refresh_search();
-            assert_eq!(app.search_results.len(), 1);
-
-            std::fs::write(dir.path().join("Note.md"), "beta").unwrap();
-            app.refresh_search();
-            assert_eq!(
-                app.search_results.len(),
-                1,
-                "cached: no re-read when not stale"
-            );
-
+            app.refresh_search(cx);
+            app.search_query = "beta".to_string();
             app.search_stale = true;
-            app.refresh_search();
-            assert!(app.search_results.is_empty(), "stale: re-read from disk");
+            app.refresh_search(cx);
         });
+        cx.run_until_parked();
+        let titles = app.read_with(cx, |a, _| {
+            a.search_results
+                .iter()
+                .map(|r| r.1.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(titles, ["Beta"]);
     }
 
     #[gpui_kit::test]

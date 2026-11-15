@@ -295,17 +295,65 @@ impl Vault {
     /// A note that can't be read matches on its title only.
     pub fn search(&self, query: &str) -> Vec<&Note> {
         let query = query.to_lowercase();
-        // One reused pair of buffers, not a fresh lowercase copy per note.
-        let mut text = String::new();
-        let mut lowered = String::new();
+        let mut scratch = SearchScratch::default();
         self.notes
             .values()
-            .filter(|n| {
-                n.title.to_lowercase().contains(&query)
-                    || n.read_content_into(&mut text).is_ok()
-                        && text_contains(&text, &query, &mut lowered)
+            .filter(|n| note_matches(&n.title, &n.path, &query, &mut scratch))
+            .collect()
+    }
+
+    /// An owned copy of what [`search_targets`] needs from every note, so a
+    /// search can run on another thread while the vault keeps changing.
+    /// Costs three small allocations per note.
+    pub fn search_targets(&self) -> Vec<SearchTarget> {
+        self.notes
+            .values()
+            .map(|n| SearchTarget {
+                id: n.id.clone(),
+                title: n.title.clone(),
+                path: n.path.clone(),
             })
             .collect()
+    }
+}
+
+/// A note as a search sees it. Owned (`Send`) so [`search_targets`] can run
+/// off the UI thread.
+#[derive(Debug, Clone)]
+pub struct SearchTarget {
+    pub id: String,
+    pub title: String,
+    pub path: PathBuf,
+}
+
+/// [`Vault::search`] over a snapshot: the `(id, title)` of each matching
+/// target, in snapshot order.
+pub fn search_targets(targets: &[SearchTarget], query: &str) -> Vec<(String, String)> {
+    let query = query.to_lowercase();
+    let mut scratch = SearchScratch::default();
+    targets
+        .iter()
+        .filter(|t| note_matches(&t.title, &t.path, &query, &mut scratch))
+        .map(|t| (t.id.clone(), t.title.clone()))
+        .collect()
+}
+
+/// One reused pair of buffers for a whole search, not a fresh text and
+/// lowercase copy per note.
+#[derive(Default)]
+struct SearchScratch {
+    text: String,
+    lowered: String,
+}
+
+fn note_matches(title: &str, path: &Path, query_lower: &str, scratch: &mut SearchScratch) -> bool {
+    use std::io::Read;
+    title.to_lowercase().contains(query_lower) || {
+        scratch.text.clear();
+        std::fs::File::open(path)
+            .and_then(|mut f| f.read_to_string(&mut scratch.text))
+            .is_ok()
+            && text_contains(&scratch.text, query_lower, &mut scratch.lowered)
     }
 }
 
@@ -756,5 +804,24 @@ mod tests {
         std::fs::write(dir.path().join("B.md"), "").unwrap();
         let vault = Vault::open(dir.path()).unwrap();
         assert_eq!(vault.backlinks().get("B"), Some(&vec!["A".to_string()]));
+    }
+
+    #[test]
+    fn snapshot_search_matches_vault_search() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Alpha.md"), "nothing").unwrap();
+        std::fs::write(dir.path().join("B.md"), "has ALPHA inside").unwrap();
+        std::fs::write(dir.path().join("C.md"), "no match").unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        for query in ["alpha", "ALPHA", "zzz", "é"] {
+            let mut live: Vec<String> = vault.search(query).iter().map(|n| n.id.clone()).collect();
+            let mut snap: Vec<String> = search_targets(&vault.search_targets(), query)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect();
+            live.sort();
+            snap.sort();
+            assert_eq!(live, snap, "{query}");
+        }
     }
 }

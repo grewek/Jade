@@ -75,10 +75,19 @@ fn bench_search(c: &mut Criterion) {
     group.finish();
 }
 
+/// The part of a background search that still runs on the UI thread.
+fn bench_search_snapshot(c: &mut Criterion) {
+    let (_dir, vault) = vault_with_notes(200, 100);
+    c.bench_function("Vault::search_targets/200_notes", |b| {
+        b.iter(|| vault.search_targets())
+    });
+}
+
 criterion_group!(
     benches,
     bench_extract_wikilinks,
     bench_backlinks,
-    bench_search
+    bench_search,
+    bench_search_snapshot
 );
 criterion_main!(benches);
