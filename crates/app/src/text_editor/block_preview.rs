@@ -36,6 +36,25 @@ pub enum LineRole {
 /// any line given just this one small value.
 pub(super) type FenceState = Option<(u8, usize)>;
 
+/// Lossless 8-byte form of a [`FenceState`] (24 bytes as an `Option`), for
+/// the per-line state array in `document_cache.rs`.
+pub(super) fn pack_fence(state: FenceState) -> u64 {
+    match state {
+        None => 0,
+        Some((ch, len)) => {
+            debug_assert!((len as u64) < 1 << 48);
+            1 << 56 | u64::from(ch) << 48 | len as u64
+        }
+    }
+}
+
+pub(super) fn unpack_fence(packed: u64) -> FenceState {
+    (packed != 0).then_some((
+        (packed >> 48 & 0xFF) as u8,
+        (packed & ((1 << 48) - 1)) as usize,
+    ))
+}
+
 /// The one per-line transition [`classify_lines`] and [`classify_lines_from`]
 /// both fold over: given the fence state entering `line`, returns its
 /// [`LineRole`] and the fence state *after* it (i.e. entering the next
@@ -81,6 +100,7 @@ pub(super) fn classify_lines(source: &str) -> Vec<LineRole> {
         .collect()
 }
 
+#[cfg(test)]
 /// Resumes classification from `state` (the fence state *entering* the
 /// first line of `source`), which is normally a suffix of the whole
 /// document starting at some line, not necessarily the document's actual

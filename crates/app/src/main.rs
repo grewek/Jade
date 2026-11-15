@@ -1966,6 +1966,40 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn opening_a_huge_note_keeps_live_memory_bounded(cx: &mut TestAppContext) {
+        // Live heap after opening, in multiples of the note's size. Was
+        // ~5.5x (vault copy + editor copy + ~38MB of per-line caches).
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Big.md"), &content).unwrap();
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let before = crate::test_alloc::snapshot().current;
+            window.click("Big", cx);
+            window.render_frame(cx);
+            window.render_frame(cx);
+            let opened = crate::test_alloc::snapshot().current.saturating_sub(before);
+            eprintln!(
+                "opening_a_huge_note: editor adds {:.1} MiB ({:.2}x the {}-byte note)",
+                opened as f64 / 1048576.0,
+                opened as f64 / content.len() as f64,
+                content.len()
+            );
+            assert!(
+                opened < content.len() * 3,
+                "opening the note added {opened} bytes for a {}-byte note",
+                content.len()
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn scrolling_through_a_huge_file_does_not_leak(cx: &mut TestAppContext) {
         // Logical heap (`test_alloc`) is asserted; RSS is only reported,
         // because it depends on the allocator's own trim heuristics and a

@@ -635,6 +635,7 @@ pub(super) fn block_context_step(open: OpenBlock, line: &str) -> (LineContext, O
     (ctx, open)
 }
 
+#[cfg(test)]
 /// Resumes classification from `open` (the state *entering* the first line
 /// of `source`), which is normally a suffix of the whole document starting
 /// at some line, not necessarily the document's actual first line. Returns

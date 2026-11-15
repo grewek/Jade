@@ -183,12 +183,83 @@ fn parse_delimiter_row(line: &str, expected_columns: usize) -> Option<Vec<Align>
         .collect()
 }
 
+/// The index of the table containing `line`, if any. Tables are sorted and
+/// disjoint, so this is a binary search; it replaces a per-line lookup array
+/// that was 16 bytes per document line.
+pub(super) fn table_index_at(tables: &[Table], line: usize) -> Option<usize> {
+    let i = tables.partition_point(|t| t.end_line <= line);
+    tables.get(i).filter(|t| t.start_line <= line).map(|_| i)
+}
+
 /// A line is a plausible table row if it contains at least one `|` — the
 /// cheapest possible check, same spirit as this module's other
 /// simplifications; the real validation happens via the *next* line having
 /// to be a valid delimiter row for a table to be recognized at all.
 pub(super) fn is_pipe_row(line: &str) -> bool {
     line.contains('|')
+}
+
+/// Every table in `source`, in order: the same result as
+/// [`classify_tables`]' second value, computed in one streaming pass without
+/// materializing the document's lines or a per-line lookup (which cost
+/// ~12MB of transient allocation on the 320K-line stress fixture).
+pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
+    let mut offset = 0;
+    let mut lines = source
+        .split('\n')
+        .enumerate()
+        .map(|(i, line)| {
+            let start = offset;
+            offset += line.len() + 1;
+            (i, start, line)
+        })
+        .peekable();
+    let mut tables = Vec::new();
+
+    while let Some((start_line, start_byte, header)) = lines.next() {
+        if !is_pipe_row(header) {
+            continue;
+        }
+        let Some(&(_, _, delimiter)) = lines.peek() else {
+            break;
+        };
+        let header_row = scan_row(header);
+        let Some(aligns) = parse_delimiter_row(delimiter, header_row.cells.len()) else {
+            continue;
+        };
+        let (_, delim_start, delim_line) = lines.next().unwrap_or((0, 0, ""));
+        let mut end_line = start_line + 2;
+        let mut end_byte = delim_start + delim_line.len();
+
+        let mut columns: Vec<Column> = header_row
+            .cells
+            .iter()
+            .zip(aligns)
+            .map(|(cell, align)| Column {
+                width: cell.text.chars().count().max(3),
+                align,
+            })
+            .collect();
+        while let Some(&(i, row_start, row)) = lines.peek() {
+            if !is_pipe_row(row) {
+                break;
+            }
+            for (column, cell) in columns.iter_mut().zip(scan_row(row).cells.iter()) {
+                column.width = column.width.max(cell.text.chars().count());
+            }
+            end_line = i + 1;
+            end_byte = row_start + row.len();
+            lines.next();
+        }
+
+        tables.push(Table {
+            start_line,
+            end_line,
+            byte_range: start_byte..end_byte,
+            columns,
+        });
+    }
+    tables
 }
 
 /// Resolves every table in the whole `source` document: for each line, the
@@ -198,6 +269,7 @@ pub(super) fn is_pipe_row(line: &str) -> bool {
 /// `live_preview::classify_block_context`'s list-nesting pass — the same
 /// kind of whole-document state this module's own doc comment explains
 /// tables need and single-line detection can't provide.
+#[cfg(test)]
 pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
     let lines: Vec<&str> = source.split('\n').collect();
     let mut table_for_line = vec![None; lines.len()];
@@ -490,6 +562,15 @@ mod tests {
         assert_eq!(delimiter_align("abc"), None);
         assert_eq!(delimiter_align(""), None);
         assert_eq!(delimiter_align(":"), None);
+    }
+
+    #[test]
+    fn classify_table_list_matches_classify_tables_on_the_stress_fixture() {
+        let Ok(text) = std::fs::read_to_string("benches/fixtures/large_markdown_stress_test.md")
+        else {
+            return;
+        };
+        assert_eq!(classify_table_list(&text), classify_tables(&text).1);
     }
 
     #[test]

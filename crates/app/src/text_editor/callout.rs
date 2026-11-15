@@ -283,6 +283,32 @@ pub(super) struct CalloutState {
     pub(super) current: Option<usize>,
 }
 
+impl CalloutState {
+    /// Lossless 8-byte form, for the per-line state array in
+    /// `document_cache.rs` (the struct itself is 24 bytes).
+    pub(super) fn pack(self) -> u64 {
+        let current = self.current.map_or(0, |c| c as u64 + 1);
+        debug_assert!(current < 1 << 62);
+        (current << 1) | u64::from(self.block_open)
+    }
+
+    pub(super) fn unpack(packed: u64) -> Self {
+        let current = packed >> 1;
+        Self {
+            block_open: packed & 1 == 1,
+            current: (current != 0).then(|| current as usize - 1),
+        }
+    }
+}
+
+/// The index of the callout containing `line`, if any. Callouts are sorted
+/// and disjoint, so this is a binary search; it replaces a per-line lookup
+/// array that was 16 bytes per document line.
+pub(super) fn callout_index_at(callouts: &[Callout], line: usize) -> Option<usize> {
+    let i = callouts.partition_point(|c| c.end_line <= line);
+    callouts.get(i).filter(|c| c.start_line <= line).map(|_| i)
+}
+
 /// The one per-line transition [`classify_callouts`]/[`classify_callouts_from`]
 /// both fold over — pulled out of the original single sequential loop the
 /// same way `block_preview::step` was, so an incremental caller can resume
@@ -372,6 +398,7 @@ pub(super) fn step(
     )
 }
 
+#[cfg(test)]
 /// Resumes classification from `state` (the state *entering* the first
 /// line of `source`, whose absolute document line index is `start_line`)
 /// — `source` is normally a suffix of the whole document, not necessarily

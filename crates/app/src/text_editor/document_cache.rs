@@ -39,7 +39,7 @@
 
 use std::ops::Range;
 
-use super::block_preview::{self, FenceState, LineRole};
+use super::block_preview::{self, LineRole};
 use super::callout::{self, Callout, CalloutState};
 use super::fenwick::{Fenwick, LINE_GROWTH_SLACK};
 use super::live_preview::{self, LineContext, OpenBlock};
@@ -123,7 +123,7 @@ pub(super) struct DocumentCache {
     /// `fence_states[0]` is always `None`) — the small per-line value
     /// `patch_block_preview` resumes from and compares against to know
     /// when it can stop walking forward. Parallel to `line_roles`.
-    fence_states: Vec<FenceState>,
+    fence_states: Vec<u64>,
     /// Per-line byte strides (`line_text.len() + 1` for every line but the
     /// last, which has no trailing `\n`) — lets every patch function below
     /// map an edit's byte offset to a line index in O(log n) instead of
@@ -135,13 +135,11 @@ pub(super) struct DocumentCache {
     /// Parallel to `block_contexts`, same role `fence_states` plays for
     /// `line_roles`.
     open_block_states: Vec<OpenBlock>,
-    table_for_line: Vec<Option<usize>>,
     tables: Vec<Table>,
-    callout_for_line: Vec<Option<usize>>,
     callouts: Vec<Callout>,
     /// `callout_states[i]` is the `CalloutState` *entering* line `i`.
     /// Parallel to `callout_for_line`.
-    callout_states: Vec<CalloutState>,
+    callout_states: Vec<u64>,
     /// `callout_counts[i]` is `callouts.len()` *entering* line `i` (i.e.
     /// how many callouts had already been created by the time line `i` was
     /// about to be processed) — `patch_callouts` needs this on top of
@@ -150,7 +148,7 @@ pub(super) struct DocumentCache {
     /// the *same number* of callouts by the same point, not just reached
     /// an equal `(block_open, current)` state — see that function's own
     /// doc comment.
-    callout_counts: Vec<usize>,
+    callout_counts: Vec<u32>,
 }
 
 impl DocumentCache {
@@ -165,9 +163,7 @@ impl DocumentCache {
             line_index: Fenwick::new(&[]),
             block_contexts: Vec::new(),
             open_block_states: Vec::new(),
-            table_for_line: Vec::new(),
             tables: Vec::new(),
-            callout_for_line: Vec::new(),
             callouts: Vec::new(),
             callout_states: Vec::new(),
             callout_counts: Vec::new(),
@@ -184,16 +180,8 @@ impl DocumentCache {
         &self.block_contexts
     }
 
-    pub(super) fn table_for_line(&self) -> &[Option<usize>] {
-        &self.table_for_line
-    }
-
     pub(super) fn tables(&self) -> &[Table] {
         &self.tables
-    }
-
-    pub(super) fn callout_for_line(&self) -> &[Option<usize>] {
-        &self.callout_for_line
     }
 
     pub(super) fn callouts(&self) -> &[Callout] {
@@ -285,11 +273,7 @@ impl DocumentCache {
         // Tables the edit touched are dropped here; `patch_tables`
         // re-derives them from the extents `table_pre` saved. Tables after
         // the edit just move.
-        let old_last = (span.start_line + span.lines_removed).min(self.line_roles.len() - 1);
-        let first = self
-            .tables
-            .partition_point(|t| t.end_line <= span.start_line);
-        let end = self.tables.partition_point(|t| t.start_line <= old_last);
+        let (first, end) = self.tables_touching(span);
         self.tables.drain(first..end);
         for t in &mut self.tables[first..] {
             t.start_line = shift_line(t.start_line, delta);
@@ -300,71 +284,65 @@ impl DocumentCache {
         resize_vec(&mut self.fence_states, at, delta);
         resize_vec(&mut self.block_contexts, at, delta);
         resize_vec(&mut self.open_block_states, at, delta);
-        resize_vec(&mut self.table_for_line, at, delta);
-        resize_vec(&mut self.callout_for_line, at, delta);
         resize_vec(&mut self.callout_states, at, delta);
         resize_vec(&mut self.callout_counts, at, delta);
         self.line_index.resize(at, delta);
     }
 
+    // The three `recompute_*` below stream each line's step straight into
+    // its arrays: collecting a per-line result `Vec` first cost up to 15MB
+    // of transient garbage on the stress fixture, which the allocator then
+    // kept as retained-but-free memory.
+
     fn recompute_block_preview(&mut self, text: &str) {
-        let results = block_preview::classify_lines_from(text, None);
-        let n = results.len();
-        self.line_roles = results.iter().map(|(role, _)| *role).collect();
-        self.fence_states = Vec::with_capacity(n);
-        self.fence_states.push(None);
-        self.fence_states.extend(
-            results
-                .iter()
-                .take(n.saturating_sub(1))
-                .map(|(_, state)| *state),
-        );
+        let n = count_lines(text);
+        let mut roles = Vec::with_capacity(n + LINE_GROWTH_SLACK);
+        let mut states = Vec::with_capacity(n + LINE_GROWTH_SLACK);
+        let mut state = None;
+        for line in text.split('\n') {
+            states.push(block_preview::pack_fence(state));
+            let (role, next) = block_preview::step(state, line);
+            roles.push(role);
+            state = next;
+        }
+        self.line_roles = roles;
+        self.fence_states = states;
         self.line_index = build_line_index(text);
     }
 
     fn recompute_callouts(&mut self, text: &str) {
+        let n = count_lines(text);
         let mut callouts = Vec::new();
-        let results =
-            callout::classify_callouts_from(text, CalloutState::default(), 0, &mut callouts);
-        let n = results.len();
-        self.callout_for_line = results.iter().map(|(callout, _, _)| *callout).collect();
-        self.callout_states = Vec::with_capacity(n);
-        self.callout_states.push(CalloutState::default());
-        self.callout_states.extend(
-            results
-                .iter()
-                .take(n.saturating_sub(1))
-                .map(|(_, state, _)| *state),
-        );
-        self.callout_counts = Vec::with_capacity(n);
-        self.callout_counts.push(0);
-        self.callout_counts.extend(
-            results
-                .iter()
-                .take(n.saturating_sub(1))
-                .map(|(_, _, count)| *count),
-        );
+        let mut states = Vec::with_capacity(n + LINE_GROWTH_SLACK);
+        let mut counts = Vec::with_capacity(n + LINE_GROWTH_SLACK);
+        let mut state = CalloutState::default();
+        for (i, line) in text.split('\n').enumerate() {
+            states.push(state.pack());
+            counts.push(callouts.len() as u32);
+            state = callout::step(state, line, i, &mut callouts).1;
+        }
+        self.callout_states = states;
+        self.callout_counts = counts;
         self.callouts = callouts;
     }
 
     fn recompute_block_context(&mut self, text: &str) {
-        let results = live_preview::classify_block_context_from(text, OpenBlock::None);
-        let n = results.len();
-        self.block_contexts = results.iter().map(|(ctx, _)| *ctx).collect();
-        self.open_block_states = Vec::with_capacity(n);
-        self.open_block_states.push(OpenBlock::None);
-        self.open_block_states.extend(
-            results
-                .into_iter()
-                .take(n.saturating_sub(1))
-                .map(|(_, state)| state),
-        );
+        let n = count_lines(text);
+        let mut contexts = Vec::with_capacity(n + LINE_GROWTH_SLACK);
+        let mut states = Vec::with_capacity(n + LINE_GROWTH_SLACK);
+        let mut open = OpenBlock::None;
+        for line in text.split('\n') {
+            states.push(open.clone());
+            let (ctx, next) = live_preview::block_context_step(open, line);
+            contexts.push(ctx);
+            open = next;
+        }
+        self.block_contexts = contexts;
+        self.open_block_states = states;
     }
 
     fn recompute_tables(&mut self, text: &str) {
-        let (table_for_line, tables) = table_preview::classify_tables(text);
-        self.table_for_line = table_for_line;
-        self.tables = tables;
+        self.tables = table_preview::classify_table_list(text);
     }
 
     /// The byte offset right after line `line`'s own content, excluding
@@ -400,23 +378,26 @@ impl DocumentCache {
     /// Reads, from the *old* layout, which tables the edit's replaced lines
     /// belonged to. Must run before [`Self::resize_lines`].
     fn table_pre(&self, span: &EditSpan) -> TablePre {
-        let old_last = (span.start_line + span.lines_removed).min(self.table_for_line.len() - 1);
-        let mut pre = TablePre {
-            touched_old_table: false,
-            old_extent: None,
-        };
-        for idx in self.table_for_line[span.start_line..=old_last]
-            .iter()
-            .flatten()
-        {
-            let t = &self.tables[*idx];
-            pre.touched_old_table = true;
-            pre.old_extent = Some(match pre.old_extent {
-                None => (t.start_line, t.end_line),
-                Some((s, e)) => (s.min(t.start_line), e.max(t.end_line)),
-            });
+        let (first, end) = self.tables_touching(span);
+        let touched = &self.tables[first..end];
+        TablePre {
+            touched_old_table: !touched.is_empty(),
+            old_extent: touched
+                .first()
+                .zip(touched.last())
+                .map(|(a, b)| (a.start_line.min(b.start_line), a.end_line.max(b.end_line))),
         }
-        pre
+    }
+
+    /// The `tables[first..end]` that contain a line the edit replaced (old
+    /// numbering: call before [`Self::resize_lines`]).
+    fn tables_touching(&self, span: &EditSpan) -> (usize, usize) {
+        let old_last = (span.start_line + span.lines_removed).min(self.line_roles.len() - 1);
+        let first = self
+            .tables
+            .partition_point(|t| t.end_line <= span.start_line);
+        let end = self.tables.partition_point(|t| t.start_line <= old_last);
+        (first, end.max(first))
     }
 
     /// The real incremental path for `table_preview`: unlike the other
@@ -446,7 +427,7 @@ impl DocumentCache {
     /// touched — bounded by the window's own size plus the total number of
     /// tables and the line spans of ones kept, not by document length.
     fn patch_tables(&mut self, text: &str, span: &EditSpan, pre: &TablePre) -> Range<usize> {
-        let line_count = self.table_for_line.len();
+        let line_count = self.line_roles.len();
         let start_line = span.start_line;
         let last_touched_line = span.last_new_line().min(line_count.saturating_sub(1));
 
@@ -534,7 +515,7 @@ impl DocumentCache {
         let window_start_byte = self.line_index.prefix_sum(window_start) as usize;
         let window_end_byte = self.line_end_byte(window_end - 1);
         let window_text = &text[window_start_byte..window_end_byte];
-        let (local_for_line, local_tables) = table_preview::classify_tables(window_text);
+        let local_tables = table_preview::classify_table_list(window_text);
 
         let prefix_table_count = self.tables.partition_point(|t| t.end_line <= window_start);
         let suffix_start_idx = self.tables.partition_point(|t| t.start_line < window_end);
@@ -549,7 +530,6 @@ impl DocumentCache {
                 columns: t.columns.clone(),
             });
         }
-        let first_kept_suffix_new_idx = new_tables.len();
         for t in &self.tables[suffix_start_idx..] {
             new_tables.push(Table {
                 start_line: t.start_line,
@@ -558,16 +538,6 @@ impl DocumentCache {
                     ..self.line_end_byte(t.end_line - 1),
                 columns: t.columns.clone(),
             });
-        }
-
-        for (i, entry) in local_for_line.iter().enumerate() {
-            self.table_for_line[window_start + i] = entry.map(|idx| idx + prefix_table_count);
-        }
-        for (offset, t) in new_tables[first_kept_suffix_new_idx..].iter().enumerate() {
-            let new_idx = first_kept_suffix_new_idx + offset;
-            for entry in &mut self.table_for_line[t.start_line..t.end_line] {
-                *entry = Some(new_idx);
-            }
         }
 
         self.tables = new_tables;
@@ -632,7 +602,7 @@ impl DocumentCache {
         let last_touched_line = span.last_new_line();
 
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
-        let mut state = self.fence_states[start_line];
+        let mut state = block_preview::unpack_fence(self.fence_states[start_line]);
         for (i, (line, line_len, has_next_line)) in (start_line..).zip(lines_from(text, start_byte))
         {
             let (role, next_state) = block_preview::step(state, line);
@@ -643,10 +613,11 @@ impl DocumentCache {
             self.line_index.add_at(i, new_len - old_len);
 
             let has_next = i + 1 < old_line_count;
+            let packed_next = block_preview::pack_fence(next_state);
             let reconverged =
-                has_next && i >= last_touched_line && self.fence_states[i + 1] == next_state;
+                has_next && i >= last_touched_line && self.fence_states[i + 1] == packed_next;
             if has_next {
-                self.fence_states[i + 1] = next_state;
+                self.fence_states[i + 1] = packed_next;
             }
             if reconverged || !has_next {
                 return start_line..(i + 1);
@@ -677,28 +648,28 @@ impl DocumentCache {
     ///    would otherwise have kept extending it. Caught by this module's
     ///    own randomized property test, not reasoned out in advance.
     fn patch_callouts(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
-        let old_line_count = self.callout_for_line.len();
+        let old_line_count = self.line_roles.len();
         let start_line = span.start_line;
         let last_touched_line = span.last_new_line();
 
-        let prefix_callout_count = self.callout_counts[start_line];
+        let prefix_callout_count = self.callout_counts[start_line] as usize;
         let old_snapshot: Vec<Callout> = self.callouts.clone();
         self.callouts.truncate(prefix_callout_count);
 
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
-        let mut state = self.callout_states[start_line];
+        let mut state = CalloutState::unpack(self.callout_states[start_line]);
         for (i, (line, ..)) in (start_line..).zip(lines_from(text, start_byte)) {
-            let (callout_idx, next_state) = callout::step(state, line, i, &mut self.callouts);
-            self.callout_for_line[i] = callout_idx;
+            let (_, next_state) = callout::step(state, line, i, &mut self.callouts);
+            let packed_next = next_state.pack();
 
             let has_next = i + 1 < old_line_count;
             let reconverged = has_next
                 && i >= last_touched_line
-                && self.callout_states[i + 1] == next_state
-                && self.callouts.len() == self.callout_counts[i + 1];
+                && self.callout_states[i + 1] == packed_next
+                && self.callouts.len() == self.callout_counts[i + 1] as usize;
             if has_next {
-                self.callout_states[i + 1] = next_state;
-                self.callout_counts[i + 1] = self.callouts.len();
+                self.callout_states[i + 1] = packed_next;
+                self.callout_counts[i + 1] = self.callouts.len() as u32;
             }
             if reconverged {
                 // The skipped tail lies after the edit, so its stored line
@@ -766,6 +737,11 @@ fn union_ranges(a: Range<usize>, b: Range<usize>) -> Range<usize> {
     a.start.min(b.start)..a.end.max(b.end)
 }
 
+/// The number of lines `text.split('\n')` yields.
+fn count_lines(text: &str) -> usize {
+    text.bytes().filter(|&b| b == b'\n').count() + 1
+}
+
 /// `line` moved by `delta` lines.
 fn shift_line(line: usize, delta: isize) -> usize {
     let shifted = line as isize + delta;
@@ -800,8 +776,6 @@ fn reserve_line_slack(cache: &mut DocumentCache) {
     slack(&mut cache.fence_states);
     slack(&mut cache.block_contexts);
     slack(&mut cache.open_block_states);
-    slack(&mut cache.table_for_line);
-    slack(&mut cache.callout_for_line);
     slack(&mut cache.callout_states);
     slack(&mut cache.callout_counts);
 }
@@ -834,13 +808,13 @@ fn lines_from(text: &str, start_byte: usize) -> impl Iterator<Item = (&str, usiz
 /// tree so `prefix_sum(i)` gives line `i`'s own byte offset and `find`
 /// answers "which line contains byte offset X" in O(log n).
 fn build_line_index(text: &str) -> Fenwick {
-    let mut strides = Vec::new();
+    let mut strides = Vec::with_capacity(count_lines(text));
     let mut lines = text.split('\n').peekable();
     while let Some(line) = lines.next() {
         let has_next = lines.peek().is_some();
         strides.push(line.len() as i64 + if has_next { 1 } else { 0 });
     }
-    Fenwick::new(&strides)
+    Fenwick::from_vec(strides)
 }
 
 #[cfg(test)]
@@ -936,7 +910,7 @@ mod tests {
         let (new_text, edit) = apply_edit(&text, blank_line_start, blank_line_start + 1, "");
         cache.record_edit(&new_text, edit);
         let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
-        assert_eq!(cache.table_for_line(), expected_for_line.as_slice());
+        assert_eq!(table_for_line_of(&cache), expected_for_line);
         assert_eq!(cache.tables(), expected_tables.as_slice());
         assert_eq!(cache.tables().len(), 1, "the two tables merged into one");
         text = new_text;
@@ -955,7 +929,7 @@ mod tests {
         let (new_text, edit) = apply_edit(&text, delim_start, delim_start + 1, "x");
         cache.record_edit(&new_text, edit);
         let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
-        assert_eq!(cache.table_for_line(), expected_for_line.as_slice());
+        assert_eq!(table_for_line_of(&cache), expected_for_line);
         assert_eq!(cache.tables(), expected_tables.as_slice());
         text = new_text;
 
@@ -964,8 +938,22 @@ mod tests {
         let (new_text, edit) = apply_edit(&text, 0, 0, "BEFORE ");
         cache.record_edit(&new_text, edit);
         let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
-        assert_eq!(cache.table_for_line(), expected_for_line.as_slice());
+        assert_eq!(table_for_line_of(&cache), expected_for_line);
         assert_eq!(cache.tables(), expected_tables.as_slice());
+    }
+
+    /// What the removed per-line lookup arrays held, derived from `tables`
+    /// and `callouts`: compared against the whole-document oracles.
+    fn table_for_line_of(cache: &DocumentCache) -> Vec<Option<usize>> {
+        (0..cache.line_count())
+            .map(|i| table_preview::table_index_at(cache.tables(), i))
+            .collect()
+    }
+
+    fn callout_for_line_of(cache: &DocumentCache) -> Vec<Option<usize>> {
+        (0..cache.line_count())
+            .map(|i| callout::callout_index_at(cache.callouts(), i))
+            .collect()
     }
 
     /// Every field of `cache`, including the entering-state arrays and the
@@ -987,15 +975,7 @@ mod tests {
             cache.open_block_states, fresh.open_block_states,
             "open_block_states {context}"
         );
-        assert_eq!(
-            cache.table_for_line, fresh.table_for_line,
-            "table_for_line {context}"
-        );
         assert_eq!(cache.tables, fresh.tables, "tables {context}");
-        assert_eq!(
-            cache.callout_for_line, fresh.callout_for_line,
-            "callout_for_line {context}"
-        );
         assert_eq!(cache.callouts, fresh.callouts, "callouts {context}");
         assert_eq!(
             cache.callout_states, fresh.callout_states,
@@ -1101,8 +1081,8 @@ mod tests {
             let (expected_callout_for_line, expected_callouts) =
                 callout::classify_callouts(&new_text);
             assert_eq!(
-                cache.callout_for_line(),
-                expected_callout_for_line.as_slice(),
+                callout_for_line_of(&cache),
+                expected_callout_for_line,
                 "callout_for_line step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
             );
             assert_eq!(
@@ -1121,8 +1101,8 @@ mod tests {
             let (expected_table_for_line, expected_tables) =
                 table_preview::classify_tables(&new_text);
             assert_eq!(
-                cache.table_for_line(),
-                expected_table_for_line.as_slice(),
+                table_for_line_of(&cache),
+                expected_table_for_line,
                 "table_for_line step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
             );
             assert_eq!(

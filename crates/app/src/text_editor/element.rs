@@ -6,7 +6,7 @@ use gpui_kit::*;
 
 use super::Editor;
 use super::block_preview::LineRole;
-use super::callout::{Callout, CalloutType};
+use super::callout::{Callout, CalloutType, callout_index_at};
 use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
 use super::live_preview::{
@@ -14,17 +14,12 @@ use super::live_preview::{
     build_display_line, build_display_line_in_context, build_table_row, hidden_line,
     is_thematic_break, line_indent,
 };
-use super::table_preview::{self, Table};
+use super::table_preview::{self, Table, table_index_at};
 
 /// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
-/// `classify_callouts`' per-line lookup (`callout_for_line`) and the
-/// resolved `callouts` themselves — same shape as `table_line_kind`.
-pub(super) fn callout_at_line<'a>(
-    callouts: &'a [Callout],
-    callout_for_line: &[Option<usize>],
-    line_index: usize,
-) -> Option<&'a Callout> {
-    callout_for_line[line_index].map(|idx| &callouts[idx])
+/// the resolved `callouts` — same shape as `table_line_kind`.
+pub(super) fn callout_at_line(callouts: &[Callout], line_index: usize) -> Option<&Callout> {
+    callout_index_at(callouts, line_index).map(|idx| &callouts[idx])
 }
 
 /// Which table-related rendering a `LineRole::Plain` line needs, resolved
@@ -37,14 +32,9 @@ pub(super) enum TableLineKind<'a> {
     Row(&'a Table),
 }
 
-/// Resolves `line_index`'s [`TableLineKind`] from `classify_tables`'
-/// per-line table-index lookup and the resolved `tables` themselves.
-pub(super) fn table_line_kind<'a>(
-    tables: &'a [Table],
-    table_for_line: &[Option<usize>],
-    line_index: usize,
-) -> TableLineKind<'a> {
-    match table_for_line[line_index] {
+/// Resolves `line_index`'s [`TableLineKind`] from the resolved `tables`.
+pub(super) fn table_line_kind(tables: &[Table], line_index: usize) -> TableLineKind<'_> {
+    match table_index_at(tables, line_index) {
         None => TableLineKind::None,
         Some(idx) => {
             let table = &tables[idx];
@@ -67,13 +57,12 @@ pub(super) fn table_line_kind<'a>(
 /// `focused`-gating as `is_active_line`.
 pub(super) fn is_table_active(
     tables: &[Table],
-    table_for_line: &[Option<usize>],
     line_index: usize,
     cursor: usize,
     focused: bool,
 ) -> bool {
     focused
-        && table_for_line[line_index].is_some_and(|idx| {
+        && table_index_at(tables, line_index).is_some_and(|idx| {
             let range = &tables[idx].byte_range;
             cursor >= range.start && cursor <= range.end
         })
@@ -439,7 +428,7 @@ impl RowHeightCache {
                 });
             counts.push(count as i64);
         }
-        self.rows = Fenwick::new(&counts);
+        self.rows = Fenwick::from_vec(counts);
         self.active_line = if focused {
             Some(doc.line_at(cursor))
         } else {
@@ -604,10 +593,7 @@ fn estimate_row_count(
     char_width: Pixels,
     available_width: Pixels,
 ) -> Option<usize> {
-    if !matches!(
-        table_line_kind(doc.tables(), doc.table_for_line(), i),
-        TableLineKind::None
-    ) {
+    if !matches!(table_line_kind(doc.tables(), i), TableLineKind::None) {
         return None;
     }
     let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
@@ -646,9 +632,9 @@ fn row_count_for_line(
     let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
     let line_text = &text[line_range.clone()];
     let active = is_active_line(&line_range, cursor, focused);
-    let table_kind = table_line_kind(doc.tables(), doc.table_for_line(), i);
-    let table_active = is_table_active(doc.tables(), doc.table_for_line(), i, cursor, focused);
-    let callout = callout_at_line(doc.callouts(), doc.callout_for_line(), i);
+    let table_kind = table_line_kind(doc.tables(), i);
+    let table_active = is_table_active(doc.tables(), i, cursor, focused);
+    let callout = callout_at_line(doc.callouts(), i);
     let callout_is_header = callout.is_some_and(|c| c.is_header(i));
     let (display_lines, wrap_width) = build_display_lines(
         line_text,
@@ -1398,9 +1384,7 @@ pub(super) fn render_editor(
                             &layout,
                             doc.line_roles(),
                             doc.block_contexts(),
-                            doc.table_for_line(),
                             doc.tables(),
-                            doc.callout_for_line(),
                             doc.callouts(),
                             &callout_ranges,
                             cursor,
@@ -1496,9 +1480,7 @@ fn register_mouse_handling(
                     &layout,
                     doc.line_roles(),
                     doc.block_contexts(),
-                    doc.table_for_line(),
                     doc.tables(),
-                    doc.callout_for_line(),
                     doc.callouts(),
                     cursor,
                     focused,
@@ -1538,9 +1520,7 @@ fn register_mouse_handling(
                     &layout,
                     doc.line_roles(),
                     doc.block_contexts(),
-                    doc.table_for_line(),
                     doc.tables(),
-                    doc.callout_for_line(),
                     doc.callouts(),
                     cursor,
                     focused,
@@ -1594,9 +1574,7 @@ fn offset_for_position(
     layout: &LineLayout,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
-    table_for_line: &[Option<usize>],
     tables: &[Table],
-    callout_for_line: &[Option<usize>],
     callouts: &[Callout],
     cursor: usize,
     focused: bool,
@@ -1619,9 +1597,9 @@ fn offset_for_position(
     for i in range.clone() {
         let line_text = &text[layout.line_range(i)];
         let active = is_active_line(&layout.line_range(i), cursor, focused);
-        let table_kind = table_line_kind(tables, table_for_line, i);
-        let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
-        let callout = callout_at_line(callouts, callout_for_line, i);
+        let table_kind = table_line_kind(tables, i);
+        let table_active = is_table_active(tables, i, cursor, focused);
+        let callout = callout_at_line(callouts, i);
         let callout_is_header = callout.is_some_and(|c| c.is_header(i));
         let results = shape_display_line(
             line_text,
@@ -1755,9 +1733,7 @@ fn paint_lines(
     layout: &LineLayout,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
-    table_for_line: &[Option<usize>],
     tables: &[Table],
-    callout_for_line: &[Option<usize>],
     callouts: &[Callout],
     callout_ranges: &[(Pixels, Pixels)],
     cursor: usize,
@@ -1828,7 +1804,7 @@ fn paint_lines(
     // a table's start by actually visiting its header row, which doesn't
     // happen if that row is outside `range`.
     let mut table_paint: Option<TablePaint> = None;
-    if let Some(idx) = table_for_line[range.start] {
+    if let Some(idx) = table_index_at(tables, range.start) {
         let table = &tables[idx];
         if table.start_line < range.start {
             let max_chars =
@@ -1861,9 +1837,9 @@ fn paint_lines(
         let line_range = layout.line_range(i);
         let line_text = &text[line_range.clone()];
         let active = is_active_line(&line_range, cursor, show_cursor);
-        let table_kind = table_line_kind(tables, table_for_line, i);
-        let table_active = is_table_active(tables, table_for_line, i, cursor, show_cursor);
-        let callout = callout_at_line(callouts, callout_for_line, i);
+        let table_kind = table_line_kind(tables, i);
+        let table_active = is_table_active(tables, i, cursor, show_cursor);
+        let callout = callout_at_line(callouts, i);
         let callout_is_header = callout.is_some_and(|c| c.is_header(i));
 
         let results = shape_display_line(
@@ -1918,10 +1894,7 @@ fn paint_lines(
         // `table_kind_for_geometry` below).
         if !active
             && matches!(line_roles[i], LineRole::Plain)
-            && matches!(
-                table_line_kind(tables, table_for_line, i),
-                TableLineKind::None
-            )
+            && matches!(table_line_kind(tables, i), TableLineKind::None)
             && is_thematic_break(line_text)
         {
             let mid_y = bounds.origin.y + y_offset + total_height / 2.;
@@ -1939,7 +1912,7 @@ fn paint_lines(
             // above — cheap to resolve again (a plain array lookup) rather
             // than restructuring this loop just to keep the first value
             // alive.
-            let table_kind_for_geometry = table_line_kind(tables, table_for_line, i);
+            let table_kind_for_geometry = table_line_kind(tables, i);
             if let TableLineKind::Row(table) | TableLineKind::Delimiter(table) =
                 &table_kind_for_geometry
             {

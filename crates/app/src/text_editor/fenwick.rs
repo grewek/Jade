@@ -39,6 +39,16 @@ impl Fenwick {
         fenwick
     }
 
+    /// Like [`Self::new`], but takes ownership of `values` and reuses its
+    /// buffer instead of copying it (a second multi-MB allocation).
+    pub(super) fn from_vec(mut values: Vec<i64>) -> Self {
+        values.reserve_exact(1 + LINE_GROWTH_SLACK);
+        values.insert(0, 0);
+        let mut fenwick = Self { tree: values };
+        fenwick.build_in_place();
+        fenwick
+    }
+
     /// Raw values -> tree, O(n): each node adds itself into its parent.
     fn build_in_place(&mut self) {
         let n = self.len();

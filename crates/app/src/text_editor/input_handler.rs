@@ -192,9 +192,7 @@ impl EntityInputHandler for Editor {
         let cache_ref = self.document_cache.borrow();
         let line_roles = cache_ref.line_roles();
         let block_contexts = cache_ref.block_contexts();
-        let table_for_line = cache_ref.table_for_line();
         let tables = cache_ref.tables();
-        let callout_for_line = cache_ref.callout_for_line();
         let callouts = cache_ref.callouts();
         let viewport = self.scroll_handle.bounds();
         let range = visible_line_range(&layout, element_bounds, viewport);
@@ -207,9 +205,9 @@ impl EntityInputHandler for Editor {
             let line_range = layout.line_range(i);
             let line_text = &text[line_range.clone()];
             let active = is_active_line(&line_range, cursor, focused);
-            let table_kind = table_line_kind(tables, table_for_line, i);
-            let table_active = is_table_active(tables, table_for_line, i, cursor, focused);
-            let callout = callout_at_line(callouts, callout_for_line, i);
+            let table_kind = table_line_kind(tables, i);
+            let table_active = is_table_active(tables, i, cursor, focused);
+            let callout = callout_at_line(callouts, i);
             let callout_is_header = callout.is_some_and(|c| c.is_header(i));
             let results = shape_display_line(
                 line_text,
