@@ -2664,12 +2664,9 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn ctrl_z_undoes_the_last_keystrokes_edit(cx: &mut TestAppContext) {
-        // `window.input` dispatches one character per keystroke, and each
-        // character arrives through `EntityInputHandler::replace_text_in_range`
-        // as its own `buffer.insert` call — so, per this editor's documented
-        // "basic" (non-coalescing) undo, one ctrl-z only undoes the single
-        // last-typed character, not the whole burst of typing.
+    fn ctrl_z_undoes_a_whole_burst_of_typed_characters(cx: &mut TestAppContext) {
+        // `window.input` sends one char at a time through
+        // `replace_text_in_range`, the real typing path.
         let (window, editor) = open_editor(cx, "hello");
         cx.update_window(window, |_, window, cx| {
             focus_editor(window, cx);
@@ -2680,16 +2677,12 @@ mod tests {
         .unwrap();
 
         let text = editor.read_with(cx, |editor, _| editor.buffer().text().to_string());
-        assert_eq!(
-            text, "hello worl",
-            "ctrl-z should undo only the last-typed character"
-        );
+        assert_eq!(text, "hello", "the typed burst undoes as one step");
     }
 
     #[gpui_kit::test]
     fn ctrl_z_then_ctrl_shift_z_round_trips_a_pasted_insert(cx: &mut TestAppContext) {
-        // Pasted text arrives in one `buffer.insert` call, so (unlike typing,
-        // see the test above) it's a single undo/redo step.
+        // Pasted text arrives in one `buffer.insert` call: a single step.
         let (window, editor) = open_editor(cx, "hello");
         cx.update_window(window, |_, window, cx| {
             focus_editor(window, cx);

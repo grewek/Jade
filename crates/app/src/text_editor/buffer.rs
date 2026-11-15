@@ -32,30 +32,18 @@ pub struct EditorBuffer {
     /// every other operation (even just moving left/right) since those make
     /// a new column the deliberate one.
     preferred_column: Option<usize>,
-    /// One snapshot per *burst* of same-kind, contiguous text-modifying
-    /// operations (not one per individual operation, and not per cursor
-    /// movement) — see `push_undo`/`LastEdit` for what counts as
-    /// "continuing" a burst. Capped at `UNDO_STACK_CAP` entries, oldest
-    /// evicted first, so even a long uncoalesced sequence (many distinct,
-    /// non-contiguous edits) can't retain an unbounded number of full-text
-    /// clones.
+    /// One full-text snapshot per burst of same-kind contiguous edits (see
+    /// `LastEdit`), capped at `UNDO_STACK_CAP`, oldest evicted first.
     undo_stack: Vec<Snapshot>,
     redo_stack: Vec<Snapshot>,
-    /// The most recent text-modifying operation's kind and the buffer
-    /// position a *following* operation must start at to be considered
-    /// part of the same burst — `None` whenever the next edit should
-    /// unconditionally start a fresh undo entry (right after undo/redo, an
-    /// explicit cursor move, `select_all`, or any edit that replaced an
-    /// active selection, since none of those represent "the same simple
-    /// typing/backspacing session continuing").
+    /// Where the next edit must start to continue the current burst. `None`
+    /// forces a fresh undo entry: after undo/redo, a cursor move,
+    /// `select_all`, or an edit that replaced a selection.
     last_edit: Option<LastEdit>,
 }
 
-/// Which direction of plain (no-selection) edit just happened — kept
-/// separate from `None` (any selection-involving edit) so inserting and
-/// then immediately backspacing, or backspacing and then forward-deleting,
-/// each still starts a new undo entry rather than silently merging two
-/// edits that moved in different directions into one step.
+/// Direction of a plain (no-selection) edit; a change of direction starts a
+/// new undo entry instead of merging into the previous burst.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum EditKind {
     Insert,
@@ -69,12 +57,8 @@ struct LastEdit {
     continuation_point: usize,
 }
 
-/// How many burst-coalesced undo entries to retain at most — generous
-/// enough that this is never the limiting factor in practice (each entry
-/// is a whole burst, e.g. a sentence's worth of typing, not one
-/// character), while still giving the uncoalesced worst case (many
-/// distinct, non-contiguous edits — e.g. repeated find/replace at
-/// scattered positions) a hard ceiling on retained full-text clones.
+/// Hard ceiling on retained full-text clones for the uncoalesced worst case
+/// (many scattered, non-contiguous edits).
 const UNDO_STACK_CAP: usize = 100;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -139,11 +123,8 @@ impl EditorBuffer {
             self.anchor = None;
         }
         self.cursor = offset;
-        // An explicit cursor move always ends the current undo burst, even
-        // if a later edit happens to land back at the same position —
-        // moving away (a click, an arrow key) is a deliberate break in the
-        // editing session, not something that should let a coincidentally
-        // same-position edit silently merge with whatever came before it.
+        // A move ends the burst even if the next edit lands back at the same
+        // spot; use `replace_range_with` to position without breaking it.
         self.last_edit = None;
     }
 
@@ -157,23 +138,34 @@ impl EditorBuffer {
     /// Replaces the selection (if any) with `s`, else inserts it at the cursor.
     /// The cursor ends up right after the inserted text.
     pub fn insert(&mut self, s: &str) {
-        let had_selection = self.selection().is_some();
         let range = self.selection().unwrap_or(self.cursor..self.cursor);
-        // Continues the current burst only if this is itself a plain
-        // (no-selection) insert landing exactly where the last one in the
-        // burst left the cursor — see `LastEdit`'s own doc comment.
-        let continues = !had_selection
+        self.replace_range_with(range, s);
+    }
+
+    /// Replaces `range` with `s` and puts the cursor right after it.
+    ///
+    /// Unlike `set_cursor` + `insert`, this never touches `last_edit` on the
+    /// way in, so a burst of plain inserts coalesces into one undo entry even
+    /// when every call positions itself first (the IME/OS text-input path).
+    /// Offsets are clamped to char boundaries and ordered, like `set_cursor`
+    /// plus a normalized selection, since the OS may hand us either order.
+    pub fn replace_range_with(&mut self, range: Range<usize>, s: &str) {
+        let a = clamp_to_char_boundary(&self.text, range.start);
+        let b = clamp_to_char_boundary(&self.text, range.end);
+        let (start, end) = (a.min(b), a.max(b));
+        let is_plain_insert = start == end;
+        let continues = is_plain_insert
             && self.last_edit
                 == Some(LastEdit {
                     kind: EditKind::Insert,
-                    continuation_point: range.start,
+                    continuation_point: start,
                 });
         self.push_undo(continues);
         self.preferred_column = None;
-        self.text.replace_range(range.clone(), s);
-        self.cursor = range.start + s.len();
+        self.text.replace_range(start..end, s);
+        self.cursor = start + s.len();
         self.anchor = None;
-        self.last_edit = (!had_selection).then_some(LastEdit {
+        self.last_edit = is_plain_insert.then_some(LastEdit {
             kind: EditKind::Insert,
             continuation_point: self.cursor,
         });
@@ -205,18 +197,10 @@ impl EditorBuffer {
         self.delete_range(self.cursor..end, Some(EditKind::DeleteForward));
     }
 
-    /// `kind` is `None` for a selection delete (never coalesces with
-    /// anything, in either direction) or `Some` for a plain single-char
-    /// delete — whether *that* continues the current burst depends on the
-    /// direction: a backward delete (backspace) continues if the previous
-    /// one in the burst ended exactly at `range.end` (this deletion's own
-    /// right edge, i.e. where the cursor already was); a forward delete
-    /// continues if the previous one ended at `range.start` (its left
-    /// edge — which never moves for a forward-delete burst, since deleting
-    /// the char *after* the cursor doesn't move the cursor itself). Either
-    /// way, the position the *next* delete in the burst must match is
-    /// `range.start` (what the cursor becomes after this one, for both
-    /// directions), so that's what gets recorded regardless of direction.
+    /// `kind` is `None` for a selection delete, which never coalesces. A
+    /// backspace continues a burst whose last delete ended at `range.end`; a
+    /// forward delete one that ended at `range.start`. Both record
+    /// `range.start` (the new cursor) as the next continuation point.
     fn delete_range(&mut self, range: Range<usize>, kind: Option<EditKind>) {
         let continues = match kind {
             Some(EditKind::DeleteBackward) => {
@@ -369,20 +353,9 @@ impl EditorBuffer {
         }
     }
 
-    /// Records the state *before* a text-modifying operation, so `undo` can
-    /// return to it, and clears `redo_stack` — making a fresh edit after an
-    /// undo abandon the redone-away future, same as every other editor.
-    ///
-    /// If `continues` is true (the caller already determined this edit
-    /// picks up exactly where the previous one in the current burst left
-    /// off), no new snapshot is pushed at all — the existing top-of-stack
-    /// entry already represents "before this whole burst," which is
-    /// exactly what undoing the burst as one step needs; pushing another
-    /// one here would just make undo stop one keystroke early instead of
-    /// at the start of the sentence. Caps `undo_stack` at
-    /// [`UNDO_STACK_CAP`] regardless of coalescing, evicting the oldest
-    /// entry, so a long sequence of distinct (non-continuing) edits still
-    /// has a hard ceiling on retained full-text clones.
+    /// Snapshots the pre-edit state for `undo` and clears `redo_stack`.
+    /// When `continues`, the top entry already is the pre-burst state, so
+    /// nothing is pushed.
     fn push_undo(&mut self, continues: bool) {
         if !continues {
             if self.undo_stack.len() >= UNDO_STACK_CAP {
@@ -398,9 +371,7 @@ impl EditorBuffer {
         self.cursor = snapshot.cursor;
         self.anchor = snapshot.anchor;
         self.preferred_column = None;
-        // An undo/redo jump is never "continued" by whatever edit comes
-        // next, even if it happens to land at the same position restoring
-        // left the cursor at.
+        // The next edit must not continue a burst across an undo/redo jump.
         self.last_edit = None;
     }
 
@@ -828,9 +799,7 @@ mod tests {
     #[test]
     fn a_new_edit_after_an_undo_clears_the_redo_stack() {
         let mut buf = EditorBuffer::new("");
-        // See the previous test's own comment — breaks coalescing so "a"
-        // and "b" land in separate undo entries, matching this test's
-        // actual intent (undoing just the second edit, not the whole burst).
+        // Breaks coalescing so "a" and "b" get separate undo entries.
         buf.insert("a");
         buf.set_cursor(buf.cursor(), false);
         buf.insert("b");
@@ -857,6 +826,56 @@ mod tests {
             !buf.undo(),
             "nothing left to undo — the burst was a single entry"
         );
+    }
+
+    #[test]
+    fn positioning_with_set_cursor_before_each_insert_defeats_coalescing() {
+        // Documents the footgun `replace_range_with` exists to avoid.
+        let mut buf = EditorBuffer::new("");
+        for c in "abc".chars() {
+            let at = buf.cursor();
+            buf.set_cursor(at, false);
+            buf.set_cursor(at, true);
+            buf.insert(&c.to_string());
+        }
+        for _ in 0..3 {
+            assert!(buf.undo());
+        }
+        assert!(!buf.undo(), "three separate undo entries, none coalesced");
+    }
+
+    #[test]
+    fn a_burst_of_replace_range_with_inserts_coalesces_into_one_undo_step() {
+        let mut buf = EditorBuffer::new("");
+        for c in "hello".chars() {
+            let at = buf.cursor();
+            buf.replace_range_with(at..at, &c.to_string());
+        }
+        assert_eq!(buf.text(), "hello");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "");
+        assert!(!buf.undo());
+    }
+
+    #[test]
+    fn replace_range_with_a_nonempty_range_replaces_and_never_coalesces() {
+        let mut buf = EditorBuffer::new("xyz");
+        buf.replace_range_with(0..1, "a");
+        buf.replace_range_with(1..1, "b");
+        assert_eq!(buf.text(), "abyz");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "ayz");
+        assert!(buf.undo());
+        assert_eq!(buf.text(), "xyz");
+    }
+
+    #[test]
+    fn replace_range_with_clamps_and_orders_its_range() {
+        let mut buf = EditorBuffer::new("aéb"); // é is bytes 1..3
+        let (past_end, mid_char) = (99, 2);
+        buf.replace_range_with(past_end..mid_char, "X"); // reversed
+        assert_eq!(buf.text(), "aX");
+        assert_eq!(buf.cursor(), 2);
     }
 
     #[test]

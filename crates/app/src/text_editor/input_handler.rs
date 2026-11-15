@@ -11,11 +11,8 @@ use super::{Editor, EditorBuffer};
 
 /// The byte offset in `text` after `utf16_offset` UTF-16 code units.
 ///
-/// GPUI's platform text input protocol (`EntityInputHandler`) speaks UTF-16
-/// offsets, since that's the common denominator for the underlying OS APIs
-/// (both macOS's and Windows' text input services are UTF-16-native)
-/// regardless of this buffer being UTF-8 internally — every method on this
-/// trait needs a conversion at the boundary.
+/// `EntityInputHandler` speaks UTF-16 offsets (the OS text-input APIs are
+/// UTF-16-native), while the buffer is UTF-8.
 pub(super) fn utf16_to_utf8(text: &str, utf16_offset: usize) -> usize {
     let mut utf16_count = 0;
     for (byte_index, ch) in text.char_indices() {
@@ -33,19 +30,11 @@ pub(super) fn utf8_to_utf16(text: &str, byte_offset: usize) -> usize {
     text[..byte_offset].chars().map(char::len_utf16).sum()
 }
 
-/// The byte range `replace_text_in_range`/`replace_and_mark_text_in_range`
-/// should replace: the explicit `range_utf16` if given, else whatever's
-/// still marked, else the current selection/cursor — see each caller's own
-/// doc comment for why that fallback order matters. Deliberately borrows
-/// `buffer.text()` rather than cloning it (an earlier version of both
-/// callers did `buffer.text().to_string()` unconditionally, even though
-/// `range_utf16` is `None` for every plain keystroke — not just real IME
-/// composition — making that an O(document) clone paid on every single
-/// character typed in a large note, confirmed by direct measurement to
-/// cost ~1ms on the 320K-line stress fixture for no reason the `None` case
-/// ever needed it for) — the borrow only has to survive long enough to
-/// resolve `r`'s UTF-16 offsets, well before either caller's own first
-/// mutating `buffer` call.
+/// The byte range a replace should cover: the explicit `range_utf16`, else
+/// the marked range, else the selection/cursor.
+///
+/// Borrows the text instead of cloning it: `range_utf16` is `None` for every
+/// plain keystroke, and a clone cost ~1ms per key on the 320K-line fixture.
 fn resolve_replace_range(
     buffer: &EditorBuffer,
     marked_range: &Option<Range<usize>>,
@@ -90,10 +79,8 @@ impl EntityInputHandler for Editor {
         let selection = self.buffer.selection().unwrap_or(cursor..cursor);
         Some(UTF16Selection {
             range: utf8_to_utf16(text, selection.start)..utf8_to_utf16(text, selection.end),
-            // Not tracked — `EditorBuffer::selection()` only exposes the
-            // normalized (start <= end) range, not which side the actual
-            // cursor is on. Phase 1 simplification; affects only the rare
-            // IME/text-service that cares which end the caret is at.
+            // `EditorBuffer::selection()` is normalized, so the caret side
+            // is unknown; only rare IMEs care.
             reversed: false,
         })
     }
@@ -117,24 +104,16 @@ impl EntityInputHandler for Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // `range_utf16` is `None` for, among other cases, committing an IME
-        // composition (e.g. a dead-key preview like `^` or `` ` ``) — which
-        // must replace whatever's still marked, not insert next to it. Mirror
-        // `replace_and_mark_text_in_range`'s own fallback chain (explicit
-        // range, else the marked range, else the current selection/cursor):
-        // using only the current selection/cursor here left the marked
-        // preview character in the buffer and inserted the committed text
-        // right after it, duplicating the symbol once the composition ended
-        // (e.g. on the next keystroke, like pressing space).
+        // `None` also means "commit an IME composition" (e.g. a dead-key
+        // `^`), which must replace the marked text; ignoring it duplicated
+        // the preview character.
         let replace_range = resolve_replace_range(&self.buffer, &self.marked_range, range_utf16);
         let edit = TextEdit {
             start_byte: replace_range.start,
             old_end_byte: replace_range.end,
             new_end_byte: replace_range.start + text.len(),
         };
-        self.buffer.set_cursor(replace_range.start, false);
-        self.buffer.set_cursor(replace_range.end, true);
-        self.buffer.insert(text);
+        self.buffer.replace_range_with(replace_range, text);
         self.marked_range = None;
         self.record_edit(edit, window, cx);
     }
@@ -153,11 +132,8 @@ impl EntityInputHandler for Editor {
             old_end_byte: replace_range.end,
             new_end_byte: replace_range.start + new_text.len(),
         };
-        self.buffer.set_cursor(replace_range.start, false);
-        self.buffer.set_cursor(replace_range.end, true);
-        self.buffer.insert(new_text);
-
         let marked_start = replace_range.start;
+        self.buffer.replace_range_with(replace_range, new_text);
         let marked_end = marked_start + new_text.len();
         self.marked_range = Some(marked_start..marked_end);
 
@@ -186,10 +162,8 @@ impl EntityInputHandler for Editor {
         let cursor = self.buffer.cursor();
         let line_height = window.line_height();
         let text_style = window.text_style();
-        // Same mono-family override `element.rs`'s `render_editor` applies —
-        // bold/italic Live Preview runs need the bundled mono family's real
-        // Bold/Italic faces, and this method must shape with the same font
-        // that painting did or the IME candidate window lands slightly off.
+        // Must match `render_editor`'s mono-family override, or the IME
+        // candidate window lands slightly off.
         let mut font = text_style.font();
         font.family = gpui_kit::component::Theme::global(cx)
             .mono_font_family
@@ -198,15 +172,8 @@ impl EntityInputHandler for Editor {
         let text_color = text_style.color;
         let focused = self.focus_handle.is_focused(window);
 
-        // Same viewport-bounded approach `element.rs`'s `paint_lines`/
-        // `offset_for_position` use — IME composition's target byte offset
-        // is normally at/near the cursor, which (per `autoscroll_to_cursor`)
-        // should already be inside the visible viewport, so windowing here
-        // avoids the same O(document) real-shaping cost those functions
-        // used to pay on every call, not just on every paint. Also reuses
-        // `row_height_cache` (patched incrementally the same way `document_
-        // cache` is — see `Editor::record_edit`) rather than re-deriving
-        // every line's row count here too.
+        // Viewport-bounded like `paint_lines`: the IME target is near the
+        // cursor, which is already scrolled into view.
         let layout = analyze_line_layout(
             &text,
             &self.document_cache,
@@ -220,11 +187,8 @@ impl EntityInputHandler for Editor {
             text_color,
             window,
         );
-        // Reads the same persisted classification cache every edit already
-        // updated via `record_edit`/`invalidate_all` — this used to
-        // independently rerun all four classify_* passes on every call, not
-        // just once per paint like `render_editor`; see `document_cache`'s
-        // own module doc.
+        // Reuses the incrementally maintained classification cache instead
+        // of reclassifying the document.
         let cache_ref = self.document_cache.borrow();
         let line_roles = cache_ref.line_roles();
         let block_contexts = cache_ref.block_contexts();
@@ -262,9 +226,7 @@ impl EntityInputHandler for Editor {
                 element_bounds.size.width,
                 window,
             );
-            // Usually one entry; more than one only for a table row whose
-            // cells had to wrap — same "which sub-row is this byte
-            // actually on" search, one level deeper.
+            // More than one entry only for a table row whose cells wrapped.
             for (wrapped, display_line) in &results {
                 let height = wrapped.size(line_height).height;
                 if byte_offset <= line_range.end {
@@ -292,14 +254,8 @@ impl EntityInputHandler for Editor {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        // Would need this element's current screen bounds, which (unlike
-        // `bounds_for_range`) this method isn't passed — mouse-driven cursor
-        // placement already goes through `offset_for_position` in
-        // `element.rs` instead, where `canvas`'s paint closure has `bounds`
-        // directly in scope. This only affects secondary OS text-service
-        // affordances (e.g. a right-click "Look Up"), not typing or IME
-        // composition, so returning "unsupported" is an acceptable Phase 1
-        // gap rather than plumbing a persisted-bounds field just for it.
+        // Needs the element's screen bounds, which this method isn't given.
+        // Only affects OS affordances like "Look Up", not typing or IME.
         None
     }
 
@@ -318,11 +274,8 @@ impl EntityInputHandler for Editor {
     }
 }
 
-// Deliberately not `use super::*` here: the production code above uses
-// `use gpui_kit::*;`, which (with `test-support` enabled) also re-exports
-// GPUI's `test` attribute macro — importing it transitively into this module
-// would shadow the plain `#[test]` these pure-logic tests use and make it
-// recurse infinitely (the same project-wide gotcha noted in `main.rs`).
+// Not `use super::*`: it would pull in GPUI's `test` macro, which shadows
+// `#[test]` and recurses infinitely (same gotcha as in `main.rs`).
 #[cfg(test)]
 mod tests {
     use super::{utf8_to_utf16, utf16_to_utf8};
