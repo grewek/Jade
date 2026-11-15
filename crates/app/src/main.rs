@@ -2011,6 +2011,55 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn the_paint_trace_reports_a_consistent_first_frame_over_the_socket(cx: &mut TestAppContext) {
+        use std::io::{BufRead, BufReader};
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let sock =
+            std::env::temp_dir().join(format!("jade-paint-test-{}.sock", std::process::id()));
+        // SAFETY: tests run single-threaded (`--test-threads=1`).
+        unsafe { std::env::set_var("JADE_DEBUG_SOCKET", &sock) };
+        crate::debug_socket::start_if_enabled();
+        let client = std::os::unix::net::UnixStream::connect(&sock).unwrap();
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(300)))
+            .unwrap();
+        let mut reader = BufReader::new(client);
+        let mut hello = String::new();
+        reader.read_line(&mut hello).unwrap();
+        crate::debug_socket::wait_for_client();
+
+        let (_dir, window, _editor) = open_stress_fixture(cx, &content);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+
+        let mut frames = Vec::new();
+        let mut line = String::new();
+        while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
+            if line.starts_with("[paint]") {
+                frames.push(line.clone());
+            }
+            line.clear();
+        }
+        std::fs::remove_file(&sock).unwrap();
+        unsafe { std::env::remove_var("JADE_DEBUG_SOCKET") };
+
+        assert!(!frames.is_empty(), "no paint frames arrived");
+        let first = &frames[0];
+        assert!(first.contains("wrap_width=unknown"), "first frame: {first}");
+        assert!(
+            first.contains("callout"),
+            "the fixture opens on callouts: {first}"
+        );
+        for frame in &frames {
+            assert!(!frame.contains("INCONSISTENT"), "{frame}");
+        }
+    }
+
+    #[gpui_kit::test]
     fn first_paint_of_a_huge_note_needs_no_row_height_corrections(cx: &mut TestAppContext) {
         // A cold rebuild seeds wrapped lines with over-estimates. Callout
         // backgrounds are drawn before the lines, from those heights, so

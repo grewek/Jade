@@ -1,6 +1,6 @@
 //! Opt-in debug channel: with `JADE_DEBUG_SOCKET=<path>` the app listens on a
-//! Unix socket and broadcasts newline-delimited text lines (today: the memory
-//! probe) to every connected client, so a tool can read the live app without
+//! Unix socket and broadcasts newline-delimited text lines (the memory probe and
+//! the editor's paint trace) to every connected client, so a tool can read the live app without
 //! scraping a terminal. Read-only: nothing a client sends is interpreted.
 
 use std::io::Write;
@@ -60,6 +60,17 @@ pub(crate) fn emit(line: &str) {
     }
     let msg = format!("{line}\n");
     clients.retain_mut(|c| c.write_all(msg.as_bytes()).is_ok());
+}
+
+/// Blocks (up to ~1s) until a client has been registered, for tests.
+#[cfg(test)]
+pub(crate) fn wait_for_client() {
+    for _ in 0..100 {
+        if CLIENTS.lock().is_ok_and(|c| !c.is_empty()) {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[cfg(test)]

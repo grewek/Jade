@@ -14,6 +14,7 @@ use super::live_preview::{
     build_display_line, build_display_line_in_context, build_table_row, hidden_line,
     is_thematic_break, line_indent,
 };
+use super::paint_trace::{FrameInfo, PaintTrace};
 use super::table_preview::{self, Table, table_index_at};
 
 /// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
@@ -341,7 +342,6 @@ pub(super) struct RowHeightCache {
     verified: std::ops::Range<usize>,
     /// Corrections `paint_lines`' own per-line loop still had to make: after
     /// [`LineLayout::verify_rows`] there should be none.
-    #[cfg(test)]
     pub(super) late_corrections: usize,
 }
 
@@ -357,7 +357,6 @@ impl RowHeightCache {
             available_width: px(0.),
             char_width: px(0.),
             verified: 0..0,
-            #[cfg(test)]
             late_corrections: 0,
         }
     }
@@ -724,6 +723,15 @@ impl LineLayout {
         self.line_height * self.row_cache.borrow().prefix_sum(i) as f32
     }
 
+    /// For the paint trace: the wrap width the cached heights were computed
+    /// for (`None` while still unknown), the exact window, and how many
+    /// corrections painting has had to make so far.
+    pub(super) fn trace_state(&self) -> (Option<Pixels>, std::ops::Range<usize>, usize) {
+        let rows = self.row_cache.borrow();
+        let width = (rows.available_width < Pixels::MAX).then_some(rows.available_width);
+        (width, rows.verified.clone(), rows.late_corrections)
+    }
+
     /// Makes the row counts of `range` exact. A cold rebuild seeds ordinary
     /// lines with an over-estimate that painting only corrects line by line,
     /// *after* anything positioned from the estimates (a callout's
@@ -797,7 +805,6 @@ impl LineLayout {
     /// mutability pattern [`Self::cumulative_at`] already relies on.
     pub(super) fn correct_row_count(&self, i: usize, real_rows: usize) {
         let mut rows = self.row_cache.borrow_mut();
-        #[cfg(test)]
         if i < rows.line_count() && rows.row_count(i) != real_rows as i64 {
             rows.late_corrections += 1;
         }
@@ -1813,6 +1820,28 @@ fn paint_lines(
     cx: &mut App,
 ) {
     let range = visible_line_range(layout, bounds, viewport);
+    let mut trace = PaintTrace::start_if_enabled(|| {
+        let (cached_width, verified, late_corrections_before) = layout.trace_state();
+        let rect = |b: Bounds<Pixels>| {
+            (
+                f32::from(b.origin.x),
+                f32::from(b.origin.y),
+                f32::from(b.size.width),
+                f32::from(b.size.height),
+            )
+        };
+        FrameInfo {
+            bounds: rect(bounds),
+            viewport: rect(viewport),
+            cursor,
+            focused: show_cursor,
+            range: range.clone(),
+            total_height: f32::from(layout.cumulative_at(layout.line_count())),
+            cached_width: cached_width.map(f32::from),
+            verified,
+            late_corrections_before,
+        }
+    });
 
     // Every callout's background tint + accent bar, painted *before* any
     // line's text — unlike `TablePaint`'s grid lines (thin enough that
@@ -1848,6 +1877,14 @@ fn paint_lines(
             layout.cumulative_at(callout.start_line),
             layout.cumulative_at(callout.end_line.min(range.end)),
         );
+        if let Some(trace) = trace.as_mut() {
+            trace.band(
+                callout.start_line..callout.end_line.min(range.end),
+                f32::from(top),
+                f32::from(bottom),
+                callout.kind,
+            );
+        }
         let color = callout_color(callout.kind);
         let background = Hsla {
             a: CALLOUT_BACKGROUND_ALPHA,
@@ -1953,6 +1990,24 @@ fn paint_lines(
         // multiple of `line_height` in principle, but float division can
         // land a hair off either side of the actual integer.
         layout.correct_row_count(i, (total_height / line_height).round() as usize);
+        if let Some(trace) = trace.as_mut() {
+            let tag = match (callout, table_line_kind(tables, i), line_roles[i]) {
+                (Some(c), ..) if c.is_header(i) => "callout-header",
+                (Some(_), ..) => "callout",
+                (None, TableLineKind::Row(_) | TableLineKind::Delimiter(_), _) => "table",
+                (None, _, LineRole::FenceContent) => "code",
+                _ => "plain",
+            };
+            trace.line(
+                i,
+                f32::from(y_offset),
+                (total_height / line_height).round() as usize,
+                f32::from(total_height),
+                tag,
+                line_text,
+            );
+            trace.set_late_corrections(layout.trace_state().2);
+        }
         // Every entry of one raw line shares the same indent (a table's is
         // always `None` across all of them, same as the common one-entry
         // case) — fine to read it off the first.

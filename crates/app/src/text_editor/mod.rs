@@ -12,6 +12,7 @@ mod element;
 mod fenwick;
 mod input_handler;
 mod live_preview;
+mod paint_trace;
 mod table_preview;
 
 pub use buffer::EditorBuffer;
