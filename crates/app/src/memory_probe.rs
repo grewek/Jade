@@ -53,22 +53,27 @@ fn allocator_mib() -> Option<(usize, usize, usize)> {
     None
 }
 
-/// Starts the logging thread if `JADE_MEMORY_LOG` is set; otherwise a no-op.
+/// Starts the logging thread if `JADE_MEMORY_LOG` or `JADE_DEBUG_SOCKET` is
+/// set; lines go to stderr and to debug-socket clients.
 pub(crate) fn start_if_enabled() {
-    if std::env::var_os(ENV_VAR).is_none() {
+    if std::env::var_os(ENV_VAR).is_none() && !crate::debug_socket::requested() {
         return;
     }
     std::thread::spawn(|| {
         loop {
-            match (rss_kib(), allocator_mib()) {
-                (Some(kib), Some((used, free, mapped))) => eprintln!(
+            let line = match (rss_kib(), allocator_mib()) {
+                (Some(kib), Some((used, free, mapped))) => format!(
                     "[jade-memory] rss={} MiB heap_in_use={used} MiB \
                      heap_free_retained={free} MiB mmapped={mapped} MiB",
                     kib / 1024
                 ),
-                (Some(kib), None) => eprintln!("[jade-memory] rss={} MiB", kib / 1024),
-                _ => eprintln!("[jade-memory] rss unavailable on this platform"),
+                (Some(kib), None) => format!("[jade-memory] rss={} MiB", kib / 1024),
+                _ => "[jade-memory] rss unavailable on this platform".to_owned(),
+            };
+            if std::env::var_os(ENV_VAR).is_some() {
+                eprintln!("{line}");
             }
+            crate::debug_socket::emit(&line);
             std::thread::sleep(INTERVAL);
         }
     });

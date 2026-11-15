@@ -51,3 +51,4 @@ Deliberately deferred — don't pick up without checking in (see `CLAUDE.md`).
 - **Settings dialog**: non-functional placeholder; themes, text size, editor preferences to come.
 - **`jade-app` benchmarks**: binary-only (no `[lib]`), so `text_editor` internals can't be criterion-benchmarked; restructuring declined for now. Fixture: `crates/app/benches/fixtures/large_markdown_stress_test.md` (~11.3MB, seed `1337`, regenerate with `python3 crates/app/benches/fixtures/generate_stress_markdown.py`).
 - **Permanently declined**: images, setext headings, indented code blocks, link reference definitions, raw HTML, hard/soft line-break distinction.
+- Debug socket: `JADE_DEBUG_SOCKET=/path/to.sock cargo run -p jade-app --release` broadcasts the memory-probe lines to clients (`socat - UNIX-CONNECT:/path/to.sock`); read-only, std-only (`debug_socket.rs`).

@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+mod debug_socket;
 mod memory_probe;
 #[cfg(test)]
 mod test_alloc;
@@ -999,6 +1000,7 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("vault"));
 
+    debug_socket::start_if_enabled();
     memory_probe::start_if_enabled();
 
     // Registers the bundled Lucide icon SVGs (`Dialog`'s own close "x",
