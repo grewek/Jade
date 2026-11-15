@@ -41,7 +41,7 @@ use std::ops::Range;
 
 use super::block_preview::{self, FenceState, LineRole};
 use super::callout::{self, Callout, CalloutState};
-use super::fenwick::Fenwick;
+use super::fenwick::{Fenwick, LINE_GROWTH_SLACK};
 use super::live_preview::{self, LineContext, OpenBlock};
 use super::table_preview::{self, Table, is_pipe_row};
 
@@ -66,11 +66,53 @@ pub(super) struct TextEdit {
 /// classifier patch function needs, computed once in [`DocumentCache::
 /// record_edit`] rather than once per classifier.
 struct EditSpan {
-    /// The old line index `edit.start_byte` falls on.
+    /// The old line index `edit.start_byte` falls on (also its new index:
+    /// nothing before the edit moves).
     start_line: usize,
     /// How many old lines the edit's old byte range spanned across (0 if
     /// it never crossed a newline at all).
     lines_removed: usize,
+    /// How many newlines the edit's new text contains.
+    lines_added: usize,
+}
+
+impl EditSpan {
+    /// The last line (in the *new* numbering) whose text the edit itself
+    /// changed. Reconvergence in the patch walks is only trustworthy past
+    /// this line.
+    fn last_new_line(&self) -> usize {
+        self.start_line + self.lines_added
+    }
+
+    fn line_delta(&self) -> isize {
+        self.lines_added as isize - self.lines_removed as isize
+    }
+
+    /// Where per-line arrays gain or lose entries so that everything after
+    /// the edit lines up with its new line numbers: the entries before
+    /// this point cover lines the walk rewrites anyway, the ones from it
+    /// on are the untouched old tail.
+    fn splice_at(&self) -> usize {
+        self.start_line + self.lines_removed.min(self.lines_added) + 1
+    }
+}
+
+/// What [`DocumentCache::record_edit`] changed, for `RowHeightCache` to
+/// mirror: resize at `splice_at` by `line_delta` lines, then re-derive
+/// `touched`.
+pub(super) struct EditPatch {
+    pub touched: Range<usize>,
+    pub splice_at: usize,
+    pub line_delta: isize,
+}
+
+/// What `patch_tables` must learn from the *old* table layout before the
+/// edit's line shift destroys it.
+struct TablePre {
+    /// Whether any old line the edit replaced belonged to a table.
+    touched_old_table: bool,
+    /// The union of the old line extents of every table that did.
+    old_extent: Option<(usize, usize)>,
 }
 
 /// The persisted result of the four classify_* passes over the buffer's
@@ -182,6 +224,8 @@ impl DocumentCache {
         self.recompute_callouts(text);
         self.recompute_block_context(text);
         self.recompute_tables(text);
+        // Spare room for Enter to grow into without reallocating.
+        reserve_line_slack(self);
     }
 
     /// Patches the cache for a precisely-ranged edit: the real incremental
@@ -193,16 +237,19 @@ impl DocumentCache {
     /// counts instead of re-deriving the whole document's layout. `None`
     /// means a line-count-changing edit forced a full recompute instead
     /// (see [`Self::edit_span`]), so every line is potentially dirty.
-    pub(super) fn record_edit(&mut self, text: &str, edit: TextEdit) -> Option<Range<usize>> {
+    pub(super) fn record_edit(&mut self, text: &str, edit: TextEdit) -> Option<EditPatch> {
         let Some(span) = self.edit_span(text, edit) else {
             self.recompute_all(text);
             return None;
         };
 
-        // Every line the edit's old byte range actually spanned has
-        // different raw text now, regardless of what any classifier below
-        // reports — this is the floor of what's touched.
-        let minimal = span.start_line..(span.start_line + span.lines_removed + 1);
+        let table_pre = self.table_pre(&span);
+        self.resize_lines(&span);
+
+        // Every line the edit's new text actually spans has different raw
+        // text now, regardless of what any classifier below reports — this
+        // is the floor of what's touched.
+        let minimal = span.start_line..(span.last_new_line() + 1);
 
         let r1 = self.patch_block_preview(text, &span);
         let r2 = self.patch_callouts(text, &span);
@@ -210,13 +257,54 @@ impl DocumentCache {
         // text's layout, which `patch_block_preview` above has already
         // guaranteed.
         let r3 = self.patch_block_context(text, &span);
-        let r4 = self.patch_tables(text, &span);
+        let r4 = self.patch_tables(text, &span, &table_pre);
 
         let touched = [minimal, r1, r2, r3, r4]
             .into_iter()
             .reduce(union_ranges)
             .unwrap();
-        Some(touched.start..touched.end.min(self.line_roles.len()))
+        Some(EditPatch {
+            touched: touched.start..touched.end.min(self.line_roles.len()),
+            splice_at: span.splice_at(),
+            line_delta: span.line_delta(),
+        })
+    }
+
+    /// Resizes every per-line array (and the byte index) so entry `i` of
+    /// each describes new line `i` for every line the edit left alone.
+    /// Entries for the lines the edit replaced hold stale values the patch
+    /// walks overwrite; tables and callouts after the edit also get their
+    /// stored line numbers shifted.
+    fn resize_lines(&mut self, span: &EditSpan) {
+        let delta = span.line_delta();
+        if delta == 0 {
+            return;
+        }
+        let at = span.splice_at();
+
+        // Tables the edit touched are dropped here; `patch_tables`
+        // re-derives them from the extents `table_pre` saved. Tables after
+        // the edit just move.
+        let old_last = (span.start_line + span.lines_removed).min(self.line_roles.len() - 1);
+        let first = self
+            .tables
+            .partition_point(|t| t.end_line <= span.start_line);
+        let end = self.tables.partition_point(|t| t.start_line <= old_last);
+        self.tables.drain(first..end);
+        for t in &mut self.tables[first..] {
+            t.start_line = shift_line(t.start_line, delta);
+            t.end_line = shift_line(t.end_line, delta);
+        }
+
+        resize_vec(&mut self.line_roles, at, delta);
+        resize_vec(&mut self.fence_states, at, delta);
+        resize_vec(&mut self.block_contexts, at, delta);
+        resize_vec(&mut self.open_block_states, at, delta);
+        resize_vec(&mut self.table_for_line, at, delta);
+        resize_vec(&mut self.callout_for_line, at, delta);
+        resize_vec(&mut self.callout_states, at, delta);
+        resize_vec(&mut self.callout_counts, at, delta);
+        self.line_index.resize(at, delta);
     }
 
     fn recompute_block_preview(&mut self, text: &str) {
@@ -302,6 +390,35 @@ impl DocumentCache {
         &text[start..self.line_end_byte(line)]
     }
 
+    /// The table whose lines include `line`, found by line number (the
+    /// `table_for_line` indices are stale for tables after a dropped one).
+    fn table_containing(&self, line: usize) -> Option<&Table> {
+        let i = self.tables.partition_point(|t| t.end_line <= line);
+        self.tables.get(i).filter(|t| t.start_line <= line)
+    }
+
+    /// Reads, from the *old* layout, which tables the edit's replaced lines
+    /// belonged to. Must run before [`Self::resize_lines`].
+    fn table_pre(&self, span: &EditSpan) -> TablePre {
+        let old_last = (span.start_line + span.lines_removed).min(self.table_for_line.len() - 1);
+        let mut pre = TablePre {
+            touched_old_table: false,
+            old_extent: None,
+        };
+        for idx in self.table_for_line[span.start_line..=old_last]
+            .iter()
+            .flatten()
+        {
+            let t = &self.tables[*idx];
+            pre.touched_old_table = true;
+            pre.old_extent = Some(match pre.old_extent {
+                None => (t.start_line, t.end_line),
+                Some((s, e)) => (s.min(t.start_line), e.max(t.end_line)),
+            });
+        }
+        pre
+    }
+
     /// The real incremental path for `table_preview`: unlike the other
     /// three classifiers, a table's column widths are an aggregate over
     /// its whole row range, so there's no meaningful per-line "entering
@@ -328,17 +445,17 @@ impl DocumentCache {
     /// the window or belonging to a kept-after table whose index shifted
     /// touched — bounded by the window's own size plus the total number of
     /// tables and the line spans of ones kept, not by document length.
-    fn patch_tables(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
-        let old_line_count = self.table_for_line.len();
+    fn patch_tables(&mut self, text: &str, span: &EditSpan, pre: &TablePre) -> Range<usize> {
+        let line_count = self.table_for_line.len();
         let start_line = span.start_line;
-        let last_touched_line =
-            (start_line + span.lines_removed).min(old_line_count.saturating_sub(1));
+        let last_touched_line = span.last_new_line().min(line_count.saturating_sub(1));
 
-        let touched_old_table =
-            (start_line..=last_touched_line).any(|i| self.table_for_line[i].is_some());
         let touched_new_pipe_row =
             (start_line..=last_touched_line).any(|i| is_pipe_row(self.line_text_at(text, i)));
-        if !touched_old_table && !touched_new_pipe_row {
+        // The line above the edit may be a header whose delimiter row (not
+        // necessarily containing a `|`) the edit just created.
+        let header_above = start_line > 0 && is_pipe_row(self.line_text_at(text, start_line - 1));
+        if !pre.touched_old_table && !touched_new_pipe_row && !header_above {
             // No table's own *content* could have changed, but an edit
             // anywhere before a table still shifts every subsequent byte
             // offset — `line_index` already reflects that (patched before
@@ -369,17 +486,49 @@ impl DocumentCache {
 
         let mut window_start = start_line;
         let mut window_end = last_touched_line + 1;
-        for i in start_line..=last_touched_line {
-            if let Some(idx) = self.table_for_line[i] {
-                window_start = window_start.min(self.tables[idx].start_line);
-                window_end = window_end.max(self.tables[idx].end_line);
+        if let Some((table_start, table_end)) = pre.old_extent {
+            // `resize_lines` already dropped those tables; their extents
+            // are in the old numbering, and the end (always at or past the
+            // edit) moves with it.
+            window_start = window_start.min(table_start);
+            // May go negative for a table that ended inside a deleted
+            // range; the touched end then wins the `max`.
+            window_end = window_end.max((table_end as isize + span.line_delta()).max(0) as usize);
+        }
+        // Grow to a fixpoint: a run of pipe rows, plus any existing table
+        // touching either edge. A table's delimiter row needn't contain a
+        // `|`, so walking pipe rows alone can stop between a table's header
+        // and its body.
+        loop {
+            let before = (window_start, window_end);
+            while window_start > 0 && is_pipe_row(self.line_text_at(text, window_start - 1)) {
+                window_start -= 1;
             }
-        }
-        while window_start > 0 && is_pipe_row(self.line_text_at(text, window_start - 1)) {
-            window_start -= 1;
-        }
-        while window_end < old_line_count && is_pipe_row(self.line_text_at(text, window_end)) {
-            window_end += 1;
+            while window_end < line_count && is_pipe_row(self.line_text_at(text, window_end)) {
+                window_end += 1;
+            }
+            // A pipe row ending the window may be a header whose delimiter
+            // row (which needn't contain a `|`) is the next line.
+            if window_end < line_count && is_pipe_row(self.line_text_at(text, window_end - 1)) {
+                window_end += 1;
+            }
+            let edges = [
+                Some(window_start),
+                window_start.checked_sub(1),
+                Some(window_end - 1),
+            ]
+            .into_iter()
+            .flatten()
+            .chain((window_end < line_count).then_some(window_end));
+            for line in edges {
+                if let Some(t) = self.table_containing(line) {
+                    window_start = window_start.min(t.start_line);
+                    window_end = window_end.max(t.end_line);
+                }
+            }
+            if (window_start, window_end) == before {
+                break;
+            }
         }
 
         let window_start_byte = self.line_index.prefix_sum(window_start) as usize;
@@ -438,15 +587,8 @@ impl DocumentCache {
     }
 
     /// Resolves `edit`'s [`EditSpan`] against the *old* `line_index`, or
-    /// `None` whenever the edit changed the document's total line count:
-    /// `line_index` (and every per-classifier entering-state array) is a
-    /// fixed-size structure indexed by old line number, with no insert/
-    /// remove operation — once line indices shift there's no single old
-    /// "corresponding line" left for a patch function to compare a resumed
-    /// line's state against. An accepted, explicitly-scoped gap (see
-    /// CLAUDE.md's Backlog), not an oversight — Enter, a multi-line paste,
-    /// or deleting across a newline all still work correctly, just via the
-    /// slower whole-classifier recompute for now.
+    /// `None` only for an empty cache (nothing to patch). Edits that change
+    /// the line count are handled by [`Self::resize_lines`].
     fn edit_span(&self, text: &str, edit: TextEdit) -> Option<EditSpan> {
         if self.line_roles.is_empty() {
             return None;
@@ -457,9 +599,10 @@ impl DocumentCache {
         let lines_added = text[edit.start_byte..edit.new_end_byte]
             .matches('\n')
             .count();
-        (lines_added == lines_removed).then_some(EditSpan {
+        Some(EditSpan {
             start_line,
             lines_removed,
+            lines_added,
         })
     }
 
@@ -486,7 +629,7 @@ impl DocumentCache {
         // exactly what an earlier version of this function got wrong on a
         // multi-line, same-line-count-delta edit, caught by this module's
         // own randomized property test, not reasoned out in advance.
-        let last_touched_line = start_line + span.lines_removed;
+        let last_touched_line = span.last_new_line();
 
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
         let mut state = self.fence_states[start_line];
@@ -536,7 +679,7 @@ impl DocumentCache {
     fn patch_callouts(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
         let old_line_count = self.callout_for_line.len();
         let start_line = span.start_line;
-        let last_touched_line = start_line + span.lines_removed;
+        let last_touched_line = span.last_new_line();
 
         let prefix_callout_count = self.callout_counts[start_line];
         let old_snapshot: Vec<Callout> = self.callouts.clone();
@@ -558,11 +701,18 @@ impl DocumentCache {
                 self.callout_counts[i + 1] = self.callouts.len();
             }
             if reconverged {
+                // The skipped tail lies after the edit, so its stored line
+                // numbers move with it.
+                let delta = span.line_delta();
                 if let Some(idx) = next_state.current {
-                    self.callouts[idx].end_line = old_snapshot[idx].end_line;
+                    self.callouts[idx].end_line = shift_line(old_snapshot[idx].end_line, delta);
                 }
-                self.callouts
-                    .extend_from_slice(&old_snapshot[self.callouts.len()..]);
+                let tail = old_snapshot[self.callouts.len()..].iter().map(|c| Callout {
+                    start_line: shift_line(c.start_line, delta),
+                    end_line: shift_line(c.end_line, delta),
+                    ..c.clone()
+                });
+                self.callouts.extend(tail);
                 return start_line..(i + 1);
             }
             if !has_next {
@@ -585,7 +735,7 @@ impl DocumentCache {
     fn patch_block_context(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
         let old_line_count = self.block_contexts.len();
         let start_line = span.start_line;
-        let last_touched_line = start_line + span.lines_removed;
+        let last_touched_line = span.last_new_line();
 
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
         let mut state = self.open_block_states[start_line].clone();
@@ -614,6 +764,46 @@ impl DocumentCache {
 /// recomputed" range.
 fn union_ranges(a: Range<usize>, b: Range<usize>) -> Range<usize> {
     a.start.min(b.start)..a.end.max(b.end)
+}
+
+/// `line` moved by `delta` lines.
+fn shift_line(line: usize, delta: isize) -> usize {
+    let shifted = line as isize + delta;
+    debug_assert!(shifted >= 0, "line {line} shifted by {delta}");
+    shifted.max(0) as usize
+}
+
+/// Inserts `delta` copies of the entry before `at` (`delta > 0`) or removes
+/// `-delta` entries starting at `at` (`delta < 0`). Grows in fixed chunks:
+/// see [`LINE_GROWTH_SLACK`].
+fn resize_vec<T: Clone>(v: &mut Vec<T>, at: usize, delta: isize) {
+    if delta > 0 {
+        let k = delta as usize;
+        let fill = v[at - 1].clone();
+        if v.capacity() - v.len() < k {
+            v.reserve_exact(k.max(LINE_GROWTH_SLACK));
+        }
+        v.splice(at..at, std::iter::repeat_n(fill, k));
+    } else {
+        v.drain(at..at + delta.unsigned_abs());
+    }
+}
+
+/// Keeps [`LINE_GROWTH_SLACK`] spare entries in every per-line array.
+fn reserve_line_slack(cache: &mut DocumentCache) {
+    fn slack<T>(v: &mut Vec<T>) {
+        if v.capacity() - v.len() < LINE_GROWTH_SLACK {
+            v.reserve_exact(LINE_GROWTH_SLACK);
+        }
+    }
+    slack(&mut cache.line_roles);
+    slack(&mut cache.fence_states);
+    slack(&mut cache.block_contexts);
+    slack(&mut cache.open_block_states);
+    slack(&mut cache.table_for_line);
+    slack(&mut cache.callout_for_line);
+    slack(&mut cache.callout_states);
+    slack(&mut cache.callout_counts);
 }
 
 /// Yields `(line_text, line_len, has_next_line)` starting at `start_byte`
@@ -778,6 +968,57 @@ mod tests {
         assert_eq!(cache.tables(), expected_tables.as_slice());
     }
 
+    /// Every field of `cache`, including the entering-state arrays and the
+    /// byte-offset index no public accessor exposes, must equal a cache
+    /// built fresh from `text`: a stale entry there could survive until a
+    /// later edit resumes from it.
+    fn assert_matches_fresh_cache(cache: &DocumentCache, text: &str, context: &str) {
+        let fresh = DocumentCache::new(text);
+        assert_eq!(cache.line_roles, fresh.line_roles, "line_roles {context}");
+        assert_eq!(
+            cache.fence_states, fresh.fence_states,
+            "fence_states {context}"
+        );
+        assert_eq!(
+            cache.block_contexts, fresh.block_contexts,
+            "contexts {context}"
+        );
+        assert_eq!(
+            cache.open_block_states, fresh.open_block_states,
+            "open_block_states {context}"
+        );
+        assert_eq!(
+            cache.table_for_line, fresh.table_for_line,
+            "table_for_line {context}"
+        );
+        assert_eq!(cache.tables, fresh.tables, "tables {context}");
+        assert_eq!(
+            cache.callout_for_line, fresh.callout_for_line,
+            "callout_for_line {context}"
+        );
+        assert_eq!(cache.callouts, fresh.callouts, "callouts {context}");
+        assert_eq!(
+            cache.callout_states, fresh.callout_states,
+            "callout_states {context}"
+        );
+        assert_eq!(
+            cache.callout_counts, fresh.callout_counts,
+            "callout_counts {context}"
+        );
+        assert_eq!(
+            cache.line_index.len(),
+            fresh.line_index.len(),
+            "line_index len {context}"
+        );
+        for i in 0..=fresh.line_index.len() {
+            assert_eq!(
+                cache.line_index.prefix_sum(i),
+                fresh.line_index.prefix_sum(i),
+                "line_index prefix {i} {context}"
+            );
+        }
+    }
+
     /// Same property, exercised over many pseudo-random edits — deliberate
     /// coverage of positions/fragments a hand-picked sequence wouldn't
     /// think to try, same "fuzz the invariant against the oracle" approach
@@ -786,7 +1027,14 @@ mod tests {
     /// both patch functions at once via the same `record_edit` call.
     #[test]
     fn incremental_classification_matches_the_oracle_across_many_randomized_edits() {
-        let mut seed: u64 = 0xC0FF_EE15_EA5E_D00Du64;
+        for run in 0..25u64 {
+            run_randomized_edits(
+                0xC0FF_EE15_EA5E_D00Du64 ^ run.wrapping_mul(0x9E37_79B9_7F4A_7C15),
+            );
+        }
+    }
+
+    fn run_randomized_edits(mut seed: u64) {
         let mut next = move || {
             seed = seed
                 .wrapping_mul(6364136223846793005)
@@ -824,6 +1072,10 @@ mod tests {
             "| --- | --- |\n",
             "|",
             " extra |",
+            "\n| p | q |\n| --- | --- |\n| 5 | 6 |\n",
+            "> [!note]\n> a\n> b\n\n",
+            "\n\n\n\n",
+            "line one\nline two\n",
         ];
 
         for step in 0..400 {
@@ -877,6 +1129,12 @@ mod tests {
                 cache.tables(),
                 expected_tables.as_slice(),
                 "tables step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
+            );
+
+            assert_matches_fresh_cache(
+                &cache,
+                &new_text,
+                &format!("step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"),
             );
 
             text = new_text;

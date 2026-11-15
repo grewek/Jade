@@ -163,7 +163,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         let text = self.buffer.text();
-        let touched = self.document_cache.borrow_mut().record_edit(text, edit);
+        let patch = self.document_cache.borrow_mut().record_edit(text, edit);
 
         let params = render_params(self, window, cx);
         let cursor = self.buffer.cursor();
@@ -171,7 +171,10 @@ impl Editor {
         let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
         let doc = self.document_cache.borrow();
         let mut rows = self.row_height_cache.borrow_mut();
-        match touched {
+        if let Some(patch) = &patch {
+            rows.resize_for(patch, &doc);
+        }
+        match patch.map(|p| p.touched) {
             Some(range) if !rows.needs_full_rebuild(&doc, params.available_width, char_width) => {
                 rows.patch_lines(
                     text,

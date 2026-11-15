@@ -1920,6 +1920,52 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn line_count_changing_edits_do_not_rebuild_the_document(cx: &mut TestAppContext) {
+        // Enter and a line-joining Backspace used to recompute every
+        // per-line cache (~165MB allocated, a 32MB peak, >150ms on the
+        // stress fixture). Bytes allocated are asserted, not time: it is
+        // deterministic.
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let (_dir, window, _editor) = open_stress_fixture(cx, &content);
+        cx.update_window(window, |_, window, cx| {
+            for key in ["x", "enter", "enter", "backspace", "backspace", "x"] {
+                crate::test_alloc::reset();
+                let mut keystroke = gpui_kit::Keystroke::parse(key).unwrap();
+                if key == "x" {
+                    keystroke.key_char = Some("x".to_string());
+                    window.dispatch_keystroke(keystroke, cx);
+                } else {
+                    // A bare key-down, as the real Linux platform sends
+                    // (`dispatch_keystroke` would add a simulated text input
+                    // that doubles Enter).
+                    window.dispatch_event(
+                        gpui_kit::PlatformInput::KeyDown(gpui_kit::KeyDownEvent {
+                            keystroke,
+                            is_held: false,
+                            prefer_character_input: false,
+                        }),
+                        cx,
+                    );
+                }
+                window.render_frame(cx);
+                let snap = crate::test_alloc::snapshot();
+                assert!(
+                    snap.total < content.len() / 4 && snap.peak < snap.current + content.len() / 8,
+                    "{key}: allocated {} bytes (peak {}) in a {}-byte document",
+                    snap.total,
+                    snap.peak,
+                    content.len()
+                );
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn scrolling_through_a_huge_file_does_not_leak(cx: &mut TestAppContext) {
         // Logical heap (`test_alloc`) is asserted; RSS is only reported,
         // because it depends on the allocator's own trim heuristics and a

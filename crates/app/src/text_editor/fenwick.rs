@@ -11,13 +11,16 @@
 //! reuses for per-line *height* (CLAUDE.md's own Fenwick-tree mention) —
 //! same shape, different per-line value.
 //!
-//! Deliberately **fixed-size**: this tree has no insert/remove operation.
 //! A same-line-count edit (plain typing/deletion within a line) is a pure
 //! point update (`add_at`), O(log n). A line-count-changing edit (Enter, a
-//! multi-line paste, deleting across a newline) has to rebuild from the
-//! edited line onward instead — callers are expected to do that themselves
-//! (e.g. via `Fenwick::new` on the affected suffix) rather than this type
-//! growing/shrinking in place.
+//! multi-line paste, deleting across a newline) uses [`Fenwick::resize`]:
+//! an in-place O(n) splice (a few memmoves, no allocation), still far
+//! cheaper than re-deriving every line's value.
+
+/// Spare element capacity kept past a per-line `Vec`'s length, so Enter
+/// doesn't reallocate it (a doubling realloc of a multi-MB array leaves a
+/// freed hole the allocator keeps).
+pub(super) const LINE_GROWTH_SLACK: usize = 4096;
 
 pub(super) struct Fenwick {
     /// 1-indexed internally (`tree[0]` unused) — the standard Fenwick tree
@@ -28,13 +31,60 @@ pub(super) struct Fenwick {
 
 impl Fenwick {
     pub(super) fn new(values: &[i64]) -> Self {
-        let mut fenwick = Self {
-            tree: vec![0; values.len() + 1],
-        };
-        for (i, &v) in values.iter().enumerate() {
-            fenwick.add_at(i, v);
-        }
+        let mut tree = Vec::with_capacity(values.len() + 1 + LINE_GROWTH_SLACK);
+        tree.push(0);
+        tree.extend_from_slice(values);
+        let mut fenwick = Self { tree };
+        fenwick.build_in_place();
         fenwick
+    }
+
+    /// Raw values -> tree, O(n): each node adds itself into its parent.
+    fn build_in_place(&mut self) {
+        let n = self.len();
+        for i in 1..=n {
+            let parent = i + lowest_set_bit(i);
+            if parent <= n {
+                let v = self.tree[i];
+                self.tree[parent] += v;
+            }
+        }
+    }
+
+    /// Exact inverse of [`Self::build_in_place`]: undo its steps in
+    /// reverse order, leaving the raw values.
+    fn unbuild_in_place(&mut self) {
+        let n = self.len();
+        for i in (1..=n).rev() {
+            let parent = i + lowest_set_bit(i);
+            if parent <= n {
+                let v = self.tree[i];
+                self.tree[parent] -= v;
+            }
+        }
+    }
+
+    /// Inserts `delta` zero values at index `at` (`delta > 0`), or removes
+    /// `-delta` values starting at `at` (`delta < 0`). O(n), in place.
+    pub(super) fn resize(&mut self, at: usize, delta: isize) {
+        let n = self.len();
+        assert!(at <= n, "resize position {at} past length {n}");
+        if delta == 0 {
+            return;
+        }
+        self.unbuild_in_place();
+        if delta > 0 {
+            let k = delta as usize;
+            if self.tree.capacity() - self.tree.len() < k {
+                self.tree.reserve_exact(k.max(LINE_GROWTH_SLACK));
+            }
+            self.tree.splice(at + 1..at + 1, std::iter::repeat_n(0, k));
+        } else {
+            let k = delta.unsigned_abs();
+            assert!(at + k <= n, "cannot remove {k} values at {at} of {n}");
+            self.tree.drain(at + 1..at + 1 + k);
+        }
+        self.build_in_place();
     }
 
     pub(super) fn len(&self) -> usize {
@@ -256,6 +306,48 @@ mod tests {
                         "n={n}, target={target}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn resize_matches_rebuilding_from_the_spliced_values() {
+        let mut seed: u64 = 0x5EED_F00D_1234_5678;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        let mut values: Vec<i64> = (0..40).map(|_| (next() % 50) as i64).collect();
+        let mut tree = Fenwick::new(&values);
+        for step in 0..500 {
+            let at = (next() as usize) % (values.len() + 1);
+            let delta: isize = if values.len() - at > 0 && next() % 2 == 0 {
+                -((1 + (next() as usize) % (values.len() - at).min(5)) as isize)
+            } else {
+                1 + (next() % 5) as isize
+            };
+            if delta > 0 {
+                for _ in 0..delta {
+                    values.insert(at, 0);
+                }
+            } else {
+                values.drain(at..at + delta.unsigned_abs());
+            }
+            tree.resize(at, delta);
+            // Interleave point updates so later steps resize a tree that
+            // has seen real edits, not only zeros.
+            if !values.is_empty() {
+                let i = (next() as usize) % values.len();
+                let d = (next() % 9) as i64 - 4;
+                values[i] += d;
+                tree.add_at(i, d);
+            }
+            let fresh = Fenwick::new(&values);
+            assert_eq!(tree.len(), fresh.len(), "step {step}");
+            for i in 0..=values.len() {
+                assert_eq!(tree.prefix_sum(i), fresh.prefix_sum(i), "step {step} i {i}");
             }
         }
     }

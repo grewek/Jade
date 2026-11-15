@@ -7,7 +7,7 @@ use gpui_kit::*;
 use super::Editor;
 use super::block_preview::LineRole;
 use super::callout::{Callout, CalloutType};
-use super::document_cache::DocumentCache;
+use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
 use super::live_preview::{
     DisplayLine, InlineStyle, LineContext, LineIndent, build_callout_header_line,
@@ -447,6 +447,18 @@ impl RowHeightCache {
         };
         self.available_width = available_width;
         self.char_width = char_width;
+    }
+
+    /// Mirrors `patch`'s line-count change in the row counts, so
+    /// [`Self::patch_lines`] can then re-derive just the touched lines.
+    /// A no-op when this cache wasn't in sync with the document before the
+    /// edit (never built, say): [`Self::needs_full_rebuild`] then sees the
+    /// line-count mismatch and forces a full rebuild.
+    pub(super) fn resize_for(&mut self, patch: &EditPatch, doc: &DocumentCache) {
+        let old_count = doc.line_count() as isize - patch.line_delta;
+        if patch.line_delta != 0 && self.line_count() as isize == old_count {
+            self.rows.resize(patch.splice_at, patch.line_delta);
+        }
     }
 
     /// Recomputes every line in `touched`, patching the Fenwick tree in
@@ -3440,8 +3452,11 @@ mod tests {
             for &(start, delete_len, insert) in edits {
                 let old_end = start + delete_len;
                 let (new_text, edit) = apply_edit(&text, start, old_end, insert);
-                let touched = doc_cache.record_edit(&new_text, edit);
-                match touched {
+                let patch = doc_cache.record_edit(&new_text, edit);
+                if let Some(patch) = &patch {
+                    row_cache.resize_for(patch, &doc_cache);
+                }
+                match patch.map(|p| p.touched) {
                     Some(range)
                         if !row_cache.needs_full_rebuild(
                             &doc_cache,
