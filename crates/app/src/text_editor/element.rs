@@ -298,7 +298,7 @@ const OVERSCAN_LINES: usize = 20;
 /// Three invalidation triggers, matching exactly what a line's row count
 /// can actually depend on:
 /// - **An edit** — patched eagerly, at the same call site `DocumentCache`
-///   itself is patched (`Editor::record_edit`/`invalidate_all`), using the
+///   itself is patched (`Editor::record_edit`), using the
 ///   touched-line range `DocumentCache::record_edit` returns. Needs
 ///   `window`/font/width at that point, which weren't previously computed
 ///   outside of paint — see [`RenderParams`].
@@ -739,8 +739,8 @@ impl LineLayout {
 }
 
 /// The render parameters [`analyze_line_layout`] needs, computed the same
-/// way both `render_editor` (every paint) and `Editor::record_edit`/
-/// `invalidate_all` (every edit, so [`RowHeightCache`] can be patched
+/// way both `render_editor` (every paint) and `Editor::record_edit`
+/// (every edit, so [`RowHeightCache`] can be patched
 /// synchronously right there rather than deferred to the next paint) need
 /// them — pulled out into one function once a second call site needed the
 /// exact same computation `render_editor` already did inline.
@@ -1322,7 +1322,7 @@ pub(super) fn render_editor(
 
     // Makes sure `row_height_cache` is up to date (almost always a cheap
     // active-line check — see `RowHeightCache`'s own doc comment, and
-    // `Editor::record_edit`/`invalidate_all` for the edit-triggered half of
+    // `Editor::record_edit` for the edit-triggered half of
     // keeping it that way) and wraps it alongside `document_cache` into a
     // `LineLayout`, feeding `measure_document`'s sizing and `paint_lines`/
     // `offset_for_position`/`register_mouse_handling`'s viewport-bounded

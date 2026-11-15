@@ -13,6 +13,7 @@
 //! would fix this but needs its own dependency approval, deferred until it's
 //! actually needed.
 
+use super::document_cache::TextEdit;
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -420,8 +421,13 @@ impl EditorBuffer {
     }
 
     /// Applies `entry` to the text and selection, returning its inverse.
-    fn apply(&mut self, entry: UndoEntry) -> UndoEntry {
+    fn apply(&mut self, entry: UndoEntry) -> (UndoEntry, TextEdit) {
         let end = entry.start + entry.inserted_len;
+        let edit = TextEdit {
+            start_byte: entry.start,
+            old_end_byte: end,
+            new_end_byte: entry.start + entry.removed.len(),
+        };
         let inverse = UndoEntry {
             start: entry.start,
             removed: self.text[entry.start..end].to_owned(),
@@ -436,29 +442,25 @@ impl EditorBuffer {
         self.preferred_column = None;
         // The next edit must not continue a burst across an undo/redo jump.
         self.last_edit = None;
-        inverse
+        (inverse, edit)
     }
 
-    /// Undoes the most recent text-modifying operation, if any. Returns
-    /// whether there was one to undo.
-    pub fn undo(&mut self) -> bool {
-        let Some(entry) = self.undo_stack.pop() else {
-            return false;
-        };
-        let inverse = self.apply(entry);
+    /// Undoes the most recent text-modifying operation, if any, returning
+    /// the text change it made.
+    pub(super) fn undo(&mut self) -> Option<TextEdit> {
+        let entry = self.undo_stack.pop()?;
+        let (inverse, edit) = self.apply(entry);
         self.redo_stack.push(inverse);
-        true
+        Some(edit)
     }
 
-    /// Reapplies the most recently undone operation, if any. Returns whether
-    /// there was one to redo.
-    pub fn redo(&mut self) -> bool {
-        let Some(entry) = self.redo_stack.pop() else {
-            return false;
-        };
-        let inverse = self.apply(entry);
+    /// Reapplies the most recently undone operation, if any, returning the
+    /// text change it made.
+    pub(super) fn redo(&mut self) -> Option<TextEdit> {
+        let entry = self.redo_stack.pop()?;
+        let (inverse, edit) = self.apply(entry);
         self.undo_stack.push(inverse);
-        true
+        Some(edit)
     }
 }
 
@@ -814,7 +816,7 @@ mod tests {
         let mut buf = EditorBuffer::new("hello");
         buf.set_cursor(5, false);
         buf.insert(" world");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "hello");
         assert_eq!(buf.cursor(), 5);
     }
@@ -825,7 +827,7 @@ mod tests {
         buf.set_cursor(5, false);
         buf.insert(" world");
         buf.undo();
-        assert!(buf.redo());
+        assert!(buf.redo().is_some());
         assert_eq!(buf.text(), "hello world");
         assert_eq!(buf.cursor(), 11);
     }
@@ -844,19 +846,19 @@ mod tests {
         buf.set_cursor(buf.cursor(), false);
         buf.insert("c");
         assert_eq!(buf.text(), "abc");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "ab");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "a");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "");
-        assert!(!buf.undo(), "nothing left to undo");
+        assert!(buf.undo().is_none(), "nothing left to undo");
     }
 
     #[test]
     fn undo_with_an_empty_history_is_a_no_op() {
         let mut buf = EditorBuffer::new("hello");
-        assert!(!buf.undo());
+        assert!(buf.undo().is_none());
         assert_eq!(buf.text(), "hello");
     }
 
@@ -870,7 +872,10 @@ mod tests {
         buf.undo();
         buf.insert("c");
         assert_eq!(buf.text(), "ac");
-        assert!(!buf.redo(), "redo history was abandoned by the new edit");
+        assert!(
+            buf.redo().is_none(),
+            "redo history was abandoned by the new edit"
+        );
     }
 
     #[test]
@@ -880,14 +885,14 @@ mod tests {
             buf.insert(&c.to_string());
         }
         assert_eq!(buf.text(), "hello");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(
             buf.text(),
             "",
             "the whole burst undoes in one step, not one character at a time"
         );
         assert!(
-            !buf.undo(),
+            buf.undo().is_none(),
             "nothing left to undo — the burst was a single entry"
         );
     }
@@ -903,9 +908,12 @@ mod tests {
             buf.insert(&c.to_string());
         }
         for _ in 0..3 {
-            assert!(buf.undo());
+            assert!(buf.undo().is_some());
         }
-        assert!(!buf.undo(), "three separate undo entries, none coalesced");
+        assert!(
+            buf.undo().is_none(),
+            "three separate undo entries, none coalesced"
+        );
     }
 
     #[test]
@@ -916,9 +924,9 @@ mod tests {
             buf.replace_range_with(at..at, &c.to_string());
         }
         assert_eq!(buf.text(), "hello");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "");
-        assert!(!buf.undo());
+        assert!(buf.undo().is_none());
     }
 
     #[test]
@@ -927,9 +935,9 @@ mod tests {
         buf.replace_range_with(0..1, "a");
         buf.replace_range_with(1..1, "b");
         assert_eq!(buf.text(), "abyz");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "ayz");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "xyz");
     }
 
@@ -949,7 +957,7 @@ mod tests {
         buf.set_cursor(buf.cursor(), false); // an explicit move, even back to the same spot
         buf.insert("b");
         assert_eq!(buf.text(), "ab");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(
             buf.text(),
             "a",
@@ -965,13 +973,13 @@ mod tests {
         buf.insert("a"); // replaces the selection — "x" -> "a"
         buf.insert("b"); // plain insert right after, same position a burst would continue from
         assert_eq!(buf.text(), "ab");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(
             buf.text(),
             "a",
             "the selection-replacing insert must not coalesce with what follows it"
         );
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "x");
     }
 
@@ -981,13 +989,13 @@ mod tests {
         buf.insert("ab");
         buf.delete_backward();
         assert_eq!(buf.text(), "a");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(
             buf.text(),
             "ab",
             "only the delete undoes first, not the insert too"
         );
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "");
     }
 
@@ -999,7 +1007,7 @@ mod tests {
             buf.delete_backward();
         }
         assert_eq!(buf.text(), "");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(
             buf.text(),
             "hello",
@@ -1015,7 +1023,7 @@ mod tests {
             buf.delete_forward();
         }
         assert_eq!(buf.text(), "");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "hello");
     }
 
@@ -1030,7 +1038,7 @@ mod tests {
         buf.set_cursor(2, false);
         buf.delete_forward(); // removes "d" -> "abe", cursor at 2
         assert_eq!(buf.text(), "abe");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "abde", "only the forward delete undoes");
     }
 
@@ -1042,7 +1050,7 @@ mod tests {
         }
         buf.undo();
         assert_eq!(buf.text(), "");
-        assert!(buf.redo());
+        assert!(buf.redo().is_some());
         assert_eq!(buf.text(), "hi");
     }
 
@@ -1057,7 +1065,7 @@ mod tests {
             buf.set_cursor(buf.cursor(), false);
         }
         let mut undo_count = 0;
-        while buf.undo() {
+        while buf.undo().is_some() {
             undo_count += 1;
         }
         assert_eq!(
@@ -1073,7 +1081,7 @@ mod tests {
         buf.set_cursor(6, true);
         buf.delete_backward();
         assert_eq!(buf.text(), "world");
-        assert!(buf.undo());
+        assert!(buf.undo().is_some());
         assert_eq!(buf.text(), "hello world");
         assert_eq!(buf.selection(), Some(0..6));
     }
@@ -1269,15 +1277,38 @@ mod tests {
             states.push((buf.text().to_owned(), buf.cursor()));
         }
         let mut undone = 0;
-        while buf.undo() {
+        while buf.undo().is_some() {
             undone += 1;
         }
         assert!(undone > 0 && undone <= UNDO_STACK_CAP);
         // Undo stops at the cap, so it lands on a recorded state; the text
         // must equal one of them and the cursor-restoring path must work.
         assert!(states.iter().any(|(text, _)| text == buf.text()));
-        while buf.redo() {}
+        while buf.redo().is_some() {}
         assert_eq!(buf.text(), states.last().unwrap().0);
         assert_eq!(buf.cursor(), states.last().unwrap().1);
+    }
+
+    #[test]
+    fn undo_and_redo_report_exactly_the_text_they_changed() {
+        let mut buf = EditorBuffer::new("héllo\nworld");
+        buf.set_cursor(3, false);
+        buf.insert("A\nB");
+        buf.replace_range_with(0..2, "zz\n");
+        buf.delete_backward();
+        let check = |before: &str, after: &str, e: TextEdit| {
+            assert_eq!(before[..e.start_byte], after[..e.start_byte]);
+            assert_eq!(before[e.old_end_byte..], after[e.new_end_byte..]);
+        };
+        loop {
+            let before = buf.text().to_owned();
+            let Some(edit) = buf.undo() else { break };
+            check(&before, buf.text(), edit);
+        }
+        loop {
+            let before = buf.text().to_owned();
+            let Some(edit) = buf.redo() else { break };
+            check(&before, buf.text(), edit);
+        }
     }
 }

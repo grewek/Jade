@@ -1959,7 +1959,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn line_count_changing_edits_do_not_rebuild_the_document(cx: &mut TestAppContext) {
-        // Enter and a line-joining Backspace used to recompute every
+        // Enter, a line-joining Backspace and undo/redo of them used to recompute every
         // per-line cache (~165MB allocated, a 32MB peak, >150ms on the
         // stress fixture). Bytes allocated are asserted, not time: it is
         // deterministic.
@@ -1968,9 +1968,21 @@ mod tests {
             eprintln!("stress fixture not found at {fixture_path:?}, skipping");
             return;
         };
-        let (_dir, window, _editor) = open_stress_fixture(cx, &content);
+        let (_dir, window, editor) = open_stress_fixture(cx, &content);
         cx.update_window(window, |_, window, cx| {
-            for key in ["x", "enter", "enter", "backspace", "backspace", "x"] {
+            for key in [
+                "x",
+                "enter",
+                "enter",
+                "backspace",
+                "backspace",
+                "x",
+                "enter",
+                "ctrl-z",
+                "ctrl-z",
+                "ctrl-shift-z",
+            ] {
+                let len_before = editor.read(cx).buffer().text().len();
                 crate::test_alloc::reset();
                 let mut keystroke = gpui_kit::Keystroke::parse(key).unwrap();
                 if key == "x" {
@@ -1987,6 +1999,13 @@ mod tests {
                             prefer_character_input: false,
                         }),
                         cx,
+                    );
+                }
+                if key.starts_with("ctrl-") {
+                    assert_ne!(
+                        editor.read(cx).buffer().text().len(),
+                        len_before,
+                        "{key} did not change the text"
                     );
                 }
                 window.render_frame(cx);

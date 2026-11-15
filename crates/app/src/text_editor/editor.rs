@@ -210,38 +210,6 @@ impl Editor {
         self.notify_changed(cx);
     }
 
-    /// For undo/redo: a `Snapshot` swap gives no derivable `TextEdit` at all
-    /// (the edit it undoes/redoes could have touched anything), so this
-    /// always falls back to a full recompute rather than guessing at a
-    /// range, for both caches — not on the hot per-keystroke path, see
-    /// `document_cache.rs`'s own module doc for why this is an accepted,
-    /// explicitly-scoped gap rather than an oversight.
-    pub(super) fn invalidate_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.buffer.text();
-        self.document_cache.borrow_mut().recompute_all(text);
-
-        let params = render_params(self, window, cx);
-        let cursor = self.buffer.cursor();
-        let focused = self.focus_handle.is_focused(window);
-        let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
-        let doc = self.document_cache.borrow();
-        self.row_height_cache.borrow_mut().rebuild(
-            text,
-            &doc,
-            cursor,
-            focused,
-            params.available_width,
-            char_width,
-            &params.font,
-            params.font_size,
-            params.text_color,
-            window,
-        );
-        drop(doc);
-
-        self.notify_changed(cx);
-    }
-
     /// Navigation/editing keys only (arrows, Home/End, Backspace/Delete,
     /// Enter, Ctrl/Cmd+A/C/X/V/Z, Ctrl/Cmd+Shift+Z, Ctrl/Cmd+Left/Right for
     /// word-wise movement/selection) — plain character typing goes through
@@ -303,13 +271,13 @@ impl Editor {
                     return;
                 }
                 "z" => {
-                    let changed = if shift {
+                    let edit = if shift {
                         self.buffer.redo()
                     } else {
                         self.buffer.undo()
                     };
-                    if changed {
-                        self.invalidate_all(window, cx);
+                    if let Some(edit) = edit {
+                        self.record_edit(edit, window, cx);
                     }
                     return;
                 }

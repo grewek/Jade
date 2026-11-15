@@ -51,10 +51,9 @@ use super::table_preview::{self, Table, is_pipe_row};
 /// mutating call site (`editor.rs`, `input_handler.rs`) derives this from
 /// `cursor()`/`selection()`/`text().len()` reads taken immediately before
 /// and after the actual buffer mutation — all O(1), no scan — rather than
-/// `EditorBuffer` itself reporting it, keeping that module's pure/GPUI-free
-/// boundary untouched. Undo/redo have no derivable `TextEdit` at all (a
-/// `Snapshot` swap could have touched anything) and go through
-/// `Editor::invalidate_all` instead.
+/// `EditorBuffer` reporting it for plain edits. Undo/redo report theirs
+/// directly (`EditorBuffer::undo`/`redo`): an undo entry is a delta, so the
+/// replaced range is known.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TextEdit {
     pub start_byte: usize,
