@@ -61,6 +61,9 @@ struct LastEdit {
 /// memory by the edited text, not by document size times entries.
 const UNDO_STACK_CAP: usize = 100;
 
+/// Spare bytes kept past the text so ordinary typing never reallocates it.
+const TEXT_GROWTH_CHUNK: usize = 64 * 1024;
+
 /// A reversible edit: `text[start..start + inserted_len]` was put in place of
 /// `removed`. Applying it swaps the two, which yields the inverse entry, so
 /// undo and redo share one code path. `cursor`/`anchor` are the selection
@@ -76,8 +79,10 @@ struct UndoEntry {
 
 impl EditorBuffer {
     pub fn new(text: impl Into<String>) -> Self {
+        let mut text = text.into();
+        text.reserve_exact(TEXT_GROWTH_CHUNK);
         Self {
-            text: text.into(),
+            text,
             cursor: 0,
             anchor: None,
             preferred_column: None,
@@ -172,6 +177,7 @@ impl EditorBuffer {
             self.push_undo(start, &self.text[start..end].to_owned(), s.len());
         }
         self.preferred_column = None;
+        self.reserve_for_insert(s.len());
         self.text.replace_range(start..end, s);
         self.cursor = start + s.len();
         self.anchor = None;
@@ -362,6 +368,15 @@ impl EditorBuffer {
         self.selection().map(|range| self.text[range].to_string())
     }
 
+    /// Grows `text` in fixed chunks instead of the default doubling: on an
+    /// 11MB note one typed character would otherwise reallocate to ~23MB,
+    /// leaving an 11MB freed hole the allocator never returns.
+    fn reserve_for_insert(&mut self, additional: usize) {
+        if self.text.capacity() - self.text.len() < additional {
+            self.text.reserve_exact(additional.max(TEXT_GROWTH_CHUNK));
+        }
+    }
+
     /// Records a new undo entry for replacing `removed` (at `start`) with
     /// `inserted_len` bytes, and clears `redo_stack`.
     fn push_undo(&mut self, start: usize, removed: &str, inserted_len: usize) {
@@ -414,6 +429,7 @@ impl EditorBuffer {
             cursor: self.cursor,
             anchor: self.anchor,
         };
+        self.reserve_for_insert(entry.removed.len());
         self.text.replace_range(entry.start..end, &entry.removed);
         self.cursor = entry.cursor;
         self.anchor = entry.anchor;

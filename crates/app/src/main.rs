@@ -1890,6 +1890,36 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn first_keystroke_in_a_huge_file_does_not_reallocate_the_document(cx: &mut TestAppContext) {
+        // A cloned note has no spare capacity, so the first insert used to
+        // double the buffer (~11MB retained, an 11MB hole in the real app).
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let (_dir, window, _editor) = open_stress_fixture(cx, &content);
+        cx.update_window(window, |_, window, cx| {
+            crate::test_alloc::reset();
+            let before = crate::test_alloc::snapshot();
+            let mut keystroke = gpui_kit::Keystroke::parse("x").unwrap();
+            keystroke.key_char = Some("x".to_string());
+            window.dispatch_keystroke(keystroke, cx);
+            window.render_frame(cx);
+            let after = crate::test_alloc::snapshot();
+            let retained = after.current.saturating_sub(before.current);
+            assert!(
+                after.total < content.len() / 4 && retained < content.len() / 10,
+                "first keystroke allocated {} and retained {retained} bytes in a \
+                 {}-byte document",
+                after.total,
+                content.len()
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
     fn scrolling_through_a_huge_file_does_not_leak(cx: &mut TestAppContext) {
         // Logical heap (`test_alloc`) is asserted; RSS is only reported,
         // because it depends on the allocator's own trim heuristics and a
