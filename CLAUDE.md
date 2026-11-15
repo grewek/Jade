@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It's deliberately minimal — standing rules and commands only, since this file is reloaded in full on every turn.
 
-- **`ARCHITECTURE.md`** — the module map (files, types, functions, current limitations). Not auto-loaded; read the relevant section before working in a given area.
+- **`ARCHITECTURE.md`** — non-obvious invariants, GPUI/test gotchas, and the Backlog. Not auto-loaded; read before touching the editor, dialogs, or UI tests.
 - **`STYLE.md`** — Tigerstyle-derived coding rules (safety, performance, style), adapted for Rust/GPUI. Not auto-loaded; read on demand when writing or reviewing code.
 
 ## Vision
