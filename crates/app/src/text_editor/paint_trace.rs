@@ -16,6 +16,11 @@ use super::callout::CalloutType;
 const TOLERANCE: f32 = 0.5;
 /// Enough to recognise a line in the note without bloating the frame line.
 const PREVIEW_CHARS: usize = 30;
+/// A frame whose window is huge (a zero-height viewport paints the whole
+/// document) must not become a multi-megabyte socket line: only the first
+/// lines and bands are kept, and the counts of the rest are reported.
+const MAX_LINES: usize = 150;
+const MAX_BANDS: usize = 60;
 
 static FRAME: AtomicU64 = AtomicU64::new(0);
 static LAST_SIGNATURE: Mutex<String> = Mutex::new(String::new());
@@ -69,6 +74,8 @@ pub(super) struct PaintTrace {
     late_corrections_after: usize,
     bands: Vec<Band>,
     lines: Vec<Line>,
+    elided_bands: usize,
+    elided_lines: usize,
 }
 
 impl PaintTrace {
@@ -78,6 +85,8 @@ impl PaintTrace {
             late_corrections_after: 0,
             bands: Vec::new(),
             lines: Vec::new(),
+            elided_bands: 0,
+            elided_lines: 0,
         })
     }
 
@@ -88,6 +97,10 @@ impl PaintTrace {
         bottom: f32,
         kind: CalloutType,
     ) {
+        if self.bands.len() >= MAX_BANDS {
+            self.elided_bands += 1;
+            return;
+        }
         self.bands.push(Band {
             start_line: lines.start,
             end_line: lines.end,
@@ -106,6 +119,10 @@ impl PaintTrace {
         tag: &'static str,
         text: &str,
     ) {
+        if self.lines.len() >= MAX_LINES {
+            self.elided_lines += 1;
+            return;
+        }
         self.lines.push(Line {
             index,
             y,
@@ -200,6 +217,13 @@ impl PaintTrace {
                 l.index, l.y, l.rows, l.tag, l.preview
             );
         }
+        if self.elided_bands + self.elided_lines > 0 {
+            let _ = write!(
+                s,
+                " | elided {} bands, {} lines",
+                self.elided_bands, self.elided_lines
+            );
+        }
         s
     }
 }
@@ -240,6 +264,8 @@ mod tests {
             late_corrections_after: 0,
             bands: Vec::new(),
             lines: Vec::new(),
+            elided_bands: 0,
+            elided_lines: 0,
         }
     }
 
@@ -302,5 +328,17 @@ mod tests {
         lay_out_four_lines(&mut b);
         assert_eq!(a.signature(&[]), b.signature(&[]));
         assert!(a.signature(&[]).contains("wrap_width=unknown"));
+    }
+
+    #[test]
+    fn a_huge_window_is_truncated_not_sent_whole() {
+        let mut t = trace();
+        for i in 0..10_000 {
+            t.line(i, i as f32 * 20., 1, 20., "plain", "text");
+        }
+        t.band(0..10, 0., 200., CalloutType::Note);
+        let sig = t.signature(&[]);
+        assert!(sig.len() < 20_000, "{} bytes", sig.len());
+        assert!(sig.contains("elided 0 bands, 9850 lines"));
     }
 }

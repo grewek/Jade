@@ -59,7 +59,16 @@ pub(crate) fn emit(line: &str) {
         return;
     }
     let msg = format!("{line}\n");
-    clients.retain_mut(|c| c.write_all(msg.as_bytes()).is_ok());
+    clients.retain_mut(|c| match c.write_all(msg.as_bytes()) {
+        Ok(()) => true,
+        Err(err) => {
+            eprintln!(
+                "[jade-debug] dropped a client ({} byte line): {err}",
+                msg.len()
+            );
+            false
+        }
+    });
 }
 
 /// Blocks (up to ~1s) until a client has been registered, for tests.
