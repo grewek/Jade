@@ -4,6 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **`ARCHITECTURE.md`** — the module map (files, types, functions, current limitations). Not auto-loaded; read the relevant section before working in a given area.
 - **`HISTORY.md`** — the detailed rationale, bug narratives, and measured-number history behind decisions in both files. Not auto-loaded; read on demand when the "why" actually matters.
+- **`STYLE.md`** — Tigerstyle-derived coding rules (safety, performance, style), adapted for Rust/GPUI. Not auto-loaded; read on demand when writing or reviewing code.
 
 ## Vision
 
