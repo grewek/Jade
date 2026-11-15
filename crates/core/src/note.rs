@@ -11,31 +11,43 @@ pub fn relative_id(vault_root: &Path, path: &Path) -> String {
     relative_path_id(vault_root, &path.with_extension(""))
 }
 
+/// A note's identity and location. Deliberately holds no text: note text
+/// lives on disk (read on demand) and, while a note is open, in the editor,
+/// so there is only ever one in-memory copy.
 #[derive(Debug, Clone)]
 pub struct Note {
     pub id: String,
     pub path: PathBuf,
     pub title: String,
-    pub content: String,
 }
 
 impl Note {
-    pub fn load(vault_root: &Path, path: PathBuf) -> std::io::Result<Self> {
-        let content = std::fs::read_to_string(&path)?;
+    /// The note at `path`, without touching the filesystem.
+    pub fn new(vault_root: &Path, path: PathBuf) -> Self {
         let id = relative_id(vault_root, &path);
         let title = path
             .file_stem()
             .map(|s| s.to_string_lossy().into_owned())
             .unwrap_or_else(|| id.clone());
-        Ok(Self {
-            id,
-            path,
-            title,
-            content,
-        })
+        Self { id, path, title }
     }
 
-    pub fn save(&self) -> std::io::Result<()> {
-        std::fs::write(&self.path, &self.content)
+    /// Reads the note's current text from disk.
+    pub fn read_content(&self) -> std::io::Result<String> {
+        std::fs::read_to_string(&self.path)
+    }
+
+    /// Like [`Self::read_content`], into a caller-owned buffer (cleared
+    /// first) so scanning many notes reuses one allocation.
+    pub fn read_content_into(&self, buf: &mut String) -> std::io::Result<()> {
+        use std::io::Read;
+        buf.clear();
+        std::fs::File::open(&self.path)?.read_to_string(buf)?;
+        Ok(())
+    }
+
+    /// Writes `text` as the note's content.
+    pub fn save(&self, text: &str) -> std::io::Result<()> {
+        std::fs::write(&self.path, text)
     }
 }

@@ -91,6 +91,11 @@ struct JadeApp {
     sidebar_tab: SidebarTab,
     search_input: Entity<InputState>,
     search_query: String,
+    /// Search reads note files, so results are computed once per change
+    /// (query or note text/set), never per frame: mutations set
+    /// `search_stale` and `render` recomputes when the tab is showing.
+    search_results: Vec<(String, String)>,
+    search_stale: bool,
     _search_subscription: Subscription,
 }
 
@@ -107,6 +112,7 @@ impl JadeApp {
         let search_subscription = cx.subscribe(&search_input, |this, input, event, cx| {
             if matches!(event, InputEvent::Change) {
                 this.search_query = input.read(cx).value().to_string();
+                this.search_stale = true;
                 cx.notify();
             }
         });
@@ -133,6 +139,8 @@ impl JadeApp {
             sidebar_tab: SidebarTab::default(),
             search_input,
             search_query: String::new(),
+            search_results: Vec::new(),
+            search_stale: true,
             _search_subscription: search_subscription,
         }
     }
@@ -143,10 +151,10 @@ impl JadeApp {
         // without this, switching notes right after typing would drop it.
         self.flush_editor(cx);
 
-        let Some(note) = self.vault.note(&id) else {
+        // The editor takes the only in-memory copy of the text.
+        let Ok(text) = self.vault.read_note(&id) else {
             return;
         };
-        let text = note.content.clone();
         let editor = cx.new(|cx| Editor::new(text, cx));
         let subscription = cx.subscribe(&editor, |this, _editor, event, cx| {
             if matches!(event, EditorEvent::Changed) {
@@ -171,13 +179,21 @@ impl JadeApp {
         };
         self._editor_subscription = None;
         self.autosave_task = None;
-        let text = editor.read(cx).buffer().text().to_string();
-        let _ = self.vault.update_note_content(&note_id, text);
+        self.persist_editor(&editor, &note_id, cx);
+    }
+
+    /// Writes the editor's text to the note's file straight from the buffer
+    /// (no copy) and refreshes the note's cached links.
+    fn persist_editor(&mut self, editor: &Entity<Editor>, note_id: &str, cx: &App) {
+        let _ = self
+            .vault
+            .save_note(note_id, editor.read(cx).buffer().text());
+        self.search_stale = true;
     }
 
     /// Schedules a save of the open editor, restarting the wait on every
-    /// call: saving copies the whole note, rescans it for wikilinks and
-    /// rewrites the file, which is far too much work to do per keystroke.
+    /// call: saving rescans the whole note for wikilinks and rewrites the
+    /// file, which is far too much work to do per keystroke.
     fn autosave_editor(&mut self, cx: &mut Context<Self>) {
         self.autosave_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
@@ -192,13 +208,13 @@ impl JadeApp {
         let (Some(editor), Some(note_id)) = (self.editor.clone(), self.selected_id.clone()) else {
             return;
         };
-        let text = editor.read(cx).buffer().text().to_string();
-        let _ = self.vault.update_note_content(&note_id, text);
+        self.persist_editor(&editor, &note_id, cx);
         cx.notify();
     }
 
     fn create_note(&mut self, parent: Option<&str>, window: &mut Window, cx: &mut Context<Self>) {
         if let Ok(id) = self.vault.create_note("Untitled", parent) {
+            self.search_stale = true;
             self.open_note(id, window, cx);
             self.sidebar_focus.focus(window, cx);
         }
@@ -231,6 +247,7 @@ impl JadeApp {
         let Ok(new_id) = self.vault.rename_note(id, new_title) else {
             return;
         };
+        self.search_stale = true;
         if self.selected_id.as_deref() == Some(id) {
             self.open_note(new_id, window, cx);
         } else {
@@ -239,10 +256,13 @@ impl JadeApp {
     }
 
     fn delete_note(&mut self, id: &str, cx: &mut Context<Self>) {
-        if self.vault.delete_note(id).is_ok() && self.selected_id.as_deref() == Some(id) {
-            self.selected_id = None;
-            self.editor = None;
-            self._editor_subscription = None;
+        if self.vault.delete_note(id).is_ok() {
+            self.search_stale = true;
+            if self.selected_id.as_deref() == Some(id) {
+                self.selected_id = None;
+                self.editor = None;
+                self._editor_subscription = None;
+            }
         }
         cx.notify();
     }
@@ -262,6 +282,7 @@ impl JadeApp {
         let Ok(new_id) = self.vault.rename_folder(id, new_name) else {
             return;
         };
+        self.search_stale = true;
 
         if self.collapsed_folders.remove(id) {
             self.collapsed_folders.insert(new_id.clone());
@@ -280,6 +301,7 @@ impl JadeApp {
 
     fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.vault.delete_folder(id).is_ok() {
+            self.search_stale = true;
             let prefix = format!("{id}/");
             self.collapsed_folders
                 .retain(|f| f != id && !f.starts_with(&prefix));
@@ -813,9 +835,31 @@ impl JadeApp {
         .into_any_element()
     }
 
+    /// Recomputes `search_results` if anything it depends on changed since
+    /// the last call: `Vault::search` reads every note file.
+    fn refresh_search(&mut self) {
+        if !self.search_stale {
+            return;
+        }
+        self.search_stale = false;
+        let query = self.search_query.trim();
+        let mut results: Vec<(String, String)> = if query.is_empty() {
+            Vec::new()
+        } else {
+            self.vault
+                .search(query)
+                .into_iter()
+                .map(|note| (note.id.clone(), note.title.clone()))
+                .collect()
+        };
+        results.sort_by(|a, b| a.1.cmp(&b.1));
+        self.search_results = results;
+    }
+
     /// The "Search" sidebar tab: a live-filtered list of notes matching the
     /// query, by title or content substring (via `Vault::search`).
-    fn render_search_panel(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_search_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        self.refresh_search();
         let mut panel = div()
             .flex()
             .flex_col()
@@ -830,13 +874,7 @@ impl JadeApp {
                     .child("Type to search notes by title or content."),
             );
         } else {
-            let mut results: Vec<(String, String)> = self
-                .vault
-                .search(query)
-                .into_iter()
-                .map(|note| (note.id.clone(), note.title.clone()))
-                .collect();
-            results.sort_by(|a, b| a.1.cmp(&b.1));
+            let results = self.search_results.clone();
 
             panel = panel.child(
                 div()
@@ -1967,8 +2005,10 @@ mod tests {
 
     #[gpui_kit::test]
     fn opening_a_huge_note_keeps_live_memory_bounded(cx: &mut TestAppContext) {
-        // Live heap after opening, in multiples of the note's size. Was
-        // ~5.5x (vault copy + editor copy + ~38MB of per-line caches).
+        // Live heap from before the vault is scanned to after the note is
+        // open, in multiples of the note's size. The text must exist once
+        // (the editor's buffer); the vault keeps none. Was ~3.9x with the
+        // vault's own copy, ~5.5x before the per-line caches were slimmed.
         let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
         let Ok(content) = std::fs::read_to_string(fixture_path) else {
             eprintln!("stress fixture not found at {fixture_path:?}, skipping");
@@ -1976,27 +2016,62 @@ mod tests {
         };
         let dir = temp_vault();
         std::fs::write(dir.path().join("Big.md"), &content).unwrap();
+        let before = crate::test_alloc::snapshot().current;
         let (window, _app) = open_app(cx, dir.path().to_path_buf());
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            let before = crate::test_alloc::snapshot().current;
+            let scanned = crate::test_alloc::snapshot().current.saturating_sub(before);
             window.click("Big", cx);
             window.render_frame(cx);
             window.render_frame(cx);
             let opened = crate::test_alloc::snapshot().current.saturating_sub(before);
             eprintln!(
-                "opening_a_huge_note: editor adds {:.1} MiB ({:.2}x the {}-byte note)",
+                "opening_a_huge_note: vault scan {:.1} MiB, with note open {:.1} MiB \
+                 ({:.2}x the {}-byte note)",
+                scanned as f64 / 1048576.0,
                 opened as f64 / 1048576.0,
                 opened as f64 / content.len() as f64,
                 content.len()
             );
             assert!(
-                opened < content.len() * 3,
+                scanned < content.len() / 4,
+                "the vault scan retained {scanned} bytes for a {}-byte note: it must not \
+                 keep note text",
+                content.len()
+            );
+            assert!(
+                opened < content.len() * 7 / 2,
                 "opening the note added {opened} bytes for a {}-byte note",
                 content.len()
             );
         })
         .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn search_results_are_cached_until_something_changes(cx: &mut TestAppContext) {
+        // `Vault::search` reads every note file, so `render` must not call
+        // it per frame: results are recomputed only when marked stale.
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "alpha").unwrap();
+        let (_window, app) = open_app(cx, dir.path().to_path_buf());
+        app.update(cx, |app, _| {
+            app.search_query = "alpha".to_string();
+            app.refresh_search();
+            assert_eq!(app.search_results.len(), 1);
+
+            std::fs::write(dir.path().join("Note.md"), "beta").unwrap();
+            app.refresh_search();
+            assert_eq!(
+                app.search_results.len(),
+                1,
+                "cached: no re-read when not stale"
+            );
+
+            app.search_stale = true;
+            app.refresh_search();
+            assert!(app.search_results.is_empty(), "stale: re-read from disk");
+        });
     }
 
     #[gpui_kit::test]

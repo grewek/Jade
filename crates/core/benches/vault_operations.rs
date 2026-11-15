@@ -21,18 +21,18 @@ fn synthetic_note(word_count: usize, link_every: usize) -> String {
     text
 }
 
-/// Goes through the real `create_note`/`update_note_content` API (backed by a
+/// Goes through the real `create_note`/`save_note` API (backed by a
 /// real temp directory) rather than constructing `Vault`'s fields directly, so
 /// this also exercises the real incremental wikilink-cache updates, not just a
 /// hand-assembled fixture. The `TempDir` must stay alive as long as `Vault`
-/// does, even though nothing here re-reads from disk after setup.
+/// does: `search` reads the notes back from disk.
 fn vault_with_notes(count: usize, words_per_note: usize) -> (TempDir, Vault) {
     let dir = tempfile::tempdir().unwrap();
     let mut vault = Vault::open(dir.path()).unwrap();
     for i in 0..count {
         let id = vault.create_note(&format!("Note {i}"), None).unwrap();
         vault
-            .update_note_content(&id, synthetic_note(words_per_note, 20))
+            .save_note(&id, &synthetic_note(words_per_note, 20))
             .unwrap();
     }
     (dir, vault)
@@ -66,6 +66,11 @@ fn bench_search(c: &mut Criterion) {
     for &(label, words) in SIZES {
         let (_dir, vault) = vault_with_notes(200, words);
         group.bench_function(label, |b| b.iter(|| vault.search("word")));
+        // No note matches, so every byte of every file is scanned: the
+        // real worst case (a match exits early).
+        group.bench_function(format!("{label}_no_match"), |b| {
+            b.iter(|| vault.search("zzzqqq"))
+        });
     }
     group.finish();
 }

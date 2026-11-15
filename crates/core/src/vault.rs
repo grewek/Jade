@@ -10,9 +10,8 @@ pub struct Vault {
     /// Folder ids (relative paths, `/`-separated), including empty folders.
     pub folders: HashSet<String>,
     /// Each note's extracted wikilinks, cached and kept in sync with `notes` on
-    /// every mutation. Without this, `backlinks()` re-parses every note's content
-    /// on every call — including ones that haven't changed since the last call,
-    /// which it's called on on every keystroke (the live backlinks panel).
+    /// every mutation. Note text is not kept in memory (see [`Note`]), so this
+    /// is also the only way `backlinks()` can know what a note links to.
     wikilinks: HashMap<String, Vec<WikiLink>>,
 }
 
@@ -21,11 +20,8 @@ impl Vault {
         let root = root.into();
         let mut notes = HashMap::new();
         let mut folders = HashSet::new();
-        collect_entries(&root, &root, &mut notes, &mut folders)?;
-        let wikilinks = notes
-            .values()
-            .map(|note| (note.id.clone(), extract_wikilinks(&note.content)))
-            .collect();
+        let mut wikilinks = HashMap::new();
+        collect_entries(&root, &root, &mut notes, &mut folders, &mut wikilinks)?;
         Ok(Self {
             root,
             notes,
@@ -70,10 +66,9 @@ impl Vault {
 
         let path = dir.join(format!("{candidate}.md"));
         std::fs::write(&path, "")?;
-        let note = Note::load(&self.root, path)?;
+        let note = Note::new(&self.root, path);
         let id = note.id.clone();
-        self.wikilinks
-            .insert(id.clone(), extract_wikilinks(&note.content));
+        self.wikilinks.insert(id.clone(), Vec::new());
         self.notes.insert(id.clone(), note);
         Ok(id)
     }
@@ -104,12 +99,22 @@ impl Vault {
         Ok(id)
     }
 
-    pub fn update_note_content(&mut self, id: &str, content: String) -> std::io::Result<()> {
-        let note = self.notes.get_mut(id).ok_or_else(|| not_found(id))?;
-        note.content = content;
-        let links = extract_wikilinks(&note.content);
-        note.save()?;
-        self.wikilinks.insert(id.to_string(), links);
+    /// The note's current text, read from disk. The caller owns the only
+    /// in-memory copy.
+    pub fn read_note(&self, id: &str) -> std::io::Result<String> {
+        self.notes
+            .get(id)
+            .ok_or_else(|| not_found(id))?
+            .read_content()
+    }
+
+    /// Writes `text` to the note's file and refreshes its cached wikilinks
+    /// from it. Takes a borrow so the editor's text is never copied to save.
+    pub fn save_note(&mut self, id: &str, text: &str) -> std::io::Result<()> {
+        let note = self.notes.get(id).ok_or_else(|| not_found(id))?;
+        note.save(text)?;
+        self.wikilinks
+            .insert(id.to_string(), extract_wikilinks(text));
         Ok(())
     }
 
@@ -139,7 +144,7 @@ impl Vault {
         std::fs::rename(&old_path, &new_path)?;
 
         self.notes.remove(id);
-        let note = Note::load(&self.root, new_path)?;
+        let note = Note::new(&self.root, new_path);
         let new_id = note.id.clone();
         self.notes.insert(new_id.clone(), note);
         // Content is unchanged by a rename, so move the cached links to the new
@@ -202,20 +207,16 @@ impl Vault {
 
         let new_id = relative_path_id(&self.root, &new_path);
         self.folders.insert(new_id.clone());
-        collect_entries(&self.root, &new_path, &mut self.notes, &mut self.folders)?;
-        // Content is unchanged by a move, but re-extracting (rather than remapping
-        // the old prefix to the new one key by key) is simpler for arbitrarily
-        // nested children — this only runs on a user-initiated folder rename, not
-        // on every keystroke, so it doesn't need to be as tight as `backlinks()`.
-        let new_prefix = format!("{new_id}/");
-        for note in self
-            .notes
-            .values()
-            .filter(|n| n.id.starts_with(&new_prefix))
-        {
-            self.wikilinks
-                .insert(note.id.clone(), extract_wikilinks(&note.content));
-        }
+        // Re-scanning (which also re-extracts the links) rather than remapping the
+        // old prefix to the new one key by key is simpler for arbitrarily nested
+        // children — this only runs on a user-initiated folder rename.
+        collect_entries(
+            &self.root,
+            &new_path,
+            &mut self.notes,
+            &mut self.folders,
+            &mut self.wikilinks,
+        )?;
         Ok(new_id)
     }
 
@@ -283,15 +284,66 @@ impl Vault {
         index.get(&target.to_lowercase()).cloned()
     }
 
+    /// Notes whose title or on-disk text contains `query` (case-insensitive).
+    /// Reads files, so call it when the query or notes change, not per frame.
+    /// A note that can't be read matches on its title only.
     pub fn search(&self, query: &str) -> Vec<&Note> {
         let query = query.to_lowercase();
+        // One reused pair of buffers, not a fresh lowercase copy per note.
+        let mut text = String::new();
+        let mut lowered = String::new();
         self.notes
             .values()
             .filter(|n| {
-                n.title.to_lowercase().contains(&query) || n.content.to_lowercase().contains(&query)
+                n.title.to_lowercase().contains(&query)
+                    || n.read_content_into(&mut text).is_ok()
+                        && text_contains(&text, &query, &mut lowered)
             })
             .collect()
     }
+}
+
+/// Whether `text` contains `query_lower` (already lowercased), ignoring case.
+/// An ASCII query is matched on the raw bytes with ASCII case folding: no
+/// lowercase copy of the text, and it stops at the first hit. (That folds
+/// only ASCII letters in the text, so e.g. the Kelvin sign U+212A doesn't
+/// match "k".) Other queries lowercase the text into `scratch` first, for
+/// full Unicode folding.
+fn text_contains(text: &str, query_lower: &str, scratch: &mut String) -> bool {
+    if query_lower.is_ascii() {
+        return contains_ascii_ignore_case(text.as_bytes(), query_lower.as_bytes());
+    }
+    scratch.clear();
+    scratch.extend(text.chars().flat_map(char::to_lowercase));
+    scratch.contains(query_lower)
+}
+
+/// `needle` must be lowercase ASCII. Bytes of a multi-byte UTF-8 character
+/// are all >= 0x80, so they can never match an ASCII needle byte.
+fn contains_ascii_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
+    let Some(&first) = needle.first() else {
+        return true;
+    };
+    let first_upper = first.to_ascii_uppercase();
+    let last_start = match haystack.len().checked_sub(needle.len()) {
+        Some(last) => last,
+        None => return false,
+    };
+    let mut i = 0;
+    while i <= last_start {
+        let Some(offset) = haystack[i..=last_start]
+            .iter()
+            .position(|&b| b == first || b == first_upper)
+        else {
+            return false;
+        };
+        i += offset;
+        if haystack[i..i + needle.len()].eq_ignore_ascii_case(needle) {
+            return true;
+        }
+        i += 1;
+    }
+    false
 }
 
 fn not_found(id: &str) -> std::io::Error {
@@ -308,19 +360,36 @@ fn folder_not_found(id: &str) -> std::io::Error {
     )
 }
 
+/// Scans `dir` recursively into `notes`/`folders`, reading each note once to
+/// extract its wikilinks into `wikilinks` and then dropping the text.
 fn collect_entries(
     root: &Path,
     dir: &Path,
     notes: &mut HashMap<String, Note>,
     folders: &mut HashSet<String>,
+    wikilinks: &mut HashMap<String, Vec<WikiLink>>,
+) -> std::io::Result<()> {
+    let mut text = String::new();
+    collect_entries_with(root, dir, notes, folders, wikilinks, &mut text)
+}
+
+fn collect_entries_with(
+    root: &Path,
+    dir: &Path,
+    notes: &mut HashMap<String, Note>,
+    folders: &mut HashSet<String>,
+    wikilinks: &mut HashMap<String, Vec<WikiLink>>,
+    text: &mut String,
 ) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
             folders.insert(relative_path_id(root, &path));
-            collect_entries(root, &path, notes, folders)?;
+            collect_entries_with(root, &path, notes, folders, wikilinks, text)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
-            let note = Note::load(root, path)?;
+            let note = Note::new(root, path);
+            note.read_content_into(text)?;
+            wikilinks.insert(note.id.clone(), extract_wikilinks(text));
             notes.insert(note.id.clone(), note);
         }
     }
@@ -364,7 +433,7 @@ mod tests {
         assert!(!vault.backlinks().contains_key("Note B"));
 
         vault
-            .update_note_content("Note A", "Links to [[Note B]] now.".to_string())
+            .save_note("Note A", "Links to [[Note B]] now.")
             .unwrap();
 
         let backlinks = vault.backlinks();
@@ -464,20 +533,18 @@ mod tests {
 
         assert!(vault.folders.contains("Math"));
         assert!(vault.folders.contains("Math/Empty Subfolder"));
-        assert_eq!(vault.note("Math/Algebra").unwrap().content, "x + y");
+        assert_eq!(vault.read_note("Math/Algebra").unwrap(), "x + y");
     }
 
     #[test]
-    fn update_note_content_persists_to_disk() {
+    fn save_note_persists_to_disk() {
         let dir = temp_vault();
         std::fs::write(dir.path().join("Note.md"), "old content").unwrap();
         let mut vault = Vault::open(dir.path()).unwrap();
 
-        vault
-            .update_note_content("Note", "new content".to_string())
-            .unwrap();
+        vault.save_note("Note", "new content").unwrap();
 
-        assert_eq!(vault.note("Note").unwrap().content, "new content");
+        assert_eq!(vault.read_note("Note").unwrap(), "new content");
         let on_disk = std::fs::read_to_string(dir.path().join("Note.md")).unwrap();
         assert_eq!(on_disk, "new content");
     }
@@ -494,7 +561,7 @@ mod tests {
         assert!(!dir.path().join("Old Name.md").exists());
         assert!(dir.path().join("New Name.md").exists());
         assert!(vault.note("Old Name").is_none());
-        assert_eq!(vault.note("New Name").unwrap().content, "content");
+        assert_eq!(vault.read_note("New Name").unwrap(), "content");
     }
 
     #[test]
@@ -540,7 +607,7 @@ mod tests {
         assert!(vault.folders.contains("Mathematics"));
         assert!(vault.folders.contains("Mathematics/Geometry"));
         assert!(vault.note("Math/Algebra").is_none());
-        assert_eq!(vault.note("Mathematics/Algebra").unwrap().content, "x + y");
+        assert_eq!(vault.read_note("Mathematics/Algebra").unwrap(), "x + y");
     }
 
     #[test]
@@ -591,6 +658,90 @@ mod tests {
         assert!(!vault.folders.contains("Math"));
         assert!(vault.note("Math/Algebra").is_none());
         assert!(vault.note("Other").is_some());
+    }
+
+    /// The ASCII fast path must agree with plain `to_lowercase().contains`
+    /// everywhere except the documented exotic-fold characters, which the
+    /// random alphabet below deliberately leaves out.
+    #[test]
+    fn ascii_search_matches_the_lowercase_contains_reference() {
+        let mut seed: u64 = 0xBADC_0FFE_E0DD_F00D;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        let alphabet: Vec<char> = "abAB cdCD\n|[]é中🙂".chars().collect();
+        let mut scratch = String::new();
+        for _ in 0..20_000 {
+            let text: String = (0..next() % 40)
+                .map(|_| alphabet[next() % alphabet.len()])
+                .collect();
+            let query: String = (0..1 + next() % 4)
+                .map(|_| alphabet[next() % 9])
+                .collect::<String>()
+                .to_lowercase();
+            assert_eq!(
+                text_contains(&text, &query, &mut scratch),
+                text.to_lowercase().contains(&query),
+                "text {text:?} query {query:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn non_ascii_search_uses_full_unicode_case_folding() {
+        let mut scratch = String::new();
+        assert!(text_contains("Große Straße", "straße", &mut scratch));
+        assert!(text_contains("ÉCOLE", "école", &mut scratch));
+        assert!(!text_contains("ecole", "école", &mut scratch));
+    }
+
+    #[test]
+    fn search_reads_the_current_text_from_disk() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "nothing special").unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        assert!(vault.search("zebra").is_empty());
+
+        // The vault keeps no copy of the text, so a change on disk is seen.
+        std::fs::write(dir.path().join("Note.md"), "A Zebra appears").unwrap();
+        let found = vault.search("zebra");
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "Note");
+    }
+
+    #[test]
+    fn search_still_matches_the_title_of_an_unreadable_note() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Gone.md"), "text").unwrap();
+        let vault = Vault::open(dir.path()).unwrap();
+        std::fs::remove_file(dir.path().join("Gone.md")).unwrap();
+
+        assert_eq!(vault.search("gone").len(), 1, "title match needs no read");
+        assert!(vault.search("text").is_empty(), "content can't be read");
+    }
+
+    #[test]
+    fn read_note_reports_not_found_for_an_unknown_id() {
+        let vault = Vault::empty(temp_vault().path());
+        let err = vault.read_note("Nope").unwrap_err();
+        assert_eq!(err.kind(), std::io::ErrorKind::NotFound);
+    }
+
+    #[test]
+    fn save_note_refreshes_the_cached_links_from_the_given_text() {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("A.md"), "no links").unwrap();
+        std::fs::write(dir.path().join("B.md"), "b").unwrap();
+        let mut vault = Vault::open(dir.path()).unwrap();
+        assert!(!vault.backlinks().contains_key("B"));
+
+        vault.save_note("A", "now links to [[B]]").unwrap();
+        assert_eq!(vault.backlinks().get("B"), Some(&vec!["A".to_string()]));
+        vault.save_note("A", "link removed").unwrap();
+        assert!(!vault.backlinks().contains_key("B"));
     }
 
     #[test]
