@@ -129,6 +129,12 @@ impl Editor {
         &self.buffer
     }
 
+    /// Visible lines `paint_lines` still had to re-measure after the pre-pass.
+    #[cfg(test)]
+    pub fn late_row_corrections(&self) -> usize {
+        self.row_height_cache.borrow().late_corrections
+    }
+
     pub fn buffer_mut(&mut self) -> &mut EditorBuffer {
         &mut self.buffer
     }

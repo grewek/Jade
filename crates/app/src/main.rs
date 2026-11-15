@@ -2011,6 +2011,34 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn first_paint_of_a_huge_note_needs_no_row_height_corrections(cx: &mut TestAppContext) {
+        // A cold rebuild seeds wrapped lines with over-estimates. Callout
+        // backgrounds are drawn before the lines, from those heights, so
+        // painting must not still be correcting visible lines afterwards:
+        // the bands would sit at the wrong height until the next repaint.
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Big.md"), &content).unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Big", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        let late = editor.read_with(cx, |e, _| e.late_row_corrections());
+        assert_eq!(
+            late, 0,
+            "paint corrected {late} visible lines after verification"
+        );
+    }
+
+    #[gpui_kit::test]
     fn line_count_changing_edits_do_not_rebuild_the_document(cx: &mut TestAppContext) {
         // Enter, a line-joining Backspace and undo/redo of them used to recompute every
         // per-line cache (~165MB allocated, a 32MB peak, >150ms on the

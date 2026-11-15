@@ -335,6 +335,14 @@ pub(super) struct RowHeightCache {
     /// and font size changes in one comparable value, rather than needing
     /// `Font: PartialEq` (which this type deliberately avoids depending on).
     char_width: Pixels,
+    /// Lines (one contiguous window, the last painted) whose row counts are
+    /// known exact, not [`estimate_row_count`] over-estimates. Reset by a
+    /// rebuild or a line-count change; see [`LineLayout::verify_rows`].
+    verified: std::ops::Range<usize>,
+    /// Corrections `paint_lines`' own per-line loop still had to make: after
+    /// [`LineLayout::verify_rows`] there should be none.
+    #[cfg(test)]
+    pub(super) late_corrections: usize,
 }
 
 impl RowHeightCache {
@@ -348,6 +356,9 @@ impl RowHeightCache {
             active_line: None,
             available_width: px(0.),
             char_width: px(0.),
+            verified: 0..0,
+            #[cfg(test)]
+            late_corrections: 0,
         }
     }
 
@@ -436,6 +447,7 @@ impl RowHeightCache {
         };
         self.available_width = available_width;
         self.char_width = char_width;
+        self.verified = 0..0;
     }
 
     /// Mirrors `patch`'s line-count change in the row counts, so
@@ -447,6 +459,7 @@ impl RowHeightCache {
         let old_count = doc.line_count() as isize - patch.line_delta;
         if patch.line_delta != 0 && self.line_count() as isize == old_count {
             self.rows.resize(patch.splice_at, patch.line_delta);
+            self.verified = 0..0;
         }
     }
 
@@ -551,6 +564,10 @@ impl RowHeightCache {
     /// for real painting, at zero extra cost. Idempotent: a no-op once a
     /// line has already been corrected, or for any line `rebuild` already
     /// computed exactly (table rows/delimiters).
+    fn row_count(&self, i: usize) -> i64 {
+        self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i)
+    }
+
     pub(super) fn correct(&mut self, i: usize, real_rows: usize) {
         if i >= self.line_count() {
             return;
@@ -707,6 +724,68 @@ impl LineLayout {
         self.line_height * self.row_cache.borrow().prefix_sum(i) as f32
     }
 
+    /// Makes the row counts of `range` exact. A cold rebuild seeds ordinary
+    /// lines with an over-estimate that painting only corrects line by line,
+    /// *after* anything positioned from the estimates (a callout's
+    /// background) has been drawn, so those backgrounds sat at the wrong
+    /// height until the next repaint. Once the real width is known a one-row
+    /// estimate is already exact (it never undercounts and a line has at
+    /// least one row), so only multi-row lines are shaped, once per window.
+    /// Before that (the first frame wraps at `Pixels::MAX`, so every line
+    /// estimates as one row) every line in the window is shaped.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn verify_rows(
+        &self,
+        range: std::ops::Range<usize>,
+        text: &str,
+        cursor: usize,
+        focused: bool,
+        paint_width: Pixels,
+        font: &Font,
+        font_size: Pixels,
+        text_color: Hsla,
+        window: &mut Window,
+    ) {
+        let (verified, char_width, cached_width) = {
+            let rows = self.row_cache.borrow();
+            (rows.verified.clone(), rows.char_width, rows.available_width)
+        };
+        if range.start >= verified.start && range.end <= verified.end {
+            return;
+        }
+        let width_unknown = cached_width >= Pixels::MAX;
+        let doc = self.doc_cache.borrow();
+        let mut corrections = Vec::new();
+        for i in range.clone().filter(|i| !verified.contains(i)) {
+            if width_unknown || self.row_cache.borrow().row_count(i) > 1 {
+                let rows = row_count_for_line(
+                    text,
+                    &doc,
+                    i,
+                    cursor,
+                    focused,
+                    char_width,
+                    font,
+                    font_size,
+                    text_color,
+                    paint_width,
+                    window,
+                );
+                corrections.push((i, rows));
+            }
+        }
+        let mut rows = self.row_cache.borrow_mut();
+        for (i, count) in corrections {
+            rows.correct(i, count);
+        }
+        let touching = range.start <= verified.end && verified.start <= range.end;
+        rows.verified = if touching && !verified.is_empty() {
+            range.start.min(verified.start)..range.end.max(verified.end)
+        } else {
+            range
+        };
+    }
+
     /// The line containing buffer byte offset `cursor`.
     pub(super) fn line_at(&self, cursor: usize) -> usize {
         self.doc_cache.borrow().line_at(cursor)
@@ -717,7 +796,12 @@ impl LineLayout {
     /// self`: mutates through `row_cache`'s `RefCell`, the same interior-
     /// mutability pattern [`Self::cumulative_at`] already relies on.
     pub(super) fn correct_row_count(&self, i: usize, real_rows: usize) {
-        self.row_cache.borrow_mut().correct(i, real_rows);
+        let mut rows = self.row_cache.borrow_mut();
+        #[cfg(test)]
+        if i < rows.line_count() && rows.row_count(i) != real_rows as i64 {
+            rows.late_corrections += 1;
+        }
+        rows.correct(i, real_rows);
     }
 
     /// Binary search over [`Self::cumulative_at`], matching `[Pixels]::
@@ -887,32 +971,15 @@ pub(super) fn visible_line_range(
 fn measure_document(
     layout: &LineLayout,
     cursor: usize,
-    callouts: &[Callout],
     line_height: Pixels,
-) -> (Pixels, Pixels, Pixels, Vec<(Pixels, Pixels)>) {
+) -> (Pixels, Pixels, Pixels) {
     let total = layout.cumulative_at(layout.line_count());
 
     let cursor_line = layout.line_at(cursor);
     let cursor_top = layout.cumulative_at(cursor_line);
     let cursor_height = layout.height(cursor_line).max(line_height);
 
-    // Each callout's `(top, bottom)` pixel range, read straight from
-    // `layout`'s cumulative row counts at its known `start_line`/`end_line`
-    // — no need to have actually visited those lines "for real" the way a
-    // sequential accumulator would have required, which matters once
-    // `paint_lines` stops visiting every line (see that function's own doc
-    // comment).
-    let callout_ranges = callouts
-        .iter()
-        .map(|c| {
-            (
-                layout.cumulative_at(c.start_line),
-                layout.cumulative_at(c.end_line),
-            )
-        })
-        .collect();
-
-    (total, cursor_top, cursor_height, callout_ranges)
+    (total, cursor_top, cursor_height)
 }
 
 /// The `Font` to paint a [`DisplaySegment`](super::live_preview::DisplaySegment)'s
@@ -1344,12 +1411,7 @@ pub(super) fn render_editor(
         text_color,
         window,
     );
-    let (total_height, cursor_top, cursor_height, callout_ranges) = measure_document(
-        &layout,
-        cursor,
-        document_cache.borrow().callouts(),
-        line_height,
-    );
+    let (total_height, cursor_top, cursor_height) = measure_document(&layout, cursor, line_height);
 
     div()
         .id("editor")
@@ -1390,7 +1452,6 @@ pub(super) fn render_editor(
                             doc.block_contexts(),
                             doc.tables(),
                             doc.callouts(),
-                            &callout_ranges,
                             cursor,
                             selection.clone(),
                             focused,
@@ -1739,7 +1800,6 @@ fn paint_lines(
     block_contexts: &[LineContext],
     tables: &[Table],
     callouts: &[Callout],
-    callout_ranges: &[(Pixels, Pixels)],
     cursor: usize,
     selection: Option<std::ops::Range<usize>>,
     show_cursor: bool,
@@ -1764,12 +1824,30 @@ fn paint_lines(
     // this runs as its own pass, skipping any callout whose range doesn't
     // intersect the viewport at all (cheap, and keeps this pass bounded
     // even for a document with a huge number of callouts).
-    let viewport_top = viewport.origin.y - bounds.origin.y;
-    let viewport_bottom = viewport_top + viewport.size.height;
-    for (callout, &(top, bottom)) in callouts.iter().zip(callout_ranges) {
-        if viewport.size.height > px(0.) && (bottom < viewport_top || top > viewport_bottom) {
-            continue;
-        }
+    layout.verify_rows(
+        range.clone(),
+        text,
+        cursor,
+        show_cursor,
+        bounds.size.width,
+        font,
+        font_size,
+        text_color,
+        window,
+    );
+    // Callouts never overlap and are ordered, so the visible ones are a
+    // contiguous run.
+    let first_visible = callouts.partition_point(|c| c.end_line <= range.start);
+    for callout in callouts[first_visible..]
+        .iter()
+        .take_while(|c| c.start_line < range.end)
+    {
+        // Past the verified window the heights are estimates; the band is
+        // off-screen there anyway, so stop where they begin.
+        let (top, bottom) = (
+            layout.cumulative_at(callout.start_line),
+            layout.cumulative_at(callout.end_line.min(range.end)),
+        );
         let color = callout_color(callout.kind);
         let background = Hsla {
             a: CALLOUT_BACKGROUND_ALPHA,
