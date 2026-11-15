@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+mod memory_probe;
 #[cfg(test)]
 mod test_alloc;
 mod text_editor;
@@ -998,6 +999,8 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("vault"));
 
+    memory_probe::start_if_enabled();
+
     // Registers the bundled Lucide icon SVGs (`Dialog`'s own close "x",
     // `Button::icon(...)`, etc.) with GPUI's asset loader — without this,
     // every `IconName` renders as empty (the button itself still paints,
@@ -1741,6 +1744,113 @@ mod tests {
                 "current live bytes grew from {} to {} across 10 unchanged repaints — looks like a real leak, not just per-paint churn",
                 after_first_render.current,
                 after_many_renders.current
+            );
+        })
+        .unwrap();
+    }
+
+    /// Opens the stress fixture in a full app and focuses its editor.
+    fn open_stress_fixture(
+        cx: &mut TestAppContext,
+        content: &str,
+    ) -> (tempfile::TempDir, AnyWindowHandle, Entity<Editor>) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Big.md"), content).unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Big", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        cx.update_window(window, |_, window, cx| {
+            editor.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        (dir, window, editor)
+    }
+
+    #[gpui_kit::test]
+    fn real_keystrokes_in_a_huge_file_keep_undo_memory_bounded(cx: &mut TestAppContext) {
+        // Regression guard: keystrokes must go through `dispatch_keystroke`
+        // (the real `replace_text_in_range` path), because calling
+        // `EditorBuffer::insert` directly hid a bug where every keystroke
+        // pushed a full-buffer undo snapshot (~11MB each on this fixture).
+        const KEYSTROKES: usize = 150;
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let (_dir, window, _editor) = open_stress_fixture(cx, &content);
+        cx.update_window(window, |_, window, cx| {
+            crate::test_alloc::reset();
+            let before = crate::test_alloc::snapshot();
+            for i in 0..KEYSTROKES {
+                let mut keystroke = gpui_kit::Keystroke::parse("x").unwrap();
+                keystroke.key_char = Some("x".to_string());
+                window.dispatch_keystroke(keystroke, cx);
+                if i % 25 == 0 {
+                    window.render_frame(cx);
+                }
+            }
+            window.render_frame(cx);
+            let after = crate::test_alloc::snapshot();
+            let retained = after.current.saturating_sub(before.current);
+            eprintln!(
+                "real_keystrokes_in_a_huge_file_keep_undo_memory_bounded: \
+                 {KEYSTROKES} keystrokes retained {retained} bytes (buffer is {})",
+                content.len()
+            );
+            // One coalesced burst costs about one buffer clone; allow a few
+            // for caches. An uncoalesced run would retain KEYSTROKES clones.
+            assert!(
+                retained < 4 * content.len(),
+                "retained {retained} bytes after {KEYSTROKES} keystrokes in a {}-byte \
+                 buffer: undo coalescing is not working on the real typing path",
+                content.len()
+            );
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn scrolling_through_a_huge_file_does_not_leak(cx: &mut TestAppContext) {
+        // Logical heap (`test_alloc`) is asserted; RSS is only reported,
+        // because it depends on the allocator's own trim heuristics and a
+        // hard threshold would be flaky.
+        const SCROLL_STEPS: usize = 200;
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let (_dir, window, editor) = open_stress_fixture(cx, &content);
+        cx.update_window(window, |_, window, cx| {
+            let handle = editor.read(cx).scroll_handle().clone();
+            let max_y = f32::from(handle.max_offset().y.abs());
+            let rss_before = crate::memory_probe::rss_kib();
+            let before = crate::test_alloc::snapshot();
+            for step in 0..SCROLL_STEPS {
+                let y = max_y * step as f32 / SCROLL_STEPS as f32;
+                handle.set_offset(point(px(0.), px(-y)));
+                window.render_frame(cx);
+            }
+            let after = crate::test_alloc::snapshot();
+            let rss_after = crate::memory_probe::rss_kib();
+            eprintln!(
+                "scrolling_through_a_huge_file_does_not_leak: max_scroll={max_y}px \
+                 heap {} -> {} bytes, rss {rss_before:?} -> {rss_after:?} KiB",
+                before.current, after.current
+            );
+            assert!(max_y > 0.0, "fixture should be scrollable");
+            assert!(
+                after.current < before.current + before.current / 2,
+                "heap grew from {} to {} across {SCROLL_STEPS} scroll steps",
+                before.current,
+                after.current
             );
         })
         .unwrap();
