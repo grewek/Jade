@@ -32,10 +32,10 @@ pub struct EditorBuffer {
     /// every other operation (even just moving left/right) since those make
     /// a new column the deliberate one.
     preferred_column: Option<usize>,
-    /// One full-text snapshot per burst of same-kind contiguous edits (see
-    /// `LastEdit`), capped at `UNDO_STACK_CAP`, oldest evicted first.
-    undo_stack: Vec<Snapshot>,
-    redo_stack: Vec<Snapshot>,
+    /// One delta per burst of same-kind contiguous edits (see `LastEdit`),
+    /// capped at `UNDO_STACK_CAP`, oldest evicted first.
+    undo_stack: Vec<UndoEntry>,
+    redo_stack: Vec<UndoEntry>,
     /// Where the next edit must start to continue the current burst. `None`
     /// forces a fresh undo entry: after undo/redo, a cursor move,
     /// `select_all`, or an edit that replaced a selection.
@@ -57,13 +57,19 @@ struct LastEdit {
     continuation_point: usize,
 }
 
-/// Hard ceiling on retained full-text clones for the uncoalesced worst case
-/// (many scattered, non-contiguous edits).
+/// Ceiling on retained undo entries. Entries are deltas, so this bounds
+/// memory by the edited text, not by document size times entries.
 const UNDO_STACK_CAP: usize = 100;
 
+/// A reversible edit: `text[start..start + inserted_len]` was put in place of
+/// `removed`. Applying it swaps the two, which yields the inverse entry, so
+/// undo and redo share one code path. `cursor`/`anchor` are the selection
+/// state to restore when this entry is applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct Snapshot {
-    text: String,
+struct UndoEntry {
+    start: usize,
+    removed: String,
+    inserted_len: usize,
     cursor: usize,
     anchor: Option<usize>,
 }
@@ -160,7 +166,11 @@ impl EditorBuffer {
                     kind: EditKind::Insert,
                     continuation_point: start,
                 });
-        self.push_undo(continues);
+        if continues {
+            self.extend_top_insert(s.len());
+        } else {
+            self.push_undo(start, &self.text[start..end].to_owned(), s.len());
+        }
         self.preferred_column = None;
         self.text.replace_range(start..end, s);
         self.cursor = start + s.len();
@@ -219,7 +229,14 @@ impl EditorBuffer {
             }
             _ => false,
         };
-        self.push_undo(continues);
+        let deleted = self.text[range.clone()].to_owned();
+        match (continues, kind) {
+            (true, Some(EditKind::DeleteBackward)) => {
+                self.extend_top_delete(range.start, &deleted, true)
+            }
+            (true, _) => self.extend_top_delete(range.start, &deleted, false),
+            (false, _) => self.push_undo(range.start, &deleted, 0),
+        }
         self.preferred_column = None;
         self.text.replace_range(range.clone(), "");
         self.cursor = range.start;
@@ -345,55 +362,86 @@ impl EditorBuffer {
         self.selection().map(|range| self.text[range].to_string())
     }
 
-    fn snapshot(&self) -> Snapshot {
-        Snapshot {
-            text: self.text.clone(),
+    /// Records a new undo entry for replacing `removed` (at `start`) with
+    /// `inserted_len` bytes, and clears `redo_stack`.
+    fn push_undo(&mut self, start: usize, removed: &str, inserted_len: usize) {
+        if self.undo_stack.len() >= UNDO_STACK_CAP {
+            self.undo_stack.remove(0);
+        }
+        self.undo_stack.push(UndoEntry {
+            start,
+            removed: removed.to_owned(),
+            inserted_len,
             cursor: self.cursor,
             anchor: self.anchor,
-        }
+        });
+        self.redo_stack.clear();
     }
 
-    /// Snapshots the pre-edit state for `undo` and clears `redo_stack`.
-    /// When `continues`, the top entry already is the pre-burst state, so
-    /// nothing is pushed.
-    fn push_undo(&mut self, continues: bool) {
-        if !continues {
-            if self.undo_stack.len() >= UNDO_STACK_CAP {
-                self.undo_stack.remove(0);
-            }
-            self.undo_stack.push(self.snapshot());
+    /// Grows the burst's entry by a contiguous insert (a burst is one entry).
+    fn extend_top_insert(&mut self, len: usize) {
+        let top = self.undo_stack.last_mut();
+        debug_assert!(top.is_some(), "a continued burst has an entry");
+        if let Some(top) = top {
+            top.inserted_len += len;
         }
         self.redo_stack.clear();
     }
 
-    fn restore(&mut self, snapshot: Snapshot) {
-        self.text = snapshot.text;
-        self.cursor = snapshot.cursor;
-        self.anchor = snapshot.anchor;
+    /// Grows the burst's entry by a contiguous delete: backspace prepends the
+    /// deleted text and moves the entry's start; forward delete appends.
+    fn extend_top_delete(&mut self, start: usize, deleted: &str, backward: bool) {
+        let top = self.undo_stack.last_mut();
+        debug_assert!(top.is_some(), "a continued burst has an entry");
+        if let Some(top) = top {
+            if backward {
+                top.removed.insert_str(0, deleted);
+                top.start = start;
+            } else {
+                top.removed.push_str(deleted);
+            }
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Applies `entry` to the text and selection, returning its inverse.
+    fn apply(&mut self, entry: UndoEntry) -> UndoEntry {
+        let end = entry.start + entry.inserted_len;
+        let inverse = UndoEntry {
+            start: entry.start,
+            removed: self.text[entry.start..end].to_owned(),
+            inserted_len: entry.removed.len(),
+            cursor: self.cursor,
+            anchor: self.anchor,
+        };
+        self.text.replace_range(entry.start..end, &entry.removed);
+        self.cursor = entry.cursor;
+        self.anchor = entry.anchor;
         self.preferred_column = None;
         // The next edit must not continue a burst across an undo/redo jump.
         self.last_edit = None;
+        inverse
     }
 
     /// Undoes the most recent text-modifying operation, if any. Returns
     /// whether there was one to undo.
     pub fn undo(&mut self) -> bool {
-        let Some(snapshot) = self.undo_stack.pop() else {
+        let Some(entry) = self.undo_stack.pop() else {
             return false;
         };
-        self.redo_stack.push(self.snapshot());
-        self.restore(snapshot);
+        let inverse = self.apply(entry);
+        self.redo_stack.push(inverse);
         true
     }
 
     /// Reapplies the most recently undone operation, if any. Returns whether
     /// there was one to redo.
     pub fn redo(&mut self) -> bool {
-        let Some(snapshot) = self.redo_stack.pop() else {
+        let Some(entry) = self.redo_stack.pop() else {
             return false;
         };
-        self.undo_stack.push(self.snapshot());
-        self.restore(snapshot);
+        let inverse = self.apply(entry);
+        self.undo_stack.push(inverse);
         true
     }
 }
@@ -1178,5 +1226,42 @@ mod tests {
              UNDO_STACK_CAP ({UNDO_STACK_CAP}) buffers' worth ({cap_worth} bytes), not one per edit",
             UNDO_STACK_CAP * 3
         );
+    }
+
+    #[test]
+    fn undo_and_redo_round_trip_a_randomized_edit_sequence() {
+        let mut buf = EditorBuffer::new("héllo wörld\nsecond line\n");
+        let mut states = vec![(buf.text().to_owned(), buf.cursor())];
+        let mut seed = 0x2545_f491_u32;
+        let mut next = move |n: usize| {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as usize % n
+        };
+        for _ in 0..200 {
+            let at = next(buf.text().len() + 1);
+            buf.set_cursor(at, false);
+            match next(4) {
+                0 => buf.insert("é\n"),
+                1 => buf.delete_backward(),
+                2 => buf.delete_forward(),
+                _ => {
+                    buf.set_cursor(at, false);
+                    buf.set_cursor(next(buf.text().len() + 1), true);
+                    buf.insert("xy");
+                }
+            }
+            states.push((buf.text().to_owned(), buf.cursor()));
+        }
+        let mut undone = 0;
+        while buf.undo() {
+            undone += 1;
+        }
+        assert!(undone > 0 && undone <= UNDO_STACK_CAP);
+        // Undo stops at the cap, so it lands on a recorded state; the text
+        // must equal one of them and the cursor-restoring path must work.
+        assert!(states.iter().any(|(text, _)| text == buf.text()));
+        while buf.redo() {}
+        assert_eq!(buf.text(), states.last().unwrap().0);
+        assert_eq!(buf.cursor(), states.last().unwrap().1);
     }
 }

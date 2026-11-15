@@ -7,7 +7,7 @@ Non-obvious invariants, gotchas, and the Backlog. Not auto-loaded. The code is t
 - **Live Preview**: the cursor's line renders raw. A table renders entirely raw if the cursor is anywhere in it (`is_table_active`). Callouts are render-only (always expanded). List markers are *replaced* (`•`, `N. `), not just hidden. Lazy continuation is deliberately more lenient than CommonMark.
 - **Row heights**: `RowHeightCache` seeds non-table lines with an allocation-free over-estimate (`estimate_row_count`) and corrects to exact when painted, so total height starts slightly tall and settles while scrolling. Table rows always use the exact path. Validated against `exact_row_counts`.
 - **`DocumentCache` patching**: edits report a `TextEdit` to `Editor::record_edit`. Any edit that changes the line count, and undo/redo, fully recomputes. Patches are validated against whole-document oracles by property tests.
-- **Undo**: bursts of same-kind edits coalesce into one snapshot; stack capped at `UNDO_STACK_CAP` (100). Snapshots clone the full text.
+- **Undo**: bursts of same-kind edits coalesce into one delta (`UndoEntry`: replaced range + removed text), so memory scales with edited text, not document size; stack capped at `UNDO_STACK_CAP` (100).
 - **Paint snapshot**: mouse closures share one `Rc<PaintSnapshot>` so hit-testing matches what was last painted, not the live document.
 - **Autosave**: `open_note` subscribes to `EditorEvent::Changed`; `flush_editor` persists and drops the editor before `open_note`/renames.
 - **Showcase fixture**: `vault/Markdown Showcase.md` (local, gitignored) must be updated in the same change that adds or changes a Live Preview construct.
