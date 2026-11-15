@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
-use crate::links::{WikiLink, extract_wikilinks};
+use crate::links::{WikiLink, extract_wikilinks, extract_wikilinks_from_file};
 use crate::note::{Note, relative_id, relative_path_id};
 
 pub struct Vault {
@@ -360,8 +360,8 @@ fn folder_not_found(id: &str) -> std::io::Error {
     )
 }
 
-/// Scans `dir` recursively into `notes`/`folders`, reading each note once to
-/// extract its wikilinks into `wikilinks` and then dropping the text.
+/// Scans `dir` recursively into `notes`/`folders`, streaming each note
+/// line by line to extract its wikilinks into `wikilinks` (no whole-file buffer).
 fn collect_entries(
     root: &Path,
     dir: &Path,
@@ -369,27 +369,14 @@ fn collect_entries(
     folders: &mut HashSet<String>,
     wikilinks: &mut HashMap<String, Vec<WikiLink>>,
 ) -> std::io::Result<()> {
-    let mut text = String::new();
-    collect_entries_with(root, dir, notes, folders, wikilinks, &mut text)
-}
-
-fn collect_entries_with(
-    root: &Path,
-    dir: &Path,
-    notes: &mut HashMap<String, Note>,
-    folders: &mut HashSet<String>,
-    wikilinks: &mut HashMap<String, Vec<WikiLink>>,
-    text: &mut String,
-) -> std::io::Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let path = entry?.path();
         if path.is_dir() {
             folders.insert(relative_path_id(root, &path));
-            collect_entries_with(root, &path, notes, folders, wikilinks, text)?;
+            collect_entries(root, &path, notes, folders, wikilinks)?;
         } else if path.extension().and_then(|e| e.to_str()) == Some("md") {
             let note = Note::new(root, path);
-            note.read_content_into(text)?;
-            wikilinks.insert(note.id.clone(), extract_wikilinks(text));
+            wikilinks.insert(note.id.clone(), extract_wikilinks_from_file(&note.path)?);
             notes.insert(note.id.clone(), note);
         }
     }

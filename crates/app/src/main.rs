@@ -2003,6 +2003,37 @@ mod tests {
         .unwrap();
     }
 
+    #[test]
+    fn opening_a_vault_does_not_buffer_a_whole_note() {
+        // The scan extracts wikilinks line by line; reading each file whole
+        // cost ~11 MiB of transient (then glibc-retained) heap for the
+        // 11.8MB stress note.
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Big.md"), &content).unwrap();
+        crate::test_alloc::reset();
+        let before = crate::test_alloc::snapshot();
+        let vault = jade_core::Vault::open(dir.path()).unwrap();
+        let after = crate::test_alloc::snapshot();
+        eprintln!(
+            "vault open: peak {} KiB over baseline, live {} KiB",
+            (after.peak - before.current) / 1024,
+            (after.current - before.current) / 1024
+        );
+        assert!(
+            after.peak < after.current + content.len() / 16,
+            "vault open peaked {} bytes above its live {} for a {}-byte note",
+            after.peak - before.current,
+            after.current - before.current,
+            content.len()
+        );
+        drop(vault);
+    }
+
     #[gpui_kit::test]
     fn opening_a_huge_note_keeps_live_memory_bounded(cx: &mut TestAppContext) {
         // Live heap from before the vault is scanned to after the note is
