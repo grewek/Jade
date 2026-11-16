@@ -25,3 +25,7 @@ pub(crate) use app::JadeApp;
 #[cfg(any(test, feature = "debug-socket"))]
 pub(crate) use app::SidebarTab;
 pub use app::run;
+
+/// Internals the criterion benches need; not a stable API.
+#[doc(hidden)]
+pub use text_editor::bench_api;

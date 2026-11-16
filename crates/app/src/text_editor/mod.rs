@@ -3,6 +3,7 @@
 //! without swapping between separate widget instances. See `CLAUDE.md`'s
 //! "Custom editor" section for the phased plan this is built in.
 
+pub mod bench_api;
 mod block_preview;
 mod buffer;
 mod callout;
