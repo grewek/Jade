@@ -370,7 +370,8 @@ impl JadeApp {
                     .on_confirm(|_index_path, window, cx| {
                         window.close_dialog(cx);
                         JadeApp::open_settings_dialog(window, cx);
-                    }),
+                    })
+                    .debug_name("command-palette"),
             )
         });
     }
@@ -389,7 +390,8 @@ impl JadeApp {
                     .test_support()
                     .p_4()
                     .text_color(rgb(0x888888))
-                    .child("Settings aren't implemented yet — themes, text size, and general editor preferences are coming soon."),
+                    .child("Settings aren't implemented yet — themes, text size, and general editor preferences are coming soon.")
+                    .debug_name("settings-panel"),
             )
         });
     }
@@ -443,7 +445,11 @@ impl JadeApp {
             let id = id.clone();
             dialog
                 .title("Rename note")
-                .child(Input::new(&input).id("rename-input"))
+                .child(
+                    Input::new(&input)
+                        .id("rename-input")
+                        .debug_name("rename-input"),
+                )
                 // `on_ok` is what the dialog's built-in Enter-to-confirm keybinding
                 // dispatches to, regardless of which footer buttons are rendered —
                 // without it, Enter silently does nothing for a custom footer.
@@ -461,14 +467,18 @@ impl JadeApp {
                         .child(
                             Button::new("cancel-rename")
                                 .label("Cancel")
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                                .on_click(|_, window, cx| window.close_dialog(cx))
+                                .debug_name("cancel-rename"),
                         )
-                        .child(Button::new("confirm-rename").label("Rename").on_click(
-                            move |_, window, cx| {
-                                Self::commit_rename(&id, &input, &app, window, cx);
-                                window.close_dialog(cx);
-                            },
-                        )),
+                        .child(
+                            Button::new("confirm-rename")
+                                .label("Rename")
+                                .on_click(move |_, window, cx| {
+                                    Self::commit_rename(&id, &input, &app, window, cx);
+                                    window.close_dialog(cx);
+                                })
+                                .debug_name("confirm-rename"),
+                        ),
                 )
         });
     }
@@ -525,7 +535,11 @@ impl JadeApp {
             let id = id.clone();
             dialog
                 .title("Rename folder")
-                .child(Input::new(&input).id("rename-folder-input"))
+                .child(
+                    Input::new(&input)
+                        .id("rename-folder-input")
+                        .debug_name("rename-folder-input"),
+                )
                 // See the comment on the note rename dialog's `on_ok` for why this is
                 // needed in addition to the footer button: it's what Enter dispatches to.
                 .on_ok({
@@ -542,7 +556,8 @@ impl JadeApp {
                         .child(
                             Button::new("cancel-rename-folder")
                                 .label("Cancel")
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                                .on_click(|_, window, cx| window.close_dialog(cx))
+                                .debug_name("cancel-rename-folder"),
                         )
                         .child(
                             Button::new("confirm-rename-folder")
@@ -550,7 +565,8 @@ impl JadeApp {
                                 .on_click(move |_, window, cx| {
                                     Self::commit_rename_folder(&id, &input, &app, window, cx);
                                     window.close_dialog(cx);
-                                }),
+                                })
+                                .debug_name("confirm-rename-folder"),
                         ),
                 )
         });
@@ -610,7 +626,11 @@ impl JadeApp {
             let parent = parent.clone();
             dialog
                 .title("New folder")
-                .child(Input::new(&input).id("create-folder-input"))
+                .child(
+                    Input::new(&input)
+                        .id("create-folder-input")
+                        .debug_name("create-folder-input"),
+                )
                 // See the comment on the rename dialog's `on_ok` for why this is
                 // needed in addition to the footer button: it's what Enter dispatches to.
                 .on_ok({
@@ -627,7 +647,8 @@ impl JadeApp {
                         .child(
                             Button::new("cancel-create-folder")
                                 .label("Cancel")
-                                .on_click(|_, window, cx| window.close_dialog(cx)),
+                                .on_click(|_, window, cx| window.close_dialog(cx))
+                                .debug_name("cancel-create-folder"),
                         )
                         .child(
                             Button::new("confirm-create-folder")
@@ -635,7 +656,8 @@ impl JadeApp {
                                 .on_click(move |_, window, cx| {
                                     Self::commit_create_folder(&parent, &input, &app, cx);
                                     window.close_dialog(cx);
-                                }),
+                                })
+                                .debug_name("confirm-create-folder"),
                         ),
                 )
         });
@@ -884,11 +906,11 @@ impl JadeApp {
     /// query, by title or content substring (via `Vault::search`).
     fn render_search_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         self.refresh_search(cx);
-        let mut panel = div()
-            .flex()
-            .flex_col()
-            .gap_1()
-            .child(Input::new(&self.search_input).id("search-input"));
+        let mut panel = div().flex().flex_col().gap_1().child(
+            Input::new(&self.search_input)
+                .id("search-input")
+                .debug_name("search-input"),
+        );
 
         let query = self.search_query.trim();
         if query.is_empty() {
@@ -2417,6 +2439,192 @@ mod tests {
         );
         // Measured at <1%; the bound is loose so noise cannot flake it.
         assert!(on < off + off / 4, "off {off:?}, on {on:?}");
+    }
+
+    /// `call_on_main`, then a repaint: the headless window does not redraw
+    /// itself the way the real one does after input.
+    fn step(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        client: &mut crate::debug_server::test_client::TestClient,
+        command: jade_debug_protocol::Command,
+    ) -> jade_debug_protocol::Answer {
+        let answer = call_on_main(cx, client, command);
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        answer
+    }
+
+    fn click_named(name: &str) -> jade_debug_protocol::Command {
+        use jade_debug_protocol::{Button, Command, Location, Modifiers};
+        Command::Click {
+            at: Location::Target(name.into()),
+            button: Button::Left,
+            count: 1,
+            modifiers: Modifiers::default(),
+        }
+    }
+
+    fn key(name: &str) -> jade_debug_protocol::Command {
+        jade_debug_protocol::Command::Key {
+            key: name.into(),
+            modifiers: jade_debug_protocol::Modifiers::default(),
+        }
+    }
+
+    #[gpui_kit::test]
+    fn a_note_can_be_renamed_by_driving_the_dialog_over_the_socket(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, Query};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "existing").unwrap();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let app_state = Command::Query {
+            what: Query::AppState,
+        };
+        let dialog_open = |cx: &mut TestAppContext, client: &mut _| {
+            let Answer::AppState(state) = step(cx, window, client, app_state.clone()) else {
+                panic!("expected app state");
+            };
+            state.dialog_open
+        };
+
+        for command in [click_named("note-Note A"), key("f2")] {
+            assert_eq!(step(cx, window, &mut client, command), Answer::Ok);
+        }
+        assert!(dialog_open(cx, &mut client), "F2 opens the rename dialog");
+
+        let Answer::Targets { targets } = step(cx, window, &mut client, Command::ListTargets)
+        else {
+            panic!("expected targets");
+        };
+        for name in ["rename-input", "confirm-rename", "cancel-rename"] {
+            assert!(
+                targets.iter().any(|t| t.name == name),
+                "{name}: {targets:?}"
+            );
+        }
+
+        let mut commands = vec![click_named("rename-input"), key("end")];
+        commands.extend((0.."Note A".len()).map(|_| key("backspace")));
+        commands.push(Command::Type {
+            text: "Renamed".into(),
+        });
+        commands.push(click_named("confirm-rename"));
+        for command in commands {
+            assert_eq!(step(cx, window, &mut client, command), Answer::Ok);
+        }
+        assert!(dir.path().join("Renamed.md").exists());
+        assert!(!dir.path().join("Note A.md").exists());
+        assert!(
+            !dialog_open(cx, &mut client),
+            "confirming closes the dialog"
+        );
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn alert_dialogs_are_driven_with_enter_and_escape(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, Query};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Doomed.md"), "x").unwrap();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let dialog_open = |cx: &mut TestAppContext, client: &mut _| {
+            let command = Command::Query {
+                what: Query::AppState,
+            };
+            let Answer::AppState(state) = step(cx, window, client, command) else {
+                panic!("expected app state");
+            };
+            state.dialog_open
+        };
+
+        for command in [click_named("note-Doomed"), key("backspace")] {
+            assert_eq!(step(cx, window, &mut client, command), Answer::Ok);
+        }
+        assert!(dialog_open(cx, &mut client), "Backspace asks to delete");
+        assert_eq!(step(cx, window, &mut client, key("escape")), Answer::Ok);
+        assert!(!dialog_open(cx, &mut client), "Escape cancels");
+        assert!(dir.path().join("Doomed.md").exists());
+
+        assert_eq!(step(cx, window, &mut client, key("backspace")), Answer::Ok);
+        assert!(dialog_open(cx, &mut client));
+        assert_eq!(step(cx, window, &mut client, key("enter")), Answer::Ok);
+        assert!(!dir.path().join("Doomed.md").exists(), "Enter confirms");
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn app_state_and_editor_text_can_be_read_back(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, MAX_TEXT_BYTES, Query};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "h\u{e9}llo w\u{f6}rld").unwrap();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let state = |cx: &mut TestAppContext, client: &mut _| {
+            let command = Command::Query {
+                what: Query::AppState,
+            };
+            let Answer::AppState(state) = step(cx, window, client, command) else {
+                panic!("expected app state");
+            };
+            state
+        };
+        let read = |start, len| Command::ReadEditorText { start, len };
+
+        let initial = state(cx, &mut client);
+        assert_eq!(initial.note, None);
+        assert_eq!(initial.sidebar_tab, "vault");
+        assert!(matches!(
+            step(cx, window, &mut client, read(0, 5)),
+            Answer::Error { .. }
+        ));
+
+        step(cx, window, &mut client, click_named("note-Note A"));
+        let Answer::Text {
+            start,
+            text,
+            total_len,
+        } = step(cx, window, &mut client, read(0, 3))
+        else {
+            panic!("expected text");
+        };
+        assert_eq!((start, text.as_str(), total_len), (0, "h\u{e9}", 13));
+        // Byte 2 is inside the two-byte e-acute: the slice starts before it,
+        // and `len` counts from there (4 bytes: e-acute + "ll").
+        let Answer::Text { start, text, .. } = step(cx, window, &mut client, read(2, 4)) else {
+            panic!("expected text");
+        };
+        assert_eq!((start, text.as_str()), (1, "\u{e9}ll"));
+        let Answer::Text { text, .. } = step(cx, window, &mut client, read(0, MAX_TEXT_BYTES * 4))
+        else {
+            panic!("expected text");
+        };
+        assert_eq!(text, "h\u{e9}llo w\u{f6}rld");
+
+        step(cx, window, &mut client, click_named("sidebar-tab-search"));
+        step(cx, window, &mut client, click_named("search-input"));
+        step(
+            cx,
+            window,
+            &mut client,
+            Command::Type { text: "wor".into() },
+        );
+        let after = state(cx, &mut client);
+        assert_eq!(after.note.as_deref(), Some("Note A"));
+        assert_eq!(
+            (after.sidebar_tab.as_str(), after.search_query.as_str()),
+            ("search", "wor")
+        );
+        std::fs::remove_file(&sock).unwrap();
     }
 
     #[gpui_kit::test]

@@ -86,9 +86,13 @@ pub(crate) fn install(app: &Entity<JadeApp>, cx: &mut App) {
     cx.spawn(async move |cx| {
         loop {
             let job = NextJob.await;
+            let quit = matches!(job.command, Command::Quit);
             cx.update(|cx| {
                 let answer = commands::execute(job.command, &app, cx);
                 job.client.reply(job.req, answer);
+                if quit {
+                    cx.quit();
+                }
             });
         }
     })

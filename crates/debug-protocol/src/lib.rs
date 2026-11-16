@@ -64,6 +64,8 @@ pub enum Topic {
 #[serde(rename_all = "snake_case")]
 pub enum Query {
     Memory,
+    /// Selected note, sidebar tab, search query, open dialog, vault error.
+    AppState,
     FrameTimes,
     EditorState,
     WindowSize,
@@ -121,6 +123,15 @@ pub enum Command {
         modifiers: Modifiers,
     },
     ListTargets,
+    /// Reads up to `MAX_TEXT_BYTES` of the open note's text from byte `start`
+    /// (rounded down to a character boundary; `len` counts from the rounded
+    /// start and is cut at one too), to check what typing produced.
+    ReadEditorText {
+        start: usize,
+        len: usize,
+    },
+    /// Closes the app cleanly (flushing the open note) after replying.
+    Quit,
     Query {
         what: Query,
     },
@@ -161,6 +172,8 @@ pub struct Target {
     pub visible: bool,
 }
 
+/// Longest slice `Command::ReadEditorText` returns.
+pub const MAX_TEXT_BYTES: usize = 16 * 1024;
 /// Frames the app remembers for `Query::FrameTimes`.
 pub const FRAME_HISTORY: usize = 240;
 /// 60 fps, the per-frame ceiling (`CLAUDE.md` Performance).
@@ -181,6 +194,19 @@ impl FrameSample {
     pub fn total_us(&self) -> u32 {
         self.render_us.saturating_add(self.paint_us)
     }
+}
+
+/// App-level state that is not in the editor.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct AppState {
+    pub note: Option<String>,
+    /// `"vault"` or `"search"`.
+    pub sidebar_tab: String,
+    pub search_query: String,
+    pub search_results: usize,
+    pub dialog_open: bool,
+    /// Why the vault failed to open, if it did.
+    pub error: Option<String>,
 }
 
 /// What the open note's editor currently holds.
@@ -225,6 +251,14 @@ pub enum Answer {
         frames: Vec<FrameSample>,
     },
     EditorState(EditorState),
+    AppState(AppState),
+    /// Reply to `ReadEditorText`: `text` starts at byte `start`; `total_len`
+    /// is the whole note, so `start + text.len() < total_len` means more.
+    Text {
+        start: usize,
+        text: String,
+        total_len: usize,
+    },
     WindowSize {
         width: f32,
         height: f32,
@@ -304,56 +338,76 @@ mod tests {
         assert_eq!(decode_line::<T>(&line).unwrap(), value);
     }
 
+    fn round_trip_commands(commands: Vec<Command>) {
+        for (req, command) in commands.into_iter().enumerate() {
+            roundtrip(Request {
+                req: req as u64,
+                command,
+            });
+        }
+    }
+
     #[test]
-    fn every_command_round_trips() {
+    fn input_commands_round_trip() {
         let at = Point { x: 1.5, y: 2.0 };
-        let commands = vec![
+        let shift = Modifiers {
+            shift: true,
+            ..Default::default()
+        };
+        let none = Modifiers::default();
+        let editor = || Location::Target("editor".into());
+        round_trip_commands(vec![
             Command::Type {
                 text: "hi\n".into(),
             },
             Command::Key {
                 key: "enter".into(),
-                modifiers: Modifiers {
-                    ctrl: true,
-                    ..Default::default()
-                },
+                modifiers: Modifiers { ctrl: true, ..none },
             },
             Command::MouseMove {
                 at: Location::Point(at),
-                modifiers: Modifiers::default(),
+                modifiers: none,
             },
             Command::MouseDown {
-                at: Location::Target("editor".into()),
+                at: editor(),
                 button: Button::Right,
-                modifiers: Modifiers {
-                    shift: true,
-                    ..Default::default()
-                },
+                modifiers: shift,
             },
             Command::MouseUp {
                 at: Location::Point(at),
                 button: Button::Middle,
-                modifiers: Modifiers::default(),
+                modifiers: none,
             },
             Command::Click {
-                at: Location::Target("new-note".into()),
+                at: editor(),
                 button: Button::Left,
                 count: 2,
-                modifiers: Modifiers::default(),
+                modifiers: none,
             },
             Command::Click {
                 at: Location::Point(at),
                 button: Button::Left,
                 count: 1,
-                modifiers: Modifiers::default(),
+                modifiers: none,
             },
             Command::Scroll {
-                at: Location::Target("editor".into()),
+                at: editor(),
                 dx: 0.0,
                 dy: -40.0,
-                modifiers: Modifiers::default(),
+                modifiers: none,
             },
+        ]);
+    }
+
+    #[test]
+    fn query_and_control_commands_round_trip() {
+        round_trip_commands(vec![
             Command::ListTargets,
+            Command::ReadEditorText { start: 3, len: 40 },
+            Command::Quit,
+            Command::Query {
+                what: Query::AppState,
+            },
             Command::Query {
                 what: Query::FrameTimes,
             },
@@ -367,13 +421,7 @@ mod tests {
                 topic: Topic::Frames,
                 timeout_ms: 500,
             },
-        ];
-        for (req, command) in commands.into_iter().enumerate() {
-            roundtrip(Request {
-                req: req as u64,
-                command,
-            });
-        }
+        ]);
     }
 
     #[test]
@@ -453,6 +501,19 @@ mod tests {
                 focused: true,
             }),
             Answer::EditorState(EditorState::default()),
+            Answer::AppState(AppState {
+                note: Some("A".into()),
+                sidebar_tab: "search".into(),
+                search_query: "q".into(),
+                search_results: 2,
+                dialog_open: true,
+                error: None,
+            }),
+            Answer::Text {
+                start: 1,
+                text: "hé".into(),
+                total_len: 9,
+            },
             Answer::WindowSize {
                 width: 800.0,
                 height: 600.0,

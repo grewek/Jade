@@ -1,7 +1,10 @@
 //! Commands that must run on the GPUI main thread, with window access.
 
+use gpui_kit::component::WindowExt;
 use gpui_kit::{App, Focusable, WeakEntity};
-use jade_debug_protocol::{Answer, Command, EditorState, Event, Query, Topic};
+use jade_debug_protocol::{
+    Answer, AppState, Command, EditorState, Event, MAX_TEXT_BYTES, Query, Topic,
+};
 
 use super::input;
 use crate::JadeApp;
@@ -20,6 +23,12 @@ pub(super) fn execute(command: Command, app: &WeakEntity<JadeApp>, cx: &mut App)
         Command::Query {
             what: Query::EditorState,
         } => editor_state(app, cx),
+        Command::Query {
+            what: Query::AppState,
+        } => app_state(app, cx),
+        Command::ReadEditorText { start, len } => read_text(app, start, len, cx),
+        // The pump quits after the reply is sent.
+        Command::Quit => Answer::Ok,
         Command::ListTargets => Answer::Targets {
             targets: super::targets::list(),
         },
@@ -87,5 +96,53 @@ fn editor_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
     match state {
         Ok(state) => Answer::EditorState(state),
         Err(err) => error(format!("window unavailable: {err}")),
+    }
+}
+
+fn app_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
+    let (Some(app), Some(handle)) = (app.upgrade(), first_window(cx)) else {
+        return error("the app window is gone");
+    };
+    let state = handle.update(cx, |_, window, cx| {
+        let dialog_open = window.has_active_dialog(cx);
+        let app = app.read(cx);
+        AppState {
+            note: app.selected_id.clone(),
+            sidebar_tab: match app.sidebar_tab {
+                crate::SidebarTab::Vault => "vault",
+                crate::SidebarTab::Search => "search",
+            }
+            .into(),
+            search_query: app.search_query.clone(),
+            search_results: app.search_results.len(),
+            dialog_open,
+            error: app.error.clone(),
+        }
+    });
+    match state {
+        Ok(state) => Answer::AppState(state),
+        Err(err) => error(format!("window unavailable: {err}")),
+    }
+}
+
+/// A slice of the open note, cut on character boundaries.
+fn read_text(app: &WeakEntity<JadeApp>, start: usize, len: usize, cx: &App) -> Answer {
+    let Some(app) = app.upgrade() else {
+        return error("the app window is gone");
+    };
+    let Some(editor) = app.read(cx).editor.clone() else {
+        return error("no note is open");
+    };
+    let text = editor.read(cx).buffer().text();
+    let start = text.floor_char_boundary(start.min(text.len()));
+    let end = text.floor_char_boundary(
+        start
+            .saturating_add(len.min(MAX_TEXT_BYTES))
+            .min(text.len()),
+    );
+    Answer::Text {
+        start,
+        text: text[start..end].to_owned(),
+        total_len: text.len(),
     }
 }
