@@ -1,10 +1,10 @@
 //! Opt-in per-frame record of what the editor canvas painted, sent over the
-//! debug socket (`JADE_DEBUG_SOCKET`, see `debug_socket.rs`). It exists
+//! debug socket (`JADE_DEBUG_SOCKET`, see `debug_server/`). It exists
 //! because some rendering bugs fix themselves on the next frame (a stale
 //! height, say), so a screenshot or an on-demand dump only ever sees the
 //! good frame. A frame is emitted only when it differs from the last one
-//! emitted, so an idle app is silent. Each line starts `[paint] ok` or
-//! `[paint] INCONSISTENT(...)`.
+//! emitted, so an idle app is silent. Each trace starts `ok` or
+//! `INCONSISTENT(...)`.
 
 use std::fmt::Write as _;
 use std::sync::Mutex;
@@ -29,11 +29,11 @@ static LAST_SIGNATURE: Mutex<String> = Mutex::new(String::new());
 pub(super) fn enabled() -> bool {
     // Tests flip the variable between cases.
     #[cfg(test)]
-    return crate::debug_socket::requested();
+    return crate::debug_server::requested();
     #[cfg(not(test))]
     static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     #[cfg(not(test))]
-    *ENABLED.get_or_init(crate::debug_socket::requested)
+    *ENABLED.get_or_init(crate::debug_server::requested)
 }
 
 /// What the canvas knew about the frame before painting any line.
@@ -239,7 +239,11 @@ impl Drop for PaintTrace {
         if *last == signature {
             return;
         }
-        crate::debug_socket::emit(&format!("[paint] frame={frame} {signature}"));
+        crate::debug_server::emit(&jade_debug_protocol::Event::Paint {
+            frame,
+            consistent: problems.is_empty(),
+            trace: signature.clone(),
+        });
         *last = signature;
     }
 }

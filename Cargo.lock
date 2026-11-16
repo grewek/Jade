@@ -3798,6 +3798,7 @@ dependencies = [
  "criterion",
  "gpui-kit",
  "jade-core",
+ "jade-debug-protocol",
  "tempfile",
 ]
 

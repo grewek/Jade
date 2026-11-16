@@ -147,6 +147,18 @@ pub struct Target {
     pub height: f32,
 }
 
+/// Process memory; the heap figures come from glibc and are absent elsewhere.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct MemoryInfo {
+    pub rss_kib: u64,
+    #[serde(default)]
+    pub heap_in_use_mib: Option<u64>,
+    #[serde(default)]
+    pub heap_free_retained_mib: Option<u64>,
+    #[serde(default)]
+    pub mmapped_mib: Option<u64>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Answer {
@@ -157,9 +169,7 @@ pub enum Answer {
     Targets {
         targets: Vec<Target>,
     },
-    Memory {
-        rss_kib: u64,
-    },
+    Memory(MemoryInfo),
     FrameTimes {
         recent_paint_us: Vec<u32>,
     },
@@ -186,9 +196,7 @@ pub enum Event {
         consistent: bool,
         trace: String,
     },
-    Memory {
-        rss_kib: u64,
-    },
+    Memory(MemoryInfo),
     Frames {
         frame: u64,
         paint_us: u32,
@@ -202,7 +210,7 @@ impl Event {
     pub fn topic(&self) -> Topic {
         match self {
             Event::Paint { .. } => Topic::Paint,
-            Event::Memory { .. } => Topic::Memory,
+            Event::Memory(_) => Topic::Memory,
             Event::Frames { .. } => Topic::Frames,
             Event::Input { .. } => Topic::Input,
         }
@@ -314,76 +322,76 @@ mod tests {
     }
 
     #[test]
-    fn every_message_round_trips() {
-        let event = Event::Frames {
-            frame: 7,
-            paint_us: 900,
-        };
-        let messages = vec![
-            Message::Event {
-                event: event.clone(),
+    fn every_event_round_trips() {
+        let events = vec![
+            Event::Frames {
+                frame: 7,
+                paint_us: 900,
             },
-            Message::Event {
-                event: Event::Paint {
-                    frame: 1,
-                    consistent: false,
-                    trace: "x".into(),
-                },
+            Event::Paint {
+                frame: 1,
+                consistent: false,
+                trace: "x".into(),
             },
-            Message::Response {
-                req: 1,
-                answer: Answer::Ok,
-            },
-            Message::Response {
-                req: 2,
-                answer: Answer::Error {
-                    message: "no".into(),
-                },
-            },
-            Message::Response {
-                req: 3,
-                answer: Answer::Targets {
-                    targets: vec![Target {
-                        name: "a".into(),
-                        x: 1.0,
-                        y: 2.0,
-                        width: 3.0,
-                        height: 4.0,
-                    }],
-                },
-            },
-            Message::Response {
-                req: 4,
-                answer: Answer::Memory { rss_kib: 150_000 },
-            },
-            Message::Response {
-                req: 5,
-                answer: Answer::FrameTimes {
-                    recent_paint_us: vec![100, 200],
-                },
-            },
-            Message::Response {
-                req: 6,
-                answer: Answer::EditorState {
-                    note: None,
-                    cursor: 3,
-                    len: 9,
-                },
-            },
-            Message::Response {
-                req: 7,
-                answer: Answer::WindowSize {
-                    width: 800.0,
-                    height: 600.0,
-                },
-            },
-            Message::Response {
-                req: 8,
-                answer: Answer::Event { event },
+            Event::Memory(MemoryInfo {
+                rss_kib: 5,
+                ..Default::default()
+            }),
+            Event::Input {
+                description: "click".into(),
             },
         ];
-        for message in messages {
-            roundtrip(message);
+        for event in events {
+            roundtrip(Message::Event {
+                event: event.clone(),
+            });
+            roundtrip(Message::Response {
+                req: 8,
+                answer: Answer::Event { event },
+            });
+        }
+    }
+
+    #[test]
+    fn every_answer_round_trips() {
+        let target = Target {
+            name: "a".into(),
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+        };
+        let answers = vec![
+            Answer::Ok,
+            Answer::Error {
+                message: "no".into(),
+            },
+            Answer::Targets {
+                targets: vec![target],
+            },
+            Answer::Memory(MemoryInfo {
+                rss_kib: 150_000,
+                heap_in_use_mib: Some(90),
+                ..Default::default()
+            }),
+            Answer::FrameTimes {
+                recent_paint_us: vec![100, 200],
+            },
+            Answer::EditorState {
+                note: None,
+                cursor: 3,
+                len: 9,
+            },
+            Answer::WindowSize {
+                width: 800.0,
+                height: 600.0,
+            },
+        ];
+        for (req, answer) in answers.into_iter().enumerate() {
+            roundtrip(Message::Response {
+                req: req as u64,
+                answer,
+            });
         }
     }
 
@@ -412,7 +420,7 @@ mod tests {
 
     #[test]
     fn event_topic_matches_its_variant() {
-        assert_eq!(Event::Memory { rss_kib: 1 }.topic(), Topic::Memory);
+        assert_eq!(Event::Memory(MemoryInfo::default()).topic(), Topic::Memory);
         assert_eq!(
             Event::Input {
                 description: String::new()

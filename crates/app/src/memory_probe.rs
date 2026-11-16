@@ -4,6 +4,8 @@
 
 use std::time::Duration;
 
+use jade_debug_protocol::{Event, MemoryInfo, Topic};
+
 const ENV_VAR: &str = "JADE_MEMORY_LOG";
 const INTERVAL: Duration = Duration::from_secs(2);
 
@@ -53,27 +55,50 @@ fn allocator_mib() -> Option<(usize, usize, usize)> {
     None
 }
 
-/// Starts the logging thread if `JADE_MEMORY_LOG` or `JADE_DEBUG_SOCKET` is
-/// set; lines go to stderr and to debug-socket clients.
+/// One sample of process memory; `None` where RSS is unavailable.
+pub(crate) fn sample() -> Option<MemoryInfo> {
+    let heap = allocator_mib();
+    Some(MemoryInfo {
+        rss_kib: rss_kib()?,
+        heap_in_use_mib: heap.map(|h| h.0 as u64),
+        heap_free_retained_mib: heap.map(|h| h.1 as u64),
+        mmapped_mib: heap.map(|h| h.2 as u64),
+    })
+}
+
+fn log_line(info: &MemoryInfo) -> String {
+    let rss = info.rss_kib / 1024;
+    match (
+        info.heap_in_use_mib,
+        info.heap_free_retained_mib,
+        info.mmapped_mib,
+    ) {
+        (Some(used), Some(free), Some(mapped)) => format!(
+            "[jade-memory] rss={rss} MiB heap_in_use={used} MiB \
+             heap_free_retained={free} MiB mmapped={mapped} MiB"
+        ),
+        _ => format!("[jade-memory] rss={rss} MiB"),
+    }
+}
+
+/// Starts the sampling thread if `JADE_MEMORY_LOG` or `JADE_DEBUG_SOCKET` is
+/// set: samples go to stderr (with the log variable) and to clients subscribed
+/// to the memory topic. Samples are only taken when someone consumes them.
 pub(crate) fn start_if_enabled() {
-    if std::env::var_os(ENV_VAR).is_none() && !crate::debug_socket::requested() {
+    if std::env::var_os(ENV_VAR).is_none() && !crate::debug_server::requested() {
         return;
     }
     std::thread::spawn(|| {
         loop {
-            let line = match (rss_kib(), allocator_mib()) {
-                (Some(kib), Some((used, free, mapped))) => format!(
-                    "[jade-memory] rss={} MiB heap_in_use={used} MiB \
-                     heap_free_retained={free} MiB mmapped={mapped} MiB",
-                    kib / 1024
-                ),
-                (Some(kib), None) => format!("[jade-memory] rss={} MiB", kib / 1024),
-                _ => "[jade-memory] rss unavailable on this platform".to_owned(),
-            };
-            if std::env::var_os(ENV_VAR).is_some() {
-                eprintln!("{line}");
+            let log = std::env::var_os(ENV_VAR).is_some();
+            if (log || crate::debug_server::wants(Topic::Memory))
+                && let Some(info) = sample()
+            {
+                if log {
+                    eprintln!("{}", log_line(&info));
+                }
+                crate::debug_server::emit(&Event::Memory(info));
             }
-            crate::debug_socket::emit(&line);
             std::thread::sleep(INTERVAL);
         }
     });

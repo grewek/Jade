@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-mod debug_socket;
+mod debug_server;
 mod memory_probe;
 #[cfg(test)]
 mod test_alloc;
@@ -1081,7 +1081,7 @@ fn main() {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("vault"));
 
-    debug_socket::start_if_enabled();
+    debug_server::start_if_enabled();
     memory_probe::start_if_enabled();
 
     // Registers the bundled Lucide icon SVGs (`Dialog`'s own close "x",
@@ -1104,6 +1104,7 @@ fn main() {
                 cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
             })
             .expect("failed to open window");
+            debug_server::install(cx);
         });
 }
 
@@ -2012,51 +2013,84 @@ mod tests {
 
     #[gpui_kit::test]
     fn the_paint_trace_reports_a_consistent_first_frame_over_the_socket(cx: &mut TestAppContext) {
-        use std::io::{BufRead, BufReader};
+        use crate::debug_server::test_client::{TestClient, start_test_server};
+        use jade_debug_protocol::{Answer, Command, Event, Message, Topic};
         let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
         let Ok(content) = std::fs::read_to_string(fixture_path) else {
             eprintln!("stress fixture not found at {fixture_path:?}, skipping");
             return;
         };
-        let sock =
-            std::env::temp_dir().join(format!("jade-paint-test-{}.sock", std::process::id()));
-        // SAFETY: tests run single-threaded (`--test-threads=1`).
-        unsafe { std::env::set_var("JADE_DEBUG_SOCKET", &sock) };
-        crate::debug_socket::start_if_enabled();
-        let client = std::os::unix::net::UnixStream::connect(&sock).unwrap();
-        client
-            .set_read_timeout(Some(std::time::Duration::from_millis(300)))
-            .unwrap();
-        let mut reader = BufReader::new(client);
-        let mut hello = String::new();
-        reader.read_line(&mut hello).unwrap();
-        crate::debug_socket::wait_for_client();
+        let sock = start_test_server();
+        let mut client = TestClient::connect(&sock);
+        assert_eq!(
+            client.call(Command::Subscribe {
+                topic: Topic::Paint
+            }),
+            Answer::Ok
+        );
 
         let (_dir, window, _editor) = open_stress_fixture(cx, &content);
         cx.update_window(window, |_, window, cx| window.render_frame(cx))
             .unwrap();
 
         let mut frames = Vec::new();
-        let mut line = String::new();
-        while reader.read_line(&mut line).is_ok_and(|n| n > 0) {
-            if line.starts_with("[paint]") {
-                frames.push(line.clone());
+        while let Some(message) = client.try_recv(std::time::Duration::from_millis(300)) {
+            if let Message::Event {
+                event: Event::Paint {
+                    consistent, trace, ..
+                },
+            } = message
+            {
+                frames.push((consistent, trace));
             }
-            line.clear();
         }
         std::fs::remove_file(&sock).unwrap();
-        unsafe { std::env::remove_var("JADE_DEBUG_SOCKET") };
 
         assert!(!frames.is_empty(), "no paint frames arrived");
-        let first = &frames[0];
+        let (_, first) = &frames[0];
         assert!(first.contains("wrap_width=unknown"), "first frame: {first}");
         assert!(
             first.contains("callout"),
             "the fixture opens on callouts: {first}"
         );
-        for frame in &frames {
-            assert!(!frame.contains("INCONSISTENT"), "{frame}");
+        for (consistent, trace) in &frames {
+            assert!(*consistent && !trace.contains("INCONSISTENT"), "{trace}");
         }
+    }
+
+    #[gpui_kit::test]
+    fn commands_reach_the_main_thread_and_are_answered(cx: &mut TestAppContext) {
+        use crate::debug_server::test_client::{TestClient, start_test_server};
+        use jade_debug_protocol::{Answer, Command, Message, Query};
+        let sock = start_test_server();
+        // Server threads wake the main-thread pump; the test scheduler
+        // otherwise rejects activity from threads it did not start.
+        cx.executor().allow_parking();
+        let dir = temp_vault();
+        let (_window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update(crate::debug_server::install);
+        let mut client = TestClient::connect(&sock);
+
+        let req = client.send(Command::Query {
+            what: Query::WindowSize,
+        });
+        let mut reply = None;
+        for _ in 0..200 {
+            cx.run_until_parked();
+            if let Some(message) = client.try_recv(std::time::Duration::from_millis(10)) {
+                reply = Some(message);
+                break;
+            }
+        }
+        std::fs::remove_file(&sock).unwrap();
+        let Some(Message::Response { req: got, answer }) = reply else {
+            panic!("the main thread never answered");
+        };
+        assert_eq!(got, req);
+        let Answer::WindowSize { width, height } = answer else {
+            panic!("expected a window size, got {answer:?}");
+        };
+        assert!(width > 0.0 && height > 0.0, "{width}x{height}");
     }
 
     #[gpui_kit::test]

@@ -6,6 +6,7 @@ edition = "2024"
 [dependencies]
 gpui-kit = "0.7"
 jade-core = { path = "../core" }
+jade-debug-protocol = { path = "../debug-protocol" }
 
 [dev-dependencies]
 criterion = { version = "0.8.2", features = ["html_reports"] }
