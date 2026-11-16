@@ -136,22 +136,12 @@ pub(super) struct DocumentCache {
     open_block_states: Vec<OpenBlock>,
     tables: Vec<Table>,
     callouts: Vec<Callout>,
-    /// Reused by `patch_callouts` to hold the callouts after the edit point
-    /// while the walk rewrites the list (cloning the list per edit cost
-    /// 250KB on the stress fixture).
-    callout_tail_scratch: Vec<Callout>,
-    /// `callout_states[i]` is the `CalloutState` *entering* line `i`.
+    /// Reused by `patch_callouts` to hold the callouts the walk re-derives
+    /// before they are spliced into `callouts`.
+    callout_scratch: Vec<Callout>,
+    /// `callout_states[i]` is the packed `CalloutState` *entering* line `i`.
     /// Parallel to `callout_for_line`.
-    callout_states: Vec<u64>,
-    /// `callout_counts[i]` is `callouts.len()` *entering* line `i` (i.e.
-    /// how many callouts had already been created by the time line `i` was
-    /// about to be processed) — `patch_callouts` needs this on top of
-    /// `callout_states` alone, since a resumed walk's freshly assigned
-    /// callout indices only agree with the old cached ones if it's created
-    /// the *same number* of callouts by the same point, not just reached
-    /// an equal `(block_open, current)` state — see that function's own
-    /// doc comment.
-    callout_counts: Vec<u32>,
+    callout_states: Vec<u8>,
 }
 
 impl DocumentCache {
@@ -169,8 +159,7 @@ impl DocumentCache {
             tables: Vec::new(),
             callouts: Vec::new(),
             callout_states: Vec::new(),
-            callout_counts: Vec::new(),
-            callout_tail_scratch: Vec::new(),
+            callout_scratch: Vec::new(),
         };
         cache.recompute_all(text);
         cache
@@ -289,7 +278,6 @@ impl DocumentCache {
         resize_vec(&mut self.block_contexts, at, delta);
         resize_vec(&mut self.open_block_states, at, delta);
         resize_vec(&mut self.callout_states, at, delta);
-        resize_vec(&mut self.callout_counts, at, delta);
         self.line_index.resize(at, delta);
     }
 
@@ -318,15 +306,12 @@ impl DocumentCache {
         let n = count_lines(text);
         let mut callouts = Vec::new();
         let mut states = Vec::with_capacity(n + LINE_GROWTH_SLACK);
-        let mut counts = Vec::with_capacity(n + LINE_GROWTH_SLACK);
         let mut state = CalloutState::default();
         for (i, line) in text.split('\n').enumerate() {
             states.push(state.pack());
-            counts.push(callouts.len() as u32);
             state = callout::step(state, line, i, &mut callouts).1;
         }
         self.callout_states = states;
-        self.callout_counts = counts;
         self.callouts = callouts;
     }
 
@@ -617,92 +602,82 @@ impl DocumentCache {
     }
 
     /// The real incremental path for `callout`: the same resumable-walk
-    /// shape as `patch_block_preview`, with two extra wrinkles:
-    ///
-    /// 1. A callout's index into `self.callouts` is only meaningful
-    ///    relative to how many callouts exist *before* it, so reconvergence
-    ///    needs the resumed walk's running `callouts.len()` to match what
-    ///    the old cached `callout_counts` recorded at the same line, not
-    ///    just a matching `CalloutState`. Two states can coincidentally be
-    ///    equal (e.g. both `(block_open: false, current: None)`) while a
-    ///    different number of callouts were created to reach them, which
-    ///    would otherwise splice a stale tail with every index off by
-    ///    however many callouts diverged.
-    /// 2. If the callout that's still open *at* the reconvergence point
-    ///    continues (unchanged) into the lines being skipped, its `end_line`
-    ///    as this walk left it only reflects the lines actually walked, not
-    ///    its true full extent — `old_snapshot` (captured before any
-    ///    mutation) is what restores that one field to its real value,
-    ///    since the untouched tail beyond the reconvergence point is what
-    ///    would otherwise have kept extending it. Caught by this module's
-    ///    own randomized property test, not reasoned out in advance.
+    /// shape as `patch_block_preview`. The walk writes the callouts it
+    /// re-derives into `callout_scratch` (seeded with the one callout that
+    /// may be open across the edit), and they are spliced over the old
+    /// callouts the walked lines covered. A callout's state holds no index,
+    /// so an edit that adds or removes a callout still reconverges where
+    /// the line states match again. The callout open at that point had its
+    /// `end_line` cut off by the walk, so it takes the old callout's end.
+    /// Callouts after the splice only move when the line count changed.
     fn patch_callouts(&mut self, text: &str, span: &EditSpan) -> Range<usize> {
         let old_line_count = self.line_roles.len();
         let start_line = span.start_line;
         let last_touched_line = span.last_new_line();
+        let delta = span.line_delta();
 
-        let prefix_callout_count = self.callout_counts[start_line] as usize;
-        // The old list is needed only from `prefix_callout_count` on, plus
-        // the one prefix callout that may still be open across the edit
-        // (the walk only ever mutates that one).
-        let mut tail = std::mem::take(&mut self.callout_tail_scratch);
-        tail.clear();
-        tail.extend_from_slice(&self.callouts[prefix_callout_count..]);
-        self.callouts.truncate(prefix_callout_count);
-        let open_prefix = CalloutState::unpack(self.callout_states[start_line])
-            .current
-            .filter(|&c| c < prefix_callout_count)
-            .map(|c| (c, self.callouts[c].end_line));
-        let old_end_line = |idx: usize| match open_prefix {
-            Some((c, end)) if c == idx => end,
-            _ => tail[idx - prefix_callout_count].end_line,
-        };
+        let entering = CalloutState::unpack(self.callout_states[start_line]);
+        let before_edit = self.callouts.partition_point(|c| c.start_line < start_line);
+        let mut fresh = std::mem::take(&mut self.callout_scratch);
+        fresh.clear();
+        let mut replace_from = before_edit;
+        if entering.callout_open {
+            // The open callout is the last one starting before the edit.
+            replace_from = before_edit - 1;
+            fresh.push(self.callouts[replace_from].clone());
+        }
 
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
-        let mut state = CalloutState::unpack(self.callout_states[start_line]);
+        let mut state = entering;
+        let mut last_walked = old_line_count - 1;
+        let mut reconverged = false;
+        let mut open_at_stop = false;
         for (i, (line, ..)) in (start_line..).zip(lines_from(text, start_byte)) {
-            let (_, next_state) = callout::step(state, line, i, &mut self.callouts);
+            let (_, next_state) = callout::step(state, line, i, &mut fresh);
             let packed_next = next_state.pack();
-
-            let has_next = i + 1 < old_line_count;
-            let reconverged = has_next
-                && i >= last_touched_line
-                && self.callout_states[i + 1] == packed_next
-                && self.callouts.len() == self.callout_counts[i + 1] as usize;
-            if has_next {
-                self.callout_states[i + 1] = packed_next;
-                self.callout_counts[i + 1] = self.callouts.len() as u32;
+            last_walked = i;
+            if i + 1 >= old_line_count {
+                break;
             }
+            reconverged = i >= last_touched_line && self.callout_states[i + 1] == packed_next;
+            self.callout_states[i + 1] = packed_next;
             if reconverged {
-                // The skipped tail lies after the edit, so its stored line
-                // numbers move with it.
-                let delta = span.line_delta();
-                if let Some(idx) = next_state.current {
-                    self.callouts[idx].end_line = shift_line(old_end_line(idx), delta);
-                }
-                let rest = tail[self.callouts.len() - prefix_callout_count..]
-                    .iter()
-                    .map(|c| Callout {
-                        start_line: shift_line(c.start_line, delta),
-                        end_line: shift_line(c.end_line, delta),
-                        ..c.clone()
-                    });
-                self.callouts.extend(rest);
-                self.callout_tail_scratch = tail;
-                return start_line..(i + 1);
-            }
-            if !has_next {
-                // Walked to the document's actual last line with no
-                // reconvergence — `self.callouts` is already the complete,
-                // freshly computed result, and `tail` (everything that used
-                // to follow) is correctly discarded.
-                self.callout_tail_scratch = tail;
-                return start_line..(i + 1);
+                open_at_stop = next_state.callout_open;
+                break;
             }
             state = next_state;
         }
-        self.callout_tail_scratch = tail;
-        start_line..old_line_count
+
+        let replace_to = if reconverged {
+            // Old callouts starting before the old line the walk stopped at
+            // were re-derived; the rest are the untouched tail.
+            let old_next = shift_line(last_walked + 1, -delta);
+            let to = self.callouts.partition_point(|c| c.start_line < old_next);
+            if open_at_stop {
+                debug_assert!(
+                    to > replace_from,
+                    "an open callout must be in the replaced range"
+                );
+                let old_end = self.callouts[to - 1].end_line;
+                if let Some(open) = fresh.last_mut() {
+                    open.end_line = shift_line(old_end, delta);
+                }
+            }
+            to
+        } else {
+            self.callouts.len()
+        };
+        let fresh_len = fresh.len();
+        self.callouts
+            .splice(replace_from..replace_to, fresh.drain(..));
+        if reconverged && delta != 0 {
+            for c in &mut self.callouts[replace_from + fresh_len..] {
+                c.start_line = shift_line(c.start_line, delta);
+                c.end_line = shift_line(c.end_line, delta);
+            }
+        }
+        self.callout_scratch = fresh;
+        start_line..(last_walked + 1)
     }
 
     /// The real incremental path for `live_preview`'s block context: the
@@ -784,7 +759,6 @@ fn reserve_line_slack(cache: &mut DocumentCache) {
     slack(&mut cache.block_contexts);
     slack(&mut cache.open_block_states);
     slack(&mut cache.callout_states);
-    slack(&mut cache.callout_counts);
 }
 
 /// Yields `(line_text, line_len, has_next_line)` starting at `start_byte`
@@ -989,10 +963,6 @@ mod tests {
             "callout_states {context}"
         );
         assert_eq!(
-            cache.callout_counts, fresh.callout_counts,
-            "callout_counts {context}"
-        );
-        assert_eq!(
             cache.line_index.len(),
             fresh.line_index.len(),
             "line_index len {context}"
@@ -1019,6 +989,40 @@ mod tests {
                 0xC0FF_EE15_EA5E_D00Du64 ^ run.wrapping_mul(0x9E37_79B9_7F4A_7C15),
             );
         }
+    }
+
+    /// A character that removes or creates a callout used to shift every
+    /// later callout count, so the walk never reconverged and ran to the end
+    /// of the document (14ms on the 320K-line stress fixture).
+    #[test]
+    fn removing_or_creating_a_callout_does_not_walk_to_the_end_of_the_document() {
+        let mut text = String::from("intro\n\n> [!note]\n> body\n\n");
+        for i in 0..2000 {
+            text.push_str(&format!("> [!tip]\n> body {i}\n\n"));
+        }
+        let mut cache = DocumentCache::new(&text);
+        let callouts = cache.callouts().len();
+        let blank = "intro\n\n> [!note]\n> body\n".len();
+
+        // "x" on the blank line lazily continues the quote above, so the
+        // next header is no longer a fresh blockquote start.
+        let (typed, edit) = apply_edit(&text, blank, blank, "x");
+        let patch = cache.record_edit(&typed, edit).unwrap();
+        assert_eq!(cache.callouts().len(), callouts - 1);
+        assert!(patch.touched.len() < 10, "touched {:?}", patch.touched);
+        assert_matches_fresh_cache(&cache, &typed, "after removing a callout");
+
+        let (restored, edit) = apply_edit(&typed, blank, blank + 1, "");
+        let patch = cache.record_edit(&restored, edit).unwrap();
+        assert_eq!(cache.callouts().len(), callouts);
+        assert!(patch.touched.len() < 10, "touched {:?}", patch.touched);
+        assert_matches_fresh_cache(&cache, &restored, "after restoring it");
+
+        // An Enter before every later callout shifts them without re-walking.
+        let (entered, edit) = apply_edit(&restored, 0, 0, "\n");
+        let patch = cache.record_edit(&entered, edit).unwrap();
+        assert!(patch.touched.len() < 10, "touched {:?}", patch.touched);
+        assert_matches_fresh_cache(&cache, &entered, "after Enter at the top");
     }
 
     fn run_randomized_edits(mut seed: u64) {

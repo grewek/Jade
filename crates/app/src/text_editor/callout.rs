@@ -239,9 +239,8 @@ fn looks_like_heading(line: &str) -> bool {
 /// the *previous* line part of an open blockquote block at all, callout or
 /// not — this is what lets a line tell "I'm a fresh blockquote start" apart
 /// from "I'm continuing one," the distinction a callout header check needs
-/// and plain blockquote rendering never did) and `current` (the currently-
-/// open callout's index into the result, if the open block happens to be
-/// one).
+/// and plain blockquote rendering never did) and whether that open block is
+/// a callout.
 ///
 /// A line opens a new `Callout` when it's a *fresh*, depth-1 blockquote
 /// line (see [`blockquote_depth`]) whose content matches
@@ -270,33 +269,29 @@ pub(super) fn classify_callouts(source: &str) -> (Vec<Option<usize>>, Vec<Callou
 }
 
 /// The cross-line state [`step`] carries: `block_open` (was the *previous*
-/// line part of an open blockquote block at all) and `current` (the index
-/// into the caller's `callouts` of the currently-open callout, if the open
-/// block happens to be one). The *entire* state this classifier needs,
-/// which — together with `callouts.len()` itself, since a resumed walk's
-/// freshly assigned indices need to agree with what the original run would
-/// have assigned at the same point — is what makes it resumable; see
-/// `document_cache.rs`'s own `patch_callouts`.
+/// line part of an open blockquote block at all) and `callout_open` (is
+/// that block a callout). The open callout is always the last one in the
+/// caller's `callouts`: a new one starts only on a fresh blockquote, which
+/// closes the previous. So the state holds no index, and an edit that adds
+/// or removes a callout leaves every later line's state unchanged; see
+/// `document_cache.rs`'s `patch_callouts`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct CalloutState {
     block_open: bool,
-    pub(super) current: Option<usize>,
+    pub(super) callout_open: bool,
 }
 
 impl CalloutState {
-    /// Lossless 8-byte form, for the per-line state array in
-    /// `document_cache.rs` (the struct itself is 24 bytes).
-    pub(super) fn pack(self) -> u64 {
-        let current = self.current.map_or(0, |c| c as u64 + 1);
-        debug_assert!(current < 1 << 62);
-        (current << 1) | u64::from(self.block_open)
+    /// Lossless one-byte form, for the per-line state array in
+    /// `document_cache.rs`.
+    pub(super) fn pack(self) -> u8 {
+        u8::from(self.block_open) | (u8::from(self.callout_open) << 1)
     }
 
-    pub(super) fn unpack(packed: u64) -> Self {
-        let current = packed >> 1;
+    pub(super) fn unpack(packed: u8) -> Self {
         Self {
             block_open: packed & 1 == 1,
-            current: (current != 0).then(|| current as usize - 1),
+            callout_open: packed & 2 == 2,
         }
     }
 }
@@ -328,8 +323,10 @@ pub(super) fn step(
 ) -> (Option<usize>, CalloutState) {
     let CalloutState {
         block_open,
-        mut current,
+        callout_open,
     } = state;
+    // The open callout is the last one (see `CalloutState`).
+    let mut current = callouts.len().checked_sub(1).filter(|_| callout_open);
 
     if line.trim().is_empty() || looks_like_heading(line) {
         if let Some(idx) = current.take() {
@@ -339,7 +336,7 @@ pub(super) fn step(
             None,
             CalloutState {
                 block_open: false,
-                current,
+                callout_open: current.is_some(),
             },
         );
     }
@@ -368,7 +365,7 @@ pub(super) fn step(
             callout_for_this_line,
             CalloutState {
                 block_open: true,
-                current,
+                callout_open: current.is_some(),
             },
         );
     }
@@ -393,7 +390,7 @@ pub(super) fn step(
         callout_for_this_line,
         CalloutState {
             block_open,
-            current,
+            callout_open: current.is_some(),
         },
     )
 }
