@@ -8,7 +8,7 @@ description: Drive and observe the live Jade app (click, type, scroll, read edit
 Full reference: `ARCHITECTURE.md` "Debug harness". The loop:
 
 ```sh
-cargo build --release -p jade-app -p jade-debug-cli
+cargo build --release -p jade-app --features debug-socket && cargo build --release -p jade-debug-cli
 J=target/release/jade-debug
 $J launch /abs/path/to/vault        # runs the app on a COPY of the vault; prints pid, socket, copy path
 export JADE_DEBUG_SOCKET=/tmp/jade-debug.sock   # the default socket launch uses

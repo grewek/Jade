@@ -73,9 +73,11 @@ fn refresh_wanted() {
     }
 }
 
-/// Binds the socket and starts accepting clients. No-op unless requested;
+/// Starts the memory probe, then binds the socket and starts accepting
+/// clients. The socket is a no-op unless requested;
 /// failures are reported on stderr and leave the app running.
 pub(crate) fn start_if_enabled() {
+    crate::memory_probe::start_if_enabled();
     let Some(path) = std::env::var_os(ENV_VAR) else {
         return;
     };

@@ -138,7 +138,8 @@ fn wait_until_ready(socket: &Path, child: &mut Child, log: &Path) -> Result<(), 
         std::thread::sleep(Duration::from_millis(100));
     }
     Err(format!(
-        "the app did not become ready within {READY_TIMEOUT:?}; log {}",
+        "the app did not become ready within {READY_TIMEOUT:?}; log {} (was jade-app built \
+         with `--features debug-socket`? Without it there is no socket)",
         log.display()
     ))
 }

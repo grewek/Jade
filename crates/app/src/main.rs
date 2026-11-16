@@ -1,6 +1,13 @@
 use std::path::PathBuf;
 
+// Without the `debug-socket` feature (and outside tests) a no-op stub with the
+// same names replaces the socket server, so the shipped binary has none.
+#[cfg(any(test, feature = "debug-socket"))]
 mod debug_server;
+#[cfg(not(any(test, feature = "debug-socket")))]
+#[path = "debug_server_stub.rs"]
+mod debug_server;
+#[cfg(any(test, feature = "debug-socket"))]
 mod memory_probe;
 #[cfg(test)]
 mod test_alloc;
@@ -1116,7 +1123,6 @@ fn main() {
         .unwrap_or_else(|| PathBuf::from("vault"));
 
     debug_server::start_if_enabled();
-    memory_probe::start_if_enabled();
 
     // Registers the bundled Lucide icon SVGs (`Dialog`'s own close "x",
     // `Button::icon(...)`, etc.) with GPUI's asset loader — without this,

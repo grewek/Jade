@@ -12,6 +12,10 @@ mod element;
 mod fenwick;
 mod input_handler;
 mod live_preview;
+#[cfg(any(test, feature = "debug-socket"))]
+mod paint_trace;
+#[cfg(not(any(test, feature = "debug-socket")))]
+#[path = "paint_trace_stub.rs"]
 mod paint_trace;
 mod table_preview;
 

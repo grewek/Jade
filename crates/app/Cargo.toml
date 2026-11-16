@@ -3,12 +3,19 @@ name = "jade-app"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+# The Unix-socket debug server (`debug_server/`) that `jade-debug` drives.
+# Off by default so the shipped binary has no input-injecting socket; tests
+# always include it.
+debug-socket = ["dep:jade-debug-protocol"]
+
 [dependencies]
 gpui-kit = "0.7"
 jade-core = { path = "../core" }
-jade-debug-protocol = { path = "../debug-protocol" }
+jade-debug-protocol = { path = "../debug-protocol", optional = true }
 
 [dev-dependencies]
+jade-debug-protocol = { path = "../debug-protocol" }
 criterion = { version = "0.8.2", features = ["html_reports"] }
 gpui-kit = { version = "0.7", features = ["test-support"] }
 tempfile = "3.27.0"
