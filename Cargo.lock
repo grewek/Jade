@@ -3810,6 +3810,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "jade-debug-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "jni-sys"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
