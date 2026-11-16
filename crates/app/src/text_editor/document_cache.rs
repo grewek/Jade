@@ -349,6 +349,19 @@ impl DocumentCache {
         self.tables = table_preview::classify_table_list(text);
     }
 
+    /// Every line's start byte, plus the document's length as a final entry
+    /// (`line_count() + 1` values), in one O(n) sweep: line `i` is
+    /// `starts[i]..starts[i + 1] - 1` (without its `\n`), except the last
+    /// line, which runs to `starts[line_count()]`. Far cheaper than scanning
+    /// the text for newlines or calling [`Self::line_start_byte`] per line.
+    pub(super) fn line_start_offsets(&self) -> Vec<usize> {
+        self.line_index
+            .prefix_sums()
+            .into_iter()
+            .map(|offset| offset as usize)
+            .collect()
+    }
+
     /// The byte offset right after line `line`'s own content, excluding
     /// its trailing `\n` (or the document's total length, for the actual
     /// last line, which has none) — the complement of [`Self::line_start_

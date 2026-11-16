@@ -101,11 +101,24 @@ pub struct Cell {
 /// cell's `text` — and a leading/trailing `|` is optional and, if present,
 /// isn't part of any cell's own range.
 pub fn scan_row(line: &str) -> Row {
+    let mut cells = Vec::new();
+    let (has_leading_pipe, has_trailing_pipe) =
+        for_each_cell_range(line, |raw| cells.push(make_cell(line, raw)));
+    Row {
+        cells,
+        has_leading_pipe,
+        has_trailing_pipe,
+    }
+}
+
+/// Calls `visit` with the byte range of each cell of `line`, in order, and
+/// returns `(has_leading_pipe, has_trailing_pipe)`. The one place the
+/// cell-splitting rules live, shared by [`scan_row`] and [`row_line_count`].
+fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>)) -> (bool, bool) {
     let bytes = line.as_bytes();
     let has_leading_pipe = bytes.first() == Some(&b'|');
     let start = usize::from(has_leading_pipe);
 
-    let mut cells = Vec::new();
     let mut cell_start = start;
     let mut i = start;
     while i < bytes.len() {
@@ -114,7 +127,7 @@ pub fn scan_row(line: &str) -> Row {
             continue;
         }
         if bytes[i] == b'|' {
-            cells.push(make_cell(line, cell_start..i));
+            visit(cell_start..i);
             cell_start = i + 1;
         }
         i += 1;
@@ -124,14 +137,32 @@ pub fn scan_row(line: &str) -> Row {
     // not a final cell of its own.
     let has_trailing_pipe = cell_start == bytes.len() && cell_start > start;
     if !has_trailing_pipe {
-        cells.push(make_cell(line, cell_start..bytes.len()));
+        visit(cell_start..bytes.len());
     }
+    (has_leading_pipe, has_trailing_pipe)
+}
 
-    Row {
-        cells,
-        has_leading_pipe,
-        has_trailing_pipe,
-    }
+/// How many lines `line` renders on when each of its cells is wrapped to
+/// `widths` — exactly the number of lines `live_preview::build_table_row`
+/// returns for it, without building them. A cell with no more characters
+/// than its column is wide always fits one line (wrapping only ever removes
+/// whitespace), which is nearly every cell, so only an over-wide one pays
+/// for the real [`wrap_cell_text`]. A row with fewer cells than `widths`
+/// counts the missing ones as one empty line; extra cells are ignored.
+pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
+    let mut lines = 1;
+    let mut column = 0;
+    for_each_cell_range(line, |raw| {
+        if let Some(&width) = widths.get(column) {
+            let cell = line[raw].trim();
+            if cell.chars().count() > width {
+                let text = cell.replace("\\|", "|");
+                lines = lines.max(wrap_cell_text(&text, width).len());
+            }
+        }
+        column += 1;
+    });
+    lines
 }
 
 fn make_cell(line: &str, raw: Range<usize>) -> Cell {
@@ -758,6 +789,36 @@ mod tests {
                         "line {line:?} exceeds width {width} for input {text:?}"
                     );
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn row_line_count_matches_how_many_lines_build_table_row_returns() {
+        let columns: Vec<Column> = [6, 3, 12].iter().map(|&w| col(w)).collect();
+        let lines = [
+            "| a | b | c |",
+            "a | b | c",
+            "| |",
+            "| only one |",
+            "| one | two |",
+            "| a | b | c | extra | cells |",
+            "| a \\| b | c | d |",
+            "| Alexandria Fitzgerald Montgomery | x | y |",
+            "| Supercalifragilistic | b | tiny |",
+            "| ok | long long long long | many words that need to wrap here |",
+            "|   spaced     out    |   x   |  y  |",
+            "| ünïcödé wörds hëre | b | c |",
+            "",
+        ];
+        for budget in [None, Some(10), Some(24), Some(60)] {
+            let widths = resolve_widths(&columns, budget);
+            for line in lines {
+                assert_eq!(
+                    row_line_count(line, &widths),
+                    crate::text_editor::live_preview::build_table_row(line, &columns, budget).len(),
+                    "line {line:?} budget {budget:?} widths {widths:?}"
+                );
             }
         }
     }

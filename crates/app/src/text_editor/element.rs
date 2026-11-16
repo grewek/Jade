@@ -420,23 +420,69 @@ impl RowHeightCache {
     ) {
         let line_count = doc.line_count();
         let mut counts = Vec::with_capacity(line_count);
+        // One sequential pass: every line's start comes from one sweep of
+        // the line index (scanning the 12MB text for newlines costs more
+        // than the rest of this loop) and `tables` are sorted, so table
+        // membership comes from a cursor instead of a binary search per
+        // line. What is the same for every row of a table (active or not,
+        // column widths) is worked out once per table.
+        let tables = doc.tables();
+        let budget = char_budget(available_width, char_width);
+        let one_level_fit = fit_with_indent(available_width, char_width, 1);
+        let starts = doc.line_start_offsets();
+        let mut next_table = 0;
+        let mut table_state: Option<(usize, bool, Vec<usize>)> = None;
         for i in 0..line_count {
-            let count = estimate_row_count(text, doc, i, char_width, available_width)
-                .unwrap_or_else(|| {
-                    row_count_for_line(
-                        text,
-                        doc,
-                        i,
-                        cursor,
-                        focused,
-                        char_width,
-                        font,
-                        font_size,
-                        text_color,
-                        available_width,
-                        window,
-                    )
-                });
+            let end = if i + 1 < line_count {
+                starts[i + 1] - 1
+            } else {
+                starts[i + 1]
+            };
+            let line = &text[starts[i]..end];
+            while tables.get(next_table).is_some_and(|t| t.end_line <= i) {
+                next_table += 1;
+            }
+            let table = tables.get(next_table).filter(|t| t.start_line <= i);
+            let count = match table {
+                None => {
+                    estimate_row_count(line, doc, i, char_width, available_width, one_level_fit)
+                }
+                Some(table) => {
+                    let is_header =
+                        callout_at_line(doc.callouts(), i).is_some_and(|c| c.is_header(i));
+                    let plain = matches!(doc.line_roles()[i], LineRole::Plain) && !is_header;
+                    if table_state.as_ref().is_none_or(|(n, ..)| *n != next_table) {
+                        let widths = table_preview::resolve_widths(&table.columns, budget);
+                        table_state =
+                            Some((next_table, is_table_active(doc, i, cursor, focused), widths));
+                    }
+                    match &table_state {
+                        // An inactive, plainly rendered table: a delimiter is one
+                        // hidden row, a row is as tall as its tallest wrapped
+                        // cell. Anything else takes the exact path.
+                        Some((_, false, widths)) if plain => {
+                            if table.is_delimiter(i) {
+                                1
+                            } else {
+                                table_preview::row_line_count(line, widths)
+                            }
+                        }
+                        _ => row_count_for_line(
+                            text,
+                            doc,
+                            i,
+                            cursor,
+                            focused,
+                            char_width,
+                            font,
+                            font_size,
+                            text_color,
+                            available_width,
+                            window,
+                        ),
+                    }
+                }
+            };
             counts.push(count as i64);
         }
         self.rows = Fenwick::from_vec(counts);
@@ -580,10 +626,10 @@ impl RowHeightCache {
     }
 }
 
-/// A cheap, allocation-free over-estimate of line `i`'s row count — the
-/// cold-`rebuild` fast path for an *ordinary* line (`None` for a table row
-/// or delimiter, which falls back to the exact computation instead — see
-/// [`RowHeightCache::rebuild`]'s own doc comment for why). Uses the line's
+/// A cheap, allocation-free over-estimate of `line`'s (line `i`'s) row count
+/// — the cold-`rebuild` fast path for an *ordinary* line; the caller must
+/// not pass a table row or delimiter, which get the exact computation
+/// instead (see [`RowHeightCache::rebuild`]'s own doc comment for why). Uses the line's
 /// *raw* length rather than running `build_display_lines`'s real Live-
 /// Preview inline scan at all: always safe (an over-estimate, never
 /// fewer rows than the truth) because every hiding/replacement transform
@@ -604,17 +650,24 @@ impl RowHeightCache {
 /// whose indent is always forced to `None` regardless (see
 /// `build_display_lines`'s own fence-content override).
 fn estimate_row_count(
-    text: &str,
+    line: &str,
     doc: &DocumentCache,
     i: usize,
     char_width: Pixels,
     available_width: Pixels,
-) -> Option<usize> {
-    if !matches!(table_line_kind(doc.tables(), i), TableLineKind::None) {
-        return None;
+    one_level_fit: usize,
+) -> usize {
+    // A line with no context of its own that doesn't start with `>` is
+    // indented at most one level (a list marker; blockquotes need a `>`), so
+    // if even that narrower width holds its bytes it is a single row — most
+    // lines, decided without looking at its indent at all.
+    if matches!(doc.block_contexts()[i], LineContext::Plain)
+        && !matches!(doc.line_roles()[i], LineRole::FenceContent)
+        && line.as_bytes().first() != Some(&b'>')
+        && line.len() <= one_level_fit
+    {
+        return 1;
     }
-    let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
-    let line = &text[line_range];
     let indent_level = if matches!(doc.line_roles()[i], LineRole::FenceContent) {
         0
     } else {
@@ -625,7 +678,7 @@ fn estimate_row_count(
         }
     };
     let wrap_width = Some((available_width - indent_px(indent_level)).max(px(1.)));
-    Some(wrapped_row_count(line, wrap_width, char_width).max(1))
+    wrapped_row_count(line, wrap_width, char_width).max(1)
 }
 
 /// The row count for line `i` alone — the same per-line computation
@@ -1208,6 +1261,12 @@ pub(super) fn wrapped_row_count(
         return 1;
     }
     let chars_per_row = ((wrap_width / char_width) as usize).max(1);
+    // Bytes are never fewer than chars, so a text whose byte length fits
+    // needs no counting: the common case, and counting dominated opening a
+    // note with hundreds of thousands of lines.
+    if display_text.len() <= chars_per_row {
+        return 1;
+    }
     let char_count = display_text.chars().count();
     char_count.max(1).div_ceil(chars_per_row).max(1)
 }
@@ -1342,8 +1401,27 @@ fn table_row_char_budget(
     if available_width <= px(0.) {
         return None;
     }
-    let char_width = mono_char_width(font, font_size, text_color, window);
+    char_budget(
+        available_width,
+        mono_char_width(font, font_size, text_color, window),
+    )
+}
+
+/// How many monospace characters fit on a row indented `level` levels
+/// (zero if `char_width` is not positive); the wrap width is floored at 1px
+/// like [`wrap_width_for`].
+fn fit_with_indent(available_width: Pixels, char_width: Pixels, level: u8) -> usize {
     if char_width <= px(0.) {
+        return 0;
+    }
+    ((available_width - indent_px(level)).max(px(1.)) / char_width) as usize
+}
+
+/// How many monospace characters of `char_width` fit in `available_width`;
+/// `None` if either is non-positive. Pure, so a loop over many lines can
+/// measure `char_width` once ([`mono_char_width`] shapes text).
+fn char_budget(available_width: Pixels, char_width: Pixels) -> Option<usize> {
+    if available_width <= px(0.) || char_width <= px(0.) {
         return None;
     }
     Some((available_width / char_width) as usize)

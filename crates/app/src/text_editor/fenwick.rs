@@ -127,6 +127,19 @@ impl Fenwick {
         sum
     }
 
+    /// `prefix_sum(i)` for every `i` in `0..=len`, in one O(n) sweep (each
+    /// node's prefix is its parent-in-the-prefix-chain's prefix plus its own
+    /// partial sum) instead of `len` separate O(log n) queries.
+    pub(super) fn prefix_sums(&self) -> Vec<i64> {
+        let n = self.len();
+        let mut sums = Vec::with_capacity(n + 1);
+        sums.push(0);
+        for i in 1..=n {
+            sums.push(sums[i - lowest_set_bit(i)] + self.tree[i]);
+        }
+        sums
+    }
+
     pub(super) fn total(&self) -> i64 {
         self.prefix_sum(self.len())
     }
@@ -358,6 +371,19 @@ mod tests {
             assert_eq!(tree.len(), fresh.len(), "step {step}");
             for i in 0..=values.len() {
                 assert_eq!(tree.prefix_sum(i), fresh.prefix_sum(i), "step {step} i {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn prefix_sums_matches_prefix_sum_at_every_index() {
+        for n in [0usize, 1, 2, 7, 8, 9, 100, 1000] {
+            let values: Vec<i64> = (0..n as i64).map(|v| (v * 37) % 11 - 3).collect();
+            let fenwick = Fenwick::new(&values);
+            let sums = fenwick.prefix_sums();
+            assert_eq!(sums.len(), n + 1);
+            for (i, &sum) in sums.iter().enumerate() {
+                assert_eq!(sum, fenwick.prefix_sum(i), "n={n} i={i}");
             }
         }
     }
