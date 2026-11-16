@@ -31,8 +31,10 @@ pub(super) fn apply(
     cx: &mut gpui_kit::App,
 ) -> Result<(), String> {
     match command {
-        Command::Type { text } => text.chars().for_each(|c| type_char(c, window, cx)),
-        Command::Key { key, modifiers } => press_key(key, to_modifiers(*modifiers), window, cx)?,
+        Command::Type { text } => type_text(text, window, cx)?,
+        Command::Key { key, modifiers } => {
+            press_key(key, to_modifiers(*modifiers), window, cx)?;
+        }
         Command::MouseMove { at, modifiers } => mouse_move(resolve(at)?, *modifiers, window, cx)?,
         Command::MouseDown {
             at,
@@ -100,7 +102,7 @@ fn press_key(
     modifiers: Modifiers,
     window: &mut Window,
     cx: &mut gpui_kit::App,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     if key.is_empty() || key.len() > 32 {
         return Err(format!("invalid key name {key:?}"));
     }
@@ -114,18 +116,21 @@ fn press_key(
         is_held: false,
         prefer_character_input: false,
     };
-    window.dispatch_event(PlatformInput::KeyDown(down), cx);
+    let handled = !window
+        .dispatch_event(PlatformInput::KeyDown(down), cx)
+        .propagate;
     window.dispatch_event(PlatformInput::KeyUp(KeyUpEvent { keystroke }), cx);
-    Ok(())
+    Ok(handled)
 }
 
 /// Enter and Tab go bare (the editor handles them as keys, and
 /// `dispatch_keystroke` would also insert text); everything else is a
 /// keystroke carrying its character, like the headless tests do.
-fn type_char(c: char, window: &mut Window, cx: &mut gpui_kit::App) {
+/// Returns whether anything consumed the key.
+fn type_char(c: char, window: &mut Window, cx: &mut gpui_kit::App) -> bool {
     match c {
-        '\n' => drop(press_key("enter", Modifiers::default(), window, cx)),
-        '\t' => drop(press_key("tab", Modifiers::default(), window, cx)),
+        '\n' => press_key("enter", Modifiers::default(), window, cx).unwrap_or(false),
+        '\t' => press_key("tab", Modifiers::default(), window, cx).unwrap_or(false),
         _ => {
             let key = if c == ' ' {
                 "space".to_owned()
@@ -141,9 +146,21 @@ fn type_char(c: char, window: &mut Window, cx: &mut gpui_kit::App) {
                 key,
                 key_char: Some(c.to_string()),
             };
-            window.dispatch_keystroke(keystroke, cx);
+            window.dispatch_keystroke(keystroke, cx)
         }
     }
+}
+
+/// Types `text`; an error if nothing consumed any of it, which means no text
+/// field has focus (clicks cannot tell us that, so the answer is explicit).
+fn type_text(text: &str, window: &mut Window, cx: &mut gpui_kit::App) -> Result<(), String> {
+    let handled = text.chars().filter(|&c| type_char(c, window, cx)).count();
+    if handled == 0 && !text.is_empty() {
+        return Err("nothing consumed the typed text: no text field has focus. \
+                    Click `editor` (not `editor-pane`) or an input first"
+            .into());
+    }
+    Ok(())
 }
 
 fn mouse_move(

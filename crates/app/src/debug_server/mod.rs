@@ -38,6 +38,13 @@ pub(crate) fn requested() -> bool {
     std::env::var_os(ENV_VAR).is_some()
 }
 
+/// Removes the socket file; the app is about to exit.
+pub(crate) fn remove_socket() {
+    if let Some(path) = std::env::var_os(ENV_VAR) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
 /// `requested()`, evaluated once: producers call it every frame.
 pub(crate) fn enabled() -> bool {
     // Tests flip the variable between cases.

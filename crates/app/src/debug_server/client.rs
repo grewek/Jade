@@ -19,6 +19,8 @@ const TICK: Duration = Duration::from_millis(50);
 /// A stuck client must not stall the emitting thread.
 const WRITE_TIMEOUT: Duration = Duration::from_millis(200);
 const MAX_WAITERS: usize = 16;
+/// How long a reader waits for the UI thread (input waits for the paint).
+const MAIN_THREAD_TIMEOUT: Duration = Duration::from_secs(3);
 
 struct Waiter {
     req: ReqId,
@@ -264,10 +266,27 @@ fn dispatch(client: &Arc<Client>, request: Request) {
             let frames = super::frames::recent();
             client.reply(req, Answer::FrameTimes { frames });
         }
-        command => pump::submit(pump::Job {
-            client: Arc::clone(client),
-            req,
-            command,
-        }),
+        command => run_on_main(client, req, command),
+    }
+}
+
+/// Runs `command` on the UI thread and blocks this reader until it is done
+/// (for input: painted), so the next request sees its effect.
+fn run_on_main(client: &Arc<Client>, req: ReqId, command: Command) {
+    let (done, finished) = std::sync::mpsc::channel();
+    let reply = pump::Reply::new(Arc::clone(client), req);
+    pump::submit(pump::Job {
+        reply: reply.clone(),
+        command,
+        done,
+    });
+    if finished.recv_timeout(MAIN_THREAD_TIMEOUT).is_err() {
+        reply.send(Answer::Error {
+            message: format!(
+                "no reply from the UI thread within {MAIN_THREAD_TIMEOUT:?}: the window may be \
+                 hidden or occluded (no frames are painted, so input is not confirmed), or the \
+                 app is busy"
+            ),
+        });
     }
 }

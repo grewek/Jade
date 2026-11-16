@@ -2158,6 +2158,13 @@ mod tests {
         let req = client.send(command);
         for _ in 0..300 {
             cx.run_until_parked();
+            // No platform frame loop in tests: deliver the next frame
+            // ourselves, which is what releases a painted-input reply.
+            cx.update(|cx| {
+                for window in cx.windows() {
+                    let _ = window.update(cx, |_, window, cx| window.simulate_next_frame(cx));
+                }
+            });
             if let Some(Message::Response { req: got, answer }) =
                 client.try_recv(std::time::Duration::from_millis(10))
                 && got == req
@@ -2523,6 +2530,76 @@ mod tests {
             !dialog_open(cx, &mut client),
             "confirming closes the dialog"
         );
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn an_input_reply_waits_for_the_window_to_paint_it(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Message};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "x").unwrap();
+        let (mut client, sock, window, app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let simulate_frame = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| window.simulate_next_frame(cx))
+                .unwrap()
+        };
+
+        let req = client.send(click_named("note-Note A"));
+        let quiet = std::time::Duration::from_millis(60);
+        for _ in 0..3 {
+            cx.run_until_parked();
+            assert!(
+                client.try_recv(quiet).is_none(),
+                "answered before any frame was painted"
+            );
+        }
+        // The click ran immediately; only the reply is held back.
+        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        assert_eq!(selected, Some("Note A".to_string()));
+
+        // Hop one runs before the next frame draws, hop two after it.
+        assert_eq!(simulate_frame(cx), 1);
+        cx.run_until_parked();
+        assert!(client.try_recv(quiet).is_none(), "one hop is not enough");
+        assert_eq!(simulate_frame(cx), 1);
+        cx.run_until_parked();
+        let reply = client.try_recv(std::time::Duration::from_secs(2));
+        assert_eq!(
+            reply,
+            Some(Message::Response {
+                req,
+                answer: Answer::Ok
+            })
+        );
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn typing_with_no_text_field_focused_is_an_error_not_a_silent_ok(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "").unwrap();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let typed = Command::Type {
+            text: "lost".into(),
+        };
+        let Answer::Error { message } = step(cx, window, &mut client, typed.clone()) else {
+            panic!("typing into nothing must be reported");
+        };
+        assert!(message.contains("no text field has focus"), "{message}");
+
+        step(cx, window, &mut client, click_named("note-Note A"));
+        let Answer::Error { .. } = step(cx, window, &mut client, typed.clone()) else {
+            panic!("the sidebar has focus after opening a note, and takes no text");
+        };
+        step(cx, window, &mut client, click_named("editor"));
+        assert_eq!(step(cx, window, &mut client, typed), Answer::Ok);
         std::fs::remove_file(&sock).unwrap();
     }
 
