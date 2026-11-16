@@ -44,4 +44,5 @@ Workspace-wide:
 - **`jade-app`'s headless UI tests require `--test-threads=1`** — the parallel harness is non-deterministic under load (a confirmed concurrency bug in the vendored gpui/gpui-component test-support stack, not Jade's code).
 - Lint: `cargo clippy`
 - Format: `cargo fmt`
+- **Debug harness** (drive/observe the live app: click, type, frame times, paint trace): `cargo build --release -p jade-app -p jade-debug-cli`, then `target/release/jade-debug help`. See `ARCHITECTURE.md` "Debug harness" and `.claude/skills/jade-debug`. Name every new interactive widget with `.debug_name(..)`.
 - Benchmark: `cargo bench -p jade-core` (criterion; watch for a `change:`/`Performance has regressed` line, not just the absolute time). `jade-app` has no benchmarks currently (binary-only, no `[lib]` target — see `ARCHITECTURE.md`'s Backlog).

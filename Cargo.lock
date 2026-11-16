@@ -3811,6 +3811,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "jade-debug-cli"
+version = "0.1.0"
+dependencies = [
+ "jade-debug-protocol",
+]
+
+[[package]]
 name = "jade-debug-protocol"
 version = "0.1.0"
 dependencies = [

@@ -1,0 +1,14 @@
+[package]
+name = "jade-debug-cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "jade-debug"
+path = "src/main.rs"
+
+[dependencies]
+jade-debug-protocol = { path = "../debug-protocol" }
+
+[lints]
+workspace = true

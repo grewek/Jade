@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/core", "crates/app", "crates/debug-protocol"]
+members = ["crates/core", "crates/app", "crates/debug-protocol", "crates/debug-cli"]
 
 # Mechanical STYLE.md rules (3: no unwrap/expect, 10: function length).
 [workspace.lints.clippy]
