@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use jade_app::bench_api::{Cache, EditorBuffer, Index};
+use jade_app::bench_api::{Cache, EditorBuffer, Index, line_strides};
 
 const TYPICAL_BYTES: usize = 150 * 1024;
 
@@ -57,17 +57,21 @@ fn bench_passes(c: &mut Criterion) {
     group.sample_size(10);
     for (label, text) in [("typical", typical), ("stress", stress.as_str())] {
         let mut cache = Cache::new(text);
+        let strides = line_strides(text);
+        group.bench_function(format!("line_strides/{label}"), |b| {
+            b.iter(|| line_strides(black_box(text)))
+        });
         group.bench_function(format!("line_roles/{label}"), |b| {
-            b.iter(|| cache.recompute_line_roles(black_box(text)))
+            b.iter(|| cache.recompute_line_roles(black_box(text), &strides))
         });
         group.bench_function(format!("callouts/{label}"), |b| {
-            b.iter(|| cache.recompute_callouts(black_box(text)))
+            b.iter(|| cache.recompute_callouts(black_box(text), &strides))
         });
         group.bench_function(format!("block_contexts/{label}"), |b| {
-            b.iter(|| cache.recompute_block_contexts(black_box(text)))
+            b.iter(|| cache.recompute_block_contexts(black_box(text), &strides))
         });
         group.bench_function(format!("tables/{label}"), |b| {
-            b.iter(|| cache.recompute_tables(black_box(text)))
+            b.iter(|| cache.recompute_tables(black_box(text), &strides))
         });
     }
     group.finish();

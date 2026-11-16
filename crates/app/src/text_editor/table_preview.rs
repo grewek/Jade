@@ -165,6 +165,28 @@ pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
     lines
 }
 
+/// How many cells [`scan_row`] would return, without building them.
+fn cell_count(line: &str) -> usize {
+    let mut count = 0;
+    for_each_cell_range(line, |_| count += 1);
+    count
+}
+
+/// `make_cell(line, raw).text.chars().count()` without building the text.
+fn cell_width(line: &str, raw: Range<usize>) -> usize {
+    let cell = &line[raw];
+    let bytes = cell.as_bytes();
+    // Plain ASCII (no escapes, and no vertical tab, which `trim_ascii` keeps
+    // but `trim` strips): every char is one byte.
+    if bytes.iter().all(|&b| b < 0x80 && b != b'\\' && b != 0x0b) {
+        bytes.trim_ascii().len()
+    } else if bytes.contains(&b'\\') {
+        cell.replace("\\|", "|").trim().chars().count()
+    } else {
+        cell.trim().chars().count()
+    }
+}
+
 fn make_cell(line: &str, raw: Range<usize>) -> Cell {
     let text = line[raw.clone()].replace("\\|", "|").trim().to_string();
     Cell { raw, text }
@@ -203,14 +225,23 @@ fn delimiter_align(cell: &str) -> Option<Align> {
 /// match the header's *exactly* (unlike body rows, which may have more or
 /// fewer cells than the header, padded/truncated when rendered).
 fn parse_delimiter_row(line: &str, expected_columns: usize) -> Option<Vec<Align>> {
-    let row = scan_row(line);
-    if row.cells.len() != expected_columns {
+    if cell_count(line) != expected_columns {
         return None;
     }
-    row.cells
-        .iter()
-        .map(|cell| delimiter_align(&cell.text))
-        .collect()
+    // A cell with an escaped pipe is never made of dashes, so the raw text
+    // gives the same answer as the unescaped one.
+    let mut aligns = Vec::new();
+    let mut valid = true;
+    for_each_cell_range(line, |raw| {
+        if !valid {
+            return;
+        }
+        match delimiter_align(&line[raw]) {
+            Some(align) => aligns.push(align),
+            None => valid = false,
+        }
+    });
+    valid.then_some(aligns)
 }
 
 /// The index of the table containing `line`, if any. Tables are sorted and
@@ -226,7 +257,9 @@ pub(super) fn table_index_at(tables: &[Table], line: usize) -> Option<usize> {
 /// simplifications; the real validation happens via the *next* line having
 /// to be a valid delimiter row for a table to be recognized at all.
 pub(super) fn is_pipe_row(line: &str) -> bool {
-    line.contains('|')
+    // The byte search skips `str::contains`'s char-pattern machinery, which
+    // costs more than the scan itself on a short line.
+    line.as_bytes().contains(&b'|')
 }
 
 /// Every table in `source`, in order: the same result as
@@ -234,7 +267,12 @@ pub(super) fn is_pipe_row(line: &str) -> bool {
 /// materializing the document's lines or a per-line lookup (which cost
 /// ~12MB of transient allocation on the 320K-line stress fixture).
 pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
-    let mut lines = source.split('\n').enumerate().peekable();
+    classify_table_list_from(source.split('\n'))
+}
+
+/// [`classify_table_list`] over lines the caller already split.
+pub(super) fn classify_table_list_from<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<Table> {
+    let mut lines = lines.enumerate().peekable();
     let mut tables = Vec::new();
 
     while let Some((start_line, header)) = lines.next() {
@@ -244,10 +282,12 @@ pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
         let Some(&(_, delimiter)) = lines.peek() else {
             break;
         };
-        let header_row = scan_row(header);
-        let Some(aligns) = parse_delimiter_row(delimiter, header_row.cells.len()) else {
+        // The delimiter row decides, so check it before scanning the header
+        // (nearly every pipe row is not a header).
+        let Some(aligns) = parse_delimiter_row(delimiter, cell_count(header)) else {
             continue;
         };
+        let header_row = scan_row(header);
         lines.next();
         let mut end_line = start_line + 2;
 
@@ -264,9 +304,13 @@ pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
             if !is_pipe_row(row) {
                 break;
             }
-            for (column, cell) in columns.iter_mut().zip(scan_row(row).cells.iter()) {
-                column.width = column.width.max(cell.text.chars().count());
-            }
+            let mut index = 0;
+            for_each_cell_range(row, |raw| {
+                if let Some(column) = columns.get_mut(index) {
+                    column.width = column.width.max(cell_width(row, raw));
+                }
+                index += 1;
+            });
             end_line = i + 1;
             lines.next();
         }
@@ -818,6 +862,57 @@ mod tests {
                     row_line_count(line, &widths),
                     crate::text_editor::live_preview::build_table_row(line, &columns, budget).len(),
                     "line {line:?} budget {budget:?} widths {widths:?}"
+                );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod fast_path_tests {
+    use super::*;
+
+    const ROWS: [&str; 11] = [
+        "| a | b |",
+        "|a|b|c",
+        "  | x  |  y  |  ",
+        "| a \\| b | ünï | 日本 |",
+        "| \\| | \\\\| | \\|\\| |",
+        "|||",
+        "no pipes at all",
+        "| tab\t| nbsp\u{a0}|\u{3000}wide\u{3000}|",
+        "| vt\u{b}| \u{b}x\u{b} | \r\n| \u{c}y |",
+        "",
+        "| --- | :-: | --: |",
+    ];
+
+    #[test]
+    fn cell_width_and_cell_count_match_scan_row() {
+        for line in ROWS {
+            let row = scan_row(line);
+            assert_eq!(cell_count(line), row.cells.len(), "{line:?}");
+            let mut widths = Vec::new();
+            for_each_cell_range(line, |raw| widths.push(cell_width(line, raw)));
+            let expected: Vec<usize> = row.cells.iter().map(|c| c.text.chars().count()).collect();
+            assert_eq!(widths, expected, "{line:?}");
+        }
+    }
+
+    #[test]
+    fn parse_delimiter_row_matches_the_scan_row_based_answer() {
+        let oracle = |line: &str, expected: usize| -> Option<Vec<Align>> {
+            let row = scan_row(line);
+            if row.cells.len() != expected {
+                return None;
+            }
+            row.cells.iter().map(|c| delimiter_align(&c.text)).collect()
+        };
+        for line in ROWS {
+            for expected in 0..5 {
+                assert_eq!(
+                    parse_delimiter_row(line, expected),
+                    oracle(line, expected),
+                    "{line:?} x{expected}"
                 );
             }
         }

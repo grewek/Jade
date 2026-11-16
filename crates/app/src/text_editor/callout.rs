@@ -328,7 +328,7 @@ pub(super) fn step(
     // The open callout is the last one (see `CalloutState`).
     let mut current = callouts.len().checked_sub(1).filter(|_| callout_open);
 
-    if line.trim().is_empty() || looks_like_heading(line) {
+    if super::live_preview::is_blank(line) || looks_like_heading(line) {
         if let Some(idx) = current.take() {
             callouts[idx].end_line = i;
         }

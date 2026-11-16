@@ -2,10 +2,16 @@
 //! else in `text_editor` stays crate-private. Wrappers return small summaries
 //! so the optimizer cannot discard the work being timed.
 
-use super::document_cache::{DocumentCache, TextEdit};
+use super::document_cache::{DocumentCache, TextEdit, line_strides as strides_of};
 use super::fenwick::Fenwick;
 
 pub use super::buffer::EditorBuffer;
+
+/// Per-line byte strides of `text`: the one newline scan of a cold build,
+/// which the passes below then read their lines from.
+pub fn line_strides(text: &str) -> Vec<i64> {
+    strides_of(text)
+}
 
 /// The per-document classification cache every keystroke patches.
 pub struct Cache(DocumentCache);
@@ -25,20 +31,20 @@ impl Cache {
 
     /// One of the four classification passes over `text`, as run by a cold
     /// build; the other three are left as they were.
-    pub fn recompute_line_roles(&mut self, text: &str) {
-        self.0.recompute_block_preview(text);
+    pub fn recompute_line_roles(&mut self, text: &str, strides: &[i64]) {
+        self.0.recompute_block_preview(text, strides);
     }
 
-    pub fn recompute_callouts(&mut self, text: &str) {
-        self.0.recompute_callouts(text);
+    pub fn recompute_callouts(&mut self, text: &str, strides: &[i64]) {
+        self.0.recompute_callouts(text, strides);
     }
 
-    pub fn recompute_block_contexts(&mut self, text: &str) {
-        self.0.recompute_block_context(text);
+    pub fn recompute_block_contexts(&mut self, text: &str, strides: &[i64]) {
+        self.0.recompute_block_context(text, strides);
     }
 
-    pub fn recompute_tables(&mut self, text: &str) {
-        self.0.recompute_tables(text);
+    pub fn recompute_tables(&mut self, text: &str, strides: &[i64]) {
+        self.0.recompute_tables(text, strides);
     }
 
     /// Reports an edit already applied to `text`; `true` when the cache was

@@ -596,6 +596,17 @@ impl ListNode {
     }
 }
 
+/// `line.trim().is_empty()`, deciding from the first byte when it is a
+/// printable ASCII character (nearly every line) before the Unicode-aware
+/// trim.
+pub(super) fn is_blank(line: &str) -> bool {
+    match line.as_bytes().first() {
+        None => true,
+        Some(&b) if b > b' ' && b < 0x7f => false,
+        Some(_) => line.trim().is_empty(),
+    }
+}
+
 /// The one per-line transition [`classify_block_context`]/
 /// [`classify_block_context_from`] both fold over — pulled out of the
 /// original single sequential loop the same way `block_preview::step`/
@@ -603,7 +614,7 @@ impl ListNode {
 /// arbitrary line's cached entering state instead of only ever starting
 /// fresh from line 0.
 pub(super) fn block_context_step(open: OpenBlock, line: &str) -> (LineContext, OpenBlock) {
-    if line.trim().is_empty() {
+    if is_blank(line) {
         return (LineContext::Plain, OpenBlock::None);
     }
 
@@ -3215,5 +3226,38 @@ mod tests {
                 InlineStyle::Blockquote(1)
             )]
         );
+    }
+}
+
+#[cfg(test)]
+mod is_blank_tests {
+    use super::is_blank;
+
+    #[test]
+    fn matches_trim_is_empty_for_ascii_and_unicode_whitespace() {
+        let lines = [
+            "",
+            " ",
+            "  \t ",
+            "\t",
+            "\r",
+            "x",
+            " x",
+            "# h",
+            ">",
+            "-",
+            "\u{7f}",
+            "\u{a0}",
+            "\u{a0}x",
+            "\u{3000}",
+            "\u{3000} x",
+            "\u{85}",
+            "\u{2003}\u{2003}",
+            "é",
+            "日本",
+        ];
+        for line in lines {
+            assert_eq!(is_blank(line), line.trim().is_empty(), "{line:?}");
+        }
     }
 }
