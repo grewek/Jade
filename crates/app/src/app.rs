@@ -82,6 +82,8 @@ pub(crate) struct JadeApp {
     pub(crate) sidebar_tab: SidebarTab,
     /// Hides the whole sidebar (tabs, vault tree, search); the toggle rail stays.
     pub(crate) sidebar_collapsed: bool,
+    /// Hides the right sidebar (backlinks); its toggle rail stays.
+    pub(crate) backlinks_collapsed: bool,
     search_input: Entity<InputState>,
     pub(crate) search_query: String,
     /// Search reads note files, so results are computed once per change
@@ -136,6 +138,7 @@ impl JadeApp {
             collapsed_folders: Default::default(),
             sidebar_tab: SidebarTab::default(),
             sidebar_collapsed: false,
+            backlinks_collapsed: false,
             search_input,
             search_query: String::new(),
             search_results: Vec::new(),
@@ -830,6 +833,56 @@ impl JadeApp {
         .into_any_element()
     }
 
+    /// The right sidebar's body: notes linking to `note_id`.
+    fn render_backlinks_panel(&self, note_id: &str, cx: &mut Context<Self>) -> Div {
+        let mut backlink_entries: Vec<(String, String)> = self
+            .vault
+            .backlinks()
+            .get(note_id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|source_id| {
+                self.vault
+                    .note(&source_id)
+                    .map(|n| (source_id, n.title.clone()))
+            })
+            .collect();
+        backlink_entries.sort_by(|a, b| a.1.cmp(&b.1));
+
+        let mut backlinks_panel = div().flex().flex_col().gap_1().child(
+            div()
+                .font_weight(FontWeight::BOLD)
+                .child(format!("Backlinks ({})", backlink_entries.len())),
+        );
+
+        if backlink_entries.is_empty() {
+            backlinks_panel =
+                backlinks_panel.child(div().text_color(rgb(0x888888)).child("No backlinks yet."));
+        } else {
+            for (source_id, title) in backlink_entries {
+                let target_id = source_id.clone();
+                backlinks_panel = backlinks_panel.child(
+                    div()
+                        .id(format!("backlink-{source_id}"))
+                        .test_support()
+                        .px_2()
+                        .py_1()
+                        .rounded_md()
+                        .cursor_pointer()
+                        .hover(|style| style.bg(rgb(0xe8e8f8)))
+                        .child(title)
+                        .on_click(cx.listener(move |this, _event, window, cx| {
+                            this.open_note(target_id.clone(), window, cx);
+                        }))
+                        .debug_name_with(|| format!("backlink-{source_id}").into()),
+                );
+            }
+        }
+
+        backlinks_panel
+    }
+
     fn render_sidebar_tab_button(
         &self,
         tab: SidebarTab,
@@ -1019,52 +1072,7 @@ impl Render for JadeApp {
                 .p_4()
                 .child(format!("Could not open vault: {err}"))
                 .into_any_element()
-        } else if let Some(note_id) = self.selected_id.clone() {
-            let mut backlink_entries: Vec<(String, String)> = self
-                .vault
-                .backlinks()
-                .get(&note_id)
-                .cloned()
-                .unwrap_or_default()
-                .into_iter()
-                .filter_map(|source_id| {
-                    self.vault
-                        .note(&source_id)
-                        .map(|n| (source_id, n.title.clone()))
-                })
-                .collect();
-            backlink_entries.sort_by(|a, b| a.1.cmp(&b.1));
-
-            let mut backlinks_panel = div().flex().flex_col().gap_1().p_2().border_t_1().child(
-                div()
-                    .font_weight(FontWeight::BOLD)
-                    .child(format!("Backlinks ({})", backlink_entries.len())),
-            );
-
-            if backlink_entries.is_empty() {
-                backlinks_panel = backlinks_panel
-                    .child(div().text_color(rgb(0x888888)).child("No backlinks yet."));
-            } else {
-                for (source_id, title) in backlink_entries {
-                    let target_id = source_id.clone();
-                    backlinks_panel = backlinks_panel.child(
-                        div()
-                            .id(format!("backlink-{source_id}"))
-                            .test_support()
-                            .px_2()
-                            .py_1()
-                            .rounded_md()
-                            .cursor_pointer()
-                            .hover(|style| style.bg(rgb(0xe8e8f8)))
-                            .child(title)
-                            .on_click(cx.listener(move |this, _event, window, cx| {
-                                this.open_note(target_id.clone(), window, cx);
-                            }))
-                            .debug_name_with(|| format!("backlink-{source_id}").into()),
-                    );
-                }
-            }
-
+        } else if self.selected_id.is_some() {
             let mut editor_pane = div()
                 .id("note-editor-pane")
                 .size_full()
@@ -1100,7 +1108,6 @@ impl Render for JadeApp {
                 .size_full()
                 .p_4()
                 .child(editor_area)
-                .child(backlinks_panel)
                 .into_any_element()
         } else {
             div()
@@ -1123,6 +1130,38 @@ impl Render for JadeApp {
             .debug_name("toggle-sidebar");
         let rail = div().flex().flex_col().flex_none().p_1().child(toggle);
 
+        let backlinks_toggle = Button::new("toggle-backlinks")
+            .icon(if self.backlinks_collapsed {
+                IconName::PanelRightOpen
+            } else {
+                IconName::PanelRightClose
+            })
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.backlinks_collapsed = !this.backlinks_collapsed;
+                cx.notify();
+            }))
+            .debug_name("toggle-backlinks");
+        let right_rail = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .p_1()
+            .child(backlinks_toggle);
+        let right_sidebar = div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .w(px(220.))
+            .flex_none()
+            .p_2()
+            .border_l_1()
+            .children(
+                self.selected_id
+                    .as_deref()
+                    .filter(|_| self.error.is_none())
+                    .map(|id| self.render_backlinks_panel(id, cx)),
+            );
+
         div()
             .flex()
             .flex_row()
@@ -1132,6 +1171,10 @@ impl Render for JadeApp {
                 this.child(sidebar.debug_name("sidebar"))
             })
             .child(div().flex_1().child(content))
+            .when(!self.backlinks_collapsed, |this| {
+                this.child(right_sidebar.debug_name("backlinks-sidebar"))
+            })
+            .child(right_rail)
     }
 }
 
@@ -3827,6 +3870,33 @@ mod tests {
         assert!(sidebar_shown(cx, false), "sidebar starts expanded");
         assert!(!sidebar_shown(cx, true), "toggle hides the sidebar");
         assert!(sidebar_shown(cx, true), "toggle again restores it");
+    }
+
+    #[gpui_kit::test]
+    fn toggle_button_collapses_and_restores_the_backlinks_sidebar(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "Links to [[Note B]].").unwrap();
+        std::fs::write(dir.path().join("Note B.md"), "No outgoing links.").unwrap();
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note B", cx);
+        })
+        .unwrap();
+
+        let backlinks_shown = |cx: &mut TestAppContext, click: bool| {
+            cx.update_window(window, |_, window, cx| {
+                if click {
+                    window.click("toggle-backlinks", cx);
+                }
+                window.render_frame(cx);
+                window.try_find("backlink-Note A").is_some()
+            })
+            .unwrap()
+        };
+        assert!(backlinks_shown(cx, false), "backlinks start expanded");
+        assert!(!backlinks_shown(cx, true), "toggle hides the backlinks");
+        assert!(backlinks_shown(cx, true), "toggle again restores them");
     }
 
     #[gpui_kit::test]

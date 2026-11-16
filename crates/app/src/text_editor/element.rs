@@ -727,6 +727,47 @@ fn row_count_for_line(
         .max(1)
 }
 
+/// The row count painting will see for line `i`: real shaping, so word
+/// wrapping is included. [`row_count_for_line`]'s monospace estimate can come
+/// out one row short of that, which `verify_rows` must not inherit.
+#[allow(clippy::too_many_arguments)]
+fn shaped_row_count_for_line(
+    text: &str,
+    doc: &DocumentCache,
+    i: usize,
+    cursor: usize,
+    focused: bool,
+    line_height: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    available_width: Pixels,
+    window: &mut Window,
+) -> usize {
+    let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
+    let callout = callout_at_line(doc.callouts(), i);
+    let shaped = shape_display_line(
+        &text[line_range.clone()],
+        doc.line_roles()[i],
+        doc.block_contexts()[i],
+        table_line_kind(doc.tables(), i),
+        is_table_active(doc, i, cursor, focused),
+        callout,
+        callout.is_some_and(|c| c.is_header(i)),
+        is_active_line(&line_range, cursor, focused),
+        font,
+        font_size,
+        text_color,
+        available_width,
+        window,
+    );
+    let height: Pixels = shaped
+        .iter()
+        .map(|(wrapped, _)| wrapped.size(line_height).height)
+        .sum();
+    ((height / line_height).round() as usize).max(1)
+}
+
 /// Per-document, per-paint layout data that lets `measure_document`/
 /// `paint_lines`/`offset_for_position`/`input_handler::bounds_for_range`
 /// each touch only the lines they actually need, instead of every line in
@@ -808,9 +849,9 @@ impl LineLayout {
         text_color: Hsla,
         window: &mut Window,
     ) {
-        let (verified, char_width, cached_width) = {
+        let (verified, cached_width) = {
             let rows = self.row_cache.borrow();
-            (rows.verified.clone(), rows.char_width, rows.available_width)
+            (rows.verified.clone(), rows.available_width)
         };
         if range.start >= verified.start && range.end <= verified.end {
             return;
@@ -820,13 +861,13 @@ impl LineLayout {
         let mut corrections = Vec::new();
         for i in range.clone().filter(|i| !verified.contains(i)) {
             if width_unknown || self.row_cache.borrow().row_count(i) > 1 {
-                let rows = row_count_for_line(
+                let rows = shaped_row_count_for_line(
                     text,
                     &doc,
                     i,
                     cursor,
                     focused,
-                    char_width,
+                    self.line_height,
                     font,
                     font_size,
                     text_color,
