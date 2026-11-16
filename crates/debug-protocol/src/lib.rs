@@ -84,19 +84,19 @@ pub enum Command {
         modifiers: Modifiers,
     },
     MouseMove {
-        at: Point,
+        at: Location,
         #[serde(default)]
         modifiers: Modifiers,
     },
     MouseDown {
-        at: Point,
+        at: Location,
         #[serde(default)]
         button: Button,
         #[serde(default)]
         modifiers: Modifiers,
     },
     MouseUp {
-        at: Point,
+        at: Location,
         #[serde(default)]
         button: Button,
         #[serde(default)]
@@ -114,7 +114,7 @@ pub enum Command {
         modifiers: Modifiers,
     },
     Scroll {
-        at: Point,
+        at: Location,
         dx: f32,
         dy: f32,
         #[serde(default)]
@@ -148,7 +148,7 @@ pub struct Request {
     pub command: Command,
 }
 
-/// A named, clickable element and its last-painted bounds.
+/// A named element and its last-painted bounds (window coordinates).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Target {
     pub name: String,
@@ -156,6 +156,9 @@ pub struct Target {
     pub y: f32,
     pub width: f32,
     pub height: f32,
+    /// Whether any part lies inside its ancestors' clip. Clicks aim at the
+    /// center of the visible part.
+    pub visible: bool,
 }
 
 /// Frames the app remembers for `Query::FrameTimes`.
@@ -316,11 +319,11 @@ mod tests {
                 },
             },
             Command::MouseMove {
-                at,
+                at: Location::Point(at),
                 modifiers: Modifiers::default(),
             },
             Command::MouseDown {
-                at,
+                at: Location::Target("editor".into()),
                 button: Button::Right,
                 modifiers: Modifiers {
                     shift: true,
@@ -328,12 +331,12 @@ mod tests {
                 },
             },
             Command::MouseUp {
-                at,
+                at: Location::Point(at),
                 button: Button::Middle,
                 modifiers: Modifiers::default(),
             },
             Command::Click {
-                at: Location::Target("sidebar.new-note".into()),
+                at: Location::Target("new-note".into()),
                 button: Button::Left,
                 count: 2,
                 modifiers: Modifiers::default(),
@@ -345,7 +348,7 @@ mod tests {
                 modifiers: Modifiers::default(),
             },
             Command::Scroll {
-                at,
+                at: Location::Target("editor".into()),
                 dx: 0.0,
                 dy: -40.0,
                 modifiers: Modifiers::default(),
@@ -414,6 +417,7 @@ mod tests {
             y: 2.0,
             width: 3.0,
             height: 4.0,
+            visible: true,
         };
         let answers = vec![
             Answer::Ok,

@@ -33,17 +33,17 @@ pub(super) fn apply(
     match command {
         Command::Type { text } => text.chars().for_each(|c| type_char(c, window, cx)),
         Command::Key { key, modifiers } => press_key(key, to_modifiers(*modifiers), window, cx)?,
-        Command::MouseMove { at, modifiers } => mouse_move(*at, *modifiers, window, cx)?,
+        Command::MouseMove { at, modifiers } => mouse_move(resolve(at)?, *modifiers, window, cx)?,
         Command::MouseDown {
             at,
             button,
             modifiers,
-        } => mouse_down(*at, *button, *modifiers, 1, window, cx)?,
+        } => mouse_down(resolve(at)?, *button, *modifiers, 1, window, cx)?,
         Command::MouseUp {
             at,
             button,
             modifiers,
-        } => mouse_up(*at, *button, *modifiers, 1, window, cx)?,
+        } => mouse_up(resolve(at)?, *button, *modifiers, 1, window, cx)?,
         Command::Click {
             at,
             button,
@@ -55,7 +55,7 @@ pub(super) fn apply(
             dx,
             dy,
             modifiers,
-        } => scroll(*at, *dx, *dy, *modifiers, window, cx)?,
+        } => scroll(resolve(at)?, *dx, *dy, *modifiers, window, cx)?,
         other => return Err(format!("not an input command: {other:?}")),
     }
     Ok(())
@@ -76,6 +76,14 @@ fn to_button(button: proto::Button) -> MouseButton {
         proto::Button::Left => MouseButton::Left,
         proto::Button::Right => MouseButton::Right,
         proto::Button::Middle => MouseButton::Middle,
+    }
+}
+
+/// A raw point, or the center of the visible part of a named element.
+fn resolve(at: &Location) -> Result<proto::Point, String> {
+    match at {
+        Location::Point(point) => Ok(*point),
+        Location::Target(name) => super::targets::resolve(name),
     }
 }
 
@@ -200,18 +208,16 @@ fn click(
     window: &mut Window,
     cx: &mut gpui_kit::App,
 ) -> Result<(), String> {
-    let Location::Point(at) = at else {
-        return Err("clicking a named target is not available yet".into());
-    };
+    let at = resolve(at)?;
     if !(1..=MAX_CLICK_COUNT).contains(&count) {
         return Err(format!(
             "click count must be 1..={MAX_CLICK_COUNT}, got {count}"
         ));
     }
-    mouse_move(*at, modifiers, window, cx)?;
+    mouse_move(at, modifiers, window, cx)?;
     for click_count in 1..=usize::from(count) {
-        mouse_down(*at, button, modifiers, click_count, window, cx)?;
-        mouse_up(*at, button, modifiers, click_count, window, cx)?;
+        mouse_down(at, button, modifiers, click_count, window, cx)?;
+        mouse_up(at, button, modifiers, click_count, window, cx)?;
     }
     Ok(())
 }

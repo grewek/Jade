@@ -12,6 +12,7 @@ mod text_editor;
 #[global_allocator]
 static GLOBAL_ALLOC: test_alloc::CountingAllocator = test_alloc::CountingAllocator;
 
+use debug_server::targets::DebugName;
 use gpui_kit::component::button::{Button, ButtonVariant};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogFooter;
@@ -751,6 +752,7 @@ impl JadeApp {
                     );
                 }))
             })
+            .debug_name_with(|| format!("folder-{folder_id}").into())
             .into_any_element()
     }
 
@@ -809,6 +811,7 @@ impl JadeApp {
                 );
             }))
         })
+        .debug_name_with(|| format!("note-{id}").into())
         .into_any_element()
     }
 
@@ -839,6 +842,7 @@ impl JadeApp {
             this.sidebar_tab = tab;
             cx.notify();
         }))
+        .debug_name(id)
         .into_any_element()
     }
 
@@ -918,7 +922,8 @@ impl JadeApp {
                             .child(title)
                             .on_click(cx.listener(move |this, _event, window, cx| {
                                 this.open_note(target_id.clone(), window, cx);
-                            })),
+                            }))
+                            .debug_name_with(|| format!("search-result-{id}").into()),
                     );
                 }
             }
@@ -929,6 +934,7 @@ impl JadeApp {
 
 impl Render for JadeApp {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        debug_server::targets::begin_frame();
         let tab_bar = div()
             .flex()
             .flex_row()
@@ -941,42 +947,47 @@ impl Render for JadeApp {
         // just the vault tree, not the whole sidebar — otherwise Backspace while
         // typing in the search input above would delete the selected note instead
         // of erasing a character.
-        let sidebar_content: AnyElement =
-            match self.sidebar_tab {
-                SidebarTab::Vault => {
-                    let tree_rows = self.render_tree_level(None, 0, cx);
-                    div()
-                        .flex()
-                        .flex_col()
-                        .gap_1()
-                        .key_context("NoteList")
-                        .track_focus(&self.sidebar_focus)
-                        .on_action(cx.listener(Self::rename_selected))
-                        .on_action(cx.listener(Self::delete_selected))
-                        .child(
-                            div()
-                                .flex()
-                                .flex_row()
-                                .gap_1()
-                                .child(Button::new("new-note").label("New note").on_click(
-                                    cx.listener(|this, _event, window, cx| {
+        let sidebar_content: AnyElement = match self.sidebar_tab {
+            SidebarTab::Vault => {
+                let tree_rows = self.render_tree_level(None, 0, cx);
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap_1()
+                    .key_context("NoteList")
+                    .track_focus(&self.sidebar_focus)
+                    .on_action(cx.listener(Self::rename_selected))
+                    .on_action(cx.listener(Self::delete_selected))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_row()
+                            .gap_1()
+                            .child(
+                                Button::new("new-note")
+                                    .label("New note")
+                                    .on_click(cx.listener(|this, _event, window, cx| {
                                         this.create_note(None, window, cx);
-                                    }),
-                                ))
-                                .child(Button::new("new-folder").label("New folder").on_click(
-                                    cx.listener(|_this, _event, window, cx| {
+                                    }))
+                                    .debug_name("new-note"),
+                            )
+                            .child(
+                                Button::new("new-folder")
+                                    .label("New folder")
+                                    .on_click(cx.listener(|_this, _event, window, cx| {
                                         let app_entity = cx.entity();
                                         JadeApp::open_create_folder_dialog(
                                             None, app_entity, window, cx,
                                         );
-                                    }),
-                                )),
-                        )
-                        .children(tree_rows)
-                        .into_any_element()
-                }
-                SidebarTab::Search => self.render_search_panel(cx),
-            };
+                                    }))
+                                    .debug_name("new-folder"),
+                            ),
+                    )
+                    .children(tree_rows)
+                    .into_any_element()
+            }
+            SidebarTab::Search => self.render_search_panel(cx),
+        };
 
         let sidebar = div()
             .flex()
@@ -1033,7 +1044,8 @@ impl Render for JadeApp {
                             .child(title)
                             .on_click(cx.listener(move |this, _event, window, cx| {
                                 this.open_note(target_id.clone(), window, cx);
-                            })),
+                            }))
+                            .debug_name_with(|| format!("backlink-{source_id}").into()),
                     );
                 }
             }
@@ -1056,7 +1068,7 @@ impl Render for JadeApp {
                 .flex_col()
                 .size_full()
                 .p_4()
-                .child(editor_pane)
+                .child(editor_pane.debug_name("editor-pane"))
                 .child(backlinks_panel)
                 .into_any_element()
         } else {
@@ -1070,7 +1082,7 @@ impl Render for JadeApp {
             .flex()
             .flex_row()
             .size_full()
-            .child(sidebar)
+            .child(sidebar.debug_name("sidebar"))
             .child(div().flex_1().child(content))
     }
 }
@@ -2226,16 +2238,23 @@ mod tests {
         let selected = app.read_with(cx, |app, _| app.selected_id.clone());
         assert_eq!(selected, Some("Note B".to_string()));
 
-        let named = Command::Click {
-            at: Location::Target("Note A".into()),
+        let named = |name: &str| Command::Click {
+            at: Location::Target(name.into()),
             button: Button::Left,
             count: 1,
             modifiers: Modifiers::default(),
         };
-        assert!(matches!(
-            call_on_main(cx, &mut client, named),
-            Answer::Error { .. }
-        ));
+        assert_eq!(
+            call_on_main(cx, &mut client, named("note-Note A")),
+            Answer::Ok
+        );
+        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        assert_eq!(selected, Some("Note A".to_string()), "a click by name");
+        let Answer::Error { message } = call_on_main(cx, &mut client, named("no-such-thing"))
+        else {
+            panic!("an unknown target must be an error");
+        };
+        assert!(message.contains("list_targets"), "{message}");
         let too_many = Command::Click {
             at: Location::Point(at),
             button: Button::Left,
@@ -2251,7 +2270,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_scroll_over_the_socket_scrolls_the_editor(cx: &mut TestAppContext) {
-        use jade_debug_protocol::{Answer, Command, Modifiers, Point};
+        use jade_debug_protocol::{Answer, Command, Location, Modifiers};
         let dir = temp_vault();
         let long = (0..400).map(|i| format!("line {i}\n")).collect::<String>();
         std::fs::write(dir.path().join("Long.md"), long).unwrap();
@@ -2265,16 +2284,9 @@ mod tests {
         .unwrap();
         let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
         let before = editor.read_with(cx, |e, _| e.scroll_handle().offset());
-        let size = cx
-            .update_window(window, |_, window, _| window.viewport_size())
-            .unwrap();
-        let at = Point {
-            x: f32::from(size.width) * 0.7,
-            y: f32::from(size.height) * 0.5,
-        };
 
         let scroll = Command::Scroll {
-            at,
+            at: Location::Target("editor-pane".into()),
             dx: 0.0,
             dy: -300.0,
             modifiers: Modifiers::default(),
@@ -2285,6 +2297,126 @@ mod tests {
         let after = editor.read_with(cx, |e, _| e.scroll_handle().offset());
         assert!(after.y < before.y, "scrolled down: {before:?} -> {after:?}");
         std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn list_targets_reports_what_was_painted_with_real_bounds(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, Target};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "one").unwrap();
+        std::fs::write(dir.path().join("Note B.md"), "two").unwrap();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        let list = |cx: &mut TestAppContext, client: &mut _| {
+            let Answer::Targets { targets } = call_on_main(cx, client, Command::ListTargets) else {
+                panic!("expected targets");
+            };
+            targets
+        };
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let before = list(cx, &mut client);
+        let find =
+            |targets: &[Target], name: &str| targets.iter().find(|t| t.name == name).cloned();
+        for name in [
+            "sidebar",
+            "new-note",
+            "new-folder",
+            "note-Note A",
+            "note-Note B",
+        ] {
+            let t = find(&before, name).unwrap_or_else(|| panic!("{name} missing: {before:?}"));
+            assert!(t.visible && t.width > 0.0 && t.height > 0.0, "{t:?}");
+        }
+        assert!(find(&before, "editor").is_none(), "no note open yet");
+        let (a, b) = (
+            find(&before, "note-Note A").unwrap(),
+            find(&before, "note-Note B").unwrap(),
+        );
+        assert!(a.y < b.y, "rows are listed top to bottom: {a:?} {b:?}");
+
+        cx.update_window(window, |_, window, cx| {
+            window.click("Note A", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let after = list(cx, &mut client);
+        for name in ["editor", "editor-pane"] {
+            assert!(find(&after, name).is_some(), "{name} missing: {after:?}");
+        }
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_row_below_the_window_says_it_is_out_of_view(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Button, Command, Location, Modifiers};
+        let dir = temp_vault();
+        for i in 0..120 {
+            std::fs::write(dir.path().join(format!("Note {i:03}.md")), "x").unwrap();
+        }
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let Answer::Targets { targets } = call_on_main(cx, &mut client, Command::ListTargets)
+        else {
+            panic!("expected targets");
+        };
+        let last = targets
+            .iter()
+            .find(|t| t.name == "note-Note 119")
+            .expect("listed");
+        assert!(!last.visible, "120 rows cannot fit the window: {last:?}");
+
+        let click = Command::Click {
+            at: Location::Target("note-Note 119".into()),
+            button: Button::Left,
+            count: 1,
+            modifiers: Modifiers::default(),
+        };
+        let Answer::Error { message } = call_on_main(cx, &mut client, click) else {
+            panic!("a clipped target must not be clicked");
+        };
+        assert!(message.contains("out of view"), "{message}");
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn naming_elements_adds_negligible_cost_to_a_frame(cx: &mut TestAppContext) {
+        const FRAMES: u32 = 40;
+        let dir = temp_vault();
+        for i in 0..120 {
+            std::fs::write(dir.path().join(format!("Note {i:03}.md")), "x").unwrap();
+        }
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+        let mut average = |enabled: bool| {
+            // SAFETY: tests run single-threaded (`--test-threads=1`).
+            unsafe {
+                if enabled {
+                    std::env::set_var("JADE_DEBUG_SOCKET", "/nonexistent/jade-bench.sock");
+                } else {
+                    std::env::remove_var("JADE_DEBUG_SOCKET");
+                }
+            }
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let start = std::time::Instant::now();
+                for _ in 0..FRAMES {
+                    window.render_frame(cx);
+                }
+                start.elapsed() / FRAMES
+            })
+            .unwrap()
+        };
+        let (off, on) = (average(false), average(true));
+        let (off2, on2) = (average(false), average(true));
+        unsafe { std::env::remove_var("JADE_DEBUG_SOCKET") };
+        eprintln!(
+            "naming_elements_adds_negligible_cost_to_a_frame (120 rows): \
+             off {off:?} / {off2:?}, on {on:?} / {on2:?} per frame"
+        );
+        // Measured at <1%; the bound is loose so noise cannot flake it.
+        assert!(on < off + off / 4, "off {off:?}, on {on:?}");
     }
 
     #[gpui_kit::test]

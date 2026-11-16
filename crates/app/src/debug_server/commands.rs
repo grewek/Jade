@@ -20,6 +20,9 @@ pub(super) fn execute(command: Command, app: &WeakEntity<JadeApp>, cx: &mut App)
         Command::Query {
             what: Query::EditorState,
         } => editor_state(app, cx),
+        Command::ListTargets => Answer::Targets {
+            targets: super::targets::list(),
+        },
         command if input::is_input(&command) => inject(&command, cx),
         other => error(format!("not implemented yet: {other:?}")),
     }

@@ -9,6 +9,7 @@ mod commands;
 pub(crate) mod frames;
 mod input;
 mod pump;
+pub(crate) mod targets;
 #[cfg(test)]
 pub(crate) mod test_client;
 

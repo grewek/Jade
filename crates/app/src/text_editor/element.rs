@@ -16,6 +16,7 @@ use super::live_preview::{
 };
 use super::paint_trace::{FrameInfo, PaintTrace};
 use super::table_preview::{self, Table, table_index_at};
+use crate::debug_server::targets::DebugName;
 
 /// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
 /// the resolved `callouts` — same shape as `table_line_kind`.
@@ -1506,6 +1507,7 @@ pub(super) fn render_editor(
             )
             .size_full(),
         )
+        .debug_name("editor")
 }
 
 /// Registers this frame's mouse listeners: press to focus and place the
