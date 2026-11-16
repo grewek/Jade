@@ -8,7 +8,8 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::Scrollbar;
-use gpui_kit::component::{Theme, WindowExt};
+use gpui_kit::component::{IconName, Theme, WindowExt};
+use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use jade_core::{Vault, search_targets};
 
@@ -79,6 +80,8 @@ pub(crate) struct JadeApp {
     sidebar_focus: FocusHandle,
     collapsed_folders: std::collections::HashSet<String>,
     pub(crate) sidebar_tab: SidebarTab,
+    /// Hides the whole sidebar (tabs, vault tree, search); the toggle rail stays.
+    pub(crate) sidebar_collapsed: bool,
     search_input: Entity<InputState>,
     pub(crate) search_query: String,
     /// Search reads note files, so results are computed once per change
@@ -132,6 +135,7 @@ impl JadeApp {
             sidebar_focus,
             collapsed_folders: Default::default(),
             sidebar_tab: SidebarTab::default(),
+            sidebar_collapsed: false,
             search_input,
             search_query: String::new(),
             search_results: Vec::new(),
@@ -1077,13 +1081,15 @@ impl Render for JadeApp {
             if let Some(editor) = &self.editor {
                 let handle = editor.read(cx).scroll_handle();
                 editor_pane = editor_pane.track_scroll(handle);
-                editor_area = editor_area.child(editor_pane.debug_name("editor-pane")).child(
-                    div().absolute().inset_0().child(
-                        Scrollbar::vertical(handle)
-                            .id("editor-scrollbar")
-                            .viewport_from_layout(),
-                    ),
-                );
+                editor_area = editor_area
+                    .child(editor_pane.debug_name("editor-pane"))
+                    .child(
+                        div().absolute().inset_0().child(
+                            Scrollbar::vertical(handle)
+                                .id("editor-scrollbar")
+                                .viewport_from_layout(),
+                        ),
+                    );
             } else {
                 editor_area = editor_area.child(editor_pane.debug_name("editor-pane"));
             }
@@ -1103,11 +1109,28 @@ impl Render for JadeApp {
                 .into_any_element()
         };
 
+        let toggle_icon = if self.sidebar_collapsed {
+            IconName::PanelLeftOpen
+        } else {
+            IconName::PanelLeftClose
+        };
+        let toggle = Button::new("toggle-sidebar")
+            .icon(toggle_icon)
+            .on_click(cx.listener(|this, _event, _window, cx| {
+                this.sidebar_collapsed = !this.sidebar_collapsed;
+                cx.notify();
+            }))
+            .debug_name("toggle-sidebar");
+        let rail = div().flex().flex_col().flex_none().p_1().child(toggle);
+
         div()
             .flex()
             .flex_row()
             .size_full()
-            .child(sidebar.debug_name("sidebar"))
+            .child(rail)
+            .when(!self.sidebar_collapsed, |this| {
+                this.child(sidebar.debug_name("sidebar"))
+            })
             .child(div().flex_1().child(content))
     }
 }
@@ -3783,6 +3806,27 @@ mod tests {
         assert_eq!(selected, None);
         let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
         assert!(!has_editor);
+    }
+
+    #[gpui_kit::test]
+    fn toggle_button_collapses_and_restores_the_sidebar(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "content").unwrap();
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
+
+        let mut sidebar_shown = |cx: &mut TestAppContext, click: bool| {
+            cx.update_window(window, |_, window, cx| {
+                if click {
+                    window.click("toggle-sidebar", cx);
+                }
+                window.render_frame(cx);
+                window.try_find("Note A").is_some()
+            })
+            .unwrap()
+        };
+        assert!(sidebar_shown(cx, false), "sidebar starts expanded");
+        assert!(!sidebar_shown(cx, true), "toggle hides the sidebar");
+        assert!(sidebar_shown(cx, true), "toggle again restores it");
     }
 
     #[gpui_kit::test]
