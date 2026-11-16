@@ -1428,6 +1428,9 @@ pub(super) fn render_editor(
         .test_support()
         .w_full()
         .h(total_height)
+        // At least as tall as the scroll pane, so a click anywhere below the
+        // text still lands in the editor (and puts the cursor at the end).
+        .min_h_full()
         .track_focus(&focus_handle)
         // Must out-rank `gpui_kit::init`'s global `Root` component, which
         // binds plain "tab" to its own focus-next action in a "Root"
@@ -2283,7 +2286,10 @@ mod tests {
 
     #[gpui_kit::test]
     fn height_scales_with_line_count(cx: &mut TestAppContext) {
-        let (one_line_window, _editor) = open_editor(cx, "just one line");
+        // Both taller than the window: the editor is never shorter than its
+        // container, so short texts would all measure as the container.
+        let (one_line_window, _editor) =
+            open_editor(cx, Box::leak(vec!["line"; 200].join("\n").into_boxed_str()));
         let one_line_height = cx
             .update_window(one_line_window, |_, window, cx| {
                 window.render_frame(cx);
@@ -2291,7 +2297,8 @@ mod tests {
             })
             .unwrap();
 
-        let (three_line_window, _editor) = open_editor(cx, "line1\nline2\nline3");
+        let (three_line_window, _editor) =
+            open_editor(cx, Box::leak(vec!["line"; 600].join("\n").into_boxed_str()));
         let three_line_height = cx
             .update_window(three_line_window, |_, window, cx| {
                 window.render_frame(cx);
@@ -2302,7 +2309,7 @@ mod tests {
         assert_eq!(
             three_line_height,
             one_line_height * 3.,
-            "three lines should be exactly 3x as tall as one"
+            "three times the lines should be exactly 3x as tall"
         );
     }
 

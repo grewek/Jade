@@ -1303,7 +1303,9 @@ mod tests {
         // `Editor` always falls back to "assume no wrap" (`Pixels::MAX`),
         // so this needs the full app to verify wrapping-aware sizing at all.
         let dir = temp_vault();
-        let long: &'static str = Box::leak("word ".repeat(500).into_boxed_str());
+        // Long enough to wrap to more rows than fit in the pane: the editor is
+        // never shorter than the pane, so a shorter text would not show.
+        let long: &'static str = Box::leak("word ".repeat(5000).into_boxed_str());
         std::fs::write(dir.path().join("Long Line.md"), long).unwrap();
         std::fs::write(dir.path().join("Short.md"), "short").unwrap();
 
@@ -2574,6 +2576,78 @@ mod tests {
                 answer: Answer::Ok
             })
         );
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_click_anywhere_in_the_pane_focuses_the_editor_and_edits_at_the_end(
+        cx: &mut TestAppContext,
+    ) {
+        use jade_debug_protocol::{Answer, Button, Command, Location, Modifiers, Point, Target};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Empty.md"), "").unwrap();
+        std::fs::write(dir.path().join("Short.md"), "one\ntwo\n").unwrap();
+        std::fs::write(dir.path().join("Other.md"), "other").unwrap();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let target = |cx: &mut TestAppContext, client: &mut _, name: &str| -> Target {
+            let Answer::Targets { targets } = step(cx, window, client, Command::ListTargets) else {
+                panic!("expected targets");
+            };
+            targets
+                .into_iter()
+                .find(|t| t.name == name)
+                .unwrap_or_else(|| panic!("no {name}"))
+        };
+
+        for (note, text_len) in [("Empty", 0), ("Short", 8)] {
+            // Re-open from another note so the sidebar, not the editor, has focus.
+            step(cx, window, &mut client, click_named("note-Other"));
+            step(
+                cx,
+                window,
+                &mut client,
+                click_named(&format!("note-{note}")),
+            );
+            let pane = target(cx, &mut client, "editor-pane");
+            let editor = target(cx, &mut client, "editor");
+            assert!(
+                editor.height >= pane.height - 1.0,
+                "{note}: the editor ({}) must fill the pane ({})",
+                editor.height,
+                pane.height
+            );
+
+            // The bottom-left corner of the pane: nowhere near any text.
+            let at = Point {
+                x: pane.x + 40.0,
+                y: pane.y + pane.height - 10.0,
+            };
+            let click = Command::Click {
+                at: Location::Point(at),
+                button: Button::Left,
+                count: 1,
+                modifiers: Modifiers::default(),
+            };
+            assert_eq!(step(cx, window, &mut client, click), Answer::Ok);
+            let typed = Command::Type { text: "Z".into() };
+            assert_eq!(
+                step(cx, window, &mut client, typed),
+                Answer::Ok,
+                "{note}: typing works"
+            );
+            let read = Command::ReadEditorText { start: 0, len: 100 };
+            let Answer::Text { text, .. } = step(cx, window, &mut client, read) else {
+                panic!("expected text");
+            };
+            assert_eq!(text.len(), text_len + 1, "{note}: {text:?}");
+            assert!(
+                text.ends_with('Z'),
+                "{note}: typed at the end of the document: {text:?}"
+            );
+        }
         std::fs::remove_file(&sock).unwrap();
     }
 
