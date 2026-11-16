@@ -49,6 +49,30 @@ fn bench_cache_build(c: &mut Criterion) {
     group.finish();
 }
 
+/// Each classification pass alone, as a cold build runs them in sequence.
+fn bench_passes(c: &mut Criterion) {
+    let stress = stress_text();
+    let typical = typical_prefix(&stress);
+    let mut group = c.benchmark_group("recompute_pass");
+    group.sample_size(10);
+    for (label, text) in [("typical", typical), ("stress", stress.as_str())] {
+        let mut cache = Cache::new(text);
+        group.bench_function(format!("line_roles/{label}"), |b| {
+            b.iter(|| cache.recompute_line_roles(black_box(text)))
+        });
+        group.bench_function(format!("callouts/{label}"), |b| {
+            b.iter(|| cache.recompute_callouts(black_box(text)))
+        });
+        group.bench_function(format!("block_contexts/{label}"), |b| {
+            b.iter(|| cache.recompute_block_contexts(black_box(text)))
+        });
+        group.bench_function(format!("tables/{label}"), |b| {
+            b.iter(|| cache.recompute_tables(black_box(text)))
+        });
+    }
+    group.finish();
+}
+
 /// Times `Cache::record_edit` only: each iteration applies `insert` at `at`
 /// or removes it again, so the document returns to its start state.
 fn bench_edit(c: &mut Criterion, name: &str, source: &str, at: Option<usize>, insert: &str) {
@@ -138,6 +162,7 @@ fn bench_buffer(c: &mut Criterion) {
 criterion_group!(
     benches,
     bench_cache_build,
+    bench_passes,
     bench_record_edit,
     bench_fenwick,
     bench_buffer

@@ -23,6 +23,24 @@ impl Cache {
         self.0.line_start_byte(line)
     }
 
+    /// One of the four classification passes over `text`, as run by a cold
+    /// build; the other three are left as they were.
+    pub fn recompute_line_roles(&mut self, text: &str) {
+        self.0.recompute_block_preview(text);
+    }
+
+    pub fn recompute_callouts(&mut self, text: &str) {
+        self.0.recompute_callouts(text);
+    }
+
+    pub fn recompute_block_contexts(&mut self, text: &str) {
+        self.0.recompute_block_context(text);
+    }
+
+    pub fn recompute_tables(&mut self, text: &str) {
+        self.0.recompute_tables(text);
+    }
+
     /// Reports an edit already applied to `text`; `true` when the cache was
     /// patched incrementally, `false` when it fell back to a full recompute.
     pub fn record_edit(

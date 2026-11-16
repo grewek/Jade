@@ -286,7 +286,7 @@ impl DocumentCache {
     // of transient garbage on the stress fixture, which the allocator then
     // kept as retained-but-free memory.
 
-    fn recompute_block_preview(&mut self, text: &str) {
+    pub(super) fn recompute_block_preview(&mut self, text: &str) {
         let n = count_lines(text);
         let mut roles = Vec::with_capacity(n + LINE_GROWTH_SLACK);
         let mut states = Vec::with_capacity(n + LINE_GROWTH_SLACK);
@@ -302,7 +302,7 @@ impl DocumentCache {
         self.line_index = build_line_index(text);
     }
 
-    fn recompute_callouts(&mut self, text: &str) {
+    pub(super) fn recompute_callouts(&mut self, text: &str) {
         let n = count_lines(text);
         let mut callouts = Vec::new();
         let mut states = Vec::with_capacity(n + LINE_GROWTH_SLACK);
@@ -315,7 +315,7 @@ impl DocumentCache {
         self.callouts = callouts;
     }
 
-    fn recompute_block_context(&mut self, text: &str) {
+    pub(super) fn recompute_block_context(&mut self, text: &str) {
         let n = count_lines(text);
         let mut contexts = Vec::with_capacity(n + LINE_GROWTH_SLACK);
         let mut states = Vec::with_capacity(n + LINE_GROWTH_SLACK);
@@ -330,7 +330,7 @@ impl DocumentCache {
         self.open_block_states = states;
     }
 
-    fn recompute_tables(&mut self, text: &str) {
+    pub(super) fn recompute_tables(&mut self, text: &str) {
         self.tables = table_preview::classify_table_list(text);
     }
 

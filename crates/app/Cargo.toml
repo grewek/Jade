@@ -8,6 +8,9 @@ edition = "2024"
 # Off by default so the shipped binary has no input-injecting socket; tests
 # always include it.
 debug-socket = ["dep:jade-debug-protocol"]
+# Headless GPUI harness (`headless.rs`) and allocation counting for the
+# layout and allocation benches; they need gpui-kit's test platform.
+bench-support = ["gpui-kit/test-support"]
 
 [dependencies]
 gpui-kit = "0.7"
@@ -23,6 +26,16 @@ tempfile = "3.27.0"
 [[bench]]
 name = "editor"
 harness = false
+
+[[bench]]
+name = "layout"
+harness = false
+required-features = ["bench-support"]
+
+[[bench]]
+name = "allocations"
+harness = false
+required-features = ["bench-support"]
 
 [lints]
 workspace = true

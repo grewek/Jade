@@ -25,7 +25,7 @@ static TOTAL_BYTES: AtomicUsize = AtomicUsize::new(0);
 /// Delegates every call straight to [`System`], just adding atomic
 /// bookkeeping around each one — no behavioral difference from the plain
 /// system allocator a test build would otherwise use.
-pub(crate) struct CountingAllocator;
+pub struct CountingAllocator;
 
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -112,13 +112,13 @@ fn record_shrink(removed: usize) {
 /// is the one field worth reading absolutely, not diffed, since it answers
 /// "how much is still actually live right now").
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct AllocSnapshot {
-    pub(crate) current: usize,
-    pub(crate) peak: usize,
-    pub(crate) count: usize,
+pub struct AllocSnapshot {
+    pub current: usize,
+    pub peak: usize,
+    pub count: usize,
     /// Cumulative bytes requested since the last `reset`, frees not
     /// subtracted: shows per-call churn that `current`/`peak` hide.
-    pub(crate) total: usize,
+    pub total: usize,
 }
 
 /// Rebases [`PEAK_BYTES`] to whatever's *actually* currently live, and
@@ -137,13 +137,13 @@ pub(crate) struct AllocSnapshot {
 /// isolation) crashed after this module was added. Every caller already
 /// reads `current` as a plain delta (`after.current - before.current`) for
 /// exactly this reason, not as an absolute value assumed to start at `0`.
-pub(crate) fn reset() {
+pub fn reset() {
     PEAK_BYTES.store(CURRENT_BYTES.load(Ordering::Relaxed), Ordering::Relaxed);
     ALLOC_COUNT.store(0, Ordering::Relaxed);
     TOTAL_BYTES.store(0, Ordering::Relaxed);
 }
 
-pub(crate) fn snapshot() -> AllocSnapshot {
+pub fn snapshot() -> AllocSnapshot {
     AllocSnapshot {
         current: CURRENT_BYTES.load(Ordering::Relaxed),
         peak: PEAK_BYTES.load(Ordering::Relaxed),

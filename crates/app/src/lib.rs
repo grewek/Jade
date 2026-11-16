@@ -9,9 +9,12 @@ mod debug_server;
 #[cfg(not(any(test, feature = "debug-socket")))]
 #[path = "debug_server_stub.rs"]
 mod debug_server;
+#[cfg(feature = "bench-support")]
+#[doc(hidden)]
+pub mod headless;
 #[cfg(any(test, feature = "debug-socket"))]
 mod memory_probe;
-#[cfg(test)]
+#[cfg(any(test, feature = "bench-support"))]
 mod test_alloc;
 mod text_editor;
 

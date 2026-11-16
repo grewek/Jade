@@ -99,7 +99,7 @@ fn parent_of(id: &str) -> Option<&str> {
 }
 
 impl JadeApp {
-    fn new(vault_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub(crate) fn new(vault_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar_focus = cx.focus_handle();
 
         let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search notes..."));
