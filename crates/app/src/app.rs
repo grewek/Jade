@@ -7,6 +7,7 @@ use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
+use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::{Theme, WindowExt};
 use gpui_kit::*;
 use jade_core::{Vault, search_targets};
@@ -1062,15 +1063,29 @@ impl Render for JadeApp {
 
             let mut editor_pane = div()
                 .id("note-editor-pane")
-                .flex_1()
+                .size_full()
                 .overflow_y_scroll()
                 .children(self.editor.clone());
             // Tracked so `text_editor::element`'s `autoscroll_to_cursor` can
             // scroll this container itself (see `Editor::scroll_handle`'s
             // doc comment) — without this, moving the cursor below the
             // visible area via the keyboard has nothing to adjust.
+            // The scrollbar overlays a wrapper rather than the scroll container,
+            // or it would scroll away with the content. `Scrollbar`'s default
+            // mode shows it while scrolling and fades it out after idle.
+            let mut editor_area = div().relative().flex_1().min_h_0();
             if let Some(editor) = &self.editor {
-                editor_pane = editor_pane.track_scroll(editor.read(cx).scroll_handle());
+                let handle = editor.read(cx).scroll_handle();
+                editor_pane = editor_pane.track_scroll(handle);
+                editor_area = editor_area.child(editor_pane.debug_name("editor-pane")).child(
+                    div().absolute().inset_0().child(
+                        Scrollbar::vertical(handle)
+                            .id("editor-scrollbar")
+                            .viewport_from_layout(),
+                    ),
+                );
+            } else {
+                editor_area = editor_area.child(editor_pane.debug_name("editor-pane"));
             }
 
             div()
@@ -1078,7 +1093,7 @@ impl Render for JadeApp {
                 .flex_col()
                 .size_full()
                 .p_4()
-                .child(editor_pane.debug_name("editor-pane"))
+                .child(editor_area)
                 .child(backlinks_panel)
                 .into_any_element()
         } else {
