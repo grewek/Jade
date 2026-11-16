@@ -51,10 +51,10 @@ fn bench_cache_build(c: &mut Criterion) {
 
 /// Times `Cache::record_edit` only: each iteration applies `insert` at `at`
 /// or removes it again, so the document returns to its start state.
-fn bench_edit(c: &mut Criterion, name: &str, source: &str, insert: &str) {
+fn bench_edit(c: &mut Criterion, name: &str, source: &str, at: Option<usize>, insert: &str) {
     let mut text = source.to_owned();
     let mut cache = Cache::new(&text);
-    let at = middle_line_start(&text);
+    let at = at.unwrap_or_else(|| middle_line_start(&text));
     let mut inserted = false;
     c.bench_function(name, |b| {
         b.iter_custom(|iters| {
@@ -80,10 +80,20 @@ fn bench_edit(c: &mut Criterion, name: &str, source: &str, insert: &str) {
 fn bench_record_edit(c: &mut Criterion) {
     let stress = stress_text();
     let typical = typical_prefix(&stress);
-    bench_edit(c, "record_edit/char/typical", typical, "x");
-    bench_edit(c, "record_edit/newline/typical", typical, "\n");
-    bench_edit(c, "record_edit/char/stress", &stress, "x");
-    bench_edit(c, "record_edit/newline/stress", &stress, "\n");
+    bench_edit(c, "record_edit/char/typical", typical, None, "x");
+    bench_edit(c, "record_edit/newline/typical", typical, None, "\n");
+    bench_edit(c, "record_edit/char/stress", &stress, None, "x");
+    bench_edit(c, "record_edit/newline/stress", &stress, None, "\n");
+    // Worst known case: a character typed on a callout header's line removes
+    // the callout, which shifts every later callout count (see ARCHITECTURE.md).
+    let header = stress.find("\n> [!").map(|i| i + 1);
+    bench_edit(
+        c,
+        "record_edit/char_on_callout_header/stress",
+        &stress,
+        header,
+        "x",
+    );
 }
 
 fn bench_fenwick(c: &mut Criterion) {
