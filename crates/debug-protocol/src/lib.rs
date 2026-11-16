@@ -72,11 +72,12 @@ pub enum Query {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
-    /// Types printable text through the window's input handler.
+    /// Types text, one keystroke per character (`\n` and `\t` are Enter and Tab).
     Type {
         text: String,
     },
-    /// Presses a named key (`"enter"`, `"a"`, `"tab"`) as a bare key-down.
+    /// Presses a named key (`"enter"`, `"tab"`, `"a"` with modifiers) as a bare
+    /// key-down and key-up, like the real platform: no text is produced.
     Key {
         key: String,
         #[serde(default)]
@@ -84,16 +85,22 @@ pub enum Command {
     },
     MouseMove {
         at: Point,
+        #[serde(default)]
+        modifiers: Modifiers,
     },
     MouseDown {
         at: Point,
         #[serde(default)]
         button: Button,
+        #[serde(default)]
+        modifiers: Modifiers,
     },
     MouseUp {
         at: Point,
         #[serde(default)]
         button: Button,
+        #[serde(default)]
+        modifiers: Modifiers,
     },
     /// Move, down and up in one command.
     Click {
@@ -103,11 +110,15 @@ pub enum Command {
         /// 1 = single, 2 = double click.
         #[serde(default = "one")]
         count: u8,
+        #[serde(default)]
+        modifiers: Modifiers,
     },
     Scroll {
         at: Point,
         dx: f32,
         dy: f32,
+        #[serde(default)]
+        modifiers: Modifiers,
     },
     ListTargets,
     Query {
@@ -274,29 +285,40 @@ mod tests {
                     ..Default::default()
                 },
             },
-            Command::MouseMove { at },
+            Command::MouseMove {
+                at,
+                modifiers: Modifiers::default(),
+            },
             Command::MouseDown {
                 at,
                 button: Button::Right,
+                modifiers: Modifiers {
+                    shift: true,
+                    ..Default::default()
+                },
             },
             Command::MouseUp {
                 at,
                 button: Button::Middle,
+                modifiers: Modifiers::default(),
             },
             Command::Click {
                 at: Location::Target("sidebar.new-note".into()),
                 button: Button::Left,
                 count: 2,
+                modifiers: Modifiers::default(),
             },
             Command::Click {
                 at: Location::Point(at),
                 button: Button::Left,
                 count: 1,
+                modifiers: Modifiers::default(),
             },
             Command::Scroll {
                 at,
                 dx: 0.0,
                 dy: -40.0,
+                modifiers: Modifiers::default(),
             },
             Command::ListTargets,
             Command::Query {
@@ -406,6 +428,7 @@ mod tests {
                 at: Location::Point(Point { x: 10.0, y: 20.0 }),
                 button: Button::Left,
                 count: 1,
+                modifiers: Modifiers::default(),
             }
         );
         let key: Request = decode_line(r#"{"req":1,"cmd":"key","key":"a"}"#).unwrap();

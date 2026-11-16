@@ -2093,6 +2093,199 @@ mod tests {
         assert!(width > 0.0 && height > 0.0, "{width}x{height}");
     }
 
+    /// Starts the debug server with its pump over `vault_path` and connects.
+    fn open_app_with_debug_client(
+        cx: &mut TestAppContext,
+        vault_path: PathBuf,
+    ) -> (
+        crate::debug_server::test_client::TestClient,
+        std::path::PathBuf,
+        AnyWindowHandle,
+        Entity<JadeApp>,
+    ) {
+        let sock = crate::debug_server::test_client::start_test_server();
+        // Server threads wake the main-thread pump; the test scheduler
+        // otherwise rejects activity from threads it did not start.
+        cx.executor().allow_parking();
+        let (window, app) = open_app(cx, vault_path);
+        cx.update(crate::debug_server::install);
+        let client = crate::debug_server::test_client::TestClient::connect(&sock);
+        (client, sock, window, app)
+    }
+
+    /// Sends `command` and pumps the main thread until it is answered.
+    fn call_on_main(
+        cx: &mut TestAppContext,
+        client: &mut crate::debug_server::test_client::TestClient,
+        command: jade_debug_protocol::Command,
+    ) -> jade_debug_protocol::Answer {
+        use jade_debug_protocol::Message;
+        let req = client.send(command);
+        for _ in 0..300 {
+            cx.run_until_parked();
+            if let Some(Message::Response { req: got, answer }) =
+                client.try_recv(std::time::Duration::from_millis(10))
+                && got == req
+            {
+                return answer;
+            }
+        }
+        panic!("the main thread never answered request {req}");
+    }
+
+    #[gpui_kit::test]
+    fn typed_text_and_keys_over_the_socket_edit_the_real_editor(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, Modifiers};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "").unwrap();
+        let (mut client, sock, window, app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note A", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        cx.update_window(window, |_, window, cx| {
+            editor.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let text =
+            |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().text().to_owned());
+
+        let typed = Command::Type {
+            text: "Hi There".into(),
+        };
+        assert_eq!(call_on_main(cx, &mut client, typed), Answer::Ok);
+        assert_eq!(text(cx), "Hi There");
+
+        let enter = Command::Key {
+            key: "enter".into(),
+            modifiers: Modifiers::default(),
+        };
+        assert_eq!(call_on_main(cx, &mut client, enter), Answer::Ok);
+        assert_eq!(
+            text(cx),
+            "Hi There\n",
+            "Enter must insert exactly one newline"
+        );
+
+        let multiline = Command::Type {
+            text: "a\tb\nc".into(),
+        };
+        assert_eq!(call_on_main(cx, &mut client, multiline), Answer::Ok);
+        assert_eq!(text(cx), "Hi There\na\tb\nc");
+
+        let backspace = Command::Key {
+            key: "backspace".into(),
+            modifiers: Modifiers::default(),
+        };
+        assert_eq!(call_on_main(cx, &mut client, backspace), Answer::Ok);
+        assert_eq!(text(cx), "Hi There\na\tb\n");
+
+        let bad = Command::Key {
+            key: String::new(),
+            modifiers: Modifiers::default(),
+        };
+        assert!(matches!(
+            call_on_main(cx, &mut client, bad),
+            Answer::Error { .. }
+        ));
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_click_over_the_socket_hits_the_element_under_the_point(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Button, Command, Location, Modifiers, Point};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "Links to [[Note B]].").unwrap();
+        std::fs::write(dir.path().join("Note B.md"), "No outgoing links.").unwrap();
+        let (mut client, sock, window, app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        let center = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.find("Note B").bounds().center()
+            })
+            .unwrap();
+        let at = Point {
+            x: center.x.into(),
+            y: center.y.into(),
+        };
+
+        let click = Command::Click {
+            at: Location::Point(at),
+            button: Button::Left,
+            count: 1,
+            modifiers: Modifiers::default(),
+        };
+        assert_eq!(call_on_main(cx, &mut client, click), Answer::Ok);
+        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        assert_eq!(selected, Some("Note B".to_string()));
+
+        let named = Command::Click {
+            at: Location::Target("Note A".into()),
+            button: Button::Left,
+            count: 1,
+            modifiers: Modifiers::default(),
+        };
+        assert!(matches!(
+            call_on_main(cx, &mut client, named),
+            Answer::Error { .. }
+        ));
+        let too_many = Command::Click {
+            at: Location::Point(at),
+            button: Button::Left,
+            count: 9,
+            modifiers: Modifiers::default(),
+        };
+        assert!(matches!(
+            call_on_main(cx, &mut client, too_many),
+            Answer::Error { .. }
+        ));
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_scroll_over_the_socket_scrolls_the_editor(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, Modifiers, Point};
+        let dir = temp_vault();
+        let long = (0..400).map(|i| format!("line {i}\n")).collect::<String>();
+        std::fs::write(dir.path().join("Long.md"), long).unwrap();
+        let (mut client, sock, window, app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Long", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        let before = editor.read_with(cx, |e, _| e.scroll_handle().offset());
+        let size = cx
+            .update_window(window, |_, window, _| window.viewport_size())
+            .unwrap();
+        let at = Point {
+            x: f32::from(size.width) * 0.7,
+            y: f32::from(size.height) * 0.5,
+        };
+
+        let scroll = Command::Scroll {
+            at,
+            dx: 0.0,
+            dy: -300.0,
+            modifiers: Modifiers::default(),
+        };
+        assert_eq!(call_on_main(cx, &mut client, scroll), Answer::Ok);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let after = editor.read_with(cx, |e, _| e.scroll_handle().offset());
+        assert!(after.y < before.y, "scrolled down: {before:?} -> {after:?}");
+        std::fs::remove_file(&sock).unwrap();
+    }
+
     #[gpui_kit::test]
     fn first_paint_of_a_huge_note_needs_no_row_height_corrections(cx: &mut TestAppContext) {
         // A cold rebuild seeds wrapped lines with over-estimates. Callout

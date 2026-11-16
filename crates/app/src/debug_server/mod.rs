@@ -6,6 +6,7 @@
 
 mod client;
 mod commands;
+mod input;
 mod pump;
 #[cfg(test)]
 pub(crate) mod test_client;
