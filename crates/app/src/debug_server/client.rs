@@ -258,6 +258,12 @@ fn dispatch(client: &Arc<Client>, request: Request) {
             };
             client.reply(req, answer);
         }
+        Command::Query {
+            what: Query::FrameTimes,
+        } => {
+            let frames = super::frames::recent();
+            client.reply(req, Answer::FrameTimes { frames });
+        }
         command => pump::submit(pump::Job {
             client: Arc::clone(client),
             req,

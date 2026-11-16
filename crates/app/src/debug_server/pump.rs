@@ -8,11 +8,12 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
-use gpui_kit::App;
+use gpui_kit::{App, Entity, WeakEntity};
 use jade_debug_protocol::{Answer, Command, ReqId};
 
 use super::client::Client;
 use super::commands;
+use crate::JadeApp;
 
 /// Commands waiting for the main thread; beyond this a client is told `busy`.
 const MAX_QUEUED: usize = 256;
@@ -77,15 +78,16 @@ impl Future for NextJob {
 
 /// Starts the main-thread task that runs submitted commands. No-op unless the
 /// debug server was requested.
-pub(crate) fn install(cx: &mut App) {
+pub(crate) fn install(app: &Entity<JadeApp>, cx: &mut App) {
     if !super::requested() {
         return;
     }
+    let app: WeakEntity<JadeApp> = app.downgrade();
     cx.spawn(async move |cx| {
         loop {
             let job = NextJob.await;
             cx.update(|cx| {
-                let answer = commands::execute(job.command, cx);
+                let answer = commands::execute(job.command, &app, cx);
                 job.client.reply(job.req, answer);
             });
         }

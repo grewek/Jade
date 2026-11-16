@@ -8,7 +8,6 @@
 
 use std::fmt::Write as _;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::callout::CalloutType;
 
@@ -22,18 +21,10 @@ const PREVIEW_CHARS: usize = 30;
 const MAX_LINES: usize = 150;
 const MAX_BANDS: usize = 60;
 
-static FRAME: AtomicU64 = AtomicU64::new(0);
 static LAST_SIGNATURE: Mutex<String> = Mutex::new(String::new());
 
-/// Whether the debug socket was requested; evaluated once.
 pub(super) fn enabled() -> bool {
-    // Tests flip the variable between cases.
-    #[cfg(test)]
-    return crate::debug_server::requested();
-    #[cfg(not(test))]
-    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    #[cfg(not(test))]
-    *ENABLED.get_or_init(crate::debug_server::requested)
+    crate::debug_server::enabled()
 }
 
 /// What the canvas knew about the frame before painting any line.
@@ -230,7 +221,7 @@ impl PaintTrace {
 
 impl Drop for PaintTrace {
     fn drop(&mut self) {
-        let frame = FRAME.fetch_add(1, Ordering::Relaxed) + 1;
+        let frame = crate::debug_server::frames::current();
         let problems = self.problems();
         let signature = self.signature(&problems);
         let Ok(mut last) = LAST_SIGNATURE.lock() else {

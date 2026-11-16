@@ -158,6 +158,42 @@ pub struct Target {
     pub height: f32,
 }
 
+/// Frames the app remembers for `Query::FrameTimes`.
+pub const FRAME_HISTORY: usize = 240;
+/// 60 fps, the per-frame ceiling (`CLAUDE.md` Performance).
+pub const FRAME_BUDGET_US: u32 = 16_660;
+
+/// One editor frame: building it (`render_us`, layout and measuring) plus
+/// painting it (`paint_us`). `interval_us` is the time since the previous
+/// frame started, so a long gap means the window was idle, not slow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct FrameSample {
+    pub frame: u64,
+    pub render_us: u32,
+    pub paint_us: u32,
+    pub interval_us: u32,
+}
+
+impl FrameSample {
+    pub fn total_us(&self) -> u32 {
+        self.render_us.saturating_add(self.paint_us)
+    }
+}
+
+/// What the open note's editor currently holds.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct EditorState {
+    /// Id of the selected note; `None` when no note is open.
+    pub note: Option<String>,
+    pub cursor: usize,
+    /// Selected byte range, if any.
+    pub selection: Option<(usize, usize)>,
+    pub len: usize,
+    pub lines: usize,
+    pub scroll_y: f32,
+    pub focused: bool,
+}
+
 /// Process memory; the heap figures come from glibc and are absent elsewhere.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct MemoryInfo {
@@ -181,14 +217,11 @@ pub enum Answer {
         targets: Vec<Target>,
     },
     Memory(MemoryInfo),
+    /// Oldest first; the app keeps the last `FRAME_HISTORY` frames.
     FrameTimes {
-        recent_paint_us: Vec<u32>,
+        frames: Vec<FrameSample>,
     },
-    EditorState {
-        note: Option<String>,
-        cursor: usize,
-        len: usize,
-    },
+    EditorState(EditorState),
     WindowSize {
         width: f32,
         height: f32,
@@ -208,10 +241,7 @@ pub enum Event {
         trace: String,
     },
     Memory(MemoryInfo),
-    Frames {
-        frame: u64,
-        paint_us: u32,
-    },
+    Frames(FrameSample),
     Input {
         description: String,
     },
@@ -222,7 +252,7 @@ impl Event {
         match self {
             Event::Paint { .. } => Topic::Paint,
             Event::Memory(_) => Topic::Memory,
-            Event::Frames { .. } => Topic::Frames,
+            Event::Frames(_) => Topic::Frames,
             Event::Input { .. } => Topic::Input,
         }
     }
@@ -346,10 +376,12 @@ mod tests {
     #[test]
     fn every_event_round_trips() {
         let events = vec![
-            Event::Frames {
+            Event::Frames(FrameSample {
                 frame: 7,
+                render_us: 100,
                 paint_us: 900,
-            },
+                interval_us: 16_000,
+            }),
             Event::Paint {
                 frame: 1,
                 consistent: false,
@@ -397,13 +429,26 @@ mod tests {
                 ..Default::default()
             }),
             Answer::FrameTimes {
-                recent_paint_us: vec![100, 200],
+                frames: vec![
+                    FrameSample::default(),
+                    FrameSample {
+                        frame: 2,
+                        render_us: 1,
+                        paint_us: 2,
+                        interval_us: 3,
+                    },
+                ],
             },
-            Answer::EditorState {
-                note: None,
+            Answer::EditorState(EditorState {
+                note: Some("A".into()),
                 cursor: 3,
+                selection: Some((1, 3)),
                 len: 9,
-            },
+                lines: 2,
+                scroll_y: -12.5,
+                focused: true,
+            }),
+            Answer::EditorState(EditorState::default()),
             Answer::WindowSize {
                 width: 800.0,
                 height: 600.0,

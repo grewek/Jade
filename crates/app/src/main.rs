@@ -1100,11 +1100,12 @@ fn main() {
                 KeyBinding::new("ctrl-p", OpenCommandPalette, None),
             ]);
             bind_open_command_palette(cx);
-            gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
-                cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
-            })
-            .expect("failed to open window");
-            debug_server::install(cx);
+            let (_, app) =
+                gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
+                    cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
+                })
+                .expect("failed to open window");
+            debug_server::install(&app, cx);
         });
 }
 
@@ -2067,8 +2068,8 @@ mod tests {
         // otherwise rejects activity from threads it did not start.
         cx.executor().allow_parking();
         let dir = temp_vault();
-        let (_window, _app) = open_app(cx, dir.path().to_path_buf());
-        cx.update(crate::debug_server::install);
+        let (_window, app) = open_app(cx, dir.path().to_path_buf());
+        cx.update(|cx| crate::debug_server::install(&app, cx));
         let mut client = TestClient::connect(&sock);
 
         let req = client.send(Command::Query {
@@ -2108,7 +2109,7 @@ mod tests {
         // otherwise rejects activity from threads it did not start.
         cx.executor().allow_parking();
         let (window, app) = open_app(cx, vault_path);
-        cx.update(crate::debug_server::install);
+        cx.update(|cx| crate::debug_server::install(&app, cx));
         let client = crate::debug_server::test_client::TestClient::connect(&sock);
         (client, sock, window, app)
     }
@@ -2283,6 +2284,108 @@ mod tests {
             .unwrap();
         let after = editor.read_with(cx, |e, _| e.scroll_handle().offset());
         assert!(after.y < before.y, "scrolled down: {before:?} -> {after:?}");
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn the_editor_state_query_reflects_typing_and_selection(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, EditorState, Modifiers, Query};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "one\ntwo").unwrap();
+        let (mut client, sock, window, app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        let query = Command::Query {
+            what: Query::EditorState,
+        };
+        let closed = call_on_main(cx, &mut client, query.clone());
+        assert_eq!(closed, Answer::EditorState(EditorState::default()));
+
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note A", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        cx.update_window(window, |_, window, cx| {
+            editor.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let Answer::EditorState(open) = call_on_main(cx, &mut client, query.clone()) else {
+            panic!("expected editor state");
+        };
+        assert_eq!(open.note.as_deref(), Some("Note A"));
+        assert_eq!((open.len, open.lines, open.cursor), (7, 2, 0));
+        assert!(open.focused && open.selection.is_none());
+
+        let typed = Command::Type { text: "X".into() };
+        assert_eq!(call_on_main(cx, &mut client, typed), Answer::Ok);
+        let select_all = Command::Key {
+            key: "a".into(),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+        };
+        assert_eq!(call_on_main(cx, &mut client, select_all), Answer::Ok);
+        let Answer::EditorState(after) = call_on_main(cx, &mut client, query) else {
+            panic!("expected editor state");
+        };
+        assert_eq!(after.len, 8);
+        assert_eq!(after.selection, Some((0, 8)));
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn painted_frames_are_timed_and_streamed_over_the_socket(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, Event, Message, Query, Topic};
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "one\ntwo").unwrap();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click("Note A", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert_eq!(
+            client.call(Command::Subscribe {
+                topic: Topic::Frames
+            }),
+            Answer::Ok
+        );
+        let before = crate::debug_server::frames::current();
+        cx.update_window(window, |_, window, cx| {
+            for _ in 0..3 {
+                window.render_frame(cx);
+            }
+        })
+        .unwrap();
+
+        let mut streamed = 0;
+        while let Some(message) = client.try_recv(std::time::Duration::from_millis(100)) {
+            if let Message::Event {
+                event: Event::Frames(sample),
+            } = message
+            {
+                assert!(sample.frame > before);
+                streamed += 1;
+            }
+        }
+        assert_eq!(streamed, 3, "one event per painted frame");
+
+        let Answer::FrameTimes { frames } = client.call(Command::Query {
+            what: Query::FrameTimes,
+        }) else {
+            panic!("expected frame times");
+        };
+        let fresh: Vec<_> = frames.iter().filter(|f| f.frame > before).collect();
+        assert_eq!(fresh.len(), 3, "three painted frames: {frames:?}");
+        assert!(fresh.windows(2).all(|w| w[0].frame + 1 == w[1].frame));
+        assert!(fresh[1].interval_us > 0, "{fresh:?}");
+
         std::fs::remove_file(&sock).unwrap();
     }
 

@@ -6,6 +6,7 @@
 
 mod client;
 mod commands;
+pub(crate) mod frames;
 mod input;
 mod pump;
 #[cfg(test)]
@@ -34,6 +35,18 @@ fn topic_bit(topic: Topic) -> u8 {
 /// Whether the socket was requested; lets producers skip work otherwise.
 pub(crate) fn requested() -> bool {
     std::env::var_os(ENV_VAR).is_some()
+}
+
+/// `requested()`, evaluated once: producers call it every frame.
+pub(crate) fn enabled() -> bool {
+    // Tests flip the variable between cases.
+    #[cfg(test)]
+    return requested();
+    #[cfg(not(test))]
+    {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(requested)
+    }
 }
 
 /// Whether any client currently wants events on `topic`.

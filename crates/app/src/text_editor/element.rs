@@ -1366,6 +1366,7 @@ pub(super) fn render_editor(
     window: &mut Window,
     cx: &mut Context<Editor>,
 ) -> impl IntoElement {
+    let render_start = crate::debug_server::frames::now();
     // Read straight from `editor` (the `&mut self` `Editor::render` already
     // has), not `editor_entity.read(cx)` — this function runs *as* that
     // entity's own render, so reading through the entity handle here panics
@@ -1419,6 +1420,7 @@ pub(super) fn render_editor(
         window,
     );
     let (total_height, cursor_top, cursor_height) = measure_document(&layout, cursor, line_height);
+    let render_us = crate::debug_server::frames::micros_since(render_start);
 
     div()
         .id("editor")
@@ -1437,6 +1439,7 @@ pub(super) fn render_editor(
             canvas(
                 move |_, _, _| {},
                 move |bounds, _, window, cx| {
+                    let frame_clock = crate::debug_server::frames::start();
                     let focused = focus_handle.is_focused(window);
                     // Only snap the view back to the cursor the first time
                     // we see this particular cursor position, not on every
@@ -1498,6 +1501,7 @@ pub(super) fn render_editor(
                         ElementInputHandler::new(bounds, editor_entity.clone()),
                         cx,
                     );
+                    crate::debug_server::frames::finish(frame_clock, render_us);
                 },
             )
             .size_full(),
