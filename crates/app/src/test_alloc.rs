@@ -5,13 +5,13 @@
 //! arena/mmap-threshold heuristics and doesn't distinguish "freed but not
 //! yet returned to the OS" from "still actually live." Zero effect on
 //! non-test builds (release/`cargo run`) — the `#[global_allocator]`
-//! override in `main.rs` is itself `#[cfg(test)]`-gated.
+//! override in `lib.rs` is itself `#[cfg(test)]`-gated.
 //!
 //! Added to investigate a real user report: `jade-app` using ~189MB at
 //! startup and ~3xxMB with the 320K-line stress fixture open, well above
 //! what the document's own text (~11.3MB) plus `DocumentCache`/
 //! `RowHeightCache`'s per-line arrays (~45MB, estimated from their actual
-//! field types) should cost. See `document_cache.rs`'s and `main.rs`'s own
+//! field types) should cost. See `document_cache.rs`'s and `app.rs`'s own
 //! tests that use this for what it found.
 
 use std::alloc::{GlobalAlloc, Layout, System};

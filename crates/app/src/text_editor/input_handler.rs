@@ -273,7 +273,7 @@ impl EntityInputHandler for Editor {
 }
 
 // Not `use super::*`: it would pull in GPUI's `test` macro, which shadows
-// `#[test]` and recurses infinitely (same gotcha as in `main.rs`).
+// `#[test]` and recurses infinitely (same gotcha as in `app.rs`).
 #[cfg(test)]
 mod tests {
     use super::{utf8_to_utf16, utf16_to_utf8};

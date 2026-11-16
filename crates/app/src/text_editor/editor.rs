@@ -61,9 +61,9 @@ pub struct Editor {
     /// gets; a Phase 1 cosmetic gap, not a functional one.
     pub(super) marked_range: Option<std::ops::Range<usize>>,
     /// Tracks the scroll position of *this editor's* note-editor-pane
-    /// container in `main.rs` — owned here (not by `JadeApp`) so it resets
+    /// container in `app.rs` — owned here (not by `JadeApp`) so it resets
     /// naturally per opened note, same lifetime as everything else about
-    /// this `Editor`. `main.rs` calls `.track_scroll(editor.scroll_handle())`
+    /// this `Editor`. `app.rs` calls `.track_scroll(editor.scroll_handle())`
     /// on that container; `element.rs`'s `render_editor` reads/writes it
     /// every paint to keep the cursor's line scrolled into view (see
     /// `autoscroll_to_cursor`) — two different modules sharing one handle,
@@ -139,7 +139,7 @@ impl Editor {
         &mut self.buffer
     }
 
-    /// The scroll handle for `main.rs`'s note-editor-pane container to
+    /// The scroll handle for `app.rs`'s note-editor-pane container to
     /// `.track_scroll(...)` — see the field's own doc comment.
     pub fn scroll_handle(&self) -> &ScrollHandle {
         &self.scroll_handle
@@ -400,7 +400,7 @@ impl Editor {
     /// running any element's raw `key_down_listeners` at all. An
     /// `on_key_down` handler simply never sees "tab"; only binding a
     /// *more specific* action ourselves, in a context nested inside
-    /// "Root", can take priority over it — the same mechanism `main.rs`
+    /// "Root", can take priority over it — the same mechanism `app.rs`
     /// already uses for `RenameNote`/`DeleteNote` (`"NoteList"` context),
     /// just here needing to actually out-rank a default binding rather
     /// than just adding a new one.

@@ -1,6 +1,6 @@
 //! No-op stand-in for `debug_server/` in builds without the `debug-socket`
 //! feature, so the shipped binary carries no input-injecting socket while the
-//! call sites in `main.rs` and `text_editor/` stay free of `#[cfg]`. Same
+//! call sites in `app.rs` and `text_editor/` stay free of `#[cfg]`. Same
 //! names, no behavior.
 
 use gpui_kit::{App, Entity};

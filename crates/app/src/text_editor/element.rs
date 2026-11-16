@@ -214,7 +214,7 @@ pub(super) fn is_active_line(
     focused && cursor >= line_range.start && cursor <= line_range.end
 }
 
-/// Scrolls `scroll_handle`'s tracked container (`main.rs`'s note-editor-pane
+/// Scrolls `scroll_handle`'s tracked container (`app.rs`'s note-editor-pane
 /// div — see `Editor::scroll_handle`'s doc comment) just enough to bring the
 /// cursor's line fully into view, if it currently isn't. `content_bounds` is
 /// this element's own (already scroll-shifted) on-screen bounds, the same
@@ -1435,7 +1435,7 @@ fn char_budget(available_width: Pixels, char_width: Pixels) -> Option<usize> {
 ///
 /// Composed from plain `div()` + `canvas()` rather than a hand-implemented
 /// `gpui::Element` — the outer `div` gets sizing and focus for free from the
-/// exact same builder methods already used throughout `main.rs`; `canvas`
+/// exact same builder methods already used throughout `app.rs`; `canvas`
 /// only needs to own the actual text/cursor painting and (since it has
 /// `bounds` in scope precisely when painting, unlike an event registered
 /// outside of paint) the mouse hit-testing math.
@@ -2320,7 +2320,7 @@ fn paint_lines(
 // Deliberately not `use super::*`/`use gpui_kit::*` here: with `test-support`
 // enabled, that glob also re-exports GPUI's `test` attribute macro, which then
 // shadows plain `#[test]` and makes `#[gpui_kit::test]`'s own expansion
-// recurse infinitely (see the project-wide note on this in `main.rs`).
+// recurse infinitely (see the project-wide note on this in `app.rs`).
 #[cfg(test)]
 mod tests {
     use super::super::block_preview::LineRole;
@@ -2396,11 +2396,11 @@ mod tests {
         // A direct, low-level check of the wrapping mechanism itself
         // (`shape_display_line`'s `wrap_width_for` dispatch into
         // `WindowTextSystem::shape_text`), independent of the *rest* of
-        // `main.rs`'s `scrolling_away_from_the_cursor_does_not_get_snapped_back`-
+        // `app.rs`'s `scrolling_away_from_the_cursor_does_not_get_snapped_back`-
         // style tests, which check the surrounding sizing/autoscroll
         // plumbing instead. A bare `Editor` has no tracked ancestor to
         // measure wrapping against for its *own* div sizing (see
-        // `main.rs`'s `a_line_too_wide_for_the_pane_wraps_instead_of_overflowing`,
+        // `app.rs`'s `a_line_too_wide_for_the_pane_wraps_instead_of_overflowing`,
         // which needs the real app for that reason) — but `shape_display_line`
         // itself just takes whatever `available_width` it's given, so
         // calling it directly sidesteps that entirely.
