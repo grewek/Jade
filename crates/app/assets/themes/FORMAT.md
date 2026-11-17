@@ -1,6 +1,6 @@
 # Jade theme format
 
-A theme is one TOML file. Every theme defines the **same roles**; only the palette behind them differs, so an element has the same role in every theme (a button is `surface`, a link is `link`). The shipped themes are the four Catppuccin flavors, with roles assigned after Catppuccin's [style guide](https://github.com/catppuccin/catppuccin/blob/main/docs/style-guide.md).
+A theme is one TOML file. `jade-light.toml` is the look Jade has today; the rest are Catppuccin. Every theme defines the **same roles**; only the palette behind them differs, so an element has the same role in every theme (a button is `surface`, a link is `link`). The shipped themes are the four Catppuccin flavors, with roles assigned after Catppuccin's [style guide](https://github.com/catppuccin/catppuccin/blob/main/docs/style-guide.md).
 
 ```toml
 name = "Catppuccin Latte"

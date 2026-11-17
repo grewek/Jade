@@ -1,0 +1,82 @@
+# Jade theme. Format: FORMAT.md. Same [roles] in every theme, only [palette] differs.
+#
+# The look Jade has today, extracted from element.rs, app.rs and the gpui-component
+# light theme it runs on. Where the code used several colors for one role, the
+# role takes the first value listed and the others are lost when this theme is loaded:
+#   text_muted      #737373 (theme muted_foreground); the 4 placeholders were #888888
+#   text            #090909 (theme foreground); the active tab text was #171717
+#   background_secondary  #F5F5F5 (the tab bar); sidebars and the status bar are white today
+#   background_tertiary   white: the toggle rails have no fill today
+#   surface*        #E8E8F8 / #D0D0F0 (rows); buttons are #E4E4E4 / #D3D3D3 pressed today
+#   surface_active  #D3D3D3 (a pressed button); no row is "pressed" today
+name = "Jade Light"
+kind = "light"
+
+[palette]
+white          = "#ffffff"
+gray_96        = "#f5f5f5"
+gray_90        = "#e4e4e4"
+gray_83        = "#d3d3d3"
+gray_60        = "#999999"
+gray_55        = "#8c8c8c"
+gray_45        = "#737373"
+ink            = "#090909"
+charcoal       = "#161616"
+near_white     = "#f9f9f9"
+lavender_light = "#e8e8f8"
+lavender_mid   = "#d0d0f0"
+selection_blue = "#3d87f5"
+sky_blue       = "#579cdb"
+cyan           = "#42d7d7"
+dusty_purple   = "#8c75a3"
+purple         = "#b169d3"
+turquoise      = "#47d1d1"
+green          = "#39c647"
+orange         = "#e29336"
+red            = "#d74242"
+
+[roles]
+# Backgrounds
+background           = "white"           # window, editor, active tab, dialogs
+background_secondary = "gray_96"         # sidebars, tab bar, status bar
+background_tertiary  = "white"           # toggle rails, window frame
+
+# Surfaces: interactive things that sit on a background
+surface        = "lavender_light"        # buttons, inputs, hovered rows
+surface_hover  = "lavender_mid"          # hovered buttons, selected row, active sidebar tab
+surface_active = "gray_83"               # pressed buttons
+
+# Lines
+border        = "gray_90"                # dividers between rails, sidebars, tabs, editor, status bar
+border_strong = "gray_60"                # editor decoration: quote bar, table grid, horizontal rule
+
+# Text
+text           = "ink"                   # body, headings, active tab
+text_muted     = "gray_45"               # labels, inactive tabs, status bar, placeholders and empty states
+text_subtle    = "gray_60"               # blockquote text, list markers
+text_on_accent = "near_white"            # text on an accent-colored fill
+
+# Interaction
+accent    = "charcoal"                   # focus, primary buttons, resize handle
+cursor    = "ink"                        # text cursor
+selection = "selection_blue"             # text selection (see [alpha])
+
+# Inline text in notes
+link     = "cyan"                        # [text](url), autolinks
+wikilink = "sky_blue"                    # [[wikilink]]
+code     = "dusty_purple"                # inline code
+
+# Semantic: callout accents, later diagnostics
+info    = "sky_blue"                     # Note, Info
+summary = "purple"                       # Summary
+tip     = "turquoise"                    # Tip
+success = "green"                        # Todo, Success
+warning = "orange"                       # Question, Warning
+error   = "red"                          # Failure, Danger, Bug
+neutral = "gray_55"                      # Example, Quote
+
+[alpha]
+callout_background = 0.10                # callout band tint
+selection          = 0.35                # text selection fill
+accent_hover       = 0.40                # resize handle hovered
+accent_active      = 0.70                # resize handle pressed
