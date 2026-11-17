@@ -2,7 +2,8 @@
 //! else in `text_editor` stays crate-private. Wrappers return small summaries
 //! so the optimizer cannot discard the work being timed.
 
-use super::document_cache::{DocumentCache, TextEdit, line_strides as strides_of};
+use super::doc_stats::DocStats;
+use super::document_cache::{DocumentCache, EditPatch, TextEdit, line_strides as strides_of};
 use super::fenwick::Fenwick;
 
 pub use super::buffer::EditorBuffer;
@@ -62,6 +63,55 @@ impl Cache {
             new_end_byte,
         };
         self.0.record_edit(text, edit).is_some()
+    }
+}
+
+/// Word/character counting: `build` is the cold pass at note open; `edit`
+/// then `count` split one edit into the classification patch (timed
+/// elsewhere) and the status-bar patch being measured.
+pub struct Counts {
+    cache: DocumentCache,
+    stats: DocStats,
+    patch: Option<EditPatch>,
+}
+
+impl Counts {
+    pub fn new(text: &str) -> Self {
+        Self {
+            cache: DocumentCache::new(text),
+            stats: DocStats::new(text),
+            patch: None,
+        }
+    }
+
+    /// A cold count of the whole document: (words, characters).
+    pub fn build(text: &str) -> (usize, usize) {
+        let stats = DocStats::new(text);
+        (stats.words(), stats.chars())
+    }
+
+    pub fn edit(
+        &mut self,
+        text: &str,
+        start_byte: usize,
+        old_end_byte: usize,
+        new_end_byte: usize,
+    ) {
+        let edit = TextEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+        };
+        self.patch = self.cache.record_edit(text, edit);
+    }
+
+    /// Updates the counts for the edit last passed to [`Self::edit`].
+    pub fn count(&mut self, text: &str) -> (usize, usize) {
+        match self.patch.take() {
+            Some(patch) => self.stats.patch(text, &self.cache, &patch),
+            None => self.stats.rebuild(text),
+        }
+        (self.stats.words(), self.stats.chars())
     }
 }
 

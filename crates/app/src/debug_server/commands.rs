@@ -110,6 +110,8 @@ fn app_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
             note: app.selected_id().map(str::to_string),
             tabs: app.tabs.iter().map(|tab| tab.note_id.clone()).collect(),
             active_tab: app.active_tab,
+            words: app.editor().map_or(0, |e| e.read(cx).word_count()),
+            chars: app.editor().map_or(0, |e| e.read(cx).char_count()),
             sidebar_tab: match app.sidebar_tab {
                 crate::SidebarTab::Vault => "vault",
                 crate::SidebarTab::Search => "search",

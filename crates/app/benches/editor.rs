@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use jade_app::bench_api::{Cache, EditorBuffer, Index, line_strides};
+use jade_app::bench_api::{Cache, Counts, EditorBuffer, Index, line_strides};
 
 const TYPICAL_BYTES: usize = 150 * 1024;
 
@@ -47,6 +47,48 @@ fn bench_cache_build(c: &mut Criterion) {
         b.iter(|| Cache::new(black_box(stress.as_str())))
     });
     group.finish();
+}
+
+/// The status bar's counts: the cold pass at open, then the per-edit patch.
+fn bench_counts(c: &mut Criterion) {
+    let stress = stress_text();
+    let typical = typical_prefix(&stress);
+    let mut group = c.benchmark_group("word_count");
+    group.sample_size(10);
+    group.bench_function("build/typical", |b| {
+        b.iter(|| Counts::build(black_box(typical)))
+    });
+    group.bench_function("build/stress", |b| {
+        b.iter(|| Counts::build(black_box(stress.as_str())))
+    });
+    group.finish();
+
+    for (label, insert) in [("char", "x"), ("newline", "\n")] {
+        let mut text = stress.clone();
+        let mut counts = Counts::new(&text);
+        let at = middle_line_start(&text);
+        let mut inserted = false;
+        c.bench_function(&format!("word_count/patch_{label}/stress"), |b| {
+            b.iter_custom(|iters| {
+                let mut timed = Duration::ZERO;
+                for _ in 0..iters {
+                    let (old_end, new_end) = if inserted {
+                        text.replace_range(at..at + insert.len(), "");
+                        (at + insert.len(), at)
+                    } else {
+                        text.insert_str(at, insert);
+                        (at, at + insert.len())
+                    };
+                    inserted = !inserted;
+                    counts.edit(&text, at, old_end, new_end);
+                    let start = Instant::now();
+                    black_box(counts.count(&text));
+                    timed += start.elapsed();
+                }
+                timed
+            });
+        });
+    }
 }
 
 /// Each classification pass alone, as a cold build runs them in sequence.
@@ -167,6 +209,7 @@ criterion_group!(
     benches,
     bench_cache_build,
     bench_passes,
+    bench_counts,
     bench_record_edit,
     bench_fenwick,
     bench_buffer

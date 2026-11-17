@@ -5,6 +5,7 @@ use std::rc::Rc;
 use gpui_kit::*;
 
 use super::EditorBuffer;
+use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
 
@@ -104,6 +105,8 @@ pub struct Editor {
     /// fallback already has. Same `Rc<RefCell<_>>` sharing reasoning as
     /// `document_cache`.
     pub(super) row_height_cache: Rc<RefCell<RowHeightCache>>,
+    /// Word and character counts for the status bar, patched per edit.
+    doc_stats: DocStats,
 }
 
 impl Editor {
@@ -113,6 +116,7 @@ impl Editor {
         // Part 1's viewport-rendering fix (see CLAUDE.md), not a new one
         // for this cache specifically.
         let document_cache = Rc::new(RefCell::new(DocumentCache::new(buffer.text())));
+        let doc_stats = DocStats::new(buffer.text());
         Self {
             buffer,
             focus_handle: cx.focus_handle(),
@@ -122,7 +126,18 @@ impl Editor {
             last_autoscrolled_cursor: Rc::new(Cell::new(None)),
             document_cache,
             row_height_cache: Rc::new(RefCell::new(RowHeightCache::empty())),
+            doc_stats,
         }
+    }
+
+    /// Words in the note (see `doc_stats` for what counts as one).
+    pub fn word_count(&self) -> usize {
+        self.doc_stats.words()
+    }
+
+    /// Characters in the note, spaces included, line breaks not.
+    pub fn char_count(&self) -> usize {
+        self.doc_stats.chars()
     }
 
     pub fn buffer(&self) -> &EditorBuffer {
@@ -170,6 +185,12 @@ impl Editor {
     ) {
         let text = self.buffer.text();
         let patch = self.document_cache.borrow_mut().record_edit(text, edit);
+        match &patch {
+            Some(patch) => self
+                .doc_stats
+                .patch(text, &self.document_cache.borrow(), patch),
+            None => self.doc_stats.rebuild(text),
+        }
 
         let params = render_params(self, window, cx);
         let cursor = self.buffer.cursor();

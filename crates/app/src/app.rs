@@ -152,6 +152,19 @@ pub(crate) struct JadeApp {
     _search_subscription: Subscription,
 }
 
+/// `1234567` as `1,234,567`.
+fn group_digits(n: usize) -> String {
+    let digits = n.to_string();
+    let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            grouped.push(',');
+        }
+        grouped.push(c);
+    }
+    grouped
+}
+
 /// The direct parent folder id of a note/folder id, or `None` at the vault root.
 fn parent_of(id: &str) -> Option<&str> {
     id.rsplit_once('/').map(|(parent, _)| parent)
@@ -1121,6 +1134,37 @@ impl JadeApp {
             .into_any_element()
     }
 
+    /// Word and character counts of the shown note, under the editor.
+    fn render_status_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let editor = self.editor()?.read(cx);
+        let (words, chars) = (editor.word_count(), editor.char_count());
+        let theme = Theme::global(cx);
+        let (border, muted) = (theme.border, theme.muted_foreground);
+        let plural = |n: usize, one: &str, many: &str| {
+            format!("{} {}", group_digits(n), if n == 1 { one } else { many })
+        };
+        Some(
+            div()
+                .id("status-bar")
+                .test_support()
+                .flex()
+                .flex_row()
+                .flex_none()
+                .justify_end()
+                .gap_4()
+                .px_3()
+                .py_1()
+                .border_t_1()
+                .border_color(border)
+                .text_xs()
+                .text_color(muted)
+                .child(plural(words, "word", "words"))
+                .child(plural(chars, "character", "characters"))
+                .debug_name("status-bar")
+                .into_any_element(),
+        )
+    }
+
     /// One tab: click to show it, the cross or a middle click to close it.
     fn render_tab(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let tab = &self.tabs[ix];
@@ -1553,7 +1597,8 @@ impl Render for JadeApp {
                     .when(!self.tabs.is_empty(), |this| {
                         this.child(self.render_tab_bar(cx))
                     })
-                    .child(div().flex_1().min_h_0().child(content)),
+                    .child(div().flex_1().min_h_0().child(content))
+                    .children(self.render_status_bar(cx)),
             )
             .when(!self.backlinks_collapsed, |this| {
                 this.child(right_sidebar.debug_name("backlinks-sidebar"))
@@ -4622,6 +4667,48 @@ mod tests {
         .unwrap();
         let first = bounds(cx, format!("tab-{}", names[0]));
         assert!(first.left() >= bar.left(), "{first:?} vs {bar:?}");
+    }
+
+    #[test]
+    fn group_digits_separates_thousands() {
+        let grouped: Vec<String> = [0, 7, 999, 1000, 12345, 1234567]
+            .into_iter()
+            .map(super::group_digits)
+            .collect();
+        assert_eq!(grouped, ["0", "7", "999", "1,000", "12,345", "1,234,567"]);
+    }
+
+    #[gpui_kit::test]
+    fn the_status_bar_counts_words_and_characters_and_follows_edits(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note.md"), "hello brave world").unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        let counts = |cx: &mut TestAppContext| {
+            app.read_with(cx, |app, cx| {
+                let editor = app.editor().expect("a note is open").read(cx);
+                (editor.word_count(), editor.char_count())
+            })
+        };
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            assert!(window.try_find("status-bar").is_none(), "no note, no bar");
+            window.click("Note", cx);
+            window.render_frame(cx);
+            assert!(window.try_find("status-bar").is_some());
+        })
+        .unwrap();
+        assert_eq!(counts(cx), (3, 17));
+
+        cx.update_window(window, |_, window, cx| {
+            let editor = app.read(cx).editor().cloned().expect("a note is open");
+            editor.read(cx).focus_handle(cx).focus(window, cx);
+            window.render_frame(cx);
+            window.input("again and more ", cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        // The cursor starts at the beginning of the note.
+        assert_eq!(counts(cx), (6, 32));
     }
 
     #[gpui_kit::test]

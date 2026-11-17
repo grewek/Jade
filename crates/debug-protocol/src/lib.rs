@@ -227,6 +227,9 @@ pub struct AppState {
     /// Note ids of the open tabs, left to right.
     pub tabs: Vec<String>,
     pub active_tab: Option<usize>,
+    /// The status bar's counts for the active note (0 with no note).
+    pub words: usize,
+    pub chars: usize,
     /// `"vault"` or `"search"`.
     pub sidebar_tab: String,
     pub search_query: String,
@@ -544,6 +547,8 @@ mod tests {
                 note: Some("A".into()),
                 tabs: vec!["A".into(), "B".into()],
                 active_tab: Some(0),
+                words: 4,
+                chars: 21,
                 sidebar_tab: "search".into(),
                 search_query: "q".into(),
                 search_results: 2,
