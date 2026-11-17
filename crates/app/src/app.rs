@@ -9,10 +9,30 @@ use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::Scrollbar;
-use gpui_kit::component::{IconName, Sizable as _, Theme, WindowExt};
+use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_kit::component::{IconName, IndexPath, Sizable as _, Theme, WindowExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use jade_core::{Vault, search_targets};
+
+/// One entry of the Settings theme dropdown; the value is the theme id.
+#[derive(Clone)]
+struct ThemeOption {
+    id: String,
+    name: SharedString,
+}
+
+impl gpui_kit::component::select::SelectItem for ThemeOption {
+    type Value = String;
+
+    fn title(&self) -> SharedString {
+        self.name.clone()
+    }
+
+    fn value(&self) -> &String {
+        &self.id
+    }
+}
 
 /// IBM Plex — the typeface Zed itself uses — bundled under the SIL Open Font
 /// License (OFL 1.1, see `assets/fonts/*/LICENSE.txt`), which explicitly
@@ -559,34 +579,43 @@ impl JadeApp {
         });
     }
 
-    /// The Settings dialog; for now only the theme chooser (text size and
+    /// The Settings dialog; for now only the theme dropdown (text size and
     /// editor preferences are to come). A plain associated function: it
-    /// never needs `JadeApp`'s state. The theme list is read once on open;
-    /// the checked radio follows the engine on every render.
+    /// never needs `JadeApp`'s state. The theme list is read once on open.
     fn open_settings_dialog(window: &mut Window, cx: &mut App) {
-        use gpui_kit::component::radio::Radio;
-        let themes = ThemeEngine::available(cx);
+        let options: Vec<ThemeOption> = ThemeEngine::available(cx)
+            .into_iter()
+            .map(|choice| ThemeOption {
+                id: choice.id,
+                name: choice.name.into(),
+            })
+            .collect();
+        let active = ThemeEngine::global(cx).active_id().to_owned();
+        let selected = options.iter().position(|o| o.id == active);
+        let select = cx.new(|cx| {
+            SelectState::new(
+                SearchableVec::new(options),
+                selected.map(IndexPath::new),
+                window,
+                cx,
+            )
+        });
+        cx.subscribe(
+            &select,
+            |_, event: &SelectEvent<SearchableVec<ThemeOption>>, cx| {
+                let SelectEvent::Confirm(Some(id)) = event else {
+                    return;
+                };
+                if let Err(messages) = ThemeEngine::choose(id, cx) {
+                    for message in messages {
+                        eprintln!("jade: {message}");
+                    }
+                }
+            },
+        )
+        .detach();
         window.open_dialog(cx, move |dialog, _window, cx| {
-            let active = ThemeEngine::global(cx).active_id().to_owned();
             let muted = ThemeEngine::color(cx, Role::TextMuted);
-            let options = themes.iter().enumerate().map(|(index, choice)| {
-                let id = choice.id.clone();
-                let debug_id = id.clone();
-                div()
-                    .child(
-                        Radio::new(("theme-option", index))
-                            .label(choice.name.clone())
-                            .checked(choice.id == active)
-                            .on_click(move |_, _, cx| {
-                                if let Err(messages) = ThemeEngine::choose(&id, cx) {
-                                    for message in messages {
-                                        eprintln!("jade: {message}");
-                                    }
-                                }
-                            }),
-                    )
-                    .debug_name_with(move || format!("theme-{debug_id}").into())
-            });
             dialog.title("Settings").child(
                 div()
                     .id("settings-panel")
@@ -596,7 +625,11 @@ impl JadeApp {
                     .flex_col()
                     .gap_2()
                     .child(div().text_color(muted).child("Theme"))
-                    .children(options)
+                    .child(
+                        div()
+                            .child(Select::new(&select).id("theme-select"))
+                            .debug_name("theme-select"),
+                    )
                     .debug_name("settings-panel"),
             )
         });
@@ -3309,7 +3342,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn clicking_a_theme_in_settings_switches_the_theme(cx: &mut TestAppContext) {
+    fn picking_a_theme_in_the_settings_dropdown_switches_the_theme(cx: &mut TestAppContext) {
         use jade_debug_protocol::{Answer, Command, Query};
         let dir = temp_vault();
         let (mut client, sock, window, _app) =
@@ -3333,19 +3366,12 @@ mod tests {
         else {
             panic!("expected targets");
         };
-        for id in ["jade-light", "catppuccin-latte", "catppuccin-mocha"] {
-            let name = format!("theme-{id}");
-            assert!(targets.iter().any(|t| t.name == name), "missing {name}");
+        assert!(targets.iter().any(|t| t.name == "theme-select"));
+        // Popup items are not nameable: open the menu, move to the second
+        // theme, confirm.
+        for command in [click_named("theme-select"), key("down"), key("enter")] {
+            assert_eq!(step(cx, window, &mut client, command), Answer::Ok);
         }
-        assert_eq!(
-            step(
-                cx,
-                window,
-                &mut client,
-                click_named("theme-catppuccin-mocha")
-            ),
-            Answer::Ok
-        );
         let Answer::Theme(state) = step(
             cx,
             window,
@@ -3354,7 +3380,7 @@ mod tests {
         ) else {
             panic!("expected a theme");
         };
-        assert_eq!(state.id, "catppuccin-mocha");
+        assert_eq!(state.id, "catppuccin-latte");
         std::fs::remove_file(&sock).unwrap();
     }
 
