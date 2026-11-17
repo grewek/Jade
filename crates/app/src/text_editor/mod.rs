@@ -13,6 +13,7 @@ mod document_cache;
 mod editor;
 mod element;
 mod fenwick;
+mod headings;
 mod input_handler;
 mod link_table;
 mod live_preview;

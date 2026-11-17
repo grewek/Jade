@@ -287,9 +287,11 @@ impl JadeApp {
                 window,
                 |this, editor, event, window, cx| match event {
                     EditorEvent::Changed => this.note_changed(editor.entity_id(), cx),
-                    EditorEvent::OpenLink { kind, dest } => {
-                        this.follow_link(*kind, dest, window, cx)
-                    }
+                    EditorEvent::OpenLink {
+                        kind,
+                        dest,
+                        heading,
+                    } => this.follow_link(*kind, dest, heading.as_deref(), window, cx),
                 },
             );
         Some(Tab {
@@ -304,16 +306,26 @@ impl JadeApp {
     /// the system handler, other files inside the vault open with their
     /// default app. Anything unresolved, outside the vault or with another
     /// scheme is ignored.
+    /// The active tab's editor, read back by tests.
+    #[cfg(test)]
+    fn active_editor_for_test<'a>(&'a self, cx: &'a App) -> &'a Editor {
+        self.editor().expect("a note is open").read(cx)
+    }
+
     fn follow_link(
         &mut self,
         kind: LinkKind,
         dest: &str,
+        heading: Option<&str>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if kind == LinkKind::Wiki {
             if let Some(id) = self.vault.resolve_wikilink(dest).map(str::to_owned) {
                 self.open_note(id, window, cx);
+                if let Some(heading) = heading {
+                    self.jump_to_heading(heading, cx);
+                }
             }
             return;
         }
@@ -324,12 +336,34 @@ impl JadeApp {
                 let Some(from) = self.active().map(|tab| tab.note_id.clone()) else {
                     return;
                 };
+                // `#heading` (not `?query`) after the path.
+                let heading = dest
+                    .split_once('#')
+                    .and_then(|(_, h)| jade_core::percent_decode(h));
                 match self.vault.resolve_path_link(&from, dest) {
-                    Ok(LinkTarget::Note(id)) => self.open_note(id, window, cx),
+                    Ok(LinkTarget::Note(id)) => {
+                        self.open_note(id, window, cx);
+                        if let Some(heading) = heading {
+                            self.jump_to_heading(&heading, cx);
+                        }
+                    }
                     Ok(LinkTarget::File(path)) => cx.open_with_system(&path),
+                    // `[x](#heading)` points into the note it is written in.
+                    Err(PathLinkError::SameNote) => {
+                        if let Some(heading) = heading {
+                            self.jump_to_heading(&heading, cx);
+                        }
+                    }
                     Err(_) => {}
                 }
             }
+        }
+    }
+
+    /// Moves the active note's cursor to `heading`, if it has one.
+    fn jump_to_heading(&self, heading: &str, cx: &mut Context<Self>) {
+        if let Some(editor) = self.editor() {
+            editor.update(cx, |editor, cx| editor.jump_to_heading(heading, cx));
         }
     }
 
@@ -4961,6 +4995,49 @@ mod tests {
         })
         .unwrap();
         assert_eq!(broken(cx, &app), 2, "Nowhere now exists");
+    }
+
+    #[gpui_kit::test]
+    fn a_link_with_a_heading_jumps_to_it(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let a = "start\n[[B#Second]]\n[x](B.md#second-part)\n[y](#local)\n\n# Local";
+        let b = "# First\n\ntext\n## Second\nbody\n## Second Part\n";
+        std::fs::write(dir.path().join("A.md"), a).unwrap();
+        std::fs::write(dir.path().join("B.md"), b).unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        let cursor = |cx: &mut TestAppContext, app: &Entity<JadeApp>| {
+            app.read_with(cx, |app, cx| {
+                app.active_editor_for_test(cx).buffer().cursor()
+            })
+        };
+
+        // Within the note it is written in.
+        open_via_menu(cx, window, "A", 1);
+        click_editor_line(cx, window, 3);
+        assert_eq!(cursor(cx, &app), a.find("# Local").unwrap());
+
+        // Into another note, by wikilink and by path link.
+        cx.update_window(window, |_, window, cx| {
+            app.update(cx, |app, cx| app.activate_tab(0, window, cx));
+        })
+        .unwrap();
+        cx.update_window(window, |_, _, cx| {
+            app.update(cx, |app, cx| {
+                app.tabs[0]
+                    .editor
+                    .update(cx, |e, cx| e.buffer_mut().set_cursor(0, false));
+            });
+        })
+        .unwrap();
+        click_editor_line(cx, window, 1);
+        assert_eq!(tabs_of(cx, &app).0, ["B"]);
+        assert_eq!(cursor(cx, &app), b.find("## Second\n").unwrap());
+
+        // The path link's slug matches "Second Part"; an open tab is reused.
+        open_via_menu(cx, window, "A", 1);
+        click_editor_line(cx, window, 2);
+        assert_eq!(tabs_of(cx, &app), (vec!["B".into(), "A".into()], Some(0)));
+        assert_eq!(cursor(cx, &app), b.find("## Second Part").unwrap());
     }
 
     #[gpui_kit::test]

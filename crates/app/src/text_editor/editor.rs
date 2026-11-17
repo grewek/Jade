@@ -8,6 +8,7 @@ use super::EditorBuffer;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
+use super::headings::find_heading_line;
 use super::link_table::LinkTable;
 use jade_core::link_scan::{LinkKind, scan_line};
 
@@ -50,6 +51,8 @@ pub enum EditorEvent {
     OpenLink {
         kind: LinkKind,
         dest: String,
+        /// A wikilink's `#heading`; other links carry theirs inside `dest`.
+        heading: Option<String>,
     },
 }
 
@@ -156,6 +159,7 @@ impl Editor {
                 event = Some(EditorEvent::OpenLink {
                     kind: link.kind,
                     dest: line_text[link.dest].to_string(),
+                    heading: link.heading.map(|h| line_text[h].to_string()),
                 });
             }
         });
@@ -189,6 +193,22 @@ impl Editor {
         if all || any_broken {
             cx.notify();
         }
+    }
+
+    /// Moves the cursor to the first heading matching `heading` and scrolls
+    /// to it. Returns whether there was one.
+    pub fn jump_to_heading(&mut self, heading: &str, cx: &mut Context<Self>) -> bool {
+        let line = {
+            let doc = self.document_cache.borrow();
+            find_heading_line(self.buffer.text(), &doc, heading)
+                .map(|line| doc.line_start_byte(line))
+        };
+        let Some(offset) = line else {
+            return false;
+        };
+        self.buffer.set_cursor(offset, false);
+        cx.notify();
+        true
     }
 
     /// How many of the note's links point at nothing (see `link_table`).
