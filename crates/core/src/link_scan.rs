@@ -48,6 +48,18 @@ pub struct Link {
 /// scanned as if the extra delimiters were plain text.
 const MAX_DEPTH: usize = 16;
 
+/// The URL scheme of a link destination (`https` in `https://x`, `mailto`),
+/// if it has one. A single letter is a Windows drive (`C:\\x`), not a scheme.
+pub fn scheme(dest: &str) -> Option<&str> {
+    let scheme = &dest[..dest.find(':')?];
+    let valid = scheme.len() >= 2
+        && scheme.as_bytes()[0].is_ascii_alphabetic()
+        && scheme
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'.' | b'-'));
+    valid.then_some(scheme)
+}
+
 /// The bytes that can start something `scan_range` reacts to.
 static OPENS: [bool; 256] = {
     let mut table = [false; 256];
@@ -441,6 +453,18 @@ mod tests {
     fn links_inside_emphasis_and_next_to_text_are_found() {
         let line = "**[[a]]** and *[t](u)* and ~~<https://x.y>~~";
         assert_eq!(links(line).len(), 3);
+    }
+
+    #[test]
+    fn scheme_detection() {
+        assert_eq!(scheme("https://x.y"), Some("https"));
+        assert_eq!(scheme("mailto:a@b.c"), Some("mailto"));
+        assert_eq!(scheme("git+ssh://h/r"), Some("git+ssh"));
+        assert_eq!(scheme("C:\\dir\\f.md"), None, "a drive letter");
+        assert_eq!(scheme("notes/a.md"), None);
+        assert_eq!(scheme("a:b"), None, "one letter");
+        assert_eq!(scheme("1a:b"), None);
+        assert_eq!(scheme(""), None);
     }
 
     #[test]

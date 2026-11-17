@@ -1,0 +1,398 @@
+//! Resolves a link's destination to something the app can open. Wikilinks
+//! resolve by name (`Vault::resolve_wikilink`); this module handles the
+//! path-style destinations of `[text](dest)` and `<url>`.
+//!
+//! A note can contain any destination, so the rules are strict: nothing that
+//! leaves the vault root is ever returned, symlinks included.
+
+use std::path::PathBuf;
+
+use crate::link_scan::scheme;
+use crate::vault::Vault;
+
+/// A destination longer than this is not a path anyone wrote by hand.
+const MAX_DEST_BYTES: usize = 4096;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LinkTarget {
+    /// A note in the vault, by id.
+    Note(String),
+    /// Another file inside the vault (a PDF, an image), by absolute path.
+    File(PathBuf),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PathLinkError {
+    /// Only a `#fragment` or `?query`: it points into the current note.
+    SameNote,
+    /// Has a URL scheme (`https:`, `mailto:`); the caller decides what to do.
+    External,
+    /// Resolves to somewhere outside the vault.
+    OutsideVault,
+    /// Nothing there, or a directory, or not valid text.
+    NotFound,
+}
+
+/// What follows the path in a destination: `#heading` or `?query`.
+pub fn split_fragment(dest: &str) -> (&str, Option<&str>) {
+    match dest.find(['#', '?']) {
+        Some(at) => (&dest[..at], Some(&dest[at + 1..]).filter(|f| !f.is_empty())),
+        None => (dest, None),
+    }
+}
+
+/// Decodes `%20`-style escapes. `None` when an escape is malformed or the
+/// result is not UTF-8.
+pub fn percent_decode(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hex = s.get(i + 1..i + 3)?;
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// `base` (a vault-relative directory, `/`-separated) joined with `rel`,
+/// with `.` and `..` resolved lexically. `None` if `..` climbs above the root.
+fn normalize(base: &str, rel: &str) -> Option<Vec<String>> {
+    let mut parts: Vec<String> = base
+        .split('/')
+        .filter(|p| !p.is_empty())
+        .map(str::to_owned)
+        .collect();
+    for part in rel.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop()?;
+            }
+            other => parts.push(other.to_owned()),
+        }
+    }
+    Some(parts)
+}
+
+impl Vault {
+    /// Resolves the destination of a `[text](dest)` link written in note
+    /// `from_note_id`. Relative paths are tried against the note's folder,
+    /// then against the vault root (a leading `/` means the root only). A
+    /// `.md` path or an extension-less one that names a note gives
+    /// [`LinkTarget::Note`]; any other existing file inside the vault gives
+    /// [`LinkTarget::File`].
+    pub fn resolve_path_link(
+        &self,
+        from_note_id: &str,
+        dest: &str,
+    ) -> Result<LinkTarget, PathLinkError> {
+        if dest.len() > MAX_DEST_BYTES {
+            return Err(PathLinkError::NotFound);
+        }
+        if scheme(dest).is_some() {
+            return Err(PathLinkError::External);
+        }
+        let (path, _) = split_fragment(dest);
+        if path.is_empty() {
+            return Err(PathLinkError::SameNote);
+        }
+        let decoded = percent_decode(path).ok_or(PathLinkError::NotFound)?;
+        if decoded.contains('\0') || decoded.contains('\\') {
+            return Err(PathLinkError::NotFound);
+        }
+        let note_dir = from_note_id.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let bases: &[&str] = if decoded.starts_with('/') {
+            &[""]
+        } else {
+            &[note_dir, ""]
+        };
+        let mut escaped = false;
+        for base in bases {
+            match normalize(base, &decoded) {
+                Some(parts) if !parts.is_empty() => {
+                    if let Some(found) = self.lookup(&parts) {
+                        return found;
+                    }
+                }
+                Some(_) => {}
+                None => escaped = true,
+            }
+        }
+        Err(if escaped {
+            PathLinkError::OutsideVault
+        } else {
+            PathLinkError::NotFound
+        })
+    }
+
+    /// `None` when `parts` names nothing here, so the caller tries its next base.
+    fn lookup(&self, parts: &[String]) -> Option<Result<LinkTarget, PathLinkError>> {
+        let joined = parts.join("/");
+        if joined.len() > 3 && joined[joined.len() - 3..].eq_ignore_ascii_case(".md") {
+            let id = &joined[..joined.len() - 3];
+            return self
+                .notes
+                .contains_key(id)
+                .then(|| Ok(LinkTarget::Note(id.to_owned())));
+        }
+        let path = parts.iter().fold(self.root.clone(), |p, part| p.join(part));
+        if !path.is_file() {
+            // No such file: an extension-less link may still name a note.
+            return self
+                .notes
+                .contains_key(&joined)
+                .then_some(Ok(LinkTarget::Note(joined)));
+        }
+        // A symlink inside the vault must not lead out of it.
+        let (Ok(real), Ok(root)) = (path.canonicalize(), self.root.canonicalize()) else {
+            return Some(Err(PathLinkError::NotFound));
+        };
+        Some(if real.starts_with(&root) {
+            Ok(LinkTarget::File(real))
+        } else {
+            Err(PathLinkError::OutsideVault)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn vault() -> (tempfile::TempDir, Vault) {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        fs::create_dir_all(root.join("sub/deep")).unwrap();
+        fs::write(root.join("Top.md"), "top").unwrap();
+        fs::write(root.join("sub/Child.md"), "child").unwrap();
+        fs::write(root.join("sub/deep/Leaf.md"), "leaf").unwrap();
+        fs::write(root.join("sub/doc.pdf"), "pdf").unwrap();
+        fs::write(root.join("sub/my file.png"), "png").unwrap();
+        let vault = Vault::open(root).unwrap();
+        (dir, vault)
+    }
+
+    fn note(id: &str) -> Result<LinkTarget, PathLinkError> {
+        Ok(LinkTarget::Note(id.into()))
+    }
+
+    #[test]
+    fn relative_paths_resolve_from_the_notes_folder_then_the_root() {
+        let (_dir, v) = vault();
+        assert_eq!(
+            v.resolve_path_link("sub/Child", "deep/Leaf.md"),
+            note("sub/deep/Leaf")
+        );
+        assert_eq!(
+            v.resolve_path_link("sub/deep/Leaf", "../Child.md"),
+            note("sub/Child")
+        );
+        assert_eq!(v.resolve_path_link("sub/Child", "../Top.md"), note("Top"));
+        assert_eq!(v.resolve_path_link("sub/Child", "/Top.md"), note("Top"));
+        // Not next to the note, but a vault-relative path.
+        assert_eq!(
+            v.resolve_path_link("sub/Child", "sub/deep/Leaf.md"),
+            note("sub/deep/Leaf")
+        );
+        assert_eq!(
+            v.resolve_path_link("Top", "./sub/Child.md"),
+            note("sub/Child")
+        );
+    }
+
+    #[test]
+    fn extension_is_optional_for_notes_and_case_of_md_is_ignored() {
+        let (_dir, v) = vault();
+        assert_eq!(v.resolve_path_link("Top", "sub/Child"), note("sub/Child"));
+        assert_eq!(
+            v.resolve_path_link("Top", "sub/Child.MD"),
+            note("sub/Child")
+        );
+    }
+
+    #[test]
+    fn fragments_queries_and_percent_escapes_are_handled() {
+        let (_dir, v) = vault();
+        assert_eq!(
+            v.resolve_path_link("Top", "sub/Child.md#Heading"),
+            note("sub/Child")
+        );
+        assert_eq!(
+            v.resolve_path_link("Top", "sub/Child.md?x=1"),
+            note("sub/Child")
+        );
+        assert_eq!(
+            v.resolve_path_link("Top", "#Heading"),
+            Err(PathLinkError::SameNote)
+        );
+        assert_eq!(
+            v.resolve_path_link("Top", "?q"),
+            Err(PathLinkError::SameNote)
+        );
+        let file = v.resolve_path_link("Top", "sub/my%20file.png").unwrap();
+        assert!(matches!(file, LinkTarget::File(p) if p.ends_with("sub/my file.png")));
+        assert_eq!(
+            v.resolve_path_link("Top", "sub/%zz.md"),
+            Err(PathLinkError::NotFound)
+        );
+        assert_eq!(
+            v.resolve_path_link("Top", "sub/%ff.md"),
+            Err(PathLinkError::NotFound)
+        );
+    }
+
+    #[test]
+    fn other_files_inside_the_vault_resolve_to_a_path() {
+        let (dir, v) = vault();
+        let want = dir.path().canonicalize().unwrap().join("sub/doc.pdf");
+        assert_eq!(
+            v.resolve_path_link("sub/Child", "doc.pdf"),
+            Ok(LinkTarget::File(want))
+        );
+    }
+
+    #[test]
+    fn schemes_are_external_and_missing_things_are_not_found() {
+        let (_dir, v) = vault();
+        for dest in [
+            "https://x.y",
+            "mailto:a@b.c",
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+        ] {
+            assert_eq!(
+                v.resolve_path_link("Top", dest),
+                Err(PathLinkError::External),
+                "{dest}"
+            );
+        }
+        for dest in [
+            "nope.md", "sub", "sub/", "sub/deep", "", "a\0b.md", "a\\b.md",
+        ] {
+            assert_ne!(v.resolve_path_link("Top", dest), note("Top"), "{dest}");
+            assert!(v.resolve_path_link("Top", dest).is_err(), "{dest}");
+        }
+    }
+
+    #[test]
+    fn nothing_outside_the_vault_is_ever_returned() {
+        let (dir, v) = vault();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.txt"), "s").unwrap();
+        for dest in ["../secret.txt", "../../etc/passwd", "sub/../../x", "/../x"] {
+            assert!(
+                matches!(
+                    v.resolve_path_link("Top", dest),
+                    Err(PathLinkError::OutsideVault | PathLinkError::NotFound)
+                ),
+                "{dest}"
+            );
+        }
+        assert_eq!(
+            v.resolve_path_link("Top", "../x"),
+            Err(PathLinkError::OutsideVault)
+        );
+        // An absolute path is read as vault-relative, so it cannot name /etc.
+        assert!(v.resolve_path_link("Top", "/etc/passwd").is_err());
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(
+                outside.path().join("secret.txt"),
+                dir.path().join("link.txt"),
+            )
+            .unwrap();
+            assert_eq!(
+                v.resolve_path_link("Top", "link.txt"),
+                Err(PathLinkError::OutsideVault),
+                "a symlink must not lead out of the vault"
+            );
+        }
+    }
+
+    #[test]
+    fn a_note_with_a_dot_in_its_name_resolves_without_an_extension() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("Meeting 2024.11.md"), "m").unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        assert_eq!(
+            v.resolve_path_link("x", "Meeting%202024.11"),
+            note("Meeting 2024.11")
+        );
+    }
+
+    #[test]
+    fn wikilinks_resolve_by_id_then_case_insensitively_by_title() {
+        let (_dir, v) = vault();
+        assert_eq!(v.resolve_wikilink("Top"), Some("Top"));
+        assert_eq!(v.resolve_wikilink("top"), Some("Top"));
+        assert_eq!(v.resolve_wikilink("Top.md"), Some("Top"));
+        assert_eq!(v.resolve_wikilink("Child"), Some("sub/Child"), "by title");
+        assert_eq!(v.resolve_wikilink("sub/child"), Some("sub/Child"));
+        assert_eq!(v.resolve_wikilink("Leaf"), Some("sub/deep/Leaf"));
+        assert_eq!(v.resolve_wikilink("Nope"), None);
+        assert_eq!(v.resolve_wikilink(""), None);
+    }
+
+    #[test]
+    fn an_ambiguous_wikilink_prefers_the_shortest_id_and_is_stable() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in ["a/b/Same.md", "z/Same.md", "a/Same.md", "Same.md"] {
+            let p = dir.path().join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "x").unwrap();
+        }
+        let v = Vault::open(dir.path()).unwrap();
+        assert_eq!(v.resolve_wikilink("same"), Some("Same"));
+        fs::remove_file(dir.path().join("Same.md")).unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        assert_eq!(
+            v.resolve_wikilink("same"),
+            Some("a/Same"),
+            "shorter, then alphabetical"
+        );
+    }
+
+    #[test]
+    fn backlinks_and_clicks_agree_on_an_ambiguous_title() {
+        let dir = tempfile::tempdir().unwrap();
+        for path in ["z/Same.md", "a/Same.md"] {
+            let p = dir.path().join(path);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, "x").unwrap();
+        }
+        fs::write(dir.path().join("Linker.md"), "[[Same]]").unwrap();
+        let v = Vault::open(dir.path()).unwrap();
+        let clicked = v.resolve_wikilink("Same").unwrap().to_owned();
+        let backlinks = v.backlinks();
+        assert_eq!(backlinks.get(&clicked), Some(&vec!["Linker".to_owned()]));
+        assert_eq!(backlinks.len(), 1);
+    }
+
+    #[test]
+    fn oversized_destinations_are_rejected() {
+        let (_dir, v) = vault();
+        let long = "a/".repeat(MAX_DEST_BYTES);
+        assert_eq!(
+            v.resolve_path_link("Top", &long),
+            Err(PathLinkError::NotFound)
+        );
+    }
+
+    #[test]
+    fn helpers() {
+        assert_eq!(split_fragment("a.md#h"), ("a.md", Some("h")));
+        assert_eq!(split_fragment("a.md?q#h"), ("a.md", Some("q#h")));
+        assert_eq!(split_fragment("a.md"), ("a.md", None));
+        assert_eq!(percent_decode("a%20b%C3%A9"), Some("a bé".into()));
+        assert_eq!(percent_decode("100%"), None);
+        assert_eq!(normalize("a/b", "../c"), Some(vec!["a".into(), "c".into()]));
+        assert_eq!(normalize("", "../c"), None);
+    }
+}

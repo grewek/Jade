@@ -1,3 +1,4 @@
+use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -269,25 +270,52 @@ impl Vault {
     }
 
     /// Maps each note's lowercased title and id to its id, for `resolve`'s
-    /// case-insensitive fallback.
+    /// case-insensitive fallback. When several notes share a key, the
+    /// preferred one wins (see [`preferred`]), so the answer does not depend
+    /// on `HashMap` order.
     fn title_index(&self) -> HashMap<String, String> {
-        let mut index = HashMap::with_capacity(self.notes.len() * 2);
+        let mut index: HashMap<String, String> = HashMap::with_capacity(self.notes.len() * 2);
         for note in self.notes.values() {
-            index
-                .entry(note.title.to_lowercase())
-                .or_insert_with(|| note.id.clone());
-            index
-                .entry(note.id.to_lowercase())
-                .or_insert_with(|| note.id.clone());
+            for key in [note.title.to_lowercase(), note.id.to_lowercase()] {
+                match index.entry(key) {
+                    Entry::Occupied(mut slot) => {
+                        if preferred(&note.id, slot.get()) {
+                            slot.insert(note.id.clone());
+                        }
+                    }
+                    Entry::Vacant(slot) => {
+                        slot.insert(note.id.clone());
+                    }
+                }
+            }
         }
         index
     }
 
     fn resolve(&self, target: &str, index: &HashMap<String, String>) -> Option<String> {
+        let target = without_md(target);
         if self.notes.contains_key(target) {
             return Some(target.to_string());
         }
         index.get(&target.to_lowercase()).cloned()
+    }
+
+    /// The id of the note a wikilink `target` names: an exact id, else a
+    /// case-insensitive match on id or title (`[[note]]` finds `Note`,
+    /// `[[Note.md]]` finds `Note`). Among several matches the shortest id
+    /// wins, then the alphabetically first. Scans the notes, so call it on a
+    /// click, not per frame; `backlinks` uses the same rule.
+    pub fn resolve_wikilink(&self, target: &str) -> Option<&str> {
+        let target = without_md(target);
+        if let Some(note) = self.notes.get(target) {
+            return Some(&note.id);
+        }
+        let want = target.to_lowercase();
+        self.notes
+            .values()
+            .filter(|n| n.title.to_lowercase() == want || n.id.to_lowercase() == want)
+            .map(|n| n.id.as_str())
+            .reduce(|best, id| if preferred(id, best) { id } else { best })
     }
 
     /// Notes whose title or on-disk text contains `query` (case-insensitive).
@@ -398,6 +426,22 @@ fn contains_ascii_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
         i += 1;
     }
     false
+}
+
+/// Whether note id `a` beats `b` when a link matches both: shorter first, then
+/// alphabetical.
+fn preferred(a: &str, b: &str) -> bool {
+    (a.len(), a) < (b.len(), b)
+}
+
+/// `target` without a trailing `.md`, which a link may carry.
+fn without_md(target: &str) -> &str {
+    match target.len().checked_sub(3) {
+        Some(at) if target.is_char_boundary(at) && target[at..].eq_ignore_ascii_case(".md") => {
+            &target[..at]
+        }
+        _ => target,
+    }
 }
 
 fn not_found(id: &str) -> std::io::Error {
