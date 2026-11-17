@@ -214,16 +214,13 @@ mod tests {
     use std::fs;
 
     fn vault() -> (tempfile::TempDir, Vault) {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path();
-        fs::create_dir_all(root.join("sub/deep")).unwrap();
-        fs::write(root.join("Top.md"), "top").unwrap();
-        fs::write(root.join("sub/Child.md"), "child").unwrap();
-        fs::write(root.join("sub/deep/Leaf.md"), "leaf").unwrap();
-        fs::write(root.join("sub/doc.pdf"), "pdf").unwrap();
-        fs::write(root.join("sub/my file.png"), "png").unwrap();
-        let vault = Vault::open(root).unwrap();
-        (dir, vault)
+        crate::test_support::vault_with(&[
+            ("Top.md", "top"),
+            ("sub/Child.md", "child"),
+            ("sub/deep/Leaf.md", "leaf"),
+            ("sub/doc.pdf", "pdf"),
+            ("sub/my file.png", "png"),
+        ])
     }
 
     fn note(id: &str) -> Result<LinkTarget, PathLinkError> {

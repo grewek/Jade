@@ -6,6 +6,8 @@ mod note;
 mod note_name;
 mod rename;
 mod resolve;
+#[cfg(test)]
+mod test_support;
 mod vault;
 
 pub use context::{LinkContext, SourceContexts};

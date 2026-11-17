@@ -320,16 +320,7 @@ mod tests {
     use super::*;
     use std::fs;
 
-    fn vault(files: &[(&str, &str)]) -> (tempfile::TempDir, Vault) {
-        let dir = tempfile::tempdir().unwrap();
-        for (path, text) in files {
-            let full = dir.path().join(path);
-            fs::create_dir_all(full.parent().unwrap()).unwrap();
-            fs::write(full, text).unwrap();
-        }
-        let vault = Vault::open(dir.path()).unwrap();
-        (dir, vault)
-    }
+    use crate::test_support::vault_with as vault;
 
     fn read(dir: &tempfile::TempDir, path: &str) -> String {
         fs::read_to_string(dir.path().join(path)).unwrap()
