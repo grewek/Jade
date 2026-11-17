@@ -9,6 +9,7 @@ use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
 use super::link_table::LinkTable;
+use jade_core::link_scan::{LinkKind, scan_line};
 
 /// The `TextEdit` for a plain insertion of `inserted_len` bytes replacing
 /// `old_range` (the selection, or the collapsed cursor if none) — call sites
@@ -42,9 +43,14 @@ fn edit_for_deletion(old_selection: Option<Range<usize>>) -> Option<TextEdit> {
 /// `InputEvent::Change` on a `gpui-component` input, to autosave the open
 /// note and refresh anything (e.g. the backlinks panel) that depends on its
 /// live content.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EditorEvent {
     Changed,
+    /// A link was clicked to follow it; the editor has not moved its cursor.
+    OpenLink {
+        kind: LinkKind,
+        dest: String,
+    },
 }
 
 /// The entity backing one editor view — owns the buffer and the focus handle
@@ -133,6 +139,34 @@ impl Editor {
             doc_stats,
             link_table,
         }
+    }
+
+    /// The link under raw byte `offset`, as the event that follows it. The
+    /// destination is re-parsed out of the line, since the table stores spans only.
+    pub(super) fn link_event_at(&self, offset: usize) -> Option<EditorEvent> {
+        let doc = self.document_cache.borrow();
+        let line = doc.line_at(offset);
+        let start = doc.line_start_byte(line);
+        let stored = *self.link_table.at(line, offset - start)?;
+        let text = self.buffer.text();
+        let line_text = &text[start..doc.line_end_byte(line)];
+        let mut event = None;
+        scan_line(line_text, |link| {
+            if link.span.start == stored.start as usize && link.kind == stored.kind {
+                event = Some(EditorEvent::OpenLink {
+                    kind: link.kind,
+                    dest: line_text[link.dest].to_string(),
+                });
+            }
+        });
+        event
+    }
+
+    /// Whether `offset` lies on the line the cursor is on (shown as raw
+    /// Markdown, so a click there edits instead of following).
+    pub(super) fn on_cursor_line(&self, offset: usize) -> bool {
+        let doc = self.document_cache.borrow();
+        doc.line_at(offset) == doc.line_at(self.buffer.cursor())
     }
 
     /// How many links the note has (see `link_table`).

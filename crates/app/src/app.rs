@@ -13,7 +13,8 @@ use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectStat
 use gpui_kit::component::{IconName, IndexPath, Sizable as _, Theme, WindowExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
-use jade_core::{Vault, search_targets};
+use jade_core::link_scan::LinkKind;
+use jade_core::{LinkTarget, Vault, search_targets};
 
 /// One entry of the Settings theme dropdown; the value is the theme id.
 #[derive(Clone)]
@@ -261,20 +262,59 @@ impl JadeApp {
 
     /// Reads `id` from the vault into a fresh editor; the editor takes the only
     /// in-memory copy of the text.
-    fn new_tab(&mut self, id: &str, cx: &mut Context<Self>) -> Option<Tab> {
+    fn new_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> Option<Tab> {
         let text = self.vault.read_note(id).ok()?;
         let editor = cx.new(|cx| Editor::new(text, cx));
-        let subscription = cx.subscribe(&editor, |this, editor, event, cx| {
-            if matches!(event, EditorEvent::Changed) {
-                this.note_changed(editor.entity_id(), cx);
-            }
-        });
+        let subscription =
+            cx.subscribe_in(
+                &editor,
+                window,
+                |this, editor, event, window, cx| match event {
+                    EditorEvent::Changed => this.note_changed(editor.entity_id(), cx),
+                    EditorEvent::OpenLink { kind, dest } => {
+                        this.follow_link(*kind, dest, window, cx)
+                    }
+                },
+            );
         Some(Tab {
             note_id: id.to_string(),
             editor,
             dirty: false,
             _subscription: subscription,
         })
+    }
+
+    /// Follows a clicked link: notes open in a tab, web and mail links go to
+    /// the system handler, other files inside the vault open with their
+    /// default app. Anything unresolved, outside the vault or with another
+    /// scheme is ignored.
+    fn follow_link(
+        &mut self,
+        kind: LinkKind,
+        dest: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if kind == LinkKind::Wiki {
+            if let Some(id) = self.vault.resolve_wikilink(dest).map(str::to_owned) {
+                self.open_note(id, window, cx);
+            }
+            return;
+        }
+        match jade_core::link_scan::scheme(dest) {
+            Some("http" | "https" | "mailto") => cx.open_url(dest),
+            Some(_) => {}
+            None => {
+                let Some(from) = self.active().map(|tab| tab.note_id.clone()) else {
+                    return;
+                };
+                match self.vault.resolve_path_link(&from, dest) {
+                    Ok(LinkTarget::Note(id)) => self.open_note(id, window, cx),
+                    Ok(LinkTarget::File(path)) => cx.open_with_system(&path),
+                    Err(_) => {}
+                }
+            }
+        }
     }
 
     fn focus_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
@@ -298,7 +338,7 @@ impl JadeApp {
         // `EditorEvent::Changed` from the last keystroke could still be queued, and
         // without this, switching notes right after typing would drop it.
         self.persist_tab(active, cx);
-        let Some(tab) = self.new_tab(&id, cx) else {
+        let Some(tab) = self.new_tab(&id, window, cx) else {
             return;
         };
         self.tabs[active] = tab;
@@ -311,7 +351,7 @@ impl JadeApp {
         if let Some(ix) = self.tab_of(&id) {
             return self.activate_tab(ix, window, cx);
         }
-        let Some(tab) = self.new_tab(&id, cx) else {
+        let Some(tab) = self.new_tab(&id, window, cx) else {
             return;
         };
         self.tabs.push(tab);
@@ -424,7 +464,7 @@ impl JadeApp {
             let Some(new_id) = moved(&self.tabs[ix].note_id) else {
                 continue;
             };
-            match self.new_tab(&new_id, cx) {
+            match self.new_tab(&new_id, window, cx) {
                 Some(tab) => {
                     self.tabs[ix] = tab;
                     reloaded_active |= self.active_tab == Some(ix);
@@ -4785,6 +4825,64 @@ mod tests {
             app.tabs[0].editor.read(cx).buffer().text().to_string()
         });
         assert_eq!(text, "A", "the renamed tab shows the note's content");
+    }
+
+    /// Clicks line `line` of the active editor, one pixel in from its left edge.
+    fn click_editor_line(cx: &mut TestAppContext, window: AnyWindowHandle, line: usize) {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let y = window.line_height() * line as f32 + px(1.);
+            window.click_at("editor", point(px(1.), y), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_rendered_wikilink_opens_its_note_without_moving_the_cursor(
+        cx: &mut TestAppContext,
+    ) {
+        let dir = three_note_vault();
+        std::fs::write(
+            dir.path().join("A.md"),
+            "start\n[[B]]\n[[Nowhere]]\n[t](C.md)",
+        )
+        .unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "A", 1);
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into()], Some(0)));
+        let cursor = |cx: &mut TestAppContext, app: &Entity<JadeApp>| {
+            app.read_with(cx, |app, cx| app.tabs[0].editor.read(cx).buffer().cursor())
+        };
+        let before = cursor(cx, &app);
+
+        // An unresolved target does nothing at all, not even a cursor move.
+        click_editor_line(cx, window, 2);
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into()], Some(0)));
+        assert_eq!(cursor(cx, &app), before);
+
+        // A wikilink opens its note in place of the active one.
+        click_editor_line(cx, window, 1);
+        assert_eq!(tabs_of(cx, &app), (vec!["B".into()], Some(0)));
+        let after = cursor(cx, &app);
+        assert_eq!(after, 0, "the new note starts with its cursor at the top");
+
+        // A path link to a note does the same.
+        open_via_menu(cx, window, "A", 1);
+        assert_eq!(tabs_of(cx, &app), (vec!["B".into(), "A".into()], Some(1)));
+        click_editor_line(cx, window, 3);
+        assert_eq!(tabs_of(cx, &app), (vec!["B".into(), "C".into()], Some(1)));
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_link_on_the_cursor_line_edits_instead_of_following(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        std::fs::write(dir.path().join("A.md"), "[[B]]\nother").unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "A", 1);
+        // The cursor starts on line 0, which therefore shows raw Markdown.
+        click_editor_line(cx, window, 0);
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into()], Some(0)));
     }
 
     #[gpui_kit::test]

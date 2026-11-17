@@ -1598,6 +1598,18 @@ fn register_mouse_handling(
                     window,
                 )
             };
+            // On a rendered line a plain click follows a link; on the cursor's
+            // own (raw) line only Ctrl/Cmd+click does, so the text stays editable.
+            let follow = {
+                let editor = editor_entity.read(cx);
+                (event.modifiers.secondary() || !editor.on_cursor_line(offset))
+                    .then(|| editor.link_event_at(offset))
+                    .flatten()
+            };
+            if let Some(follow) = follow {
+                editor_entity.update(cx, |_, cx| cx.emit(follow));
+                return;
+            }
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, false);
                 editor.is_dragging = true;
