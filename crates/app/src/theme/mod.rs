@@ -2,6 +2,7 @@
 //! `paths` and `builtin` are GPUI-free; `palette` and `engine` are the GPUI
 //! side. Format: `assets/themes/FORMAT.md`.
 
+mod apply;
 mod builtin;
 mod contrast;
 mod engine;

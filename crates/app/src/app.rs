@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 use crate::debug_server::{self, targets::DebugName};
 use crate::text_editor::{Editor, EditorEvent, InsertTab};
-use crate::theme::{ConfigDirs, ThemeEngine};
+use crate::theme::{Alpha, ConfigDirs, Role, ThemeEngine};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogFooter;
@@ -566,13 +566,14 @@ impl JadeApp {
     /// needs to call back into `JadeApp`'s own state, so there's no reason
     /// to thread an `Entity<Self>` through it.
     fn open_settings_dialog(window: &mut Window, cx: &mut App) {
-        window.open_dialog(cx, |dialog, _window, _cx| {
+        let muted = ThemeEngine::color(cx, Role::TextMuted);
+        window.open_dialog(cx, move |dialog, _window, _cx| {
             dialog.title("Settings").child(
                 div()
                     .id("settings-panel")
                     .test_support()
                     .p_4()
-                    .text_color(rgb(0x888888))
+                    .text_color(muted)
                     .child("Settings aren't implemented yet — themes, text size, and general editor preferences are coming soon.")
                     .debug_name("settings-panel"),
             )
@@ -983,7 +984,7 @@ impl JadeApp {
             .rounded_md()
             .child(title.to_string());
         if is_selected {
-            item = item.bg(rgb(0xd0d0f0));
+            item = item.bg(ThemeEngine::color(cx, Role::SurfaceHover));
         }
         item = item.on_click(cx.listener(move |this, _event, window, cx| {
             this.open_note(item_id.clone(), window, cx);
@@ -1058,9 +1059,13 @@ impl JadeApp {
         );
 
         if backlink_entries.is_empty() {
-            backlinks_panel =
-                backlinks_panel.child(div().text_color(rgb(0x888888)).child("No backlinks yet."));
+            backlinks_panel = backlinks_panel.child(
+                div()
+                    .text_color(ThemeEngine::color(cx, Role::TextMuted))
+                    .child("No backlinks yet."),
+            );
         } else {
+            let row_hover = ThemeEngine::color(cx, Role::Surface);
             for (source_id, title) in backlink_entries {
                 let target_id = source_id.clone();
                 backlinks_panel = backlinks_panel.child(
@@ -1071,7 +1076,7 @@ impl JadeApp {
                         .py_1()
                         .rounded_md()
                         .cursor_pointer()
-                        .hover(|style| style.bg(rgb(0xe8e8f8)))
+                        .hover(move |style| style.bg(row_hover))
                         .child(title)
                         .on_click(cx.listener(move |this, _event, window, cx| {
                             this.open_note(target_id.clone(), window, cx);
@@ -1086,8 +1091,8 @@ impl JadeApp {
 
     /// The row of open notes above the editor.
     fn render_tab_bar(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = Theme::global(cx);
-        let (bar, border) = (theme.tab_bar, theme.border);
+        let bar = ThemeEngine::color(cx, Role::BackgroundSecondary);
+        let border = ThemeEngine::color(cx, Role::Border);
         let tabs: Vec<AnyElement> = (0..self.tabs.len())
             .map(|ix| self.render_tab(ix, cx))
             .collect();
@@ -1139,8 +1144,8 @@ impl JadeApp {
     fn render_status_bar(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
         let editor = self.editor()?.read(cx);
         let (words, chars) = (editor.word_count(), editor.char_count());
-        let theme = Theme::global(cx);
-        let (border, muted) = (theme.border, theme.muted_foreground);
+        let border = ThemeEngine::color(cx, Role::Border);
+        let muted = ThemeEngine::color(cx, Role::TextMuted);
         let plural = |n: usize, one: &str, many: &str| {
             format!("{} {}", group_digits(n), if n == 1 { one } else { many })
         };
@@ -1178,11 +1183,17 @@ impl JadeApp {
     /// One tab: click to show it, the cross or a middle click to close it.
     fn render_tab(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let tab = &self.tabs[ix];
-        let theme = Theme::global(cx);
-        let (background, foreground, border) = if self.active_tab == Some(ix) {
-            (theme.tab_active, theme.tab_active_foreground, theme.border)
+        let border = ThemeEngine::color(cx, Role::Border);
+        let (background, foreground) = if self.active_tab == Some(ix) {
+            (
+                ThemeEngine::color(cx, Role::Background),
+                ThemeEngine::color(cx, Role::Text),
+            )
         } else {
-            (theme.tab, theme.muted_foreground, theme.border)
+            (
+                gpui_kit::transparent_black(),
+                ThemeEngine::color(cx, Role::TextMuted),
+            )
         };
         let title = self
             .vault
@@ -1241,7 +1252,8 @@ impl JadeApp {
             SidebarSide::Left => ("sidebar-resize", self.sidebar_width),
             SidebarSide::Right => ("backlinks-resize", self.backlinks_width),
         };
-        let accent = Theme::global(cx).primary;
+        let hover = ThemeEngine::faded(cx, Role::Accent, Alpha::AccentHover);
+        let pressed = ThemeEngine::faded(cx, Role::Accent, Alpha::AccentActive);
         let handle = div()
             .id(id)
             .test_support()
@@ -1250,8 +1262,8 @@ impl JadeApp {
             .bottom_0()
             .w(RESIZE_HANDLE_WIDTH)
             .cursor_col_resize()
-            .hover(move |style| style.bg(accent.opacity(0.4)))
-            .active(move |style| style.bg(accent.opacity(0.7)));
+            .hover(move |style| style.bg(hover))
+            .active(move |style| style.bg(pressed));
         let handle = match side {
             SidebarSide::Left => handle.right_0(),
             SidebarSide::Right => handle.left_0(),
@@ -1309,7 +1321,9 @@ impl JadeApp {
             .cursor_pointer()
             .child(label.to_string());
         if is_active {
-            item = item.bg(rgb(0xd0d0f0)).font_weight(FontWeight::BOLD);
+            item = item
+                .bg(ThemeEngine::color(cx, Role::SurfaceHover))
+                .font_weight(FontWeight::BOLD);
         }
         item.on_click(cx.listener(move |this, _event, _window, cx| {
             this.sidebar_tab = tab;
@@ -1367,7 +1381,7 @@ impl JadeApp {
         if query.is_empty() {
             panel = panel.child(
                 div()
-                    .text_color(rgb(0x888888))
+                    .text_color(ThemeEngine::color(cx, Role::TextMuted))
                     .child("Type to search notes by title or content."),
             );
         } else {
@@ -1379,8 +1393,13 @@ impl JadeApp {
                     .child(format!("Results ({})", results.len())),
             );
             if results.is_empty() {
-                panel = panel.child(div().text_color(rgb(0x888888)).child("No matching notes."));
+                panel = panel.child(
+                    div()
+                        .text_color(ThemeEngine::color(cx, Role::TextMuted))
+                        .child("No matching notes."),
+                );
             } else {
+                let row_hover = ThemeEngine::color(cx, Role::Surface);
                 for (id, title) in results {
                     let target_id = id.clone();
                     panel = panel.child(
@@ -1391,7 +1410,7 @@ impl JadeApp {
                             .py_1()
                             .rounded_md()
                             .cursor_pointer()
-                            .hover(|style| style.bg(rgb(0xe8e8f8)))
+                            .hover(move |style| style.bg(row_hover))
                             .child(title)
                             .on_click(cx.listener(move |this, _event, window, cx| {
                                 this.open_note(target_id.clone(), window, cx);
@@ -1463,7 +1482,9 @@ impl Render for JadeApp {
         };
 
         // Without an explicit color the 1px borders below are not visible.
-        let divider = Theme::global(cx).border;
+        let divider = ThemeEngine::color(cx, Role::Border);
+        let secondary = ThemeEngine::color(cx, Role::BackgroundSecondary);
+        let tertiary = ThemeEngine::color(cx, Role::BackgroundTertiary);
         let sidebar = div()
             .relative()
             .flex()
@@ -1472,6 +1493,7 @@ impl Render for JadeApp {
             .gap_1()
             .w(self.sidebar_width)
             .p_2()
+            .bg(secondary)
             .border_r_1()
             .border_color(divider)
             .child(tab_bar)
@@ -1544,6 +1566,7 @@ impl Render for JadeApp {
             .flex_col()
             .flex_none()
             .p_1()
+            .bg(tertiary)
             .border_r_1()
             .border_color(divider)
             .child(toggle);
@@ -1564,6 +1587,7 @@ impl Render for JadeApp {
             .flex_col()
             .flex_none()
             .p_1()
+            .bg(tertiary)
             .border_l_1()
             .border_color(divider)
             .child(backlinks_toggle);
@@ -1575,6 +1599,7 @@ impl Render for JadeApp {
             .w(self.backlinks_width)
             .flex_none()
             .p_2()
+            .bg(secondary)
             .border_l_1()
             .border_color(divider)
             .children(
@@ -1588,6 +1613,8 @@ impl Render for JadeApp {
             .flex()
             .flex_row()
             .size_full()
+            .bg(ThemeEngine::color(cx, Role::Background))
+            .text_color(ThemeEngine::color(cx, Role::Text))
             .on_drag_move(
                 cx.listener(|this, event: &DragMoveEvent<SidebarSide>, _window, cx| {
                     let side = *event.drag(cx);
@@ -1692,6 +1719,7 @@ mod tests {
         DeleteNote, Editor, InsertTab, JadeApp, OpenCommandPalette, RenameNote,
         SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN,
     };
+    use crate::theme::{Role, ThemeEngine};
     use gpui_kit::component::WindowExt;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
@@ -1709,7 +1737,10 @@ mod tests {
         cx: &mut TestAppContext,
         vault_path: PathBuf,
     ) -> (AnyWindowHandle, Entity<JadeApp>) {
-        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            ThemeEngine::install(None, cx);
+        });
         cx.update(|cx| {
             // Dialog entrance animations run on the real clock: under CPU load
             // the "ok" button was still sliding when a test clicked its centre.
@@ -4418,7 +4449,7 @@ mod tests {
     fn sidebar_dividers_use_a_visible_theme_color(cx: &mut TestAppContext) {
         let dir = temp_vault();
         let (_window, _app) = open_app(cx, dir.path().to_path_buf());
-        let border = cx.update(|cx| gpui_kit::component::Theme::global(cx).border);
+        let border = cx.update(|cx| ThemeEngine::color(cx, Role::Border));
         assert!(border.a > 0.1, "divider would be invisible: {border:?}");
     }
 

@@ -3,6 +3,7 @@
 //! GPUI's test platform, so a frame runs the real layout and paint code
 //! without a GPU or a visible window. Needs the `bench-support` feature.
 
+use crate::theme::ThemeEngine;
 use std::path::PathBuf;
 
 use gpui_kit::test::TestWindowExt;
@@ -42,7 +43,10 @@ impl HeadlessApp {
         }
 
         let cx = TestAppContext::single();
-        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            ThemeEngine::install(None, cx);
+        });
         let vault = dir.clone();
         let opened = cx.update(|cx| {
             cx.bind_keys([KeyBinding::new("tab", InsertTab, Some("TextEditor"))]);

@@ -115,7 +115,7 @@ Left derived (not set): all `button.*` (they follow `secondary`, `primary`, `dan
 
 ### Open items
 
-1. **Stock leaks.** Any key neither set nor derivable stays stock. Phase 3 adds a test that resolves a theme whose roles are all unlike the stock colors and fails on any resulting color that still equals the stock value (with an explicit allow-list), so a leak is caught, not noticed by eye.
+1. **Stock leaks.** Any key neither set nor derivable stays stock. Done: a test applies Mocha and Latte and fails if any resulting widget color still equals the stock one (verified to catch a dropped mapping), and another checks every mapped key is a real gpui-component key. `link` and `ring` derive correctly without being mapped.
 2. **Dialog scrim.** Done: role `scrim` (black in Jade Light, `crust` elsewhere) with `alpha.overlay` 0.50.
 3. **Jade Light buttons change** (decided: try the lavender, judge it when seen). Buttons follow `secondary` = `surface` = `#E8E8F8`, where today they are gray `#E4E4E4` (`#D3D3D3` pressed). That follows from "one color for the same element", so Jade Light will look slightly lavender on buttons; if that is unwanted, Jade Light must override `surface` and give up the lavender row hover.
 4. **One source of truth.** Jade's own UI stops reading gpui-component's `Theme` colors and reads the engine's palette, so a role cannot be answered by two places.

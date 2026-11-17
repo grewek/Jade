@@ -476,6 +476,7 @@ mod engine_setup {
         let dirs = dirs_in(&tmp);
         write(&dirs.config_file(), "theme = \"catppuccin-mocha\"");
         cx.update(|cx| {
+            gpui_kit::init(cx);
             let notices = ThemeEngine::install(Some(dirs), cx);
             assert!(notices.iter().all(|n| n.contains("warning")), "{notices:?}");
             let engine = ThemeEngine::global(cx);
@@ -485,5 +486,105 @@ mod engine_setup {
             assert_eq!(bg, expected);
             let _ = cx.new(|_| ());
         });
+    }
+
+    use gpui_kit::component::{Theme, ThemeColor};
+
+    /// Debug-prints a `ThemeColor` as `field -> value` lines.
+    fn fields(colors: &ThemeColor) -> std::collections::BTreeMap<String, String> {
+        let text = format!("{colors:#?}");
+        let mut map = std::collections::BTreeMap::new();
+        let mut current: Option<String> = None;
+        for line in text.lines().skip(1) {
+            if let Some(rest) = line.strip_prefix("    ").filter(|r| !r.starts_with(' ')) {
+                if let Some((name, value)) = rest.split_once(": ") {
+                    current = Some(name.to_owned());
+                    map.insert(name.to_owned(), value.to_owned());
+                    continue;
+                }
+            }
+            if let Some(name) = &current {
+                map.entry(name.clone())
+                    .and_modify(|v| v.push_str(line.trim()));
+            }
+        }
+        map
+    }
+
+    #[test]
+    fn every_mapped_key_is_a_real_config_key() {
+        let theme = crate::theme::ResolvedTheme::parse(&builtin::defaults(), super::SHIPPED[4].1)
+            .expect("mocha");
+        let config = crate::theme::apply::build_config(&theme).expect("builds");
+        let value = toml::Value::try_from(&config).expect("serializes");
+        let colors = value
+            .get("colors")
+            .and_then(|c| c.as_table())
+            .expect("colors table");
+        for (key, _) in crate::theme::apply::MAPPING {
+            assert!(
+                colors.contains_key(*key),
+                "gpui-component ignored the key {key:?}"
+            );
+        }
+    }
+
+    #[gpui_kit::test]
+    fn applying_sets_widget_colors_and_leaves_no_stock_color(cx: &mut TestAppContext) {
+        for (id, stock) in [
+            ("catppuccin-mocha", ThemeColor::dark()),
+            ("catppuccin-latte", ThemeColor::light()),
+        ] {
+            let tmp = tempdir().expect("tmp");
+            let dirs = dirs_in(&tmp);
+            write(&dirs.config_file(), format!("theme = \"{id}\""));
+            cx.update(|cx| {
+                gpui_kit::init(cx);
+                ThemeEngine::install(Some(dirs), cx);
+                let theme = Theme::global(cx);
+                let engine = ThemeEngine::global(cx);
+                assert_eq!(
+                    theme.background,
+                    engine.palette().color(Role::Background),
+                    "{id}"
+                );
+                assert_eq!(theme.is_dark(), id.ends_with("mocha"));
+                let (got, stock) = (fields(&theme.colors), fields(&stock));
+                assert!(got.len() > 100, "parsed {} fields", got.len());
+                let leaks: Vec<&String> = got
+                    .iter()
+                    .filter(|(k, v)| stock.get(*k) == Some(*v))
+                    .map(|(k, _)| k)
+                    .collect();
+                assert!(leaks.is_empty(), "{id}: still stock: {leaks:?}");
+            });
+        }
+    }
+}
+
+/// Colors come from the theme. A literal in UI code would ignore the theme
+/// the user picked. `element.rs` joins this list when the editor is themed.
+#[test]
+fn ui_code_has_no_color_literals() {
+    const THEMED: &[(&str, &str)] = &[("app.rs", include_str!("../app.rs"))];
+    const FORBIDDEN: &[&str] = &[
+        "rgb(", "rgba(", "hsla(", "Hsla {", "white()", "black()", "0x",
+    ];
+    for (file, src) in THEMED {
+        let ui = src.split("#[cfg(test)]").next().unwrap_or_default();
+        for (n, line) in ui.lines().enumerate() {
+            let code = line
+                .split("//")
+                .next()
+                .unwrap_or_default()
+                .replace("transparent_black()", "");
+            for bad in FORBIDDEN {
+                assert!(
+                    !code.contains(bad),
+                    "{file}:{}: color literal `{bad}`: {line}",
+                    n + 1
+                );
+            }
+        }
     }
 }
