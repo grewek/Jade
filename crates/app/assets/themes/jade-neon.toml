@@ -1,0 +1,56 @@
+# Jade theme. Format: FORMAT.md. Dark jade ground with neon accents; mint is the
+# accent. The palette defines every Catppuccin name roles.toml uses, each mapped
+# to the Jade Neon color of the same hue, so roles resolve with few overrides.
+format_version = 1
+name = "Jade Neon"
+kind = "dark"
+
+[palette]
+# Ground, darkest to lightest
+crust    = "#050807"
+base     = "#0b100e"
+mantle   = "#111815"
+surface0 = "#16201b"
+surface1 = "#1e2b24"
+surface2 = "#27382f"
+overlay0 = "#3f574a"
+overlay1 = "#7a9386"
+overlay2 = "#8fa79a"
+subtext0 = "#a3b9ac"
+subtext1 = "#c2d6ca"
+text     = "#e3f1e8"
+
+# Hues: neon takes on Catppuccin's accent names
+rosewater = "#ffc9e3"
+flamingo  = "#ff9ed8"
+pink      = "#ff5cd6"
+mauve     = "#c77dff"
+red       = "#ff5c7a"
+maroon    = "#ff7a93"
+peach     = "#ff9f5c"
+yellow    = "#ffe53d"
+green     = "#3dffa2"   # Neon Mint, the brand accent
+teal      = "#2ef2c6"
+sky       = "#2be6f2"
+sapphire  = "#3dc8ff"
+blue      = "#5ca8ff"
+lavender  = "#a8b4ff"
+
+# The jade family (from the logo) and extras
+lime        = "#d4ff3d"
+jade_light  = "#9be8ba"
+jade        = "#3bae76"
+jade_deep   = "#1f8659"
+jade_shadow = "#123d2b"
+
+[overrides]
+# Mint is the accent, cursor and wikilink color; selections are tinted jade
+# rather than gray.
+accent         = "green"
+text_on_accent = "base"
+cursor         = "green"
+wikilink       = "green"
+selection      = "jade"
+
+[alpha]
+selection = 0.35

@@ -1,6 +1,6 @@
 # Jade theme format
 
-Themes are TOML files. `roles.toml` assigns every role a palette color once, so an element has the same role in every theme (a button is `surface`, a link is `link`). A theme file supplies the **palette** and may **override** individual roles. `jade-light.toml` is the look Jade has today; the rest are Catppuccin flavors, with roles assigned after Catppuccin's [style guide](https://github.com/catppuccin/catppuccin/blob/main/docs/style-guide.md).
+Themes are TOML files. `roles.toml` assigns every role a palette color once, so an element has the same role in every theme (a button is `surface`, a link is `link`). A theme file supplies the **palette** and may **override** individual roles. `jade-light.toml` is the look Jade has today, `jade-neon.toml` a dark jade theme with neon accents; the rest are Catppuccin flavors, with roles assigned after Catppuccin's [style guide](https://github.com/catppuccin/catppuccin/blob/main/docs/style-guide.md).
 
 ```toml
 # roles.toml: shared by every theme
@@ -78,6 +78,7 @@ Catppuccin's guide gives no ratios, so these were measured on the resolved theme
 
 - **Mocha, Macchiato, Frappe**: every text role is at least 4.5 except `text_subtle` (4.4, 4.1, 3.6).
 - **Latte**: its pastels fell to 2.3 to 4.4, so it overrides 11 roles (`text_muted`, `text_subtle`, `link`, `wikilink`, `code`, `info`, `tip`, `success`, `warning`, `neutral`, `accent`) with darkened versions of the same hues; all measured roles now reach 4.5.
+- **Jade Neon**: no overrides for contrast and no warnings; every measured role reaches 4.5.
 - **Jade Light** reproduces today's colors as they are; several are low (`link` 1.8, `tip` 1.9, `success` 2.2, `warning` 2.5).
 
 ## Mapping to gpui-component (`Theme::apply_config`)

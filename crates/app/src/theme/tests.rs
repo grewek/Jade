@@ -8,6 +8,10 @@ const SHIPPED: &[(&str, &str)] = &[
         include_str!("../../assets/themes/jade-light.toml"),
     ),
     (
+        "jade-neon",
+        include_str!("../../assets/themes/jade-neon.toml"),
+    ),
+    (
         "latte",
         include_str!("../../assets/themes/catppuccin-latte.toml"),
     ),
@@ -105,6 +109,17 @@ fn resolves_palette_overrides_and_alphas() {
     assert_eq!(jade.color(Role::Scrim), rgb("000000"));
     assert_eq!(jade.alpha(Alpha::Selection), 0.35);
     assert_eq!(jade.alpha(Alpha::Overlay), 0.5, "default kept");
+}
+
+#[test]
+fn jade_neon_is_dark_with_a_mint_accent() {
+    let neon = load("jade-neon");
+    assert_eq!(neon.kind, Kind::Dark);
+    assert_eq!(neon.color(Role::Accent), rgb("3dffa2"));
+    assert_eq!(neon.color(Role::Selection), rgb("3bae76"));
+    assert_eq!(neon.color(Role::Error), rgb("ff5c7a"), "default kept");
+    assert_eq!(neon.alpha(Alpha::Selection), 0.35);
+    assert!(neon.warnings.is_empty(), "{:?}", neon.warnings);
 }
 
 #[test]
@@ -396,9 +411,10 @@ mod engine_setup {
     fn user_file_shadows_a_builtin_and_adds_new_themes() {
         let tmp = tempdir().expect("tmp");
         let dirs = dirs_in(&tmp);
-        let custom = super::SHIPPED[4].1.replace("Catppuccin Mocha", "My Mocha");
+        let shipped = |name: &str| super::SHIPPED.iter().find(|(n, _)| *n == name).unwrap().1;
+        let custom = shipped("mocha").replace("Catppuccin Mocha", "My Mocha");
         user_theme(&dirs, "catppuccin-mocha", &custom);
-        user_theme(&dirs, "mine", super::SHIPPED[1].1);
+        user_theme(&dirs, "mine", shipped("latte"));
         let defaults = builtin::defaults();
         let theme_dir = dirs.theme_dir();
         let shadowed = resolve(&defaults, Some(&theme_dir), "catppuccin-mocha").expect("loads");
@@ -626,8 +642,7 @@ mod engine_setup {
 
     #[test]
     fn every_mapped_key_is_a_real_config_key() {
-        let theme = crate::theme::ResolvedTheme::parse(&builtin::defaults(), super::SHIPPED[4].1)
-            .expect("mocha");
+        let theme = super::load("mocha");
         let config = crate::theme::apply::build_config(&theme).expect("builds");
         let value = toml::Value::try_from(&config).expect("serializes");
         let colors = value

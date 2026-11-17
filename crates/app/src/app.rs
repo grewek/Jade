@@ -3380,7 +3380,7 @@ mod tests {
         ) else {
             panic!("expected a theme");
         };
-        assert_eq!(state.id, "catppuccin-latte");
+        assert_eq!(state.id, "jade-neon");
         std::fs::remove_file(&sock).unwrap();
     }
 
