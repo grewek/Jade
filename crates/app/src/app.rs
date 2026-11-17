@@ -1160,6 +1160,15 @@ impl JadeApp {
                 .text_color(muted)
                 .child(plural(words, "word", "words"))
                 .child(plural(chars, "character", "characters"))
+                // Placeholder for the grammar/spell checker, which is its own
+                // feature (Backlog): the icon alone, with no behaviour yet.
+                .child(
+                    div()
+                        .id("grammar-check")
+                        .test_support()
+                        .child(IconName::CircleCheck)
+                        .debug_name("grammar-check"),
+                )
                 .debug_name("status-bar")
                 .into_any_element(),
         )
@@ -4670,6 +4679,13 @@ mod tests {
     }
 
     #[test]
+    fn the_grammar_check_icon_is_bundled() {
+        use gpui_kit::AssetSource as _;
+        let icon = gpui_kit::assets::Assets.load("icons/circle-check.svg");
+        assert!(matches!(icon, Ok(Some(_))), "icon missing: {icon:?}");
+    }
+
+    #[test]
     fn group_digits_separates_thousands() {
         let grouped: Vec<String> = [0, 7, 999, 1000, 12345, 1234567]
             .into_iter()
@@ -4695,6 +4711,7 @@ mod tests {
             window.click("Note", cx);
             window.render_frame(cx);
             assert!(window.try_find("status-bar").is_some());
+            assert!(window.try_find("grammar-check").is_some());
         })
         .unwrap();
         assert_eq!(counts(cx), (3, 17));
