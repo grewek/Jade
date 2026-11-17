@@ -101,32 +101,39 @@ fn wanted_id(dirs: Option<&ConfigDirs>, notices: &mut Vec<String>) -> Option<Str
     }
 }
 
+/// The theme `config.toml` names (else the built-in default), with no
+/// fallback: a reload keeps the active theme when this fails.
+pub fn load_checked(defaults: &Defaults, dirs: Option<&ConfigDirs>) -> Result<Loaded, Vec<String>> {
+    let mut notices = Vec::new();
+    let theme_dir = dirs.map(ConfigDirs::theme_dir);
+    let id = wanted_id(dirs, &mut notices);
+    if !notices.is_empty() {
+        return Err(notices);
+    }
+    let id = id.unwrap_or_else(|| builtin::DEFAULT_ID.to_owned());
+    let theme = resolve(defaults, theme_dir.as_deref(), &id)?;
+    notices.extend(
+        theme
+            .warnings
+            .iter()
+            .map(|w| format!("theme {id}: warning: {w}")),
+    );
+    Ok(Loaded { id, theme, notices })
+}
+
 /// Startup: the theme `config.toml` names, else (or on any failure) the
 /// built-in default. Always returns a usable theme.
 pub fn load_startup(defaults: &Defaults, dirs: Option<&ConfigDirs>) -> Loaded {
-    let mut notices = Vec::new();
-    let theme_dir = dirs.map(ConfigDirs::theme_dir);
-    let id = wanted_id(dirs, &mut notices).unwrap_or_else(|| builtin::DEFAULT_ID.to_owned());
-    match resolve(defaults, theme_dir.as_deref(), &id) {
-        Ok(theme) => {
-            notices.extend(
-                theme
-                    .warnings
-                    .iter()
-                    .map(|w| format!("theme {id}: warning: {w}")),
-            );
-            Loaded { id, theme, notices }
-        }
-        Err(errors) => {
-            notices.extend(errors);
+    match load_checked(defaults, dirs) {
+        Ok(loaded) => loaded,
+        Err(mut notices) => {
             notices.push(format!(
                 "using the built-in {} theme instead",
                 builtin::DEFAULT_ID
             ));
-            let theme = builtin::default_theme(defaults);
             Loaded {
                 id: builtin::DEFAULT_ID.to_owned(),
-                theme,
+                theme: builtin::default_theme(defaults),
                 notices,
             }
         }

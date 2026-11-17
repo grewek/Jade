@@ -1663,7 +1663,12 @@ pub fn run() {
         .run(move |cx| {
             gpui_kit::init(cx);
             install_fonts(cx);
-            for notice in ThemeEngine::install(ConfigDirs::from_environment(), cx) {
+            let config_dirs = ConfigDirs::from_environment();
+            let mut notices = ThemeEngine::install(config_dirs.clone(), cx);
+            if let Some(dirs) = config_dirs {
+                notices.extend(crate::theme::watch(dirs, cx));
+            }
+            for notice in notices {
                 eprintln!("jade: {notice}");
             }
             cx.bind_keys([

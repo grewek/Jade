@@ -302,7 +302,7 @@ mod engine_setup {
     use tempfile::{TempDir, tempdir};
 
     use crate::theme::builtin::{self, DEFAULT_ID};
-    use crate::theme::loader::{load_startup, resolve};
+    use crate::theme::loader::{load_checked, load_startup, resolve};
     use crate::theme::{ConfigDirs, Role, ThemeEngine};
 
     fn dirs_in(tmp: &TempDir) -> ConfigDirs {
@@ -484,6 +484,53 @@ mod engine_setup {
             let bg = engine.palette().color(Role::Background);
             let expected: gpui_kit::Hsla = gpui_kit::rgb(0x1e1e2e).into();
             assert_eq!(bg, expected);
+            let _ = cx.new(|_| ());
+        });
+    }
+
+    #[test]
+    fn debounce_fires_once_after_a_burst_goes_quiet() {
+        let mut d = super::super::watch::Debounce::default();
+        assert!(!d.tick(0));
+        assert!(!d.tick(3));
+        assert!(!d.tick(1));
+        assert!(d.tick(0));
+        assert!(!d.tick(0));
+    }
+
+    #[test]
+    fn load_checked_fails_instead_of_falling_back() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        write(&dirs.config_file(), "theme = \"nope\"");
+        let errors = load_checked(&builtin::defaults(), Some(&dirs)).err();
+        assert!(errors.is_some_and(|e| e.iter().any(|m| m.contains("not found"))));
+        write(&dirs.config_file(), "theme = [");
+        assert!(load_checked(&builtin::defaults(), Some(&dirs)).is_err());
+    }
+
+    #[gpui_kit::test]
+    fn reload_switches_and_keeps_the_last_good_theme(cx: &mut TestAppContext) {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            ThemeEngine::install(Some(dirs.clone()), cx);
+            assert_eq!(ThemeEngine::global(cx).active_id(), DEFAULT_ID);
+
+            write(&dirs.config_file(), "theme = \"catppuccin-mocha\"");
+            let notices = ThemeEngine::reload(Some(&dirs), cx);
+            assert!(notices.iter().all(|n| n.contains("warning")), "{notices:?}");
+            assert_eq!(ThemeEngine::global(cx).active_id(), "catppuccin-mocha");
+            let mocha: gpui_kit::Hsla = gpui_kit::rgb(0x1e1e2e).into();
+            assert_eq!(ThemeEngine::color(cx, Role::Background), mocha);
+            assert_eq!(Theme::global(cx).colors.background, mocha);
+
+            user_theme(&dirs, "catppuccin-mocha", "format_version = 1\nbroken = [");
+            let notices = ThemeEngine::reload(Some(&dirs), cx);
+            assert!(notices.iter().any(|n| n.contains("keeping")), "{notices:?}");
+            assert_eq!(ThemeEngine::global(cx).active_id(), "catppuccin-mocha");
+            assert_eq!(ThemeEngine::color(cx, Role::Background), mocha);
             let _ = cx.new(|_| ());
         });
     }

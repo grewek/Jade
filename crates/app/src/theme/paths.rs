@@ -45,6 +45,10 @@ impl ConfigDirs {
         )
     }
 
+    pub fn base(&self) -> &Path {
+        &self.base
+    }
+
     pub fn theme_dir(&self) -> PathBuf {
         self.base.join("theme")
     }

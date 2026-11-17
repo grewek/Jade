@@ -13,6 +13,7 @@ mod paths;
 mod roles;
 #[cfg(test)]
 mod tests;
+mod watch;
 
 pub use contrast::ContrastWarning;
 pub use engine::ThemeEngine;
@@ -24,3 +25,4 @@ pub use parse::{
 };
 pub use paths::{CONFIG_DIR_ENV, ConfigDirs};
 pub use roles::{Alpha, Role};
+pub use watch::start as watch;
