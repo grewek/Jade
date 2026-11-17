@@ -8,6 +8,7 @@
 
 use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::LINE_GROWTH_SLACK;
+use super::line_chunks::map_line_chunks;
 
 /// (words, characters) of one line.
 type Counts = (u32, u32);
@@ -72,10 +73,6 @@ fn ascii_line_counts(bytes: &[u8]) -> Counts {
     (words + u32::from(has_alnum), bytes.len() as u32)
 }
 
-/// Below this a thread per core costs more than it saves.
-pub(super) const PARALLEL_MIN_BYTES: usize = 1 << 20;
-pub(super) const MAX_THREADS: usize = 8;
-
 /// Counts of every line in `chunk`, which starts at a line start and, unless
 /// it is the document's last chunk, ends just after a newline.
 /// `final_empty_line` is set on the last chunk when the document ends in a
@@ -107,41 +104,12 @@ impl DocStats {
     /// each over a run of whole lines: this is the one O(bytes) pass of a note
     /// open (about 21ms single-threaded on the 11.8MB stress note).
     pub(super) fn rebuild(&mut self, text: &str) {
-        let threads = if text.len() < PARALLEL_MIN_BYTES {
-            1
-        } else {
-            std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS))
-        };
-        let mut cuts = vec![0];
-        for k in 1..threads {
-            let guess = text.len() / threads * k;
-            let cut = text[guess..]
-                .find('\n')
-                .map_or(text.len(), |i| guess + i + 1);
-            cuts.push(cut.max(cuts[k - 1]));
-        }
-        cuts.push(text.len());
-        let chunk = |range: &[usize]| &text[range[0]..range[1]];
         let ends_the_last_line = text.is_empty() || text.ends_with('\n');
-
-        let counted: Vec<Vec<Counts>> = std::thread::scope(|scope| {
-            let handles: Vec<_> = cuts
-                .windows(2)
-                .enumerate()
-                .map(|(k, range)| {
-                    let chunk = chunk(range);
-                    let last = k + 2 == cuts.len();
-                    scope.spawn(move || count_lines(chunk, last && ends_the_last_line))
-                })
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| {
-                    h.join()
-                        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-                })
-                .collect()
-        });
+        let counted: Vec<Vec<Counts>> = map_line_chunks(
+            text,
+            |_| 0,
+            |_, chunk, last| count_lines(chunk, last && ends_the_last_line),
+        );
 
         self.per_line.clear();
         self.per_line
@@ -164,11 +132,8 @@ impl DocStats {
         if self.per_line.len() as isize != old_len {
             return self.rebuild(text);
         }
-        // Lines after the edit shifted by `line_delta`, so the touched span's
-        // old extent ends that much earlier.
-        let start = patch.touched.start;
-        let old_end = (patch.touched.end as isize - patch.line_delta) as usize;
-        assert!(start <= old_end && old_end <= self.per_line.len());
+        let (start, old_end) = (patch.touched.start, patch.old_touched().end);
+        assert!(old_end <= self.per_line.len());
 
         let (mut added_words, mut added_chars) = (0u64, 0u64);
         let fresh = (start..patch.touched.end).map(|i| {
@@ -199,6 +164,7 @@ impl DocStats {
 mod tests {
     use super::*;
     use crate::text_editor::document_cache::TextEdit;
+    use crate::text_editor::line_chunks::PARALLEL_MIN_BYTES;
 
     #[test]
     fn counts_words_with_letters_or_digits_and_every_character() {

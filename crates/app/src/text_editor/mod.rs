@@ -15,6 +15,7 @@ mod element;
 mod fenwick;
 mod headings;
 mod input_handler;
+mod line_chunks;
 mod link_table;
 mod live_preview;
 #[cfg(any(test, feature = "debug-socket"))]

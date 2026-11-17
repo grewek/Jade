@@ -105,6 +105,17 @@ pub(super) struct EditPatch {
     pub line_delta: isize,
 }
 
+impl EditPatch {
+    /// The lines `touched` covered before the edit: later lines shifted by
+    /// `line_delta`, so the old extent ends that much earlier. What a
+    /// per-line table splices its replacement over.
+    pub(super) fn old_touched(&self) -> Range<usize> {
+        let end = self.touched.end as isize - self.line_delta;
+        assert!(end >= self.touched.start as isize);
+        self.touched.start..end as usize
+    }
+}
+
 /// What `patch_tables` must learn from the *old* table layout before the
 /// edit's line shift destroys it.
 struct TablePre {

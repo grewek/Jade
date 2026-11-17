@@ -17,8 +17,8 @@ use std::ops::Range;
 use jade_core::link_scan::{LinkKind, scan_line};
 
 use super::block_preview::LineRole;
-use super::doc_stats::{MAX_THREADS, PARALLEL_MIN_BYTES};
 use super::document_cache::{DocumentCache, EditPatch};
+use super::line_chunks::map_line_chunks;
 
 /// Room kept free after a rebuild so typing a link does not reallocate.
 const SLACK: usize = 64;
@@ -102,57 +102,20 @@ impl LinkTable {
             return;
         }
         let roles = doc.line_roles();
-        let threads = if text.len() < PARALLEL_MIN_BYTES {
-            1
-        } else {
-            std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS))
-        };
-        let mut cuts = vec![0];
-        for k in 1..threads {
-            let guess = text.len() / threads * k;
-            let cut = text[guess..]
-                .find('\n')
-                .map_or(text.len(), |i| guess + i + 1);
-            cuts.push(cut.max(cuts[k - 1]));
-        }
-        cuts.push(text.len());
         // Each chunk starts on a line boundary, so the line index knows its
         // first line number without counting newlines.
-        let chunks: Vec<(&str, usize)> = cuts
-            .windows(2)
-            .map(|w| {
-                (
-                    &text[w[0]..w[1]],
-                    if w[0] == 0 { 0 } else { doc.line_at(w[0]) },
-                )
-            })
-            .collect();
-        if let [(chunk, first)] = chunks[..] {
-            scan_chunk(chunk, first, roles, &mut self.links);
-        } else {
-            let parts: Vec<Vec<StoredLink>> = std::thread::scope(|scope| {
-                let handles: Vec<_> = chunks
-                    .iter()
-                    .map(|&(chunk, first)| {
-                        scope.spawn(move || {
-                            let mut part = Vec::new();
-                            scan_chunk(chunk, first, roles, &mut part);
-                            part
-                        })
-                    })
-                    .collect();
-                handles
-                    .into_iter()
-                    .map(|h| {
-                        h.join()
-                            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
-                    })
-                    .collect()
-            });
-            self.links.reserve_exact(parts.iter().map(Vec::len).sum());
-            for part in parts {
-                self.links.extend(part);
-            }
+        let parts: Vec<Vec<StoredLink>> = map_line_chunks(
+            text,
+            |start| doc.line_at(start),
+            |first, chunk, _| {
+                let mut part = Vec::new();
+                scan_chunk(chunk, first, roles, &mut part);
+                part
+            },
+        );
+        self.links.reserve_exact(parts.iter().map(Vec::len).sum());
+        for part in parts {
+            self.links.extend(part);
         }
         // Growth by doubling leaves up to half the vector unused.
         self.links.shrink_to_fit();
@@ -166,10 +129,8 @@ impl LinkTable {
             self.links.clear();
             return;
         }
-        // Lines after the edit moved by `line_delta`, so the touched span's
-        // old extent ends that much earlier.
         let start = patch.touched.start as u32;
-        let old_end = (patch.touched.end as isize - patch.line_delta) as u32;
+        let old_end = patch.old_touched().end as u32;
         let new_end = patch.touched.end as u32;
         let roles = doc.line_roles();
 
@@ -291,6 +252,7 @@ impl LinkTable {
 mod tests {
     use super::*;
     use crate::text_editor::document_cache::TextEdit;
+    use crate::text_editor::line_chunks::PARALLEL_MIN_BYTES;
 
     fn table_of(text: &str) -> LinkTable {
         LinkTable::new(text, &DocumentCache::new(text))
