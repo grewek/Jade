@@ -1157,6 +1157,8 @@ impl Render for JadeApp {
             SidebarTab::Search => self.render_search_panel(cx),
         };
 
+        // Without an explicit color the 1px borders below are not visible.
+        let divider = Theme::global(cx).border;
         let sidebar = div()
             .relative()
             .flex()
@@ -1166,6 +1168,7 @@ impl Render for JadeApp {
             .w(self.sidebar_width)
             .p_2()
             .border_r_1()
+            .border_color(divider)
             .child(tab_bar)
             .child(sidebar_content)
             .child(self.render_resize_handle(SidebarSide::Left, cx));
@@ -1231,7 +1234,14 @@ impl Render for JadeApp {
                 cx.notify();
             }))
             .debug_name("toggle-sidebar");
-        let rail = div().flex().flex_col().flex_none().p_1().child(toggle);
+        let rail = div()
+            .flex()
+            .flex_col()
+            .flex_none()
+            .p_1()
+            .border_r_1()
+            .border_color(divider)
+            .child(toggle);
 
         let backlinks_toggle = Button::new("toggle-backlinks")
             .icon(if self.backlinks_collapsed {
@@ -1249,6 +1259,8 @@ impl Render for JadeApp {
             .flex_col()
             .flex_none()
             .p_1()
+            .border_l_1()
+            .border_color(divider)
             .child(backlinks_toggle);
         let right_sidebar = div()
             .relative()
@@ -1259,6 +1271,7 @@ impl Render for JadeApp {
             .flex_none()
             .p_2()
             .border_l_1()
+            .border_color(divider)
             .children(
                 self.selected_id
                     .as_deref()
@@ -4027,6 +4040,14 @@ mod tests {
         assert!(sidebar_shown(cx, false), "sidebar starts expanded");
         assert!(!sidebar_shown(cx, true), "toggle hides the sidebar");
         assert!(sidebar_shown(cx, true), "toggle again restores it");
+    }
+
+    #[gpui_kit::test]
+    fn sidebar_dividers_use_a_visible_theme_color(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        let (_window, _app) = open_app(cx, dir.path().to_path_buf());
+        let border = cx.update(|cx| gpui_kit::component::Theme::global(cx).border);
+        assert!(border.a > 0.1, "divider would be invisible: {border:?}");
     }
 
     #[gpui_kit::test]
