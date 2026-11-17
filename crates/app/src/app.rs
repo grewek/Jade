@@ -34,6 +34,9 @@ impl gpui_kit::component::select::SelectItem for ThemeOption {
     }
 }
 
+/// The window's `app_id`; must match the desktop entry's file name.
+const APP_ID: &str = "jade";
+
 /// IBM Plex — the typeface Zed itself uses — bundled under the SIL Open Font
 /// License (OFL 1.1, see `assets/fonts/*/LICENSE.txt`), which explicitly
 /// permits embedding/redistributing it with an application.
@@ -1733,11 +1736,17 @@ pub fn run() {
                 KeyBinding::new("ctrl-p", OpenCommandPalette, None),
             ]);
             bind_open_command_palette(cx);
-            let (_, app) =
-                gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
-                    cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
-                })
-                .expect("failed to open window");
+            // Wayland picks the window icon from the desktop entry whose name
+            // is this id (`packaging/jade.desktop`); the compositor ignores
+            // any icon the app sends.
+            let options = WindowOptions {
+                app_id: Some(APP_ID.to_owned()),
+                ..WindowOptions::default()
+            };
+            let (_, app) = gpui_kit::open_window(options, cx, move |window, cx| {
+                cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
+            })
+            .expect("failed to open window");
             debug_server::install(&app, cx);
         });
 }

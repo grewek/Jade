@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Jade
+Comment=Markdown note-taking
+Exec=jade-app
+Icon=jade
+Terminal=false
+Categories=Office;Utility;
+StartupWMClass=jade
