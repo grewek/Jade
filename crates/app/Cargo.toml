@@ -16,6 +16,8 @@ bench-support = ["gpui-kit/test-support"]
 gpui-kit = "0.7"
 jade-core = { path = "../core" }
 jade-debug-protocol = { path = "../debug-protocol", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+toml = "1.2"
 
 [dev-dependencies]
 jade-debug-protocol = { path = "../debug-protocol" }
