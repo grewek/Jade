@@ -28,6 +28,55 @@ pub(super) fn callout_at_line(callouts: &[Callout], line_index: usize) -> Option
     callout_index_at(callouts, line_index).map(|idx| &callouts[idx])
 }
 
+/// Everything besides its text that decides how one line is displayed. Built
+/// by [`LineState::of`] from the document's caches wherever a line is shaped
+/// or measured (painting, hit-testing, row counts, the IME's caret bounds), so
+/// they cannot disagree about what the line looks like.
+pub(super) struct LineState<'a> {
+    pub role: LineRole,
+    pub block_ctx: LineContext,
+    pub table_kind: TableLineKind<'a>,
+    pub table_active: bool,
+    pub callout: Option<&'a Callout>,
+    pub callout_is_header: bool,
+    /// The cursor is on this line, so its Markdown is shown raw.
+    pub active: bool,
+    /// Raw byte ranges of links on the line whose target is missing.
+    pub broken: &'a [Range<usize>],
+}
+
+impl<'a> LineState<'a> {
+    pub(super) fn of(doc: &'a DocumentCache, i: usize, cursor: usize, focused: bool) -> Self {
+        let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
+        let callout = callout_at_line(doc.callouts(), i);
+        LineState {
+            role: doc.line_roles()[i],
+            block_ctx: doc.block_contexts()[i],
+            table_kind: table_line_kind(doc.tables(), i),
+            table_active: is_table_active(doc, i, cursor, focused),
+            callout,
+            callout_is_header: callout.is_some_and(|c| c.is_header(i)),
+            active: is_active_line(&line_range, cursor, focused),
+            broken: &[],
+        }
+    }
+
+    /// An ordinary line outside any block, for tests to vary with struct update.
+    #[cfg(test)]
+    pub(super) fn plain() -> Self {
+        LineState {
+            role: LineRole::Plain,
+            block_ctx: LineContext::Plain,
+            table_kind: TableLineKind::None,
+            table_active: false,
+            callout: None,
+            callout_is_header: false,
+            active: false,
+            broken: &[],
+        }
+    }
+}
+
 /// Which table-related rendering a `LineRole::Plain` line needs, resolved
 /// by the caller (which already knows the line's absolute index, needed to
 /// tell a table's delimiter row from its header/body rows) — see
@@ -602,21 +651,11 @@ fn row_count_for_line(
     available_width: Pixels,
     window: &mut Window,
 ) -> usize {
-    let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
-    let line_text = &text[line_range.clone()];
-    let active = is_active_line(&line_range, cursor, focused);
-    let table_kind = table_line_kind(doc.tables(), i);
-    let table_active = is_table_active(doc, i, cursor, focused);
-    let callout = callout_at_line(doc.callouts(), i);
-    let callout_is_header = callout.is_some_and(|c| c.is_header(i));
+    let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
+    let state = LineState::of(doc, i, cursor, focused);
     let (display_lines, wrap_width) = build_display_lines(
         line_text,
-        doc.line_roles()[i],
-        doc.block_contexts()[i],
-        &table_kind,
-        table_active,
-        callout_is_header,
-        active,
+        &state,
         font,
         font_size,
         text_color,
@@ -647,17 +686,9 @@ fn shaped_row_count_for_line(
     available_width: Pixels,
     window: &mut Window,
 ) -> usize {
-    let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
-    let callout = callout_at_line(doc.callouts(), i);
     let shaped = shape_display_line(
-        &text[line_range.clone()],
-        doc.line_roles()[i],
-        doc.block_contexts()[i],
-        table_line_kind(doc.tables(), i),
-        is_table_active(doc, i, cursor, focused),
-        callout,
-        callout.is_some_and(|c| c.is_header(i)),
-        is_active_line(&line_range, cursor, focused),
+        &text[doc.line_start_byte(i)..doc.line_end_byte(i)],
+        &LineState::of(doc, i, cursor, focused),
         font,
         font_size,
         text_color,
@@ -703,10 +734,6 @@ impl LineLayout {
     /// Estimated height of line `i` alone.
     pub(super) fn height(&self, i: usize) -> Pixels {
         self.cumulative_at(i + 1) - self.cumulative_at(i)
-    }
-
-    pub(super) fn is_table_active(&self, i: usize, cursor: usize, focused: bool) -> bool {
-        is_table_active(&self.doc_cache.borrow(), i, cursor, focused)
     }
 
     pub(super) fn line_range(&self, i: usize) -> std::ops::Range<usize> {
@@ -1126,21 +1153,24 @@ fn wrap_width_for(
 /// `shape_text` call `shape_display_line` still does, for every line it's
 /// actually asked to shape. See this module's own notes on viewport-bounded
 /// rendering for why that split matters.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn build_display_lines(
     line: &str,
-    role: LineRole,
-    block_ctx: LineContext,
-    table_kind: &TableLineKind,
-    table_active: bool,
-    callout_is_header: bool,
-    active: bool,
+    state: &LineState,
     font: &Font,
     font_size: Pixels,
     text_color: Hsla,
     available_width: Pixels,
     window: &mut Window,
 ) -> (Vec<DisplayLine>, Option<Pixels>) {
+    let LineState {
+        role,
+        block_ctx,
+        ref table_kind,
+        table_active,
+        callout_is_header,
+        active,
+        ..
+    } = *state;
     let mut display_lines: Vec<DisplayLine> = match role {
         LineRole::FenceContent => vec![build_display_line(line, true)],
         LineRole::FenceDelimiter if !active => vec![hidden_line(line)],
@@ -1222,56 +1252,12 @@ pub(super) fn wrapped_row_count(
 /// lines actually being rendered/hit-tested (the viewport's visible
 /// range), not every line in the document — see this module's own notes
 /// on viewport-bounded rendering.
-#[allow(clippy::too_many_arguments)]
 pub(super) fn shape_display_line(
     line: &str,
-    role: LineRole,
-    block_ctx: LineContext,
-    table_kind: TableLineKind,
-    table_active: bool,
-    callout: Option<&Callout>,
-    callout_is_header: bool,
-    active: bool,
+    state: &LineState,
     font: &Font,
     font_size: Pixels,
     colors: impl Into<InlineColors>,
-    available_width: Pixels,
-    window: &mut Window,
-) -> Vec<(WrappedLine, DisplayLine)> {
-    shape_display_line_marking(
-        line,
-        role,
-        block_ctx,
-        table_kind,
-        table_active,
-        callout,
-        callout_is_header,
-        active,
-        font,
-        font_size,
-        colors,
-        &[],
-        available_width,
-        window,
-    )
-}
-
-/// [`shape_display_line`] that also paints the links inside `broken` (raw
-/// byte ranges of the line) in the broken-link color.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn shape_display_line_marking(
-    line: &str,
-    role: LineRole,
-    block_ctx: LineContext,
-    table_kind: TableLineKind,
-    table_active: bool,
-    callout: Option<&Callout>,
-    callout_is_header: bool,
-    active: bool,
-    font: &Font,
-    font_size: Pixels,
-    colors: impl Into<InlineColors>,
-    broken: &[Range<usize>],
     available_width: Pixels,
     window: &mut Window,
 ) -> Vec<(WrappedLine, DisplayLine)> {
@@ -1279,18 +1265,14 @@ pub(super) fn shape_display_line_marking(
     let text_color = colors.text;
     let (display_lines, wrap_width) = build_display_lines(
         line,
-        role,
-        block_ctx,
-        &table_kind,
-        table_active,
-        callout_is_header,
-        active,
+        state,
         font,
         font_size,
         text_color,
         available_width,
         window,
     );
+    let (broken, callout) = (state.broken, state.callout);
 
     display_lines
         .into_iter()
@@ -1547,10 +1529,7 @@ pub(super) fn render_editor(
                             editor.buffer().text(),
                             &editor.link_table,
                             &view,
-                            doc.line_roles(),
-                            doc.block_contexts(),
-                            doc.tables(),
-                            doc.callouts(),
+                            &doc,
                             selection.clone(),
                             window,
                             cx,
@@ -1723,8 +1702,6 @@ fn offset_for_position(
 ) -> usize {
     let text = editor.buffer().text();
     let doc = editor.document_cache.borrow();
-    let (line_roles, block_contexts) = (doc.line_roles(), doc.block_contexts());
-    let (tables, callouts) = (doc.tables(), doc.callouts());
     let &FrameView {
         ref layout,
         cursor,
@@ -1745,20 +1722,9 @@ fn offset_for_position(
     let mut y_offset = layout.cumulative_at(range.start);
     for i in range.clone() {
         let line_text = &text[layout.line_range(i)];
-        let active = is_active_line(&layout.line_range(i), cursor, focused);
-        let table_kind = table_line_kind(tables, i);
-        let table_active = layout.is_table_active(i, cursor, focused);
-        let callout = callout_at_line(callouts, i);
-        let callout_is_header = callout.is_some_and(|c| c.is_header(i));
         let results = shape_display_line(
             line_text,
-            line_roles[i],
-            block_contexts[i],
-            table_kind,
-            table_active,
-            callout,
-            callout_is_header,
-            active,
+            &LineState::of(&doc, i, cursor, focused),
             font,
             font_size,
             text_color,
@@ -1881,14 +1847,12 @@ fn paint_lines(
     text: &str,
     links: &LinkTable,
     view: &FrameView,
-    line_roles: &[LineRole],
-    block_contexts: &[LineContext],
-    tables: &[Table],
-    callouts: &[Callout],
+    doc: &DocumentCache,
     selection: Option<std::ops::Range<usize>>,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let (line_roles, tables, callouts) = (doc.line_roles(), doc.tables(), doc.callouts());
     let &FrameView {
         ref layout,
         cursor,
@@ -2038,26 +2002,18 @@ fn paint_lines(
     for i in range.clone() {
         let line_range = layout.line_range(i);
         let line_text = &text[line_range.clone()];
-        let active = is_active_line(&line_range, cursor, show_cursor);
-        let table_kind = table_line_kind(tables, i);
-        let table_active = layout.is_table_active(i, cursor, show_cursor);
-        let callout = callout_at_line(callouts, i);
-        let callout_is_header = callout.is_some_and(|c| c.is_header(i));
-
         let broken: Vec<Range<usize>> = links.broken_on_line(i).collect();
-        let results = shape_display_line_marking(
+        let state = LineState {
+            broken: &broken,
+            ..LineState::of(doc, i, cursor, show_cursor)
+        };
+        let callout = state.callout;
+        let results = shape_display_line(
             line_text,
-            line_roles[i],
-            block_contexts[i],
-            table_kind,
-            table_active,
-            callout,
-            callout_is_header,
-            active,
+            &state,
             font,
             font_size,
             inline,
-            &broken,
             bounds.size.width,
             window,
         );
@@ -2114,7 +2070,7 @@ fn paint_lines(
         // cheap to resolve again rather than restructuring this loop just
         // to keep the first value alive (same reasoning as
         // `table_kind_for_geometry` below).
-        if !active
+        if !state.active
             && matches!(line_roles[i], LineRole::Plain)
             && matches!(table_line_kind(tables, i), TableLineKind::None)
             && is_thematic_break(line_text)
@@ -2129,7 +2085,7 @@ fn paint_lines(
             ));
         }
 
-        if !table_active {
+        if !state.table_active {
             // `table_kind` was already moved into `shape_display_line`
             // above — cheap to resolve again (a plain array lookup) rather
             // than restructuring this loop just to keep the first value
@@ -2323,9 +2279,10 @@ fn paint_lines(
 #[cfg(test)]
 mod tests {
     use super::super::block_preview::LineRole;
-    use super::super::live_preview::{LineContext, LineIndent};
+    use super::super::live_preview::LineIndent;
     use super::super::table_preview::classify_tables;
     use super::super::{Editor, InsertTab};
+    use super::LineState;
     use super::{TableLineKind, is_active_line, row_count_for_line, shape_display_line};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
@@ -2418,13 +2375,7 @@ mod tests {
             let (unwrapped, _) = {
                 let mut results = shape_display_line(
                     &line,
-                    LineRole::Plain,
-                    LineContext::Plain,
-                    TableLineKind::None,
-                    false,
-                    None,
-                    false,
-                    false,
+                    &LineState::plain(),
                     &font,
                     font_size,
                     text_style.color,
@@ -2443,13 +2394,7 @@ mod tests {
             let (wrapped, _) = {
                 let mut results = shape_display_line(
                     &line,
-                    LineRole::Plain,
-                    LineContext::Plain,
-                    TableLineKind::None,
-                    false,
-                    None,
-                    false,
-                    false,
+                    &LineState::plain(),
                     &font,
                     font_size,
                     text_style.color,
@@ -2492,13 +2437,10 @@ mod tests {
 
             let results = shape_display_line(
                 "| Alice | 30 |",
-                LineRole::Plain,
-                LineContext::Plain,
-                TableLineKind::Row(table),
-                false,
-                None,
-                false,
-                false,
+                &LineState {
+                    table_kind: TableLineKind::Row(table),
+                    ..LineState::plain()
+                },
                 &font,
                 font_size,
                 text_style.color,
@@ -2539,13 +2481,10 @@ mod tests {
 
             let narrow = shape_display_line(
                 row,
-                LineRole::Plain,
-                LineContext::Plain,
-                TableLineKind::Row(table),
-                false,
-                None,
-                false,
-                false,
+                &LineState {
+                    table_kind: TableLineKind::Row(table),
+                    ..LineState::plain()
+                },
                 &font,
                 font_size,
                 text_style.color,
@@ -2569,13 +2508,10 @@ mod tests {
 
             let wide = shape_display_line(
                 row,
-                LineRole::Plain,
-                LineContext::Plain,
-                TableLineKind::Row(table),
-                false,
-                None,
-                false,
-                false,
+                &LineState {
+                    table_kind: TableLineKind::Row(table),
+                    ..LineState::plain()
+                },
                 &font,
                 font_size,
                 text_style.color,
@@ -3290,13 +3226,10 @@ mod tests {
             let (_, grid) = {
                 let mut results = shape_display_line(
                     header,
-                    LineRole::Plain,
-                    LineContext::Plain,
-                    TableLineKind::Row(table),
-                    false,
-                    None,
-                    false,
-                    false,
+                    &LineState {
+                        table_kind: TableLineKind::Row(table),
+                        ..LineState::plain()
+                    },
                     &font,
                     font_size,
                     text_style.color,
@@ -3316,13 +3249,11 @@ mod tests {
             let (_, raw) = {
                 let mut results = shape_display_line(
                     header,
-                    LineRole::Plain,
-                    LineContext::Plain,
-                    TableLineKind::Row(table),
-                    true,
-                    None,
-                    false,
-                    false,
+                    &LineState {
+                        table_kind: TableLineKind::Row(table),
+                        table_active: true,
+                        ..LineState::plain()
+                    },
                     &font,
                     font_size,
                     text_style.color,
@@ -3395,13 +3326,11 @@ mod tests {
             let (_, display_line) = {
                 let mut results = shape_display_line(
                     line,
-                    LineRole::FenceContent,
-                    LineContext::Plain,
-                    TableLineKind::None,
-                    false,
-                    None,
-                    false,
-                    true,
+                    &LineState {
+                        role: LineRole::FenceContent,
+                        active: true,
+                        ..LineState::plain()
+                    },
                     &font,
                     font_size,
                     text_style.color,
@@ -3431,10 +3360,7 @@ mod tests {
             let font_size = text_style.font_size.to_pixels(window.rem_size());
             for line in ["> looks like a quote", "- looks like a list item"] {
                 let (_, display_line) = {
-            let mut results = shape_display_line(
-                line, LineRole::FenceContent, LineContext::Plain, TableLineKind::None, false, None, false, false, &font, font_size, text_style.color,
-                Pixels::MAX, window,
-            );
+            let mut results = shape_display_line(line, &LineState { role: LineRole::FenceContent, ..LineState::plain() }, &font, font_size, text_style.color, Pixels::MAX, window);
             assert_eq!(results.len(), 1, "expected exactly one entry");
             results.remove(0)
         };
@@ -3460,13 +3386,10 @@ mod tests {
             let (_, display_line) = {
                 let mut results = shape_display_line(
                     line,
-                    LineRole::FenceDelimiter,
-                    LineContext::Plain,
-                    TableLineKind::None,
-                    false,
-                    None,
-                    false,
-                    false,
+                    &LineState {
+                        role: LineRole::FenceDelimiter,
+                        ..LineState::plain()
+                    },
                     &font,
                     font_size,
                     text_style.color,
@@ -3484,13 +3407,11 @@ mod tests {
             let (_, active_display_line) = {
                 let mut results = shape_display_line(
                     line,
-                    LineRole::FenceDelimiter,
-                    LineContext::Plain,
-                    TableLineKind::None,
-                    false,
-                    None,
-                    false,
-                    true,
+                    &LineState {
+                        role: LineRole::FenceDelimiter,
+                        active: true,
+                        ..LineState::plain()
+                    },
                     &font,
                     font_size,
                     text_style.color,

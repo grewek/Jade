@@ -4,8 +4,7 @@ use gpui_kit::*;
 
 use super::document_cache::TextEdit;
 use super::element::{
-    analyze_line_layout, callout_at_line, indent_px, is_active_line, shape_display_line,
-    table_line_kind, visible_line_range,
+    LineState, analyze_line_layout, indent_px, shape_display_line, visible_line_range,
 };
 use super::{Editor, EditorBuffer};
 
@@ -190,10 +189,6 @@ impl EntityInputHandler for Editor {
         // Reuses the incrementally maintained classification cache instead
         // of reclassifying the document.
         let cache_ref = self.document_cache.borrow();
-        let line_roles = cache_ref.line_roles();
-        let block_contexts = cache_ref.block_contexts();
-        let tables = cache_ref.tables();
-        let callouts = cache_ref.callouts();
         let viewport = self.scroll_handle.bounds();
         let range = visible_line_range(&layout, element_bounds, viewport);
         if range.is_empty() {
@@ -204,20 +199,9 @@ impl EntityInputHandler for Editor {
         for i in range {
             let line_range = layout.line_range(i);
             let line_text = &text[line_range.clone()];
-            let active = is_active_line(&line_range, cursor, focused);
-            let table_kind = table_line_kind(tables, i);
-            let table_active = layout.is_table_active(i, cursor, focused);
-            let callout = callout_at_line(callouts, i);
-            let callout_is_header = callout.is_some_and(|c| c.is_header(i));
             let results = shape_display_line(
                 line_text,
-                line_roles[i],
-                block_contexts[i],
-                table_kind,
-                table_active,
-                callout,
-                callout_is_header,
-                active,
+                &LineState::of(&cache_ref, i, cursor, focused),
                 &font,
                 font_size,
                 text_color,
