@@ -6,7 +6,8 @@ use gpui_kit::*;
 
 use super::Editor;
 use super::block_preview::LineRole;
-use super::callout::{Callout, CalloutType, callout_index_at};
+use super::callout::{Callout, callout_index_at};
+use super::colors::{InlineColors, callout_role};
 use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
 use super::live_preview::{
@@ -17,6 +18,7 @@ use super::live_preview::{
 use super::paint_trace::{FrameInfo, PaintTrace};
 use super::table_preview::{self, Table, table_index_at};
 use crate::debug_server::targets::DebugName;
+use crate::theme::{Alpha, Role, ThemeEngine};
 
 /// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
 /// the resolved `callouts` — same shape as `table_line_kind`.
@@ -69,107 +71,6 @@ pub(super) fn is_table_active(
             cursor >= range.start && cursor <= range.end
         })
 }
-
-/// A pale, half-transparent highlight — a reasonable Phase 1 default, not yet
-/// pulled from the app's theme (`ActiveTheme`/`cx.theme()`, as `gpui-component`
-/// itself does for its own selection color).
-const SELECTION_HIGHLIGHT: Hsla = Hsla {
-    h: 0.6,
-    s: 0.9,
-    l: 0.6,
-    a: 0.35,
-};
-
-/// Live Preview colors for inline code, wikilink, and blockquote/list-marker
-/// text — same "flat constant, not yet pulled from the theme" Phase 1
-/// compromise as `SELECTION_HIGHLIGHT` above.
-const CODE_COLOR: Hsla = Hsla {
-    h: 0.75,
-    s: 0.2,
-    l: 0.55,
-    a: 1.0,
-};
-const WIKILINK_COLOR: Hsla = Hsla {
-    h: 0.58,
-    s: 0.65,
-    l: 0.6,
-    a: 1.0,
-};
-/// Distinct hue from `WIKILINK_COLOR` so an internal `[[wikilink]]` and an
-/// external/inline `[text](url)` link or autolink read as visually
-/// different kinds of thing.
-const LINK_COLOR: Hsla = Hsla {
-    h: 0.5,
-    s: 0.65,
-    l: 0.55,
-    a: 1.0,
-};
-const MUTED_COLOR: Hsla = Hsla {
-    h: 0.0,
-    s: 0.0,
-    l: 0.6,
-    a: 1.0,
-};
-
-/// One accent `Hsla` per callout type group — Obsidian's own rough color
-/// families (blue for Note/Info, purple for Summary, cyan for Tip, green
-/// for Success/Todo, orange for Question/Warning, red for Failure/Danger/
-/// Bug, gray for Example/Quote). Same "flat constant, not yet pulled from
-/// the theme" Phase 1 compromise as every other color in this file —
-/// `callout::callout_icon` (deliberately kept in `callout.rs`, not here —
-/// a plain `&str` has no GPUI dependency, unlike `Hsla`) picks the glyph,
-/// this picks the color.
-fn callout_color(kind: CalloutType) -> Hsla {
-    match kind {
-        CalloutType::Note | CalloutType::Info => Hsla {
-            h: 0.58,
-            s: 0.65,
-            l: 0.6,
-            a: 1.0,
-        },
-        CalloutType::Summary => Hsla {
-            h: 0.78,
-            s: 0.55,
-            l: 0.62,
-            a: 1.0,
-        },
-        CalloutType::Tip => Hsla {
-            h: 0.5,
-            s: 0.6,
-            l: 0.55,
-            a: 1.0,
-        },
-        CalloutType::Todo | CalloutType::Success => Hsla {
-            h: 0.35,
-            s: 0.55,
-            l: 0.5,
-            a: 1.0,
-        },
-        CalloutType::Question | CalloutType::Warning => Hsla {
-            h: 0.09,
-            s: 0.75,
-            l: 0.55,
-            a: 1.0,
-        },
-        CalloutType::Failure | CalloutType::Danger | CalloutType::Bug => Hsla {
-            h: 0.0,
-            s: 0.65,
-            l: 0.55,
-            a: 1.0,
-        },
-        CalloutType::Example | CalloutType::Quote => Hsla {
-            h: 0.0,
-            s: 0.0,
-            l: 0.55,
-            a: 1.0,
-        },
-    }
-}
-
-/// Alpha for a callout's background tint — low enough that body text
-/// (painted in the ambient `text_color`, not the accent) stays easily
-/// readable over it.
-const CALLOUT_BACKGROUND_ALPHA: f32 = 0.1;
 
 /// Pixel width of a callout's left accent bar — thicker than a plain
 /// blockquote's own `QUOTE_BAR_WIDTH`, so a callout reads as a distinct,
@@ -957,7 +858,7 @@ pub(super) fn render_params(
         .mono_font_family
         .clone();
     let font_size = text_style.font_size.to_pixels(window.rem_size());
-    let text_color = text_style.color;
+    let text_color = ThemeEngine::color(cx, Role::Text);
     // The editor's own on-screen width isn't known yet before the first
     // layout — `scroll_handle`'s tracked container bounds (the same "last
     // completed layout" value `autoscroll_to_cursor` already relies on)
@@ -1115,17 +1016,18 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
 /// no idea callouts exist — uses `base` instead of the usual muted
 /// blockquote gray, since the background tint already carries the visual
 /// distinction a plain quote's dimmer text otherwise provides.
-fn color_for_style(style: InlineStyle, base: Hsla, callout: Option<&Callout>) -> Hsla {
+fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&Callout>) -> Hsla {
+    let base = colors.text;
     match style {
-        InlineStyle::Code => CODE_COLOR,
-        InlineStyle::WikiLink => WIKILINK_COLOR,
-        InlineStyle::Link => LINK_COLOR,
-        InlineStyle::CalloutTitle => callout.map_or(base, |c| callout_color(c.kind)),
+        InlineStyle::Code => colors.code,
+        InlineStyle::WikiLink => colors.wikilink,
+        InlineStyle::Link => colors.link,
+        InlineStyle::CalloutTitle => callout.map_or(base, |c| colors.callout(c.kind)),
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => {
             if callout.is_some() {
                 base
             } else {
-                MUTED_COLOR
+                colors.subtle
             }
         }
         InlineStyle::Plain
@@ -1330,10 +1232,12 @@ pub(super) fn shape_display_line(
     active: bool,
     font: &Font,
     font_size: Pixels,
-    text_color: Hsla,
+    colors: impl Into<InlineColors>,
     available_width: Pixels,
     window: &mut Window,
 ) -> Vec<(WrappedLine, DisplayLine)> {
+    let colors: InlineColors = colors.into();
+    let text_color = colors.text;
     let (display_lines, wrap_width) = build_display_lines(
         line,
         role,
@@ -1357,7 +1261,7 @@ pub(super) fn shape_display_line(
                 .iter()
                 .filter(|seg| !seg.is_hidden())
                 .map(|seg| {
-                    let color = color_for_style(seg.style, text_color, callout);
+                    let color = color_for_style(seg.style, &colors, callout);
                     TextRun {
                         len: seg.display.len(),
                         font: font_for_style(seg.style, font),
@@ -1889,14 +1793,14 @@ struct TablePaint {
 /// at the right pixel position has no such seam regardless of font/hinting
 /// — the same reasoning `paint_lines`'s own blockquote quote-bar already
 /// uses a painted quad for, rather than a vertical-bar character.
-fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, window: &mut Window) {
+fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, color: Hsla, window: &mut Window) {
     for &x in &paint.column_x {
         window.paint_quad(fill(
             Bounds {
                 origin: point(x, paint.top),
                 size: size(TABLE_LINE_WIDTH, bottom - paint.top),
             },
-            MUTED_COLOR,
+            color,
         ));
     }
     let left = paint.column_x.first().copied().unwrap_or(px(0.));
@@ -1907,14 +1811,14 @@ fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, window: &mut Windo
             origin: point(left, paint.top),
             size: size(width, TABLE_LINE_WIDTH),
         },
-        MUTED_COLOR,
+        color,
     ));
     window.paint_quad(fill(
         Bounds {
             origin: point(left, bottom - TABLE_LINE_WIDTH),
             size: size(width, TABLE_LINE_WIDTH),
         },
-        MUTED_COLOR,
+        color,
     ));
     if let Some(divider_y) = paint.divider_y {
         window.paint_quad(fill(
@@ -1922,7 +1826,7 @@ fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, window: &mut Windo
                 origin: point(left, divider_y),
                 size: size(width, TABLE_LINE_WIDTH),
             },
-            MUTED_COLOR,
+            color,
         ));
     }
 }
@@ -1947,6 +1851,11 @@ fn paint_lines(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let palette = ThemeEngine::global(cx).palette().clone();
+    let inline = InlineColors::from_palette(&palette);
+    let rule = palette.color(Role::BorderStrong);
+    let selection_fill = palette.with_alpha(Role::Selection, Alpha::Selection);
+    let cursor_color = palette.color(Role::Cursor);
     let range = visible_line_range(layout, bounds, viewport);
     let mut trace = PaintTrace::start_if_enabled(|| {
         let (cached_width, verified, late_corrections_before) = layout.trace_state();
@@ -2013,11 +1922,8 @@ fn paint_lines(
                 callout.kind,
             );
         }
-        let color = callout_color(callout.kind);
-        let background = Hsla {
-            a: CALLOUT_BACKGROUND_ALPHA,
-            ..color
-        };
+        let color = palette.color(callout_role(callout.kind));
+        let background = palette.with_alpha(callout_role(callout.kind), Alpha::CalloutBackground);
         let top = bounds.origin.y + top;
         let bottom = bounds.origin.y + bottom;
         window.paint_quad(fill(
@@ -2100,7 +2006,7 @@ fn paint_lines(
             active,
             font,
             font_size,
-            text_color,
+            inline,
             bounds.size.width,
             window,
         );
@@ -2168,7 +2074,7 @@ fn paint_lines(
                     origin: point(bounds.origin.x, mid_y),
                     size: size(bounds.size.width, TABLE_LINE_WIDTH),
                 },
-                MUTED_COLOR,
+                rule,
             ));
         }
 
@@ -2212,6 +2118,7 @@ fn paint_lines(
                     paint_table_grid_lines(
                         &paint,
                         bounds.origin.y + y_offset + total_height,
+                        rule,
                         window,
                     );
                 }
@@ -2232,7 +2139,7 @@ fn paint_lines(
                         origin: point(bar_x, bounds.origin.y + y_offset),
                         size: size(QUOTE_BAR_WIDTH, total_height),
                     },
-                    MUTED_COLOR,
+                    rule,
                 ));
             }
         }
@@ -2253,7 +2160,7 @@ fn paint_lines(
                         origin: line_origin,
                         size: size(full_row_width, total_height),
                     },
-                    SELECTION_HIGHLIGHT,
+                    selection_fill,
                 ));
             }
             let mut row_y = y_offset;
@@ -2274,7 +2181,7 @@ fn paint_lines(
                         origin: line_origin,
                         size: size(px(1.), line_height),
                     },
-                    text_color,
+                    cursor_color,
                 ));
             }
         } else {
@@ -2304,7 +2211,7 @@ fn paint_lines(
                                 origin: line_origin + start_pos,
                                 size: size(end_pos.x - start_pos.x, line_height),
                             },
-                            SELECTION_HIGHLIGHT,
+                            selection_fill,
                         ));
                     } else {
                         // Spans more than one wrapped row of this same
@@ -2327,7 +2234,7 @@ fn paint_lines(
                                         origin: line_origin + point(x0, line_height * row as f32),
                                         size: size(x1 - x0, line_height),
                                     },
-                                    SELECTION_HIGHLIGHT,
+                                    selection_fill,
                                 ));
                             }
                         }
@@ -2349,7 +2256,7 @@ fn paint_lines(
                         origin: line_origin + pos,
                         size: size(px(1.), line_height),
                     },
-                    text_color,
+                    cursor_color,
                 ));
             }
         }
@@ -2379,7 +2286,10 @@ mod tests {
         cx: &mut TestAppContext,
         text: &'static str,
     ) -> (AnyWindowHandle, Entity<Editor>) {
-        cx.update(gpui_kit::init);
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            crate::theme::ThemeEngine::install(None, cx);
+        });
         cx.update(|cx| {
             // Must out-rank `gpui_kit::init`'s own global "tab" binding —
             // see `Editor::handle_insert_tab`'s doc comment.

@@ -7,6 +7,7 @@ pub mod bench_api;
 mod block_preview;
 mod buffer;
 mod callout;
+mod colors;
 mod doc_stats;
 mod document_cache;
 mod editor;

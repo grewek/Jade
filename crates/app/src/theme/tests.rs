@@ -563,10 +563,13 @@ mod engine_setup {
 }
 
 /// Colors come from the theme. A literal in UI code would ignore the theme
-/// the user picked. `element.rs` joins this list when the editor is themed.
+/// the user picked. Every file that paints UI is listed.
 #[test]
 fn ui_code_has_no_color_literals() {
-    const THEMED: &[(&str, &str)] = &[("app.rs", include_str!("../app.rs"))];
+    const THEMED: &[(&str, &str)] = &[
+        ("app.rs", include_str!("../app.rs")),
+        ("element.rs", include_str!("../text_editor/element.rs")),
+    ];
     const FORBIDDEN: &[&str] = &[
         "rgb(", "rgba(", "hsla(", "Hsla {", "white()", "black()", "0x",
     ];
@@ -577,7 +580,8 @@ fn ui_code_has_no_color_literals() {
                 .split("//")
                 .next()
                 .unwrap_or_default()
-                .replace("transparent_black()", "");
+                .replace("transparent_black()", "")
+                .replace("-> Hsla {", "");
             for bad in FORBIDDEN {
                 assert!(
                     !code.contains(bad),
