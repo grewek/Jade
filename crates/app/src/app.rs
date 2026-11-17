@@ -121,6 +121,8 @@ pub(crate) struct JadeApp {
     pub(crate) tabs: Vec<Tab>,
     /// Index into `tabs` of the tab being shown.
     pub(crate) active_tab: Option<usize>,
+    /// Horizontal scroll of the tab bar, so the active tab can be brought into view.
+    tab_scroll: ScrollHandle,
     /// Pending debounced save of the dirty tabs; dropping it cancels the wait.
     autosave_task: Option<Task<()>>,
     _quit_subscription: Subscription,
@@ -177,6 +179,7 @@ impl JadeApp {
             vault,
             tabs: Vec::new(),
             active_tab: None,
+            tab_scroll: ScrollHandle::new(),
             autosave_task: None,
             // Debounced saves can still be pending at quit.
             _quit_subscription: cx.on_app_quit(|this, cx| {
@@ -276,6 +279,7 @@ impl JadeApp {
         };
         self.tabs.push(tab);
         self.active_tab = Some(self.tabs.len() - 1);
+        self.tab_scroll.scroll_to_item(self.tabs.len() - 1);
         self.focus_active_editor(window, cx);
         cx.notify();
     }
@@ -285,6 +289,7 @@ impl JadeApp {
             return;
         }
         self.active_tab = Some(ix);
+        self.tab_scroll.scroll_to_item(ix);
         self.focus_active_editor(window, cx);
         cx.notify();
     }
@@ -1072,17 +1077,47 @@ impl JadeApp {
         let tabs: Vec<AnyElement> = (0..self.tabs.len())
             .map(|ix| self.render_tab(ix, cx))
             .collect();
-        div()
+        let scroll = self.tab_scroll.clone();
+        let strip = div()
             .id("tab-bar")
+            .test_support()
             .flex()
             .flex_row()
-            .flex_none()
             .overflow_x_scroll()
+            .track_scroll(&self.tab_scroll)
             .bg(bar)
+            // A plain mouse wheel only scrolls vertically; a row of tabs that
+            // cannot be reached with it would be stuck.
+            .on_scroll_wheel(
+                cx.listener(move |_this, event: &ScrollWheelEvent, window, cx| {
+                    let delta = event.delta.pixel_delta(window.line_height());
+                    if delta.x != px(0.) || delta.y == px(0.) {
+                        return;
+                    }
+                    let mut offset = scroll.offset();
+                    offset.x = (offset.x + delta.y).clamp(-scroll.max_offset().x, px(0.));
+                    scroll.set_offset(offset);
+                    cx.stop_propagation();
+                    cx.notify();
+                }),
+            )
+            .children(tabs)
+            .debug_name("tab-bar");
+        // The bar's width is the editor column's; the scrollbar overlays it
+        // rather than taking height.
+        div()
+            .relative()
+            .flex_none()
             .border_b_1()
             .border_color(border)
-            .children(tabs)
-            .debug_name("tab-bar")
+            .child(strip)
+            .child(
+                div().absolute().inset_0().child(
+                    Scrollbar::horizontal(&self.tab_scroll)
+                        .id("tab-scrollbar")
+                        .viewport_from_layout(),
+                ),
+            )
             .into_any_element()
     }
 
@@ -4331,15 +4366,10 @@ mod tests {
 
     /// Right-clicks a note row and picks the context-menu item at `item`
     /// (0 = Open, 1 = Open in new tab).
-    fn open_via_menu(
-        cx: &mut TestAppContext,
-        window: AnyWindowHandle,
-        note: &'static str,
-        item: usize,
-    ) {
+    fn open_via_menu(cx: &mut TestAppContext, window: AnyWindowHandle, note: &str, item: usize) {
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            window.right_click(note, cx);
+            window.right_click(note.to_string(), cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -4547,6 +4577,51 @@ mod tests {
             .unwrap();
         assert_eq!(before, after, "an untouched tab is not rewritten");
         assert_eq!(tabs_of(cx, &app).1, Some(1));
+    }
+
+    #[gpui_kit::test]
+    fn the_tab_bar_stays_inside_the_editor_column_and_reveals_the_active_tab(
+        cx: &mut TestAppContext,
+    ) {
+        use gpui_kit::ScrollDelta;
+        let dir = temp_vault();
+        let names: Vec<String> = (0..16).map(|i| format!("A long note name {i}")).collect();
+        for name in &names {
+            std::fs::write(dir.path().join(format!("{name}.md")), "x").unwrap();
+        }
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        for name in &names {
+            open_via_menu(cx, window, name, 1);
+        }
+        let bounds = |cx: &mut TestAppContext, id: String| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.render_frame(cx);
+                window.find(id).bounds()
+            })
+            .unwrap()
+        };
+
+        let bar = bounds(cx, "tab-bar".into());
+        // The resize handle sits on the right sidebar's left edge.
+        let sidebar = bounds(cx, "backlinks-resize".into());
+        assert!(
+            bar.right() <= sidebar.left(),
+            "{bar:?} runs under {sidebar:?}"
+        );
+        let last = bounds(cx, format!("tab-{}", names[15]));
+        assert!(
+            last.left() >= bar.left() && last.right() <= bar.right(),
+            "the new, active tab is scrolled into view: {last:?} vs {bar:?}"
+        );
+
+        // A vertical wheel turn scrolls the bar sideways, back to the first tab.
+        cx.update_window(window, |_, window, cx| {
+            window.scroll("tab-bar", ScrollDelta::Pixels(point(px(0.), px(5000.))), cx);
+        })
+        .unwrap();
+        let first = bounds(cx, format!("tab-{}", names[0]));
+        assert!(first.left() >= bar.left(), "{first:?} vs {bar:?}");
     }
 
     #[gpui_kit::test]
