@@ -1,3 +1,5 @@
+use crate::link_scan::{LinkKind, scan_line};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WikiLink {
     pub target: String,
@@ -28,37 +30,26 @@ pub fn extract_wikilinks_in_line(line: &str, links: &mut Vec<WikiLink>) {
 
 /// Calls `f(target, heading, alias)` for each wikilink in `line`, borrowing
 /// from it so callers that need less than a whole [`WikiLink`] allocate less.
+/// The grammar is [`crate::link_scan`]'s, so a link inside an inline code
+/// span or after an escape is not counted, as it is not rendered as one.
 fn for_each_wikilink_in_line<'a>(
     line: &'a str,
     mut f: impl FnMut(&'a str, Option<&'a str>, Option<&'a str>),
 ) {
-    let mut i = 0;
-    while let Some(start) = line[i..].find("[[") {
-        let abs_start = i + start + 2;
-        let Some(end) = line[abs_start..].find("]]") else {
-            break;
-        };
-        let abs_end = abs_start + end;
-        let inner = &line[abs_start..abs_end];
-        i = abs_end + 2;
-
-        if inner.is_empty() {
-            continue;
-        }
-
-        let (target_part, alias) = match inner.split_once('|') {
-            Some((t, a)) => (t, Some(a.trim())),
-            None => (inner, None),
-        };
-        let (target, heading) = match target_part.split_once('#') {
-            Some((t, h)) => (t.trim(), Some(h.trim())),
-            None => (target_part.trim(), None),
-        };
-
-        if !target.is_empty() {
-            f(target, heading, alias);
-        }
+    // Most lines have none, and this runs for every line of every note at
+    // vault open.
+    if !line.contains("[[") {
+        return;
     }
+    scan_line(line, |link| {
+        if link.kind == LinkKind::Wiki {
+            f(
+                &line[link.dest],
+                link.heading.map(|h| &line[h]),
+                link.alias.map(|a| line[a].trim()),
+            );
+        }
+    });
 }
 
 /// The distinct link targets in the file at `path`, sorted. This is all the
@@ -182,5 +173,12 @@ mod tests {
         let path = dir.path().join("n.md");
         std::fs::write(&path, text).unwrap();
         assert_eq!(link_targets_from_file(&path).unwrap(), link_targets(text));
+    }
+
+    #[test]
+    fn links_in_code_spans_and_after_escapes_are_not_wikilinks() {
+        let links = extract_wikilinks("`[[a]]` \\[[b]] [[c]] **[[d]]**");
+        let targets: Vec<_> = links.iter().map(|l| l.target.as_str()).collect();
+        assert_eq!(targets, ["c", "d"]);
     }
 }

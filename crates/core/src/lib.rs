@@ -1,3 +1,4 @@
+pub mod link_scan;
 mod links;
 mod note;
 mod vault;

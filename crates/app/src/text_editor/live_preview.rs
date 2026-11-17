@@ -60,6 +60,9 @@ use std::rc::Rc;
 
 use super::callout::{self, callout_header_prefix};
 use super::table_preview::{self, Column};
+use jade_core::link_scan::{
+    find_closing, parse_autolink, parse_bare_url, parse_inline_link, parse_wikilink,
+};
 
 /// How a visible [`DisplaySegment`] should be painted. Plain data —
 /// `element.rs` maps each variant to an actual `Font`/color, keeping this
@@ -783,12 +786,12 @@ enum ConstructKind {
     /// `&name;` / `&#NNN;` / `&#xHHH;` — a one-shot match like `Escape`,
     /// resolved by [`parse_entity`].
     Entity,
-    /// `[text](url)` — resolved by [`parse_link`]. Not matched at all when
+    /// `[text](url)` — resolved by [`parse_inline_link`]. Not matched at all when
     /// immediately preceded by `!` (an image, deliberately out of scope —
     /// see `scan_inline`'s own handling).
     Link,
     /// `<https://x>` / `<mailto:a@b.com>` / `<a@b.com>` — resolved by
-    /// [`parse_autolink_bracket`].
+    /// [`parse_autolink`].
     AutolinkBracket,
     /// A bare `http://`/`https://` URL with no surrounding delimiters (GFM
     /// extended autolinks) — a one-shot match, resolved directly in
@@ -897,67 +900,6 @@ fn find_construct(rest: &str) -> Option<Construct> {
     None
 }
 
-/// The absolute byte offset of the first occurrence of `delim` in
-/// `line[start..end]`, if any — skipping any occurrence immediately preceded
-/// by a backslash (an escaped delimiter, see [`ConstructKind::Escape`],
-/// doesn't count as a real closer). A multi-backslash run (`\\*`, a literal
-/// backslash followed by a real `*`) isn't specially handled — treated as
-/// escaped regardless, a deliberate simplification consistent with every
-/// other edge case this module already accepts rather than chasing.
-fn find_closing(line: &str, start: usize, end: usize, delim: &str) -> Option<usize> {
-    let mut search_start = start;
-    loop {
-        let abs = search_start + line[search_start..end].find(delim)?;
-        if abs > 0 && line.as_bytes()[abs - 1] == b'\\' {
-            search_start = abs + 1;
-            continue;
-        }
-        return Some(abs);
-    }
-}
-
-struct WikiLinkMatch {
-    /// What to actually show: the alias if there is one, else the target
-    /// (a `#heading` suffix, if present, is hidden either way).
-    visible: Range<usize>,
-    /// Absolute offset right after the closing `]]`.
-    close_end: usize,
-}
-
-/// Parses a `[[...]]` wikilink starting at `start` (pointing at the first
-/// `[`), if `line[start..end]` contains one — mirrors
-/// `jade_core::links::extract_wikilinks`' target/heading/alias split, but
-/// (needing byte offsets for hit-testing, which that function doesn't carry)
-/// is its own hand-rolled scan rather than a reuse of it.
-fn parse_wikilink(line: &str, start: usize, end: usize) -> Option<WikiLinkMatch> {
-    let inner_start = start + 2;
-    let close_rel = line[inner_start..end].find("]]")?;
-    let inner_end = inner_start + close_rel;
-    let close_end = inner_end + 2;
-    let inner = &line[inner_start..inner_end];
-    if inner.is_empty() {
-        return None;
-    }
-
-    let visible = match inner.find('|') {
-        Some(pipe_rel) => {
-            let alias_start = inner_start + pipe_rel + 1;
-            if alias_start >= inner_end {
-                return None;
-            }
-            alias_start..inner_end
-        }
-        None => {
-            let target_end = inner.find('#').map_or(inner_end, |h| inner_start + h);
-            if target_end <= inner_start {
-                return None;
-            }
-            inner_start..target_end
-        }
-    };
-    Some(WikiLinkMatch { visible, close_end })
-}
-
 /// Common named HTML entities this module decodes — not the full ~2000-entry
 /// HTML5 named character reference table (a deliberate v1 scope cut, same
 /// category as strikethrough's GFM-only doubled-tilde): just a subset
@@ -1028,104 +970,6 @@ fn parse_entity(line: &str, start: usize, end: usize) -> Option<(Range<usize>, c
             .map(|(_, c)| *c)?
     };
     Some((start..raw_end, ch))
-}
-
-struct LinkMatch {
-    /// The link text (between `[` and `]`) — shown, styled [`InlineStyle::Link`].
-    text: Range<usize>,
-    /// Absolute offset right after the closing `)`.
-    close_end: usize,
-}
-
-/// Parses `[text](url)` starting at `start` (pointing at the first `[`), if
-/// `line[start..end]` contains one. `text` may be empty (CommonMark allows
-/// it). The URL itself is never inspected beyond finding its closing `)`
-/// (escape-aware via [`find_closing`]; no nested-paren balancing — a known,
-/// not regressive, limitation for a URL containing an unescaped `)`, same
-/// category as this module's other simplifications). An optional
-/// `"title"` inside the parens isn't parsed specially — the whole `(...)`
-/// span is just hidden regardless of what's inside it.
-fn parse_link(line: &str, start: usize, end: usize) -> Option<LinkMatch> {
-    let text_start = start + 1;
-    let text_close = find_closing(line, text_start, end, "]")?;
-    if line.as_bytes().get(text_close + 1) != Some(&b'(') {
-        return None;
-    }
-    let url_start = text_close + 2;
-    let url_close = find_closing(line, url_start, end, ")")?;
-    Some(LinkMatch {
-        text: text_start..text_close,
-        close_end: url_close + 1,
-    })
-}
-
-/// Parses `<...>` starting at `start` (pointing at `<`) as a CommonMark
-/// autolink — a URI (contains `://`, or starts with `mailto:`) or a bare
-/// email (contains `@`) — if `line[start..end]` contains one. Returns the
-/// inner text's range (shown, styled [`InlineStyle::Link`]); `<`/`>`
-/// themselves are hidden by the caller. Anything else inside angle brackets
-/// (ordinary `<div>`-style raw HTML, explicitly out of scope — see this
-/// module's doc comment) falls through to plain text via the usual
-/// no-match path.
-fn parse_autolink_bracket(line: &str, start: usize, end: usize) -> Option<Range<usize>> {
-    let inner_start = start + 1;
-    let close = find_closing(line, inner_start, end, ">")?;
-    let inner = &line[inner_start..close];
-    if inner.is_empty() || inner.chars().any(char::is_whitespace) {
-        return None;
-    }
-    let is_uri = inner.contains("://") || inner.starts_with("mailto:");
-    let is_email = !is_uri && inner.contains('@');
-    (is_uri || is_email).then_some(inner_start..close)
-}
-
-/// A byte plausible inside a bare URL — used by [`bare_url_end`] to decide
-/// how far a GFM extended autolink extends.
-fn is_url_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric()
-        || matches!(
-            b,
-            b'-' | b'.'
-                | b'_'
-                | b'~'
-                | b':'
-                | b'/'
-                | b'?'
-                | b'#'
-                | b'['
-                | b']'
-                | b'@'
-                | b'!'
-                | b'$'
-                | b'&'
-                | b'\''
-                | b'('
-                | b')'
-                | b'*'
-                | b'+'
-                | b','
-                | b';'
-                | b'='
-                | b'%'
-        )
-}
-
-/// How far a bare `http://`/`https://` autolink (GFM extended autolinks)
-/// extends from its scheme at `start`: every following byte that's a
-/// plausible URL character ([`is_url_byte`]), then one single trailing
-/// `.`/`,`/`;`/`:`/`!`/`?` trimmed back off if present — a simplified
-/// stand-in for GFM's own fuller trailing-punctuation/paren-balance
-/// trimming rules.
-fn bare_url_end(line: &str, start: usize, end: usize) -> usize {
-    let bytes = line.as_bytes();
-    let mut i = start;
-    while i < end && is_url_byte(bytes[i]) {
-        i += 1;
-    }
-    if i > start && matches!(bytes[i - 1], b'.' | b',' | b';' | b':' | b'!' | b'?') {
-        i -= 1;
-    }
-    i
 }
 
 /// Scans `line[pos..end]` for inline constructs, appending hidden/visible
@@ -1210,16 +1054,16 @@ fn scan_inline(
                 })
             }
             ConstructKind::WikiLink => parse_wikilink(line, construct_start, end).map(|link| {
-                push_hidden(segments, display_text, construct_start..link.visible.start);
+                push_hidden(segments, display_text, construct_start..link.text.start);
                 push_visible(
                     line,
                     segments,
                     display_text,
-                    link.visible.clone(),
+                    link.text.clone(),
                     InlineStyle::WikiLink,
                 );
-                push_hidden(segments, display_text, link.visible.end..link.close_end);
-                link.close_end
+                push_hidden(segments, display_text, link.text.end..link.span.end);
+                link.span.end
             }),
             ConstructKind::Escape => {
                 push_hidden(segments, display_text, construct_start..construct_start + 1);
@@ -1246,7 +1090,7 @@ fn scan_inline(
             {
                 None
             }
-            ConstructKind::Link => parse_link(line, construct_start, end).map(|link| {
+            ConstructKind::Link => parse_inline_link(line, construct_start, end).map(|link| {
                 push_hidden(segments, display_text, construct_start..link.text.start);
                 push_visible(
                     line,
@@ -1255,24 +1099,25 @@ fn scan_inline(
                     link.text.clone(),
                     InlineStyle::Link,
                 );
-                push_hidden(segments, display_text, link.text.end..link.close_end);
-                link.close_end
+                push_hidden(segments, display_text, link.text.end..link.span.end);
+                link.span.end
             }),
-            ConstructKind::AutolinkBracket => parse_autolink_bracket(line, construct_start, end)
-                .map(|visible| {
-                    push_hidden(segments, display_text, construct_start..visible.start);
+            ConstructKind::AutolinkBracket => {
+                parse_autolink(line, construct_start, end).map(|link| {
+                    push_hidden(segments, display_text, construct_start..link.text.start);
                     push_visible(
                         line,
                         segments,
                         display_text,
-                        visible.clone(),
+                        link.text.clone(),
                         InlineStyle::Link,
                     );
-                    push_hidden(segments, display_text, visible.end..visible.end + 1);
-                    visible.end + 1
-                }),
+                    push_hidden(segments, display_text, link.text.end..link.span.end);
+                    link.span.end
+                })
+            }
             ConstructKind::BareUrl => {
-                let url_end = bare_url_end(line, construct_start, end);
+                let url_end = parse_bare_url(line, construct_start, end).span.end;
                 push_visible(
                     line,
                     segments,
@@ -1937,6 +1782,133 @@ fn push_list_marker(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The raw ranges Live Preview paints as a link on an inactive line.
+    fn rendered_link_texts(line: &str) -> Vec<Range<usize>> {
+        build_display_line(line, false)
+            .segments
+            .iter()
+            .filter(|s| matches!(s.style, InlineStyle::Link | InlineStyle::WikiLink))
+            .filter(|s| !s.is_hidden())
+            .map(|s| s.raw.clone())
+            .collect()
+    }
+
+    fn scanned_link_texts(line: &str) -> Vec<Range<usize>> {
+        let mut out = Vec::new();
+        jade_core::link_scan::scan_line(line, |l| {
+            if !l.text.is_empty() {
+                out.push(l.text);
+            }
+        });
+        out
+    }
+
+    /// Rendering and `link_scan` must agree on what is a link, with one known
+    /// gap: Live Preview does not scan inside bold, italic or strikethrough
+    /// (`**[[a]]**` paints `[[a]]` as plain bold text), while the scanner,
+    /// like the backlink index, still counts it. They share the leaf
+    /// parsers; this guards the loops around them.
+    fn assert_scanner_matches_rendering(line: &str) {
+        let rendered = rendered_link_texts(line);
+        let display = build_display_line(line, false);
+        let scanned = scanned_link_texts(line);
+        for r in &rendered {
+            assert!(scanned.contains(r), "rendered link not scanned: {line:?}");
+        }
+        for r in scanned.iter().filter(|r| !rendered.contains(r)) {
+            let inside_emphasis = display.segments.iter().any(|s| {
+                matches!(
+                    s.style,
+                    InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Strikethrough
+                ) && s.raw.start <= r.start
+                    && r.end <= s.raw.end
+            });
+            assert!(inside_emphasis, "scanned link not rendered: {line:?} {r:?}");
+        }
+    }
+
+    #[test]
+    fn link_scan_agrees_with_rendering_on_hand_written_lines() {
+        for line in [
+            "plain [[a]] and [[b|c]] and [[d#e]] end",
+            "**[[bold link]]** and *[t](u)* and ~~<https://x.y>~~",
+            "`[[code]]` then [[real]]",
+            "\\[[escaped]] [[after]]",
+            "![img](u.png) [text](u.md)",
+            "see https://a.b/c. and <me@x.y> and <div>",
+            "[a](b) [c](d \"title\") [e](<f g>)",
+            "a [[unclosed and [t](unclosed",
+            "[[a]] [[b]] [[c]]",
+            "# [[heading link]]",
+            "> quoted [[link]]",
+            "- item [t](u)",
+            "[[ ]] [[]] [[a|]] [[#h]]",
+            "[x](y)(z) [[a]](b)",
+            "é [[Ünï|ä]] ✓ [日本](ü.md)",
+        ] {
+            assert_scanner_matches_rendering(line);
+        }
+    }
+
+    #[test]
+    fn link_scan_agrees_with_rendering_on_random_inline_soup() {
+        let tokens = [
+            "[[",
+            "]]",
+            "[",
+            "]",
+            "(",
+            ")",
+            "<",
+            ">",
+            "`",
+            "\\",
+            "|",
+            "#",
+            "**",
+            "*",
+            "_",
+            "~~",
+            "https://x.y",
+            "a",
+            "b c",
+            " ",
+            "!",
+            "é",
+            "&amp;",
+            "[[a]]",
+            "[t](u)",
+            "<https://z>",
+        ];
+        let mut state = 0x9e37_79b9_u32;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as usize
+        };
+        for _ in 0..20_000 {
+            let line: String = (0..next() % 12)
+                .map(|_| tokens[next() % tokens.len()])
+                .collect();
+            assert_scanner_matches_rendering(&line);
+        }
+    }
+
+    #[test]
+    fn link_scan_agrees_with_rendering_on_the_stress_fixture() {
+        let path = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/benches/fixtures/large_markdown_stress_test.md"
+        );
+        let Ok(text) = std::fs::read_to_string(path) else {
+            return;
+        };
+        for line in text.lines().take(20_000) {
+            assert_scanner_matches_rendering(line);
+        }
+    }
 
     fn visible_styles(dl: &DisplayLine) -> Vec<(String, InlineStyle)> {
         dl.segments
