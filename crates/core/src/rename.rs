@@ -14,6 +14,7 @@ use std::path::Path;
 
 use crate::fence::{FenceRole, step};
 use crate::link_scan::{LinkKind, scan_line, scheme};
+use crate::note_name::split_md;
 use crate::resolve::{LinkTarget, percent_decode, split_fragment};
 use crate::vault::Vault;
 
@@ -208,7 +209,7 @@ fn note_line_edits(
             if vault.resolve_path_link(from, written) == Ok(LinkTarget::Note(target.to_string())) {
                 let (path, _) = split_fragment(written);
                 let name_at = path.rfind('/').map_or(0, |i| i + 1);
-                let (name, ext) = split_extension(&path[name_at..]);
+                let (name, ext) = split_md(&path[name_at..]);
                 let start = link.dest.start + name_at;
                 let end = start + name.len() + ext.len();
                 let new = format!("{}{ext}", encode_segment(title));
@@ -253,7 +254,7 @@ fn folder_line_edits(
             let Some(rest) = target.strip_prefix(&prefix) else {
                 return;
             };
-            let (stem, _) = split_extension(written);
+            let (stem, _) = split_md(written);
             let found = folder_segment(stem, rest.split('/').count(), |seg| {
                 seg.eq_ignore_ascii_case(old_name)
             });
@@ -316,23 +317,13 @@ fn folder_segment(
 /// A wikilink's new target: a path through folders stays a path to the new
 /// file, a plain title becomes the new title; a `.md` the author wrote stays.
 fn wikilink_target(written: &str, dir: &str, title: &str) -> String {
-    let (stem, ext) = split_extension(written);
+    let (stem, ext) = split_md(written);
     let name = if stem.contains('/') && !dir.is_empty() {
         format!("{dir}/{title}")
     } else {
         title.to_string()
     };
     format!("{name}{ext}")
-}
-
-/// `name` split before a trailing `.md` (any case), which may be absent.
-fn split_extension(name: &str) -> (&str, &str) {
-    match name.len().checked_sub(3) {
-        Some(at) if name.is_char_boundary(at) && name[at..].eq_ignore_ascii_case(".md") => {
-            name.split_at(at)
-        }
-        _ => (name, ""),
-    }
 }
 
 /// `name` escaped for use as one segment of a `[text](path)` destination.

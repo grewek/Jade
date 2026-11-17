@@ -3,6 +3,7 @@ pub mod fence;
 pub mod link_scan;
 mod links;
 mod note;
+mod note_name;
 mod rename;
 mod resolve;
 mod vault;

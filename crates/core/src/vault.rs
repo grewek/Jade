@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::links::{link_targets, link_targets_from_file};
 use crate::note::{Note, relative_id, relative_path_id};
+use crate::note_name::{file_name, first_free, split_md};
 
 pub struct Vault {
     pub root: PathBuf,
@@ -55,18 +56,11 @@ impl Vault {
         };
         std::fs::create_dir_all(&dir)?;
 
-        let mut candidate = title.to_string();
-        let mut suffix = 1;
-        loop {
-            let candidate_id = relative_id(&self.root, &dir.join(format!("{candidate}.md")));
-            if !self.notes.contains_key(&candidate_id) {
-                break;
-            }
-            candidate = format!("{title} {suffix}");
-            suffix += 1;
-        }
-
-        let path = dir.join(format!("{candidate}.md"));
+        let candidate = first_free(title, |name| {
+            let id = relative_id(&self.root, &dir.join(file_name(name)));
+            self.notes.contains_key(&id)
+        });
+        let path = dir.join(file_name(&candidate));
         std::fs::write(&path, "")?;
         let note = Note::new(&self.root, path);
         let id = note.id.clone();
@@ -84,16 +78,7 @@ impl Vault {
         };
         std::fs::create_dir_all(&parent_dir)?;
 
-        let mut candidate = name.to_string();
-        let mut suffix = 1;
-        loop {
-            if !parent_dir.join(&candidate).exists() {
-                break;
-            }
-            candidate = format!("{name} {suffix}");
-            suffix += 1;
-        }
-
+        let candidate = first_free(name, |c| parent_dir.join(c).exists());
         let path = parent_dir.join(&candidate);
         std::fs::create_dir_all(&path)?;
         let id = relative_path_id(&self.root, &path);
@@ -137,17 +122,10 @@ impl Vault {
             .clone();
         let parent = old_path.parent().unwrap_or(&self.root).to_path_buf();
 
-        let mut candidate = new_title.to_string();
-        let mut suffix = 1;
-        loop {
-            let candidate_id = relative_id(&self.root, &parent.join(format!("{candidate}.md")));
-            if candidate_id == id || !self.notes.contains_key(&candidate_id) {
-                break;
-            }
-            candidate = format!("{new_title} {suffix}");
-            suffix += 1;
-        }
-        Ok(candidate)
+        Ok(first_free(new_title, |name| {
+            let candidate_id = relative_id(&self.root, &parent.join(file_name(name)));
+            candidate_id != id && self.notes.contains_key(&candidate_id)
+        }))
     }
 
     /// Renames the note's file to exactly `title` (which [`Self::free_title`]
@@ -160,7 +138,7 @@ impl Vault {
             .path
             .clone();
         let parent = old_path.parent().unwrap_or(&self.root).to_path_buf();
-        let new_path = parent.join(format!("{title}.md"));
+        let new_path = parent.join(file_name(title));
         std::fs::rename(&old_path, &new_path)?;
 
         self.notes.remove(id);
@@ -206,17 +184,10 @@ impl Vault {
         let old_path = self.root.join(id);
         let parent_dir = old_path.parent().unwrap_or(&self.root).to_path_buf();
 
-        let mut candidate = new_name.to_string();
-        let mut suffix = 1;
-        loop {
-            let candidate_path = parent_dir.join(&candidate);
-            if candidate_path == old_path || !candidate_path.exists() {
-                break;
-            }
-            candidate = format!("{new_name} {suffix}");
-            suffix += 1;
-        }
-        Ok(candidate)
+        Ok(first_free(new_name, |name| {
+            let path = parent_dir.join(name);
+            path != old_path && path.exists()
+        }))
     }
 
     /// Renames folder `id` to exactly `name` (checked by
@@ -329,7 +300,7 @@ impl Vault {
     }
 
     pub(crate) fn resolve(&self, target: &str, index: &HashMap<String, String>) -> Option<String> {
-        let target = without_md(target);
+        let target = split_md(target).0;
         if self.notes.contains_key(target) {
             return Some(target.to_string());
         }
@@ -342,7 +313,7 @@ impl Vault {
     /// wins, then the alphabetically first. Scans the notes, so call it on a
     /// click, not per frame; `backlinks` uses the same rule.
     pub fn resolve_wikilink(&self, target: &str) -> Option<&str> {
-        let target = without_md(target);
+        let target = split_md(target).0;
         if let Some(note) = self.notes.get(target) {
             return Some(&note.id);
         }
@@ -468,16 +439,6 @@ fn contains_ascii_ignore_case(haystack: &[u8], needle: &[u8]) -> bool {
 /// alphabetical.
 fn preferred(a: &str, b: &str) -> bool {
     (a.len(), a) < (b.len(), b)
-}
-
-/// `target` without a trailing `.md`, which a link may carry.
-fn without_md(target: &str) -> &str {
-    match target.len().checked_sub(3) {
-        Some(at) if target.is_char_boundary(at) && target[at..].eq_ignore_ascii_case(".md") => {
-            &target[..at]
-        }
-        _ => target,
-    }
 }
 
 fn not_found(id: &str) -> std::io::Error {

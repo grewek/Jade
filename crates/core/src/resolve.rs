@@ -8,6 +8,7 @@
 use std::path::PathBuf;
 
 use crate::link_scan::scheme;
+use crate::note_name::split_md;
 use crate::vault::Vault;
 
 /// A destination longer than this is not a path anyone wrote by hand.
@@ -134,8 +135,8 @@ impl Vault {
     /// `None` when `parts` names nothing here, so the caller tries its next base.
     fn lookup(&self, parts: &[String]) -> Option<Result<LinkTarget, PathLinkError>> {
         let joined = parts.join("/");
-        if joined.len() > 3 && joined[joined.len() - 3..].eq_ignore_ascii_case(".md") {
-            let id = &joined[..joined.len() - 3];
+        let (id, ext) = split_md(&joined);
+        if !ext.is_empty() && !id.is_empty() {
             return self
                 .notes
                 .contains_key(id)
