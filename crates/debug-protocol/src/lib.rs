@@ -236,6 +236,8 @@ pub struct AppState {
     /// The status bar's counts for the active note (0 with no note).
     pub words: usize,
     pub chars: usize,
+    /// Links in the active note (0 with no note).
+    pub links: usize,
     /// `"vault"` or `"search"`.
     pub sidebar_tab: String,
     pub search_query: String,
@@ -571,6 +573,7 @@ mod tests {
                 active_tab: Some(0),
                 words: 4,
                 chars: 21,
+                links: 3,
                 sidebar_tab: "search".into(),
                 search_query: "q".into(),
                 search_results: 2,

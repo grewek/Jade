@@ -139,6 +139,7 @@ fn app_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
             active_tab: app.active_tab,
             words: app.editor().map_or(0, |e| e.read(cx).word_count()),
             chars: app.editor().map_or(0, |e| e.read(cx).char_count()),
+            links: app.editor().map_or(0, |e| e.read(cx).link_count()),
             sidebar_tab: match app.sidebar_tab {
                 crate::SidebarTab::Vault => "vault",
                 crate::SidebarTab::Search => "search",

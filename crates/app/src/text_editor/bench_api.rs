@@ -5,6 +5,7 @@
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, EditPatch, TextEdit, line_strides as strides_of};
 use super::fenwick::Fenwick;
+use super::link_table::LinkTable;
 
 pub use super::buffer::EditorBuffer;
 
@@ -112,6 +113,58 @@ impl Counts {
             None => self.stats.rebuild(text),
         }
         (self.stats.words(), self.stats.chars())
+    }
+}
+
+/// The link table: `rebuild` is the cold scan at note open (the
+/// classification cache it reads roles from is built outside the timing);
+/// `edit` then `patch` split one edit into the cache patch and the table
+/// patch being measured.
+pub struct Links {
+    cache: DocumentCache,
+    table: LinkTable,
+    patch: Option<EditPatch>,
+}
+
+impl Links {
+    pub fn new(text: &str) -> Self {
+        let cache = DocumentCache::new(text);
+        let table = LinkTable::new(text, &cache);
+        Self {
+            cache,
+            table,
+            patch: None,
+        }
+    }
+
+    /// Scans the whole document again; returns the number of links.
+    pub fn rebuild(&mut self, text: &str) -> usize {
+        self.table.rebuild(text, &self.cache);
+        self.table.len()
+    }
+
+    pub fn edit(
+        &mut self,
+        text: &str,
+        start_byte: usize,
+        old_end_byte: usize,
+        new_end_byte: usize,
+    ) {
+        let edit = TextEdit {
+            start_byte,
+            old_end_byte,
+            new_end_byte,
+        };
+        self.patch = self.cache.record_edit(text, edit);
+    }
+
+    /// Updates the table for the edit last passed to [`Self::edit`].
+    pub fn patch(&mut self, text: &str) -> usize {
+        match self.patch.take() {
+            Some(patch) => self.table.patch(text, &self.cache, &patch),
+            None => self.table.rebuild(text, &self.cache),
+        }
+        self.table.len()
     }
 }
 

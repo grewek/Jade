@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use jade_app::bench_api::{Cache, Counts, EditorBuffer, Index, line_strides};
+use jade_app::bench_api::{Cache, Counts, EditorBuffer, Index, Links, line_strides};
 
 const TYPICAL_BYTES: usize = 150 * 1024;
 
@@ -83,6 +83,50 @@ fn bench_counts(c: &mut Criterion) {
                     counts.edit(&text, at, old_end, new_end);
                     let start = Instant::now();
                     black_box(counts.count(&text));
+                    timed += start.elapsed();
+                }
+                timed
+            });
+        });
+    }
+}
+
+/// The link table: the cold scan at open, then the per-edit patch.
+fn bench_links(c: &mut Criterion) {
+    let stress = stress_text();
+    let typical = typical_prefix(&stress);
+    let mut group = c.benchmark_group("link_table");
+    group.sample_size(10);
+    let mut typical_links = Links::new(typical);
+    group.bench_function("build/typical", |b| {
+        b.iter(|| typical_links.rebuild(black_box(typical)))
+    });
+    let mut stress_links = Links::new(&stress);
+    group.bench_function("build/stress", |b| {
+        b.iter(|| stress_links.rebuild(black_box(stress.as_str())))
+    });
+    group.finish();
+
+    for (label, insert) in [("char", "x"), ("newline", "\n")] {
+        let mut text = stress.clone();
+        let mut links = Links::new(&text);
+        let at = middle_line_start(&text);
+        let mut inserted = false;
+        c.bench_function(&format!("link_table/patch_{label}/stress"), |b| {
+            b.iter_custom(|iters| {
+                let mut timed = Duration::ZERO;
+                for _ in 0..iters {
+                    let (old_end, new_end) = if inserted {
+                        text.replace_range(at..at + insert.len(), "");
+                        (at + insert.len(), at)
+                    } else {
+                        text.insert_str(at, insert);
+                        (at, at + insert.len())
+                    };
+                    inserted = !inserted;
+                    links.edit(&text, at, old_end, new_end);
+                    let start = Instant::now();
+                    black_box(links.patch(&text));
                     timed += start.elapsed();
                 }
                 timed
@@ -210,6 +254,7 @@ criterion_group!(
     bench_cache_build,
     bench_passes,
     bench_counts,
+    bench_links,
     bench_record_edit,
     bench_fenwick,
     bench_buffer

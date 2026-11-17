@@ -5,7 +5,7 @@
 //! Run with `cargo bench -p jade-app --features bench-support --bench
 //! allocations`.
 
-use jade_app::bench_api::{Cache, Index};
+use jade_app::bench_api::{Cache, Index, Links};
 use jade_app::headless::{AllocSnapshot, CountingAllocator, HeadlessApp, reset, snapshot};
 
 #[global_allocator]
@@ -105,6 +105,32 @@ fn cache_edits(report: &mut Report, stress: &str) {
     }
 }
 
+/// The link table's patch after an edit, on top of the cache's own.
+fn link_table(report: &mut Report, stress: &str) {
+    for (name, insert) in [
+        ("link table patch char", "x"),
+        ("link table patch newline", "\n"),
+    ] {
+        let mut text = stress.to_owned();
+        let mut links = Links::new(&text);
+        let at = middle_line_start(&text);
+        let mut inserted = false;
+        report.check(name, 64, || {
+            let (old_end, new_end) = if inserted {
+                text.replace_range(at..at + insert.len(), "");
+                (at + insert.len(), at)
+            } else {
+                text.insert_str(at, insert);
+                (at, at + insert.len())
+            };
+            inserted = !inserted;
+            links.edit(&text, at, old_end, new_end);
+            reset();
+            links.patch(&text);
+        });
+    }
+}
+
 fn fenwick(report: &mut Report, stress: &str) {
     let strides: Vec<i64> = stress
         .split_inclusive('\n')
@@ -165,6 +191,7 @@ fn main() {
     let stress = stress_text();
     let mut report = Report { failures: 0 };
     cache_edits(&mut report, &stress);
+    link_table(&mut report, &stress);
     fenwick(&mut report, &stress);
     frames(&mut report, &stress);
     if report.failures > 0 {

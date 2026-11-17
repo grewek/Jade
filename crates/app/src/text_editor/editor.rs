@@ -8,6 +8,7 @@ use super::EditorBuffer;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
+use super::link_table::LinkTable;
 
 /// The `TextEdit` for a plain insertion of `inserted_len` bytes replacing
 /// `old_range` (the selection, or the collapsed cursor if none) — call sites
@@ -107,6 +108,8 @@ pub struct Editor {
     pub(super) row_height_cache: Rc<RefCell<RowHeightCache>>,
     /// Word and character counts for the status bar, patched per edit.
     doc_stats: DocStats,
+    /// Where the note's links are, patched per edit.
+    link_table: LinkTable,
 }
 
 impl Editor {
@@ -117,6 +120,7 @@ impl Editor {
         // for this cache specifically.
         let document_cache = Rc::new(RefCell::new(DocumentCache::new(buffer.text())));
         let doc_stats = DocStats::new(buffer.text());
+        let link_table = LinkTable::new(buffer.text(), &document_cache.borrow());
         Self {
             buffer,
             focus_handle: cx.focus_handle(),
@@ -127,7 +131,17 @@ impl Editor {
             document_cache,
             row_height_cache: Rc::new(RefCell::new(RowHeightCache::empty())),
             doc_stats,
+            link_table,
         }
+    }
+
+    /// How many links the note has (see `link_table`).
+    #[cfg_attr(
+        not(any(test, feature = "debug-socket")),
+        allow(dead_code, reason = "read by the harness's `app` query")
+    )]
+    pub fn link_count(&self) -> usize {
+        self.link_table.len()
     }
 
     /// Words in the note (see `doc_stats` for what counts as one).
@@ -186,10 +200,16 @@ impl Editor {
         let text = self.buffer.text();
         let patch = self.document_cache.borrow_mut().record_edit(text, edit);
         match &patch {
-            Some(patch) => self
-                .doc_stats
-                .patch(text, &self.document_cache.borrow(), patch),
-            None => self.doc_stats.rebuild(text),
+            Some(patch) => {
+                self.doc_stats
+                    .patch(text, &self.document_cache.borrow(), patch);
+                self.link_table
+                    .patch(text, &self.document_cache.borrow(), patch);
+            }
+            None => {
+                self.doc_stats.rebuild(text);
+                self.link_table.rebuild(text, &self.document_cache.borrow());
+            }
         }
 
         let params = render_params(self, window, cx);

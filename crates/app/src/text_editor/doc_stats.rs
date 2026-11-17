@@ -73,8 +73,8 @@ fn ascii_line_counts(bytes: &[u8]) -> Counts {
 }
 
 /// Below this a thread per core costs more than it saves.
-const PARALLEL_MIN_BYTES: usize = 1 << 20;
-const MAX_THREADS: usize = 8;
+pub(super) const PARALLEL_MIN_BYTES: usize = 1 << 20;
+pub(super) const MAX_THREADS: usize = 8;
 
 /// Counts of every line in `chunk`, which starts at a line start and, unless
 /// it is the document's last chunk, ends just after a newline.

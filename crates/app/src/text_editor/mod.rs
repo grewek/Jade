@@ -14,6 +14,7 @@ mod editor;
 mod element;
 mod fenwick;
 mod input_handler;
+mod link_table;
 mod live_preview;
 #[cfg(any(test, feature = "debug-socket"))]
 mod paint_trace;
