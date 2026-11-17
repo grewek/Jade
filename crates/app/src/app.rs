@@ -104,17 +104,24 @@ pub(crate) enum SidebarTab {
     Search,
 }
 
+/// One open note. The editor is Jade's own `text_editor::Editor` (not
+/// `gpui-component`'s `Textarea`); each tab keeps its own, so cursor, scroll and
+/// undo survive switching tabs.
+struct Tab {
+    note_id: String,
+    editor: Entity<Editor>,
+    /// Set by the editor's `Changed` event, cleared when the autosave writes it.
+    dirty: bool,
+    _subscription: Subscription,
+}
+
 pub(crate) struct JadeApp {
     vault: Vault,
-    pub(crate) selected_id: Option<String>,
-    /// The currently open note's editor, if a note is selected — Jade's own
-    /// custom-built `text_editor::Editor` (see `CLAUDE.md`'s "Custom editor"
-    /// section), not `gpui-component`'s `Textarea`. One continuous editor for
-    /// the whole note; Live Preview (Phase 2) will change how it renders
-    /// per-block internally rather than swapping between separate widgets.
-    pub(crate) editor: Option<Entity<Editor>>,
-    _editor_subscription: Option<Subscription>,
-    /// Pending debounced save; dropping it cancels the wait.
+    /// Open notes, one tab each; at most one tab per note.
+    tabs: Vec<Tab>,
+    /// Index into `tabs` of the tab being shown.
+    active_tab: Option<usize>,
+    /// Pending debounced save of the dirty tabs; dropping it cancels the wait.
     autosave_task: Option<Task<()>>,
     _quit_subscription: Subscription,
     pub(crate) error: Option<String>,
@@ -168,13 +175,12 @@ impl JadeApp {
 
         Self {
             vault,
-            selected_id: None,
-            editor: None,
-            _editor_subscription: None,
+            tabs: Vec::new(),
+            active_tab: None,
             autosave_task: None,
             // Debounced saves can still be pending at quit.
             _quit_subscription: cx.on_app_quit(|this, cx| {
-                this.save_open_editor(cx);
+                this.persist_all_tabs(cx);
                 async {}
             }),
             error,
@@ -196,70 +202,193 @@ impl JadeApp {
         }
     }
 
-    fn open_note(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
-        // Flush the outgoing note ourselves before swapping `self.editor` out: an
-        // `EditorEvent::Changed` from the last keystroke could still be queued, and
-        // without this, switching notes right after typing would drop it.
-        self.flush_editor(cx);
+    /// The tab being shown.
+    fn active(&self) -> Option<&Tab> {
+        self.tabs.get(self.active_tab?)
+    }
 
-        // The editor takes the only in-memory copy of the text.
-        let Ok(text) = self.vault.read_note(&id) else {
-            return;
-        };
+    pub(crate) fn selected_id(&self) -> Option<&str> {
+        self.active().map(|tab| tab.note_id.as_str())
+    }
+
+    pub(crate) fn editor(&self) -> Option<&Entity<Editor>> {
+        self.active().map(|tab| &tab.editor)
+    }
+
+    fn tab_of(&self, note_id: &str) -> Option<usize> {
+        self.tabs.iter().position(|tab| tab.note_id == note_id)
+    }
+
+    /// Reads `id` from the vault into a fresh editor; the editor takes the only
+    /// in-memory copy of the text.
+    fn new_tab(&mut self, id: &str, cx: &mut Context<Self>) -> Option<Tab> {
+        let text = self.vault.read_note(id).ok()?;
         let editor = cx.new(|cx| Editor::new(text, cx));
-        let subscription = cx.subscribe(&editor, |this, _editor, event, cx| {
+        let subscription = cx.subscribe(&editor, |this, editor, event, cx| {
             if matches!(event, EditorEvent::Changed) {
-                this.autosave_editor(cx);
+                this.note_changed(editor.entity_id(), cx);
             }
         });
-        editor.read(cx).focus_handle(cx).focus(window, cx);
+        Some(Tab {
+            note_id: id.to_string(),
+            editor,
+            dirty: false,
+            _subscription: subscription,
+        })
+    }
 
-        self.selected_id = Some(id);
-        self.editor = Some(editor);
-        self._editor_subscription = Some(subscription);
+    fn focus_active_editor(&self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(editor) = self.editor() {
+            editor.read(cx).focus_handle(cx).focus(window, cx);
+        }
+    }
+
+    /// "Open": shows the note in the active tab (replacing that tab's note), or
+    /// in a new tab if none is open. A note that already has a tab just
+    /// switches to it, since two editors on one file would overwrite each
+    /// other's saves.
+    fn open_note(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tab_of(&id) {
+            return self.activate_tab(ix, window, cx);
+        }
+        let Some(active) = self.active_tab else {
+            return self.open_note_in_new_tab(id, window, cx);
+        };
+        // Save the outgoing note ourselves before replacing its editor: an
+        // `EditorEvent::Changed` from the last keystroke could still be queued, and
+        // without this, switching notes right after typing would drop it.
+        self.persist_tab(active, cx);
+        let Some(tab) = self.new_tab(&id, cx) else {
+            return;
+        };
+        self.tabs[active] = tab;
+        self.focus_active_editor(window, cx);
         cx.notify();
     }
 
-    /// Writes the open editor's (if any) current text back into the vault and
-    /// drops it. Call before anything that would make the editor's content
-    /// stale to keep editing against: switching notes, or renaming the open
-    /// note's folder.
-    fn flush_editor(&mut self, cx: &mut Context<Self>) {
-        let (Some(editor), Some(note_id)) = (self.editor.take(), self.selected_id.clone()) else {
+    /// "Open in new tab": always a new tab, unless the note already has one.
+    fn open_note_in_new_tab(&mut self, id: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(ix) = self.tab_of(&id) {
+            return self.activate_tab(ix, window, cx);
+        }
+        let Some(tab) = self.new_tab(&id, cx) else {
             return;
         };
-        self._editor_subscription = None;
-        self.autosave_task = None;
-        self.persist_editor(&editor, &note_id, cx);
+        self.tabs.push(tab);
+        self.active_tab = Some(self.tabs.len() - 1);
+        self.focus_active_editor(window, cx);
+        cx.notify();
     }
 
-    /// Writes the editor's text to the note's file straight from the buffer
-    /// (no copy) and refreshes the note's cached links.
-    fn persist_editor(&mut self, editor: &Entity<Editor>, note_id: &str, cx: &App) {
+    fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            return;
+        }
+        self.active_tab = Some(ix);
+        self.focus_active_editor(window, cx);
+        cx.notify();
+    }
+
+    /// Saves the tab's note, then closes it.
+    fn close_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
+        if ix >= self.tabs.len() {
+            return;
+        }
+        self.persist_tab(ix, cx);
+        let was_active = self.active_tab == Some(ix);
+        self.remove_tab(ix);
+        if was_active {
+            self.focus_active_editor(window, cx);
+        }
+        cx.notify();
+    }
+
+    /// Drops the tab without saving (its note is gone, or already saved). The
+    /// right neighbour becomes active if the active tab goes, else the left.
+    fn remove_tab(&mut self, ix: usize) {
+        self.tabs.remove(ix);
+        self.active_tab = match self.active_tab {
+            _ if self.tabs.is_empty() => None,
+            Some(active) if active == ix => Some(ix.min(self.tabs.len() - 1)),
+            Some(active) if active > ix => Some(active - 1),
+            other => other,
+        };
+    }
+
+    /// Writes the tab's text to the note's file straight from the buffer (no
+    /// copy) and refreshes the note's cached links.
+    fn persist_tab(&mut self, ix: usize, cx: &App) {
+        let tab = &mut self.tabs[ix];
         let _ = self
             .vault
-            .save_note(note_id, editor.read(cx).buffer().text());
+            .save_note(&tab.note_id, tab.editor.read(cx).buffer().text());
+        tab.dirty = false;
         self.search_stale = true;
     }
 
-    /// Schedules a save of the open editor, restarting the wait on every
-    /// call: saving rescans the whole note for wikilinks and rewrites the
-    /// file, which is far too much work to do per keystroke.
-    fn autosave_editor(&mut self, cx: &mut Context<Self>) {
+    /// Saves every open note: before vault operations that change note ids, and
+    /// at quit. Unlike the autosave this does not rely on `dirty`, which is set
+    /// by an event that can still be queued.
+    fn persist_all_tabs(&mut self, cx: &App) {
+        for ix in 0..self.tabs.len() {
+            self.persist_tab(ix, cx);
+        }
+    }
+
+    fn note_changed(&mut self, editor: EntityId, cx: &mut Context<Self>) {
+        if let Some(tab) = self.tabs.iter_mut().find(|t| t.editor.entity_id() == editor) {
+            tab.dirty = true;
+            self.autosave(cx);
+        }
+    }
+
+    /// Schedules a save of the dirty tabs, restarting the wait on every call:
+    /// saving rescans the whole note for wikilinks and rewrites the file, which
+    /// is far too much work to do per keystroke.
+    fn autosave(&mut self, cx: &mut Context<Self>) {
         self.autosave_task = Some(cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
-            this.update(cx, |this, cx| this.save_open_editor(cx)).ok();
+            this.update(cx, |this, cx| this.save_dirty_tabs(cx)).ok();
         }));
     }
 
-    /// Persists the open editor's current text to the vault, and re-renders
-    /// so e.g. the backlinks panel reflects newly-typed wikilinks.
-    fn save_open_editor(&mut self, cx: &mut Context<Self>) {
+    /// Persists the dirty tabs, and re-renders so e.g. the backlinks panel
+    /// reflects newly-typed wikilinks. Only dirty ones: a background tab holding
+    /// a huge note must not be rewritten for every edit elsewhere.
+    fn save_dirty_tabs(&mut self, cx: &mut Context<Self>) {
         self.autosave_task = None;
-        let (Some(editor), Some(note_id)) = (self.editor.clone(), self.selected_id.clone()) else {
-            return;
-        };
-        self.persist_editor(&editor, &note_id, cx);
+        for ix in 0..self.tabs.len() {
+            if self.tabs[ix].dirty {
+                self.persist_tab(ix, cx);
+            }
+        }
+        cx.notify();
+    }
+
+    /// After a vault rename moved notes: reloads each tab whose note id `moved`
+    /// maps to a new one, from disk (the caller saved first).
+    fn retarget_tabs(
+        &mut self,
+        moved: impl Fn(&str) -> Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mut reloaded_active = false;
+        for ix in (0..self.tabs.len()).rev() {
+            let Some(new_id) = moved(&self.tabs[ix].note_id) else {
+                continue;
+            };
+            match self.new_tab(&new_id, cx) {
+                Some(tab) => {
+                    self.tabs[ix] = tab;
+                    reloaded_active |= self.active_tab == Some(ix);
+                }
+                None => self.remove_tab(ix),
+            }
+        }
+        if reloaded_active {
+            self.focus_active_editor(window, cx);
+        }
         cx.notify();
     }
 
@@ -290,29 +419,23 @@ impl JadeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Flush first: renaming moves the note to a new id, so a flush keyed on
-        // its *old* id (which the editor's edits are still relative to) has to
+        // Save first: renaming moves the note to a new id, so a save keyed on
+        // its *old* id (which the editors' edits are still relative to) has to
         // happen before that, not after.
-        self.flush_editor(cx);
+        self.persist_all_tabs(cx);
 
         let Ok(new_id) = self.vault.rename_note(id, new_title) else {
             return;
         };
         self.search_stale = true;
-        if self.selected_id.as_deref() == Some(id) {
-            self.open_note(new_id, window, cx);
-        } else {
-            cx.notify();
-        }
+        self.retarget_tabs(|old| (old == id).then(|| new_id.clone()), window, cx);
     }
 
     fn delete_note(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.vault.delete_note(id).is_ok() {
             self.search_stale = true;
-            if self.selected_id.as_deref() == Some(id) {
-                self.selected_id = None;
-                self.editor = None;
-                self._editor_subscription = None;
+            if let Some(ix) = self.tab_of(id) {
+                self.remove_tab(ix);
             }
         }
         cx.notify();
@@ -325,10 +448,8 @@ impl JadeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Flush the open note first (same reasoning as `open_note`'s own flush):
-        // renaming the folder moves it to a new id, so a flush keyed on its *old*
-        // id must happen before that, not after.
-        self.flush_editor(cx);
+        // Save the open notes first (same reasoning as `rename_note`).
+        self.persist_all_tabs(cx);
 
         let Ok(new_id) = self.vault.rename_folder(id, new_name) else {
             return;
@@ -340,14 +461,14 @@ impl JadeApp {
         }
 
         let prefix = format!("{id}/");
-        let moved_selection = self
-            .selected_id
-            .clone()
-            .and_then(|selected| selected.strip_prefix(&prefix).map(str::to_string));
-        match moved_selection {
-            Some(rest) => self.open_note(format!("{new_id}/{rest}"), window, cx),
-            None => cx.notify(),
-        }
+        self.retarget_tabs(
+            |old| {
+                old.strip_prefix(&prefix)
+                    .map(|rest| format!("{new_id}/{rest}"))
+            },
+            window,
+            cx,
+        );
     }
 
     fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -356,14 +477,10 @@ impl JadeApp {
             let prefix = format!("{id}/");
             self.collapsed_folders
                 .retain(|f| f != id && !f.starts_with(&prefix));
-            if self
-                .selected_id
-                .as_deref()
-                .is_some_and(|sel| sel.starts_with(&prefix))
-            {
-                self.selected_id = None;
-                self.editor = None;
-                self._editor_subscription = None;
+            for ix in (0..self.tabs.len()).rev() {
+                if self.tabs[ix].note_id.starts_with(&prefix) {
+                    self.remove_tab(ix);
+                }
             }
         }
         cx.notify();
@@ -440,7 +557,7 @@ impl JadeApp {
     }
 
     fn rename_selected(&mut self, _: &RenameNote, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected_id.clone() {
+        if let Some(id) = self.selected_id().map(str::to_string) {
             let title = self
                 .vault
                 .note(&id)
@@ -451,7 +568,7 @@ impl JadeApp {
     }
 
     fn delete_selected(&mut self, _: &DeleteNote, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(id) = self.selected_id.clone() {
+        if let Some(id) = self.selected_id().map(str::to_string) {
             let title = self
                 .vault
                 .note(&id)
@@ -828,7 +945,7 @@ impl JadeApp {
         depth: usize,
         cx: &mut Context<Self>,
     ) -> AnyElement {
-        let is_selected = self.selected_id.as_deref() == Some(id);
+        let is_selected = self.selected_id() == Some(id);
         let item_id = id.to_string();
         let menu_id = id.to_string();
         let menu_title = title.to_string();
@@ -1178,12 +1295,12 @@ impl Render for JadeApp {
                 .p_4()
                 .child(format!("Could not open vault: {err}"))
                 .into_any_element()
-        } else if self.selected_id.is_some() {
+        } else if self.active_tab.is_some() {
             let mut editor_pane = div()
                 .id("note-editor-pane")
                 .size_full()
                 .overflow_y_scroll()
-                .children(self.editor.clone());
+                .children(self.editor().cloned());
             // Tracked so `text_editor::element`'s `autoscroll_to_cursor` can
             // scroll this container itself (see `Editor::scroll_handle`'s
             // doc comment) — without this, moving the cursor below the
@@ -1192,7 +1309,7 @@ impl Render for JadeApp {
             // or it would scroll away with the content. `Scrollbar`'s default
             // mode shows it while scrolling and fades it out after idle.
             let mut editor_area = div().relative().flex_1().min_h_0();
-            if let Some(editor) = &self.editor {
+            if let Some(editor) = self.editor() {
                 let handle = editor.read(cx).scroll_handle();
                 editor_pane = editor_pane.track_scroll(handle);
                 editor_area = editor_area
@@ -1273,8 +1390,7 @@ impl Render for JadeApp {
             .border_l_1()
             .border_color(divider)
             .children(
-                self.selected_id
-                    .as_deref()
+                self.selected_id()
                     .filter(|_| self.error.is_none())
                     .map(|id| self.render_backlinks_panel(id, cx)),
             )
@@ -1423,7 +1539,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Note B".to_string()));
     }
 
@@ -1442,7 +1558,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Note A".to_string()));
     }
 
@@ -1460,7 +1576,7 @@ mod tests {
         .unwrap();
 
         let editor = app
-            .read_with(cx, |app, _| app.editor.clone())
+            .read_with(cx, |app, _| app.editor().cloned())
             .expect("opening a note should create an editor");
 
         let offset_before = editor.read_with(cx, |editor, _| editor.scroll_handle().offset());
@@ -1556,7 +1672,7 @@ mod tests {
         })
         .unwrap();
         let editor = app
-            .read_with(cx, |app, _| app.editor.clone())
+            .read_with(cx, |app, _| app.editor().cloned())
             .expect("opening a note should create an editor");
 
         let line_height = cx
@@ -1607,7 +1723,7 @@ mod tests {
         .unwrap();
 
         let editor = app
-            .read_with(cx, |app, _| app.editor.clone())
+            .read_with(cx, |app, _| app.editor().cloned())
             .expect("opening a note should create an editor");
 
         cx.update_window(window, |_, window, cx| {
@@ -1658,7 +1774,7 @@ mod tests {
 
             // A brand-new note opens with its own editor ready immediately — no
             // click needed before it can be typed into.
-            let editor = app.read(cx).editor.clone().expect("editor should be open");
+            let editor = app.read(cx).editor().cloned().expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("Linking to [[Note A]].", cx);
@@ -1673,7 +1789,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Untitled".to_string()));
     }
 
@@ -1706,7 +1822,7 @@ mod tests {
         })
         .unwrap();
 
-        let renamed_id = app.read_with(cx, |app, _| app.selected_id.clone());
+        let renamed_id = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(
             renamed_id,
             Some("Hello".to_string()),
@@ -1719,7 +1835,7 @@ mod tests {
         // "Hello" already has its editor open, ready to type into.
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            let editor = app.read(cx).editor.clone().expect("editor should be open");
+            let editor = app.read(cx).editor().cloned().expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("Linking to [[Note A]].", cx);
@@ -1731,7 +1847,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(
             selected,
             Some("Hello".to_string()),
@@ -1743,7 +1859,7 @@ mod tests {
             window.render_frame(cx);
             window.click("Note A", cx);
             window.render_frame(cx);
-            let editor = app.read(cx).editor.clone().expect("editor should be open");
+            let editor = app.read(cx).editor().cloned().expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input(" Also linking to [[Hello]].", cx);
@@ -1755,7 +1871,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(
             selected,
             Some("Note A".to_string()),
@@ -1774,7 +1890,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Untitled".to_string()));
         assert!(dir.path().join("Untitled.md").exists());
     }
@@ -1790,7 +1906,7 @@ mod tests {
             window.click("Note", cx);
             window.render_frame(cx);
 
-            let editor = app.read(cx).editor.clone().expect("editor should be open");
+            let editor = app.read(cx).editor().cloned().expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("appended ", cx);
@@ -1827,7 +1943,7 @@ mod tests {
         })
         .unwrap();
 
-        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        let has_editor = app.read_with(cx, |app, _| app.editor().is_some());
         assert!(
             has_editor,
             "the editor should be ready for input as soon as a note is opened"
@@ -1854,7 +1970,7 @@ mod tests {
         })
         .unwrap();
 
-        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        let has_editor = app.read_with(cx, |app, _| app.editor().is_some());
         assert!(
             has_editor,
             "a brand-new note has nothing to click, so its editor must be ready right away"
@@ -1971,7 +2087,7 @@ mod tests {
         .unwrap();
 
         let editor = app.read_with(cx, |app, _| {
-            app.editor.clone().expect("editor should be open")
+            app.editor().cloned().expect("editor should be open")
         });
         cx.update_window(window, |_, window, cx| {
             editor.read(cx).focus_handle(cx).focus(window, cx);
@@ -2092,7 +2208,7 @@ mod tests {
             window.render_frame(cx);
         })
         .unwrap();
-        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        let editor = app.read_with(cx, |app, _| app.editor().cloned().expect("editor open"));
         cx.update_window(window, |_, window, cx| {
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
@@ -2390,7 +2506,7 @@ mod tests {
             window.render_frame(cx);
         })
         .unwrap();
-        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        let editor = app.read_with(cx, |app, _| app.editor().cloned().expect("editor open"));
         cx.update_window(window, |_, window, cx| {
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
@@ -2466,7 +2582,7 @@ mod tests {
             modifiers: Modifiers::default(),
         };
         assert_eq!(call_on_main(cx, &mut client, click), Answer::Ok);
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Note B".to_string()));
 
         let named = |name: &str| Command::Click {
@@ -2479,7 +2595,7 @@ mod tests {
             call_on_main(cx, &mut client, named("note-Note A")),
             Answer::Ok
         );
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Note A".to_string()), "a click by name");
         let Answer::Error { message } = call_on_main(cx, &mut client, named("no-such-thing"))
         else {
@@ -2513,7 +2629,7 @@ mod tests {
             window.render_frame(cx);
         })
         .unwrap();
-        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        let editor = app.read_with(cx, |app, _| app.editor().cloned().expect("editor open"));
         let before = editor.read_with(cx, |e, _| e.scroll_handle().offset());
 
         let scroll = Command::Scroll {
@@ -2759,7 +2875,7 @@ mod tests {
             );
         }
         // The click ran immediately; only the reply is held back.
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Note A".to_string()));
 
         // Hop one runs before the next frame draws, hop two after it.
@@ -3037,7 +3153,7 @@ mod tests {
             window.render_frame(cx);
         })
         .unwrap();
-        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        let editor = app.read_with(cx, |app, _| app.editor().cloned().expect("editor open"));
         cx.update_window(window, |_, window, cx| {
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
@@ -3140,7 +3256,7 @@ mod tests {
             window.render_frame(cx);
         })
         .unwrap();
-        let editor = app.read_with(cx, |app, _| app.editor.clone().expect("editor open"));
+        let editor = app.read_with(cx, |app, _| app.editor().cloned().expect("editor open"));
         let late = editor.read_with(cx, |e, _| e.late_row_corrections());
         assert_eq!(
             late, 0,
@@ -3572,7 +3688,7 @@ mod tests {
         .unwrap();
 
         let editor = app
-            .read_with(cx, |app, _| app.editor.clone())
+            .read_with(cx, |app, _| app.editor().cloned())
             .expect("note should still be open");
         let selection = editor.read_with(cx, |editor, _| editor.buffer().selection());
         assert!(
@@ -3616,7 +3732,7 @@ mod tests {
 
         assert!(!dir.path().join("Note.md").exists());
         assert!(dir.path().join("Renamed.md").exists());
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Renamed".to_string()));
     }
 
@@ -3641,7 +3757,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, None);
         assert!(!dir.path().join("Note.md").exists());
     }
@@ -3658,7 +3774,7 @@ mod tests {
                 window.click("Note", cx);
                 window.render_frame(cx);
 
-                let editor = app.read(cx).editor.clone().expect("editor should be open");
+                let editor = app.read(cx).editor().cloned().expect("editor should be open");
                 editor.read(cx).focus_handle(cx).focus(window, cx);
                 window.render_frame(cx);
                 window.press("backspace", cx);
@@ -3669,7 +3785,7 @@ mod tests {
 
         assert!(!dialog_open);
         assert!(dir.path().join("Note.md").exists());
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Note".to_string()));
     }
 
@@ -3707,7 +3823,7 @@ mod tests {
 
         assert!(!dir.path().join("Note A.md").exists());
         assert!(dir.path().join("Note B.md").exists());
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Note B".to_string()));
     }
 
@@ -3764,7 +3880,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Math/Untitled".to_string()));
         assert!(dir.path().join("Math").join("Untitled.md").exists());
     }
@@ -3894,9 +4010,9 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Mathematics/Algebra".to_string()));
-        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        let has_editor = app.read_with(cx, |app, _| app.editor().is_some());
         assert!(
             has_editor,
             "the note should still be open after its folder was renamed"
@@ -4015,9 +4131,9 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, None);
-        let has_editor = app.read_with(cx, |app, _| app.editor.is_some());
+        let has_editor = app.read_with(cx, |app, _| app.editor().is_some());
         assert!(!has_editor);
     }
 
@@ -4233,7 +4349,7 @@ mod tests {
         })
         .unwrap();
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Carrots".to_string()));
     }
 
@@ -4267,7 +4383,7 @@ mod tests {
             "backspace in the search input must not open the delete dialog"
         );
 
-        let selected = app.read_with(cx, |app, _| app.selected_id.clone());
+        let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
         assert_eq!(selected, Some("Note".to_string()));
         assert!(dir.path().join("Note.md").exists());
     }

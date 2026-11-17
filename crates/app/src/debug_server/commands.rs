@@ -77,10 +77,10 @@ fn editor_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
     let state = handle.update(cx, |_, window, cx| {
         let app = app.read(cx);
         let mut state = EditorState {
-            note: app.selected_id.clone(),
+            note: app.selected_id().map(str::to_string),
             ..Default::default()
         };
-        let Some(editor) = app.editor.as_ref() else {
+        let Some(editor) = app.editor() else {
             return state;
         };
         let editor = editor.read(cx);
@@ -107,7 +107,7 @@ fn app_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
         let dialog_open = window.has_active_dialog(cx);
         let app = app.read(cx);
         AppState {
-            note: app.selected_id.clone(),
+            note: app.selected_id().map(str::to_string),
             sidebar_tab: match app.sidebar_tab {
                 crate::SidebarTab::Vault => "vault",
                 crate::SidebarTab::Search => "search",
@@ -132,7 +132,7 @@ fn read_text(app: &WeakEntity<JadeApp>, start: usize, len: usize, cx: &App) -> A
     let Some(app) = app.upgrade() else {
         return error("the app window is gone");
     };
-    let Some(editor) = app.read(cx).editor.clone() else {
+    let Some(editor) = app.read(cx).editor().cloned() else {
         return error("no note is open");
     };
     let text = editor.read(cx).buffer().text();

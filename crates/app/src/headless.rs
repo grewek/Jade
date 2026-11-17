@@ -81,7 +81,7 @@ impl HeadlessApp {
             window.click(NOTE, cx);
             window.render_frame(cx);
         });
-        let editor = self.app.read_with(&self.cx, |app, _| app.editor.clone());
+        let editor = self.app.read_with(&self.cx, |app, _| app.editor().cloned());
         let Some(editor) = editor else {
             panic!("clicking the note did not open an editor");
         };
