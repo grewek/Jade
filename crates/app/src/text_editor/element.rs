@@ -1527,6 +1527,17 @@ pub(super) fn render_editor(
                         last_autoscrolled_cursor.set(Some(cursor));
                     }
                     let viewport = scroll_handle.bounds();
+                    let view = Rc::new(FrameView {
+                        layout: layout.clone(),
+                        cursor,
+                        focused,
+                        bounds,
+                        viewport,
+                        line_height,
+                        font: font.clone(),
+                        font_size,
+                        text_color,
+                    });
                     editor_entity.update(cx, |editor, cx| {
                         if editor.hovering_link {
                             window.set_window_cursor_style(CursorStyle::PointingHand);
@@ -1535,20 +1546,12 @@ pub(super) fn render_editor(
                         paint_lines(
                             editor.buffer().text(),
                             &editor.link_table,
-                            &layout,
+                            &view,
                             doc.line_roles(),
                             doc.block_contexts(),
                             doc.tables(),
                             doc.callouts(),
-                            cursor,
                             selection.clone(),
-                            focused,
-                            bounds,
-                            viewport,
-                            line_height,
-                            &font,
-                            font_size,
-                            text_color,
                             window,
                             cx,
                         );
@@ -1556,15 +1559,7 @@ pub(super) fn render_editor(
 
                     register_mouse_handling(
                         editor_entity.clone(),
-                        layout.clone(),
-                        cursor,
-                        focused,
-                        bounds,
-                        viewport,
-                        line_height,
-                        font.clone(),
-                        font_size,
-                        text_color,
+                        view.clone(),
                         focus_handle.clone(),
                         window,
                     );
@@ -1592,25 +1587,16 @@ pub(super) fn render_editor(
 /// pressed inside these bounds is still down) to extend it, release to stop
 /// dragging. `window.on_mouse_event` listeners last one frame each — this
 /// runs on every paint, same as the painting itself.
-#[allow(clippy::too_many_arguments)]
 fn register_mouse_handling(
     editor_entity: Entity<Editor>,
-    layout: LineLayout,
-    cursor: usize,
-    focused: bool,
-    bounds: Bounds<Pixels>,
-    viewport: Bounds<Pixels>,
-    line_height: Pixels,
-    font: Font,
-    font_size: Pixels,
-    text_color: Hsla,
+    view: Rc<FrameView>,
     focus_handle: FocusHandle,
     window: &mut Window,
 ) {
+    let bounds = view.bounds;
     window.on_mouse_event({
         let editor_entity = editor_entity.clone();
-        let layout = layout.clone();
-        let font = font.clone();
+        let view = view.clone();
         move |event: &MouseDownEvent, phase, window, cx| {
             if phase != DispatchPhase::Bubble
                 || event.button != MouseButton::Left
@@ -1627,28 +1613,7 @@ fn register_mouse_handling(
             {
                 return;
             }
-            let offset = {
-                let editor = editor_entity.read(cx);
-                let doc = editor.document_cache.borrow();
-                offset_for_position(
-                    editor.buffer().text(),
-                    &layout,
-                    doc.line_roles(),
-                    doc.block_contexts(),
-                    doc.tables(),
-                    doc.callouts(),
-                    cursor,
-                    focused,
-                    event.position,
-                    bounds,
-                    viewport,
-                    line_height,
-                    &font,
-                    font_size,
-                    text_color,
-                    window,
-                )
-            };
+            let offset = offset_for_position(editor_entity.read(cx), &view, event.position, window);
             // On a rendered line a plain click follows a link; on the cursor's
             // own (raw) line only Ctrl/Cmd+click does, so the text stays editable.
             let follow = {
@@ -1686,26 +1651,7 @@ fn register_mouse_handling(
                     && editor_entity.read(cx).link_count() > 0;
                 let hovering = probe && {
                     let editor = editor_entity.read(cx);
-                    let doc = editor.document_cache.borrow();
-                    let offset = offset_for_position(
-                        editor.buffer().text(),
-                        &layout,
-                        doc.line_roles(),
-                        doc.block_contexts(),
-                        doc.tables(),
-                        doc.callouts(),
-                        cursor,
-                        focused,
-                        event.position,
-                        bounds,
-                        viewport,
-                        line_height,
-                        &font,
-                        font_size,
-                        text_color,
-                        window,
-                    );
-                    drop(doc);
+                    let offset = offset_for_position(editor, &view, event.position, window);
                     editor.follows_link_at(offset, event.modifiers.secondary())
                 };
                 if editor_entity.read(cx).hovering_link != hovering {
@@ -1719,28 +1665,7 @@ fn register_mouse_handling(
             if dialog {
                 return;
             }
-            let offset = {
-                let editor = editor_entity.read(cx);
-                let doc = editor.document_cache.borrow();
-                offset_for_position(
-                    editor.buffer().text(),
-                    &layout,
-                    doc.line_roles(),
-                    doc.block_contexts(),
-                    doc.tables(),
-                    doc.callouts(),
-                    cursor,
-                    focused,
-                    event.position,
-                    bounds,
-                    viewport,
-                    line_height,
-                    &font,
-                    font_size,
-                    text_color,
-                    window,
-                )
-            };
+            let offset = offset_for_position(editor_entity.read(cx), &view, event.position, window);
             editor_entity.update(cx, |editor, cx| {
                 editor.buffer_mut().set_cursor(offset, true);
                 cx.notify();
@@ -1761,6 +1686,21 @@ fn register_mouse_handling(
     });
 }
 
+/// Everything a frame's painting and mouse hit-testing share, captured once
+/// at paint time: the line layout and where the editor, its viewport and the
+/// cursor are, with the font the lines are shaped in.
+struct FrameView {
+    layout: LineLayout,
+    cursor: usize,
+    focused: bool,
+    bounds: Bounds<Pixels>,
+    viewport: Bounds<Pixels>,
+    line_height: Pixels,
+    font: Font,
+    font_size: Pixels,
+    text_color: Hsla,
+}
+
 /// The byte offset closest to `position` (window coordinates): the line
 /// whose accumulated vertical extent `position`'s `y` falls into (no
 /// longer a plain division by `line_height`, now that a wrapped line's own
@@ -1775,25 +1715,27 @@ fn register_mouse_handling(
 /// shouldn't happen in practice, since clicks land inside the visible
 /// viewport by construction — falls back to that range's own nearest
 /// edge rather than scanning the rest of the document).
-#[allow(clippy::too_many_arguments)]
 fn offset_for_position(
-    text: &str,
-    layout: &LineLayout,
-    line_roles: &[LineRole],
-    block_contexts: &[LineContext],
-    tables: &[Table],
-    callouts: &[Callout],
-    cursor: usize,
-    focused: bool,
+    editor: &Editor,
+    view: &FrameView,
     position: Point<Pixels>,
-    bounds: Bounds<Pixels>,
-    viewport: Bounds<Pixels>,
-    line_height: Pixels,
-    font: &Font,
-    font_size: Pixels,
-    text_color: Hsla,
     window: &mut Window,
 ) -> usize {
+    let text = editor.buffer().text();
+    let doc = editor.document_cache.borrow();
+    let (line_roles, block_contexts) = (doc.line_roles(), doc.block_contexts());
+    let (tables, callouts) = (doc.tables(), doc.callouts());
+    let &FrameView {
+        ref layout,
+        cursor,
+        focused,
+        bounds,
+        viewport,
+        line_height,
+        ref font,
+        font_size,
+        text_color,
+    } = view;
     let relative_y = (position.y - bounds.origin.y).max(px(0.));
     let range = visible_line_range(layout, bounds, viewport);
     if range.is_empty() {
@@ -1938,23 +1880,26 @@ fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, color: Hsla, windo
 fn paint_lines(
     text: &str,
     links: &LinkTable,
-    layout: &LineLayout,
+    view: &FrameView,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
     tables: &[Table],
     callouts: &[Callout],
-    cursor: usize,
     selection: Option<std::ops::Range<usize>>,
-    show_cursor: bool,
-    bounds: Bounds<Pixels>,
-    viewport: Bounds<Pixels>,
-    line_height: Pixels,
-    font: &Font,
-    font_size: Pixels,
-    text_color: Hsla,
     window: &mut Window,
     cx: &mut App,
 ) {
+    let &FrameView {
+        ref layout,
+        cursor,
+        focused: show_cursor,
+        bounds,
+        viewport,
+        line_height,
+        ref font,
+        font_size,
+        text_color,
+    } = view;
     let palette = ThemeEngine::global(cx).palette().clone();
     let inline = InlineColors::from_palette(&palette);
     let rule = palette.color(Role::BorderStrong);
