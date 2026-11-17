@@ -1,4 +1,4 @@
-# Jade theme. Format: FORMAT.md. Same [roles] in every theme, only [palette] differs.
+# Jade theme. Format: FORMAT.md. Roles come from roles.toml; only [palette] (and any [overrides]) differ.
 name = "Catppuccin Macchiato"
 kind = "dark"   # "light" or "dark"
 
@@ -29,49 +29,3 @@ surface0  = "#363a4f"
 base      = "#24273a"
 mantle    = "#1e2030"
 crust     = "#181926"
-
-[roles]
-# Backgrounds
-background           = "base"      # window, editor, active tab, dialogs
-background_secondary = "mantle"    # sidebars, tab bar, status bar
-background_tertiary  = "crust"     # toggle rails, window frame
-
-# Surfaces: interactive things that sit on a background
-surface        = "surface0"        # buttons, inputs, hovered rows
-surface_hover  = "surface1"        # hovered buttons, selected row, active sidebar tab
-surface_active = "surface2"        # pressed buttons
-
-# Lines
-border        = "surface1"         # dividers between rails, sidebars, tabs, editor, status bar
-border_strong = "overlay0"         # editor decoration: quote bar, table grid, horizontal rule
-
-# Text
-text           = "text"            # body, headings, active tab
-text_muted     = "subtext0"        # labels, inactive tabs, status bar, placeholders and empty states
-text_subtle    = "overlay1"        # blockquote text, list markers
-text_on_accent = "base"            # text on an accent-colored fill
-
-# Interaction
-accent    = "lavender"             # focus, primary buttons, resize handle
-cursor    = "rosewater"            # text cursor
-selection = "overlay2"             # text selection (see [alpha])
-
-# Inline text in notes
-link     = "blue"                  # [text](url), autolinks
-wikilink = "sapphire"              # [[wikilink]]
-code     = "green"                 # inline code
-
-# Semantic: callout accents, later diagnostics
-info    = "blue"                   # Note, Info
-summary = "mauve"                  # Summary
-tip     = "teal"                   # Tip
-success = "green"                  # Todo, Success
-warning = "yellow"                 # Question, Warning
-error   = "red"                    # Failure, Danger, Bug
-neutral = "overlay2"               # Example, Quote
-
-[alpha]
-callout_background = 0.10          # callout band tint
-selection          = 0.25          # text selection fill
-accent_hover       = 0.40          # resize handle hovered
-accent_active      = 0.70          # resize handle pressed

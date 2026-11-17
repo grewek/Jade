@@ -1,22 +1,28 @@
 # Jade theme format
 
-A theme is one TOML file. `jade-light.toml` is the look Jade has today; the rest are Catppuccin. Every theme defines the **same roles**; only the palette behind them differs, so an element has the same role in every theme (a button is `surface`, a link is `link`). The shipped themes are the four Catppuccin flavors, with roles assigned after Catppuccin's [style guide](https://github.com/catppuccin/catppuccin/blob/main/docs/style-guide.md).
+Themes are TOML files. `roles.toml` assigns every role a palette color once, so an element has the same role in every theme (a button is `surface`, a link is `link`). A theme file supplies the **palette** and may **override** individual roles. `jade-light.toml` is the look Jade has today; the rest are Catppuccin flavors, with roles assigned after Catppuccin's [style guide](https://github.com/catppuccin/catppuccin/blob/main/docs/style-guide.md).
 
 ```toml
-name = "Catppuccin Latte"
-kind = "light"            # "light" | "dark": which gpui-component base theme to start from
-
-[palette]                 # raw colors, "#rrggbb", any names
-base = "#eff1f5"
-
+# roles.toml: shared by every theme
 [roles]                   # every role below is required; a value is a palette name or "#rrggbb"
 background = "base"
-
 [alpha]                   # every key below is required; 0.0..=1.0
 selection = 0.25
+
+# a theme file
+name = "Catppuccin Latte"
+kind = "light"            # "light" | "dark": which gpui-component base theme to start from
+[palette]                 # raw colors, "#rrggbb", any names (roles.toml uses Catppuccin's)
+base = "#eff1f5"
+[overrides]               # optional: roles this theme assigns differently, palette name or "#rrggbb"
+link = "#1761f5"
+[alpha]                   # optional: alphas this theme changes
+selection = 0.35
 ```
 
-Validation (to be enforced by the loader): all roles and alphas present, no unknown keys, every role value resolves, hex is `#rrggbb`.
+A role resolves to its `[overrides]` value if the theme has one, else to `roles.toml`'s. Validation (to be enforced by the loader): no unknown keys or roles, hex is `#rrggbb`, alpha is 0..=1, and every name a resolved role uses exists in the theme's `[palette]` (a theme that overrides a role does not need the palette name `roles.toml` would have used).
+
+Use an override for a real difference (contrast, a palette that lacks the default color), not to restyle one element: that breaks "same role, same look" across themes.
 
 ## Roles
 
@@ -62,6 +68,10 @@ Validation (to be enforced by the loader): all roles and alphas present, no unkn
 - `MUTED_COLOR` served text, bars, grid lines and rules: split into `text_subtle` and `border_strong`, since text needs contrast a line does not.
 - Callout accents: seven hues became seven semantic roles, so diagnostics (spell/grammar) can reuse `warning` and `error`.
 
-## Contrast (WCAG ratio, text on `background`)
+## Contrast (WCAG ratio, 4.5 for text)
 
-Catppuccin's guide gives no ratios. Measured: Mocha, Macchiato and Frappé are 4.4 or better for every text role except `text_subtle` (3.6 to 4.4, used for de-emphasized text). **Latte** is weaker: `text_muted` 4.4, `link` 4.3, `wikilink` 2.8, `code` 3.0, `text_subtle` 2.8, and `text_on_accent` on `accent` 2.8. A loader should allow per-theme role overrides before shipping Latte as is.
+Catppuccin's guide gives no ratios, so these were measured on the resolved themes (`text_muted` on `background_secondary`, `text_on_accent` on `accent`, the rest on `background`).
+
+- **Mocha, Macchiato, Frappe**: every text role is at least 4.5 except `text_subtle` (4.4, 4.1, 3.6).
+- **Latte**: its pastels fell to 2.3 to 4.4, so it overrides 11 roles (`text_muted`, `text_subtle`, `link`, `wikilink`, `code`, `info`, `tip`, `success`, `warning`, `neutral`, `accent`) with darkened versions of the same hues; all measured roles now reach 4.5.
+- **Jade Light** reproduces today's colors as they are; several are low (`link` 1.8, `tip` 1.9, `success` 2.2, `warning` 2.5).

@@ -1,4 +1,4 @@
-# Jade theme. Format: FORMAT.md. Same [roles] in every theme, only [palette] differs.
+# Jade theme. Format: FORMAT.md. Overrides every role in roles.toml with the look Jade has today.
 #
 # The look Jade has today, extracted from element.rs, app.rs and the gpui-component
 # light theme it runs on. Where the code used several colors for one role, the
@@ -35,7 +35,7 @@ green          = "#39c647"
 orange         = "#e29336"
 red            = "#d74242"
 
-[roles]
+[overrides]
 # Backgrounds
 background           = "white"           # window, editor, active tab, dialogs
 background_secondary = "gray_96"         # sidebars, tab bar, status bar
@@ -75,8 +75,5 @@ warning = "orange"                       # Question, Warning
 error   = "red"                          # Failure, Danger, Bug
 neutral = "gray_55"                      # Example, Quote
 
-[alpha]
-callout_background = 0.10                # callout band tint
-selection          = 0.35                # text selection fill
-accent_hover       = 0.40                # resize handle hovered
-accent_active      = 0.70                # resize handle pressed
+[alpha]                                  # only what differs from roles.toml
+selection = 0.35                         # text selection fill
