@@ -14,6 +14,7 @@ kind = "light"
 
 [palette]
 white          = "#ffffff"
+black          = "#000000"
 gray_96        = "#f5f5f5"
 gray_90        = "#e4e4e4"
 gray_83        = "#d3d3d3"
@@ -40,6 +41,7 @@ red            = "#d74242"
 background           = "white"           # window, editor, active tab, dialogs
 background_secondary = "gray_96"         # sidebars, tab bar, status bar
 background_tertiary  = "white"           # toggle rails, window frame
+scrim                = "black"           # dim layer behind dialogs (see [alpha])
 
 # Surfaces: interactive things that sit on a background
 surface        = "lavender_light"        # buttons, inputs, hovered rows
@@ -77,3 +79,4 @@ neutral = "gray_55"                      # Example, Quote
 
 [alpha]                                  # only what differs from roles.toml
 selection = 0.35                         # text selection fill
+overlay   = 0.50                         # scrim opacity behind dialogs

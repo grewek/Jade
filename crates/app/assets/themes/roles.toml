@@ -7,6 +7,7 @@
 background           = "base"      # window, editor, active tab, dialogs
 background_secondary = "mantle"    # sidebars, tab bar, status bar
 background_tertiary  = "crust"     # toggle rails, window frame
+scrim                = "crust"     # dim layer behind dialogs (see [alpha])
 
 # Surfaces: interactive things that sit on a background
 surface        = "surface0"        # buttons, inputs, hovered rows
@@ -47,3 +48,4 @@ callout_background = 0.10          # callout band tint
 selection          = 0.25          # text selection fill
 accent_hover       = 0.40          # resize handle hovered
 accent_active      = 0.70          # resize handle pressed
+overlay            = 0.50          # scrim opacity behind dialogs

@@ -31,6 +31,7 @@ Use an override for a real difference (contrast, a palette that lacks the defaul
 | `background` | window, editor, active tab, dialogs | theme `background`, `tab_active` |
 | `background_secondary` | sidebars, tab bar, status bar | theme `tab_bar` |
 | `background_tertiary` | toggle rails, window frame | (new) |
+| `scrim` | dim layer behind dialogs (with `alpha.overlay`) | theme `overlay` |
 | `surface` | buttons, inputs, hovered rows | `#E8E8F8` (row hover) |
 | `surface_hover` | hovered buttons, selected row, active sidebar tab | `#D0D0F0` (selected row, active tab) |
 | `surface_active` | pressed buttons | (new) |
@@ -58,6 +59,7 @@ Use an override for a real difference (contrast, a palette that lacks the defaul
 |---|---|
 | `callout_background` | the tint behind a callout (its bar is the full role color) |
 | `selection` | selection fill |
+| `overlay` | scrim opacity |
 | `accent_hover`, `accent_active` | resize handle hovered, pressed |
 
 ## What collapsed
@@ -105,13 +107,13 @@ The engine builds one `ThemeConfig` per theme. gpui-component derives most of it
 | `yellow`, `warning.background` | `warning` |
 | `cyan` | `tip` |
 | `magenta` | `summary` |
-| `overlay` | see open item 2 |
+| `overlay` | `scrim` at `alpha.overlay` |
 
 Left derived (not set): all `button.*` (they follow `secondary`, `primary`, `danger`, ...), every hover/active of the above, `link.hover`/`link.active`, the `*.light` base colors, `scrollbar.background`, `tab.background`, `chart.*`, `title_bar` extras. `background_tertiary`, `neutral` and `code` have no gpui-component counterpart; only Jade's own UI reads them.
 
 ### Open items
 
 1. **Stock leaks.** Any key neither set nor derivable stays stock. Phase 3 adds a test that resolves a theme whose roles are all unlike the stock colors and fails on any resulting color that still equals the stock value (with an explicit allow-list), so a leak is caught, not noticed by eye.
-2. **Dialog scrim.** `overlay` is a translucent dark scrim today. No role fits (`background_tertiary` is white in Jade Light and would wash out). Proposal: a 26th role `scrim` (black in Jade Light, `crust` in the dark flavors, `crust` in Latte) plus `alpha.overlay`.
-3. **Jade Light buttons change.** Buttons follow `secondary` = `surface` = `#E8E8F8`, where today they are gray `#E4E4E4` (`#D3D3D3` pressed). That follows from "one color for the same element", so Jade Light will look slightly lavender on buttons; if that is unwanted, Jade Light must override `surface` and give up the lavender row hover.
+2. **Dialog scrim.** Done: role `scrim` (black in Jade Light, `crust` elsewhere) with `alpha.overlay` 0.50.
+3. **Jade Light buttons change** (decided: try the lavender, judge it when seen). Buttons follow `secondary` = `surface` = `#E8E8F8`, where today they are gray `#E4E4E4` (`#D3D3D3` pressed). That follows from "one color for the same element", so Jade Light will look slightly lavender on buttons; if that is unwanted, Jade Light must override `surface` and give up the lavender row hover.
 4. **One source of truth.** Jade's own UI stops reading gpui-component's `Theme` colors and reads the engine's palette, so a role cannot be answered by two places.
