@@ -5025,7 +5025,7 @@ mod tests {
             app.update(cx, |app, cx| {
                 app.tabs[0]
                     .editor
-                    .update(cx, |e, cx| e.buffer_mut().set_cursor(0, false));
+                    .update(cx, |e, _| e.buffer_mut().set_cursor(0, false));
             });
         })
         .unwrap();
@@ -5038,6 +5038,42 @@ mod tests {
         click_editor_line(cx, window, 2);
         assert_eq!(tabs_of(cx, &app), (vec!["B".into(), "A".into()], Some(0)));
         assert_eq!(cursor(cx, &app), b.find("## Second Part").unwrap());
+    }
+
+    #[gpui_kit::test]
+    fn the_pointer_shows_over_followable_links_only(cx: &mut TestAppContext) {
+        use gpui_kit::{MouseMoveEvent, PlatformInput};
+        let dir = three_note_vault();
+        std::fs::write(dir.path().join("A.md"), "[[B]]\n[[B]]\nplain").unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "A", 1);
+        let hover = |cx: &mut TestAppContext, line: usize, secondary: bool| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let origin = window.find("editor").bounds().origin;
+                let y = window.line_height() * line as f32 + px(1.);
+                let mut modifiers = gpui_kit::Modifiers::default();
+                modifiers.control = secondary;
+                window.dispatch_event(
+                    PlatformInput::MouseMove(MouseMoveEvent {
+                        position: origin + point(px(1.), y),
+                        pressed_button: None,
+                        modifiers,
+                    }),
+                    cx,
+                );
+            })
+            .unwrap();
+            cx.run_until_parked();
+            app.read_with(cx, |app, cx| {
+                app.active_editor_for_test(cx).is_hovering_link()
+            })
+        };
+        // The cursor starts on line 0, so its raw link is not followable.
+        assert!(!hover(cx, 0, false));
+        assert!(hover(cx, 0, true), "Ctrl follows from the raw line");
+        assert!(hover(cx, 1, false), "a rendered line's link follows");
+        assert!(!hover(cx, 2, false), "plain text does not");
     }
 
     #[gpui_kit::test]

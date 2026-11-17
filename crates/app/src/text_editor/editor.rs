@@ -119,6 +119,8 @@ pub struct Editor {
     doc_stats: DocStats,
     /// Where the note's links are, patched per edit.
     pub(super) link_table: LinkTable,
+    /// The mouse is over a link a click would follow: paint shows a pointer.
+    pub(super) hovering_link: bool,
 }
 
 impl Editor {
@@ -141,6 +143,7 @@ impl Editor {
             row_height_cache: Rc::new(RefCell::new(RowHeightCache::empty())),
             doc_stats,
             link_table,
+            hovering_link: false,
         }
     }
 
@@ -164,6 +167,22 @@ impl Editor {
             }
         });
         event
+    }
+
+    /// Whether the pointer is over a link a click would follow.
+    #[cfg(test)]
+    pub fn is_hovering_link(&self) -> bool {
+        self.hovering_link
+    }
+
+    /// Whether a click at `offset` would follow a link (see `on_cursor_line`;
+    /// `secondary` is Ctrl/Cmd held).
+    pub(super) fn follows_link_at(&self, offset: usize, secondary: bool) -> bool {
+        let doc = self.document_cache.borrow();
+        let line = doc.line_at(offset);
+        let column = offset - doc.line_start_byte(line);
+        self.link_table.at(line, column).is_some()
+            && (secondary || line != doc.line_at(self.buffer.cursor()))
     }
 
     /// Whether `offset` lies on the line the cursor is on (shown as raw

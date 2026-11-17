@@ -1528,6 +1528,9 @@ pub(super) fn render_editor(
                     }
                     let viewport = scroll_handle.bounds();
                     editor_entity.update(cx, |editor, cx| {
+                        if editor.hovering_link {
+                            window.set_window_cursor_style(CursorStyle::PointingHand);
+                        }
                         let doc = editor.document_cache.borrow();
                         paint_lines(
                             editor.buffer().text(),
@@ -1670,10 +1673,50 @@ fn register_mouse_handling(
     window.on_mouse_event({
         let editor_entity = editor_entity.clone();
         move |event: &MouseMoveEvent, phase, window, cx| {
-            if phase != DispatchPhase::Bubble
-                || !editor_entity.read(cx).is_dragging
-                || window.has_active_dialog(cx)
-            {
+            if phase != DispatchPhase::Bubble {
+                return;
+            }
+            let dialog = window.has_active_dialog(cx);
+            if !editor_entity.read(cx).is_dragging {
+                // Not selecting: only the pointer cursor over a followable
+                // link needs working out. Shaping lines to find the offset
+                // is skipped for notes without links and outside the editor.
+                let probe = !dialog
+                    && bounds.contains(&event.position)
+                    && editor_entity.read(cx).link_count() > 0;
+                let hovering = probe && {
+                    let editor = editor_entity.read(cx);
+                    let doc = editor.document_cache.borrow();
+                    let offset = offset_for_position(
+                        editor.buffer().text(),
+                        &layout,
+                        doc.line_roles(),
+                        doc.block_contexts(),
+                        doc.tables(),
+                        doc.callouts(),
+                        cursor,
+                        focused,
+                        event.position,
+                        bounds,
+                        viewport,
+                        line_height,
+                        &font,
+                        font_size,
+                        text_color,
+                        window,
+                    );
+                    drop(doc);
+                    editor.follows_link_at(offset, event.modifiers.secondary())
+                };
+                if editor_entity.read(cx).hovering_link != hovering {
+                    editor_entity.update(cx, |editor, cx| {
+                        editor.hovering_link = hovering;
+                        cx.notify();
+                    });
+                }
+                return;
+            }
+            if dialog {
                 return;
             }
             let offset = {
