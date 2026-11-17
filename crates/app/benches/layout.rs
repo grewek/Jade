@@ -86,6 +86,20 @@ fn bench_steady_state(c: &mut Criterion, name: &str, text: &str) {
             app.resize_sidebar_and_frame(if wide { 300.0 } else { 260.0 });
         });
     });
+
+    // A theme switch: widget colors and the palette change, layout does not,
+    // so no row cache may rebuild.
+    let mut dark = false;
+    group.bench_function("theme_switch_and_frame", |b| {
+        b.iter(|| {
+            dark = !dark;
+            app.set_theme_and_frame(if dark {
+                "catppuccin-mocha"
+            } else {
+                "catppuccin-latte"
+            });
+        });
+    });
     group.finish();
 }
 

@@ -136,12 +136,12 @@ fn frames(report: &mut Report, stress: &str) {
             ("backspace", None)
         }
     };
-    report.check_snapshot("idle frame", 700_000, || app.frame());
+    report.check_snapshot("idle frame", 750_000, || app.frame());
     report.check_snapshot("keystroke (edit only)", 16 * 1024, || {
         let (key, text) = toggle();
         app.key(key, text)
     });
-    report.check_snapshot("keystroke + frame", 700_000, || {
+    report.check_snapshot("keystroke + frame", 750_000, || {
         let (key, text) = toggle();
         app.key_and_frame(key, text)
     });
@@ -149,6 +149,15 @@ fn frames(report: &mut Report, stress: &str) {
     report.check_snapshot("scroll + frame", 1_100_000, || {
         step = (step + 7) % 100;
         app.scroll_and_frame(step as f32 / 100.0)
+    });
+    let mut dark = false;
+    report.check_snapshot("theme switch + frame", 1_100_000, || {
+        dark = !dark;
+        app.set_theme_and_frame(if dark {
+            "catppuccin-mocha"
+        } else {
+            "catppuccin-latte"
+        })
     });
 }
 

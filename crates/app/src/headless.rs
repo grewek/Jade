@@ -152,6 +152,17 @@ impl HeadlessApp {
         })
     }
 
+    /// Switches to the built-in theme `id`, then renders the frame: every
+    /// color changes, no layout does.
+    pub fn set_theme_and_frame(&mut self, id: &str) -> AllocSnapshot {
+        self.measured(|window, cx| {
+            if let Err(messages) = ThemeEngine::set(id, cx) {
+                panic!("cannot switch to {id}: {messages:?}");
+            }
+            window.render_frame(cx);
+        })
+    }
+
     /// Scrolls the editor pane to `fraction` (0..=1) of its range, then
     /// renders the frame.
     pub fn scroll_and_frame(&mut self, fraction: f32) -> AllocSnapshot {
