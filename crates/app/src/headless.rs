@@ -135,6 +135,19 @@ impl HeadlessApp {
         })
     }
 
+    /// Sets the left sidebar's width (what a drag step does), then renders the
+    /// frame: the editor's wrap width changes, so its row cache rebuilds.
+    pub fn resize_sidebar_and_frame(&mut self, width: f32) -> AllocSnapshot {
+        let app = self.app.clone();
+        self.measured(|window, cx| {
+            app.update(cx, |app, cx| {
+                app.sidebar_width = px(width);
+                cx.notify();
+            });
+            window.render_frame(cx);
+        })
+    }
+
     /// Scrolls the editor pane to `fraction` (0..=1) of its range, then
     /// renders the frame.
     pub fn scroll_and_frame(&mut self, fraction: f32) -> AllocSnapshot {

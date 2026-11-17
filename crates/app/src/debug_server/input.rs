@@ -11,6 +11,7 @@ use jade_debug_protocol as proto;
 use jade_debug_protocol::{Command, Location};
 
 const MAX_CLICK_COUNT: u8 = 3;
+const MAX_DRAG_STEPS: u8 = 100;
 
 pub(super) fn is_input(command: &Command) -> bool {
     matches!(
@@ -21,6 +22,7 @@ pub(super) fn is_input(command: &Command) -> bool {
             | Command::MouseDown { .. }
             | Command::MouseUp { .. }
             | Command::Click { .. }
+            | Command::Drag { .. }
             | Command::Scroll { .. }
     )
 }
@@ -35,7 +37,19 @@ pub(super) fn apply(
         Command::Key { key, modifiers } => {
             press_key(key, to_modifiers(*modifiers), window, cx)?;
         }
-        Command::MouseMove { at, modifiers } => mouse_move(resolve(at)?, *modifiers, window, cx)?,
+        Command::MouseMove {
+            at,
+            pressed,
+            modifiers,
+        } => mouse_move(resolve(at)?, *pressed, *modifiers, window, cx)?,
+        Command::Drag {
+            from,
+            dx,
+            dy,
+            steps,
+            button,
+            modifiers,
+        } => drag(from, (*dx, *dy), *steps, *button, *modifiers, window, cx)?,
         Command::MouseDown {
             at,
             button,
@@ -165,13 +179,14 @@ fn type_text(text: &str, window: &mut Window, cx: &mut gpui_kit::App) -> Result<
 
 fn mouse_move(
     at: proto::Point,
+    pressed: Option<proto::Button>,
     modifiers: proto::Modifiers,
     window: &mut Window,
     cx: &mut gpui_kit::App,
 ) -> Result<(), String> {
     let event = MouseMoveEvent {
         position: to_point(at)?,
-        pressed_button: None,
+        pressed_button: pressed.map(to_button),
         modifiers: to_modifiers(modifiers),
     };
     window.dispatch_event(PlatformInput::MouseMove(event), cx);
@@ -231,12 +246,41 @@ fn click(
             "click count must be 1..={MAX_CLICK_COUNT}, got {count}"
         ));
     }
-    mouse_move(at, modifiers, window, cx)?;
+    mouse_move(at, None, modifiers, window, cx)?;
     for click_count in 1..=usize::from(count) {
         mouse_down(at, button, modifiers, click_count, window, cx)?;
         mouse_up(at, button, modifiers, click_count, window, cx)?;
     }
     Ok(())
+}
+
+/// Press at `from`, then `steps` held-button moves covering `delta`, then release.
+fn drag(
+    from: &Location,
+    delta: (f32, f32),
+    steps: u8,
+    button: proto::Button,
+    modifiers: proto::Modifiers,
+    window: &mut Window,
+    cx: &mut gpui_kit::App,
+) -> Result<(), String> {
+    if !(1..=MAX_DRAG_STEPS).contains(&steps) {
+        return Err(format!(
+            "drag steps must be 1..={MAX_DRAG_STEPS}, got {steps}"
+        ));
+    }
+    let from = resolve(from)?;
+    let at = |fraction: f32| proto::Point {
+        x: from.x + delta.0 * fraction,
+        y: from.y + delta.1 * fraction,
+    };
+    mouse_move(from, None, modifiers, window, cx)?;
+    mouse_down(from, button, modifiers, 1, window, cx)?;
+    for step in 1..=steps {
+        let fraction = f32::from(step) / f32::from(steps);
+        mouse_move(at(fraction), Some(button), modifiers, window, cx)?;
+    }
+    mouse_up(at(1.0), button, modifiers, 1, window, cx)
 }
 
 fn scroll(

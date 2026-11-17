@@ -2,7 +2,9 @@
 
 use std::path::PathBuf;
 
-use jade_debug_protocol::{Button, Command, Location, Modifiers, Point, Query, Topic};
+use jade_debug_protocol::{
+    Button, Command, DEFAULT_DRAG_STEPS, Location, Modifiers, Point, Query, Topic,
+};
 
 pub(crate) const DEFAULT_SOCKET: &str = "/tmp/jade-debug.sock";
 
@@ -22,7 +24,8 @@ observe
 
 act (WHERE is a target name like note-Big, or x,y)
   click WHERE [--right|--middle] [--double|--triple] [--shift --ctrl --alt --meta]
-  move WHERE | down WHERE | up WHERE
+  move WHERE [--held] | down WHERE | up WHERE   (--held: left button down during the move)
+  drag WHERE DX [DY] [STEPS]    press at WHERE, move by DX,DY px in STEPS held moves (default 8), release
   scroll WHERE DY [DX]          negative DY scrolls down
   type TEXT...                  \\n and \\t are Enter and Tab
   key CHORD                     enter, escape, backspace, ctrl+a, shift+left, ...
@@ -143,7 +146,7 @@ pub(crate) fn parse_action(words: &[String]) -> Result<Action, String> {
         "type" => type_command(rest),
         "key" => key_command(&pos),
         "launch" => launch_command(rest),
-        "click" | "move" | "down" | "up" | "scroll" => mouse_command(name, &flags, &pos),
+        "click" | "move" | "down" | "up" | "scroll" | "drag" => mouse_command(name, &flags, &pos),
         other => Err(format!("unknown command {other:?} (try `jade-debug help`)")),
     }
 }
@@ -239,7 +242,7 @@ fn parse_where(word: &str) -> Location {
 }
 
 const MOUSE_FLAGS: &[&str] = &[
-    "--right", "--middle", "--double", "--triple", "--shift", "--ctrl", "--alt", "--meta",
+    "--right", "--middle", "--double", "--triple", "--shift", "--ctrl", "--alt", "--meta", "--held",
 ];
 
 fn mouse_command(name: &str, flags: &[&str], pos: &[&str]) -> Result<Action, String> {
@@ -273,7 +276,19 @@ fn mouse_command(name: &str, flags: &[&str], pos: &[&str]) -> Result<Action, Str
                 modifiers,
             }
         }
-        "move" => Command::MouseMove { at, modifiers },
+        "move" => Command::MouseMove {
+            at,
+            pressed: has("--held").then_some(Button::Left),
+            modifiers,
+        },
+        "drag" => Command::Drag {
+            from: at,
+            dx: number(pos.get(1), f32::NAN, "DX")?,
+            dy: number(pos.get(2), 0.0, "DY")?,
+            steps: number(pos.get(3), DEFAULT_DRAG_STEPS, "STEPS")?,
+            button,
+            modifiers,
+        },
         "down" => Command::MouseDown {
             at,
             button,
@@ -295,6 +310,11 @@ fn mouse_command(name: &str, flags: &[&str], pos: &[&str]) -> Result<Action, Str
         && dy.is_nan()
     {
         return Err("scroll needs DY".into());
+    }
+    if let Command::Drag { dx, .. } = &command
+        && dx.is_nan()
+    {
+        return Err("drag needs DX".into());
     }
     Ok(Action::Send(command))
 }
@@ -395,6 +415,31 @@ mod tests {
         assert_eq!((button, count), (Button::Right, 1));
         assert!(parse_action(&words("click")).is_err());
         assert!(parse_action(&words("click a --bogus")).is_err());
+    }
+
+    #[test]
+    fn drag_takes_a_target_and_a_delta() {
+        let Command::Drag {
+            from,
+            dx,
+            dy,
+            steps,
+            ..
+        } = command("drag sidebar-resize -40")
+        else {
+            panic!("expected a drag");
+        };
+        assert_eq!(from, Location::Target("sidebar-resize".into()));
+        assert_eq!((dx, dy, steps), (-40.0, 0.0, DEFAULT_DRAG_STEPS));
+        let Command::Drag { steps, .. } = command("drag a 10 5 3") else {
+            panic!("expected a drag");
+        };
+        assert_eq!(steps, 3);
+        assert!(parse_action(&words("drag a")).is_err());
+        let Command::MouseMove { pressed, .. } = command("move 1,2 --held") else {
+            panic!("expected a move");
+        };
+        assert_eq!(pressed, Some(Button::Left));
     }
 
     #[test]

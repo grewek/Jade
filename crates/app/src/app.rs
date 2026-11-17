@@ -2893,6 +2893,46 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn sidebars_are_resized_over_the_debug_socket(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Button, Command, Location, Modifiers, Query};
+        let dir = temp_vault();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let drag = |target: &str, dx: f32| Command::Drag {
+            from: Location::Target(target.into()),
+            dx,
+            dy: 0.0,
+            steps: 4,
+            button: Button::Left,
+            modifiers: Modifiers::default(),
+        };
+        let widths = |cx: &mut TestAppContext, client: &mut _| {
+            let command = Command::Query {
+                what: Query::AppState,
+            };
+            let Answer::AppState(state) = step(cx, window, client, command) else {
+                panic!("expected app state");
+            };
+            (state.sidebar_width, state.backlinks_width)
+        };
+        assert_eq!(widths(cx, &mut client), (220.0, 220.0));
+
+        assert_eq!(
+            step(cx, window, &mut client, drag("sidebar-resize", 50.)),
+            Answer::Ok
+        );
+        assert_eq!(widths(cx, &mut client), (270.0, 220.0));
+        assert_eq!(
+            step(cx, window, &mut client, drag("backlinks-resize", -30.)),
+            Answer::Ok
+        );
+        assert_eq!(widths(cx, &mut client), (270.0, 250.0));
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
     fn app_state_and_editor_text_can_be_read_back(cx: &mut TestAppContext) {
         use jade_debug_protocol::{Answer, Command, MAX_TEXT_BYTES, Query};
         let dir = temp_vault();

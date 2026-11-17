@@ -76,6 +76,16 @@ fn bench_steady_state(c: &mut Criterion, name: &str, text: &str) {
             app.scroll_and_frame(step as f32 / 100.0);
         });
     });
+
+    // A sidebar drag step: the wrap width changes every frame, so the row
+    // cache rebuilds in full each time.
+    let mut wide = false;
+    group.bench_function("sidebar_resize_and_frame", |b| {
+        b.iter(|| {
+            wide = !wide;
+            app.resize_sidebar_and_frame(if wide { 300.0 } else { 260.0 });
+        });
+    });
     group.finish();
 }
 

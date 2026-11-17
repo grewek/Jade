@@ -87,6 +87,9 @@ pub enum Command {
     },
     MouseMove {
         at: Location,
+        /// The button held during the move; set it to feed a drag.
+        #[serde(default)]
+        pressed: Option<Button>,
         #[serde(default)]
         modifiers: Modifiers,
     },
@@ -112,6 +115,19 @@ pub enum Command {
         /// 1 = single, 2 = double click.
         #[serde(default = "one")]
         count: u8,
+        #[serde(default)]
+        modifiers: Modifiers,
+    },
+    /// Press at `from`, move by (`dx`, `dy`) in `steps` equal held-button moves,
+    /// release there.
+    Drag {
+        from: Location,
+        dx: f32,
+        dy: f32,
+        #[serde(default = "default_drag_steps")]
+        steps: u8,
+        #[serde(default)]
+        button: Button,
         #[serde(default)]
         modifiers: Modifiers,
     },
@@ -150,6 +166,13 @@ pub enum Command {
 
 fn one() -> u8 {
     1
+}
+
+/// Held-button moves a `Drag` makes when `steps` is omitted.
+pub const DEFAULT_DRAG_STEPS: u8 = 8;
+
+fn default_drag_steps() -> u8 {
+    DEFAULT_DRAG_STEPS
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -197,13 +220,16 @@ impl FrameSample {
 }
 
 /// App-level state that is not in the editor.
-#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AppState {
     pub note: Option<String>,
     /// `"vault"` or `"search"`.
     pub sidebar_tab: String,
     pub search_query: String,
     pub search_results: usize,
+    /// Widths in px of the left sidebar and the backlinks sidebar.
+    pub sidebar_width: f32,
+    pub backlinks_width: f32,
     pub dialog_open: bool,
     /// Why the vault failed to open, if it did.
     pub error: Option<String>,
@@ -366,6 +392,15 @@ mod tests {
             },
             Command::MouseMove {
                 at: Location::Point(at),
+                pressed: Some(Button::Left),
+                modifiers: none,
+            },
+            Command::Drag {
+                from: Location::Target("sidebar-resize".into()),
+                dx: -40.0,
+                dy: 0.0,
+                steps: 4,
+                button: Button::Left,
                 modifiers: none,
             },
             Command::MouseDown {
@@ -506,6 +541,8 @@ mod tests {
                 sidebar_tab: "search".into(),
                 search_query: "q".into(),
                 search_results: 2,
+                sidebar_width: 220.0,
+                backlinks_width: 300.5,
                 dialog_open: true,
                 error: None,
             }),
