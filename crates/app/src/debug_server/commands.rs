@@ -108,6 +108,8 @@ fn app_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
         let app = app.read(cx);
         AppState {
             note: app.selected_id().map(str::to_string),
+            tabs: app.tabs.iter().map(|tab| tab.note_id.clone()).collect(),
+            active_tab: app.active_tab,
             sidebar_tab: match app.sidebar_tab {
                 crate::SidebarTab::Vault => "vault",
                 crate::SidebarTab::Search => "search",

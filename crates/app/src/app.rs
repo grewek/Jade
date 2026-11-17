@@ -2,13 +2,13 @@ use std::path::PathBuf;
 
 use crate::debug_server::{self, targets::DebugName};
 use crate::text_editor::{Editor, EditorEvent, InsertTab};
-use gpui_kit::component::button::{Button, ButtonVariant};
+use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogFooter;
 use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::Scrollbar;
-use gpui_kit::component::{IconName, Theme, WindowExt};
+use gpui_kit::component::{IconName, Sizable as _, Theme, WindowExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use jade_core::{Vault, search_targets};
@@ -107,8 +107,8 @@ pub(crate) enum SidebarTab {
 /// One open note. The editor is Jade's own `text_editor::Editor` (not
 /// `gpui-component`'s `Textarea`); each tab keeps its own, so cursor, scroll and
 /// undo survive switching tabs.
-struct Tab {
-    note_id: String,
+pub(crate) struct Tab {
+    pub(crate) note_id: String,
     editor: Entity<Editor>,
     /// Set by the editor's `Changed` event, cleared when the autosave writes it.
     dirty: bool,
@@ -118,9 +118,9 @@ struct Tab {
 pub(crate) struct JadeApp {
     vault: Vault,
     /// Open notes, one tab each; at most one tab per note.
-    tabs: Vec<Tab>,
+    pub(crate) tabs: Vec<Tab>,
     /// Index into `tabs` of the tab being shown.
-    active_tab: Option<usize>,
+    pub(crate) active_tab: Option<usize>,
     /// Pending debounced save of the dirty tabs; dropping it cancels the wait.
     autosave_task: Option<Task<()>>,
     _quit_subscription: Subscription,
@@ -336,7 +336,11 @@ impl JadeApp {
     }
 
     fn note_changed(&mut self, editor: EntityId, cx: &mut Context<Self>) {
-        if let Some(tab) = self.tabs.iter_mut().find(|t| t.editor.entity_id() == editor) {
+        if let Some(tab) = self
+            .tabs
+            .iter_mut()
+            .find(|t| t.editor.entity_id() == editor)
+        {
             tab.dirty = true;
             self.autosave(cx);
         }
@@ -968,13 +972,27 @@ impl JadeApp {
         }));
 
         item.context_menu(move |menu, _window, _cx| {
+            let open_entity = app_entity.clone();
+            let open_id = menu_id.clone();
+            let new_tab_entity = app_entity.clone();
+            let new_tab_id = menu_id.clone();
             let rename_entity = app_entity.clone();
             let rename_id = menu_id.clone();
             let rename_title = menu_title.clone();
             let delete_entity = app_entity.clone();
             let delete_id = menu_id.clone();
             let delete_title = menu_title.clone();
-            menu.item(PopupMenuItem::new("Rename").on_click(move |_, window, cx| {
+            menu.item(PopupMenuItem::new("Open").on_click(move |_, window, cx| {
+                open_entity.update(cx, |app, cx| app.open_note(open_id.clone(), window, cx));
+            }))
+            .item(
+                PopupMenuItem::new("Open in new tab").on_click(move |_, window, cx| {
+                    new_tab_entity.update(cx, |app, cx| {
+                        app.open_note_in_new_tab(new_tab_id.clone(), window, cx);
+                    });
+                }),
+            )
+            .item(PopupMenuItem::new("Rename").on_click(move |_, window, cx| {
                 JadeApp::open_rename_dialog(
                     rename_id.clone(),
                     rename_title.clone(),
@@ -1045,6 +1063,87 @@ impl JadeApp {
         }
 
         backlinks_panel
+    }
+
+    /// The row of open notes above the editor.
+    fn render_tab_bar(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = Theme::global(cx);
+        let (bar, border) = (theme.tab_bar, theme.border);
+        let tabs: Vec<AnyElement> = (0..self.tabs.len())
+            .map(|ix| self.render_tab(ix, cx))
+            .collect();
+        div()
+            .id("tab-bar")
+            .flex()
+            .flex_row()
+            .flex_none()
+            .overflow_x_scroll()
+            .bg(bar)
+            .border_b_1()
+            .border_color(border)
+            .children(tabs)
+            .debug_name("tab-bar")
+            .into_any_element()
+    }
+
+    /// One tab: click to show it, the cross or a middle click to close it.
+    fn render_tab(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
+        let tab = &self.tabs[ix];
+        let theme = Theme::global(cx);
+        let (background, foreground, border) = if self.active_tab == Some(ix) {
+            (theme.tab_active, theme.tab_active_foreground, theme.border)
+        } else {
+            (theme.tab, theme.muted_foreground, theme.border)
+        };
+        let title = self
+            .vault
+            .note(&tab.note_id)
+            .map_or_else(|| tab.note_id.clone(), |note| note.title.clone());
+        let id = tab.note_id.as_str();
+        let close = Button::new(format!("tab-close-{id}"))
+            .icon(IconName::Close)
+            .ghost()
+            .xsmall()
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                this.close_tab(ix, window, cx);
+            }))
+            .debug_name_with(|| format!("tab-close-{id}").into());
+        div()
+            .id(format!("tab-{id}"))
+            .test_support()
+            .flex()
+            .flex_row()
+            .flex_none()
+            .items_center()
+            .gap_1()
+            .pl_3()
+            .pr_1()
+            .py_1()
+            .max_w(px(200.))
+            .bg(background)
+            .text_color(foreground)
+            .border_r_1()
+            .border_color(border)
+            .cursor_pointer()
+            .child(div().min_w_0().truncate().child(title))
+            // The wrapper keeps the cross's press from also starting a click on
+            // the tab (which would re-activate it after it closed).
+            .child(
+                div()
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                    .child(close),
+            )
+            .on_click(cx.listener(move |this, _event, window, cx| {
+                this.activate_tab(ix, window, cx);
+            }))
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(move |this, _event, window, cx| {
+                    this.close_tab(ix, window, cx);
+                }),
+            )
+            .debug_name_with(|| format!("tab-{id}").into())
+            .into_any_element()
     }
 
     /// The draggable strip on a sidebar's inner edge.
@@ -1410,7 +1509,17 @@ impl Render for JadeApp {
             .when(!self.sidebar_collapsed, |this| {
                 this.child(sidebar.debug_name("sidebar"))
             })
-            .child(div().flex_1().child(content))
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .when(!self.tabs.is_empty(), |this| {
+                        this.child(self.render_tab_bar(cx))
+                    })
+                    .child(div().flex_1().min_h_0().child(content)),
+            )
             .when(!self.backlinks_collapsed, |this| {
                 this.child(right_sidebar.debug_name("backlinks-sidebar"))
             })
@@ -1774,7 +1883,11 @@ mod tests {
 
             // A brand-new note opens with its own editor ready immediately — no
             // click needed before it can be typed into.
-            let editor = app.read(cx).editor().cloned().expect("editor should be open");
+            let editor = app
+                .read(cx)
+                .editor()
+                .cloned()
+                .expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("Linking to [[Note A]].", cx);
@@ -1835,7 +1948,11 @@ mod tests {
         // "Hello" already has its editor open, ready to type into.
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
-            let editor = app.read(cx).editor().cloned().expect("editor should be open");
+            let editor = app
+                .read(cx)
+                .editor()
+                .cloned()
+                .expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("Linking to [[Note A]].", cx);
@@ -1859,7 +1976,11 @@ mod tests {
             window.render_frame(cx);
             window.click("Note A", cx);
             window.render_frame(cx);
-            let editor = app.read(cx).editor().cloned().expect("editor should be open");
+            let editor = app
+                .read(cx)
+                .editor()
+                .cloned()
+                .expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input(" Also linking to [[Hello]].", cx);
@@ -1906,7 +2027,11 @@ mod tests {
             window.click("Note", cx);
             window.render_frame(cx);
 
-            let editor = app.read(cx).editor().cloned().expect("editor should be open");
+            let editor = app
+                .read(cx)
+                .editor()
+                .cloned()
+                .expect("editor should be open");
             editor.read(cx).focus_handle(cx).focus(window, cx);
             window.render_frame(cx);
             window.input("appended ", cx);
@@ -3068,6 +3193,40 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn tabs_are_driven_and_reported_over_the_debug_socket(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Button, Command, Location, Modifiers, Query};
+        let dir = three_note_vault();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let tabs = |cx: &mut TestAppContext, client: &mut _| {
+            let command = Command::Query {
+                what: Query::AppState,
+            };
+            let Answer::AppState(state) = step(cx, window, client, command) else {
+                panic!("expected app state");
+            };
+            (state.tabs, state.active_tab)
+        };
+        let click = |name: &str, button| Command::Click {
+            at: Location::Target(name.into()),
+            button,
+            count: 1,
+            modifiers: Modifiers::default(),
+        };
+
+        step(cx, window, &mut client, click("note-A", Button::Left));
+        assert_eq!(tabs(cx, &mut client), (vec!["A".to_string()], Some(0)));
+        // Left click is "open": it replaces the active tab's note.
+        step(cx, window, &mut client, click("note-B", Button::Left));
+        assert_eq!(tabs(cx, &mut client), (vec!["B".to_string()], Some(0)));
+        step(cx, window, &mut client, click("tab-B", Button::Middle));
+        assert_eq!(tabs(cx, &mut client), (vec![], None));
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
     fn app_state_and_editor_text_can_be_read_back(cx: &mut TestAppContext) {
         use jade_debug_protocol::{Answer, Command, MAX_TEXT_BYTES, Query};
         let dir = temp_vault();
@@ -3774,7 +3933,11 @@ mod tests {
                 window.click("Note", cx);
                 window.render_frame(cx);
 
-                let editor = app.read(cx).editor().cloned().expect("editor should be open");
+                let editor = app
+                    .read(cx)
+                    .editor()
+                    .cloned()
+                    .expect("editor should be open");
                 editor.read(cx).focus_handle(cx).focus(window, cx);
                 window.render_frame(cx);
                 window.press("backspace", cx);
@@ -3810,7 +3973,7 @@ mod tests {
             window
                 .within("popup-menu")
                 .within("items")
-                .click(1usize, cx);
+                .click(3usize, cx);
         })
         .unwrap();
         cx.run_until_parked();
@@ -4164,6 +4327,226 @@ mod tests {
         let (_window, _app) = open_app(cx, dir.path().to_path_buf());
         let border = cx.update(|cx| gpui_kit::component::Theme::global(cx).border);
         assert!(border.a > 0.1, "divider would be invisible: {border:?}");
+    }
+
+    /// Right-clicks a note row and picks the context-menu item at `item`
+    /// (0 = Open, 1 = Open in new tab).
+    fn open_via_menu(
+        cx: &mut TestAppContext,
+        window: AnyWindowHandle,
+        note: &'static str,
+        item: usize,
+    ) {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.right_click(note, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.within("popup-menu").within("items").click(item, cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    }
+
+    /// The open tabs' note ids and which one is active.
+    fn tabs_of(cx: &mut TestAppContext, app: &Entity<JadeApp>) -> (Vec<String>, Option<usize>) {
+        app.read_with(cx, |app, _| {
+            let ids = app.tabs.iter().map(|t| t.note_id.clone()).collect();
+            (ids, app.active_tab)
+        })
+    }
+
+    fn middle_click(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
+        use gpui_kit::{MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput};
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let position = window.find(id).bounds().center();
+            let button = MouseButton::Middle;
+            let down = MouseDownEvent {
+                button,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            };
+            window.dispatch_event(PlatformInput::MouseDown(down), cx);
+            let up = MouseUpEvent {
+                button,
+                position,
+                modifiers: Default::default(),
+                click_count: 1,
+            };
+            window.dispatch_event(PlatformInput::MouseUp(up), cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    fn click_frame(cx: &mut TestAppContext, window: AnyWindowHandle, id: &'static str) {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.click(id, cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+    }
+
+    fn three_note_vault() -> TempDir {
+        let dir = temp_vault();
+        for name in ["A", "B", "C"] {
+            std::fs::write(dir.path().join(format!("{name}.md")), name).unwrap();
+        }
+        dir
+    }
+
+    #[gpui_kit::test]
+    fn open_creates_a_tab_and_then_replaces_the_active_one(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        assert_eq!(tabs_of(cx, &app), (vec![], None));
+
+        open_via_menu(cx, window, "A", 0);
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into()], Some(0)));
+        open_via_menu(cx, window, "B", 0);
+        assert_eq!(tabs_of(cx, &app), (vec!["B".into()], Some(0)));
+    }
+
+    #[gpui_kit::test]
+    fn open_in_new_tab_always_adds_a_tab(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+
+        open_via_menu(cx, window, "A", 1);
+        open_via_menu(cx, window, "B", 1);
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into(), "B".into()], Some(1)));
+        // "Open" then replaces only the active tab.
+        open_via_menu(cx, window, "C", 0);
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into(), "C".into()], Some(1)));
+    }
+
+    #[gpui_kit::test]
+    fn opening_a_note_that_has_a_tab_switches_to_it(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "A", 1);
+        open_via_menu(cx, window, "B", 1);
+
+        open_via_menu(cx, window, "A", 0);
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into(), "B".into()], Some(0)));
+        open_via_menu(cx, window, "B", 1);
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into(), "B".into()], Some(1)));
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_tab_switches_to_it(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "A", 1);
+        open_via_menu(cx, window, "B", 1);
+
+        click_frame(cx, window, "tab-A");
+        assert_eq!(tabs_of(cx, &app).1, Some(0));
+        click_frame(cx, window, "tab-B");
+        assert_eq!(tabs_of(cx, &app).1, Some(1));
+    }
+
+    #[gpui_kit::test]
+    fn the_cross_and_a_middle_click_close_a_tab(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        for note in ["A", "B", "C"] {
+            open_via_menu(cx, window, note, 1);
+        }
+
+        // Closing a background tab keeps the active one.
+        click_frame(cx, window, "tab-close-A");
+        assert_eq!(tabs_of(cx, &app), (vec!["B".into(), "C".into()], Some(1)));
+        // The cross must not also activate the tab it sits in.
+        click_frame(cx, window, "tab-B");
+        assert_eq!(tabs_of(cx, &app).1, Some(0));
+        middle_click(cx, window, "tab-C");
+        assert_eq!(tabs_of(cx, &app), (vec!["B".into()], Some(0)));
+        click_frame(cx, window, "tab-close-B");
+        assert_eq!(tabs_of(cx, &app), (vec![], None));
+        let editor = app.read_with(cx, |app, _| app.editor().is_some());
+        assert!(!editor);
+    }
+
+    #[gpui_kit::test]
+    fn closing_the_active_tab_activates_its_neighbour(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        for note in ["A", "B", "C"] {
+            open_via_menu(cx, window, note, 1);
+        }
+        click_frame(cx, window, "tab-B");
+        click_frame(cx, window, "tab-close-B");
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into(), "C".into()], Some(1)));
+        click_frame(cx, window, "tab-close-C");
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into()], Some(0)));
+    }
+
+    #[gpui_kit::test]
+    fn deleting_or_renaming_a_note_updates_its_tab(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        for note in ["A", "B", "C"] {
+            open_via_menu(cx, window, note, 1);
+        }
+        app.update(cx, |app, cx| {
+            cx.update_window(window, |_, window, cx| {
+                // Through the entity so its own `Context` is used.
+                let _ = (window, cx);
+            })
+            .ok();
+            app.delete_note("B", cx);
+        });
+        assert_eq!(tabs_of(cx, &app), (vec!["A".into(), "C".into()], Some(1)));
+
+        cx.update_window(window, |_, window, cx| {
+            app.update(cx, |app, cx| app.rename_note("A", "Z", window, cx));
+        })
+        .unwrap();
+        assert_eq!(tabs_of(cx, &app), (vec!["Z".into(), "C".into()], Some(1)));
+        let text = app.read_with(cx, |app, cx| {
+            app.tabs[0].editor.read(cx).buffer().text().to_string()
+        });
+        assert_eq!(text, "A", "the renamed tab shows the note's content");
+    }
+
+    #[gpui_kit::test]
+    fn only_edited_tabs_are_autosaved(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "A", 1);
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.input("typed ", cx);
+        })
+        .unwrap();
+        // Another tab opens before the debounce fires.
+        open_via_menu(cx, window, "B", 1);
+        let before = std::fs::metadata(dir.path().join("B.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        cx.executor().advance_clock(super::AUTOSAVE_DEBOUNCE);
+        cx.run_until_parked();
+
+        let a = std::fs::read_to_string(dir.path().join("A.md")).unwrap();
+        assert!(
+            a.contains("typed"),
+            "the background tab's edit was saved: {a:?}"
+        );
+        let after = std::fs::metadata(dir.path().join("B.md"))
+            .unwrap()
+            .modified()
+            .unwrap();
+        assert_eq!(before, after, "an untouched tab is not rewritten");
+        assert_eq!(tabs_of(cx, &app).1, Some(1));
     }
 
     #[gpui_kit::test]

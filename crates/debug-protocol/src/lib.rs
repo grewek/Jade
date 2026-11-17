@@ -222,7 +222,11 @@ impl FrameSample {
 /// App-level state that is not in the editor.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct AppState {
+    /// The active tab's note.
     pub note: Option<String>,
+    /// Note ids of the open tabs, left to right.
+    pub tabs: Vec<String>,
+    pub active_tab: Option<usize>,
     /// `"vault"` or `"search"`.
     pub sidebar_tab: String,
     pub search_query: String,
@@ -538,6 +542,8 @@ mod tests {
             Answer::EditorState(EditorState::default()),
             Answer::AppState(AppState {
                 note: Some("A".into()),
+                tabs: vec!["A".into(), "B".into()],
+                active_tab: Some(0),
                 sidebar_tab: "search".into(),
                 search_query: "q".into(),
                 search_results: 2,
