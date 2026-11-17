@@ -75,3 +75,43 @@ Catppuccin's guide gives no ratios, so these were measured on the resolved theme
 - **Mocha, Macchiato, Frappe**: every text role is at least 4.5 except `text_subtle` (4.4, 4.1, 3.6).
 - **Latte**: its pastels fell to 2.3 to 4.4, so it overrides 11 roles (`text_muted`, `text_subtle`, `link`, `wikilink`, `code`, `info`, `tip`, `success`, `warning`, `neutral`, `accent`) with darkened versions of the same hues; all measured roles now reach 4.5.
 - **Jade Light** reproduces today's colors as they are; several are low (`link` 1.8, `tip` 1.9, `success` 2.2, `warning` 2.5).
+
+## Mapping to gpui-component (`Theme::apply_config`)
+
+The engine builds one `ThemeConfig` per theme. gpui-component derives most of its 135 colors from a small root set when a key is absent (hover and active from the base, `input` from `border`, `caret` from `primary`, the light base colors from the base colors, button variants from `primary`/`secondary`/`danger`/...), but a key it cannot derive keeps its **stock light/dark default**. So the engine sets the roots below and lets everything else derive. Colors with alpha are written `#rrggbbaa`. Fonts, radii and shadows are not colors and are left alone.
+
+| gpui-component key(s) | Role |
+|---|---|
+| `background`, `popover.background`, `accordion.background` | `background` |
+| `foreground`, `popover.foreground`, `accent.foreground`, `secondary.foreground`, `group_box.foreground`, `tab.active.foreground`, `sidebar.foreground` | `text` |
+| `border`, `input.border`, `sidebar.border`, `title_bar.border`, `status_bar.border`, `window.border`, `table.row.border` | `border` |
+| `muted.background`, `secondary.background`, `skeleton.background`, `tab_bar.segmented.background`, `list.hover.background`, `table.hover.background` | `surface` |
+| `secondary.hover.background`, `accent.background`, `list.active.background`, `table.active.background`, `sidebar.accent.background`, `slider.background`, `switch.background` | `surface_hover` |
+| `secondary.active.background` | `surface_active` |
+| `muted.foreground`, `tab.foreground`, `group_box.title.foreground`, `description_list.label.foreground`, `table.head.foreground` | `text_muted` |
+| `sidebar.background`, `tab_bar.background`, `title_bar.background`, `status_bar.background`, `list.head.background`, `table.head.background`, `group_box.background`, `description_list.label.background` | `background_secondary` |
+| `list.background`, `list.even.background`, `table.background`, `table.even.background`, `tab.active.background`, `switch.thumb.background` | `background` |
+| `primary.background`, `ring`, `drag.border`, `list.active.border`, `table.active.border`, `progress.bar.background`, `slider.thumb.background`, `sidebar.primary.background` | `accent` |
+| `primary.foreground`, `sidebar.primary.foreground`, `danger/success/info/warning.foreground` | `text_on_accent` |
+| `caret` | `cursor` |
+| `selection.background` | `selection` at `alpha.selection` |
+| `drop_target.background` | `accent` at `alpha.accent_hover` |
+| `link` | `link` |
+| `scrollbar.thumb.background` | `border_strong` |
+| `scrollbar.thumb.hover.background` | `text_subtle` |
+| `red`, `danger.background` | `error` |
+| `green`, `success.background` | `success` |
+| `blue`, `info.background` | `info` |
+| `yellow`, `warning.background` | `warning` |
+| `cyan` | `tip` |
+| `magenta` | `summary` |
+| `overlay` | see open item 2 |
+
+Left derived (not set): all `button.*` (they follow `secondary`, `primary`, `danger`, ...), every hover/active of the above, `link.hover`/`link.active`, the `*.light` base colors, `scrollbar.background`, `tab.background`, `chart.*`, `title_bar` extras. `background_tertiary`, `neutral` and `code` have no gpui-component counterpart; only Jade's own UI reads them.
+
+### Open items
+
+1. **Stock leaks.** Any key neither set nor derivable stays stock. Phase 3 adds a test that resolves a theme whose roles are all unlike the stock colors and fails on any resulting color that still equals the stock value (with an explicit allow-list), so a leak is caught, not noticed by eye.
+2. **Dialog scrim.** `overlay` is a translucent dark scrim today. No role fits (`background_tertiary` is white in Jade Light and would wash out). Proposal: a 26th role `scrim` (black in Jade Light, `crust` in the dark flavors, `crust` in Latte) plus `alpha.overlay`.
+3. **Jade Light buttons change.** Buttons follow `secondary` = `surface` = `#E8E8F8`, where today they are gray `#E4E4E4` (`#D3D3D3` pressed). That follows from "one color for the same element", so Jade Light will look slightly lavender on buttons; if that is unwanted, Jade Light must override `surface` and give up the lavender row hover.
+4. **One source of truth.** Jade's own UI stops reading gpui-component's `Theme` colors and reads the engine's palette, so a role cannot be answered by two places.
