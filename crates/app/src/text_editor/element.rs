@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::ops::Range;
 use std::rc::Rc;
 
 use gpui_kit::component::WindowExt;
@@ -10,6 +11,7 @@ use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
 use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
+use super::link_table::LinkTable;
 use super::live_preview::{
     DisplayLine, InlineStyle, LineContext, LineIndent, build_callout_header_line,
     build_display_line, build_display_line_in_context, build_table_row, hidden_line,
@@ -1236,6 +1238,43 @@ pub(super) fn shape_display_line(
     available_width: Pixels,
     window: &mut Window,
 ) -> Vec<(WrappedLine, DisplayLine)> {
+    shape_display_line_marking(
+        line,
+        role,
+        block_ctx,
+        table_kind,
+        table_active,
+        callout,
+        callout_is_header,
+        active,
+        font,
+        font_size,
+        colors,
+        &[],
+        available_width,
+        window,
+    )
+}
+
+/// [`shape_display_line`] that also paints the links inside `broken` (raw
+/// byte ranges of the line) in the broken-link color.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn shape_display_line_marking(
+    line: &str,
+    role: LineRole,
+    block_ctx: LineContext,
+    table_kind: TableLineKind,
+    table_active: bool,
+    callout: Option<&Callout>,
+    callout_is_header: bool,
+    active: bool,
+    font: &Font,
+    font_size: Pixels,
+    colors: impl Into<InlineColors>,
+    broken: &[Range<usize>],
+    available_width: Pixels,
+    window: &mut Window,
+) -> Vec<(WrappedLine, DisplayLine)> {
     let colors: InlineColors = colors.into();
     let text_color = colors.text;
     let (display_lines, wrap_width) = build_display_lines(
@@ -1261,7 +1300,15 @@ pub(super) fn shape_display_line(
                 .iter()
                 .filter(|seg| !seg.is_hidden())
                 .map(|seg| {
-                    let color = color_for_style(seg.style, &colors, callout);
+                    let is_broken = matches!(seg.style, InlineStyle::Link | InlineStyle::WikiLink)
+                        && broken
+                            .iter()
+                            .any(|r| r.start <= seg.raw.start && seg.raw.end <= r.end);
+                    let color = if is_broken {
+                        colors.broken
+                    } else {
+                        color_for_style(seg.style, &colors, callout)
+                    };
                     TextRun {
                         len: seg.display.len(),
                         font: font_for_style(seg.style, font),
@@ -1484,6 +1531,7 @@ pub(super) fn render_editor(
                         let doc = editor.document_cache.borrow();
                         paint_lines(
                             editor.buffer().text(),
+                            &editor.link_table,
                             &layout,
                             doc.line_roles(),
                             doc.block_contexts(),
@@ -1846,6 +1894,7 @@ fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, color: Hsla, windo
 #[allow(clippy::too_many_arguments)]
 fn paint_lines(
     text: &str,
+    links: &LinkTable,
     layout: &LineLayout,
     line_roles: &[LineRole],
     block_contexts: &[LineContext],
@@ -2007,7 +2056,8 @@ fn paint_lines(
         let callout = callout_at_line(callouts, i);
         let callout_is_header = callout.is_some_and(|c| c.is_header(i));
 
-        let results = shape_display_line(
+        let broken: Vec<Range<usize>> = links.broken_on_line(i).collect();
+        let results = shape_display_line_marking(
             line_text,
             line_roles[i],
             block_contexts[i],
@@ -2019,6 +2069,7 @@ fn paint_lines(
             font,
             font_size,
             inline,
+            &broken,
             bounds.size.width,
             window,
         );

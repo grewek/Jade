@@ -115,7 +115,7 @@ pub struct Editor {
     /// Word and character counts for the status bar, patched per edit.
     doc_stats: DocStats,
     /// Where the note's links are, patched per edit.
-    link_table: LinkTable,
+    pub(super) link_table: LinkTable,
 }
 
 impl Editor {
@@ -167,6 +167,37 @@ impl Editor {
     pub(super) fn on_cursor_line(&self, offset: usize) -> bool {
         let doc = self.document_cache.borrow();
         doc.line_at(offset) == doc.line_at(self.buffer.cursor())
+    }
+
+    /// Marks which links point at nothing; see [`LinkTable::resolve`]. With
+    /// `all`, forgets earlier answers first (the vault's notes changed).
+    pub(crate) fn resolve_links(
+        &mut self,
+        all: bool,
+        is_live: impl FnMut(LinkKind, &str) -> bool,
+        cx: &mut Context<Self>,
+    ) {
+        if all {
+            self.link_table.invalidate();
+        }
+        let any_broken = {
+            let doc = self.document_cache.borrow();
+            self.link_table.resolve(self.buffer.text(), &doc, is_live)
+        };
+        // An edit repaints its own line; only a vault change or a newly
+        // broken link elsewhere needs asking for one.
+        if all || any_broken {
+            cx.notify();
+        }
+    }
+
+    /// How many of the note's links point at nothing (see `link_table`).
+    #[cfg_attr(
+        not(any(test, feature = "debug-socket")),
+        allow(dead_code, reason = "read by the harness's `app` query")
+    )]
+    pub fn broken_link_count(&self) -> usize {
+        self.link_table.broken_count()
     }
 
     /// How many links the note has (see `link_table`).

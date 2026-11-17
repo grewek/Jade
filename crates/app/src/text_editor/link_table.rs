@@ -12,6 +12,8 @@
 //! scanner finds inside bold or italic text are stored too, although Live
 //! Preview does not paint them as links yet.
 
+use std::ops::Range;
+
 use jade_core::link_scan::{LinkKind, scan_line};
 
 use super::block_preview::LineRole;
@@ -21,6 +23,15 @@ use super::document_cache::{DocumentCache, EditPatch};
 /// Room kept free after a rebuild so typing a link does not reallocate.
 const SLACK: usize = 64;
 
+/// Whether a link's target exists. Set by [`LinkTable::resolve`], which the
+/// app runs against the vault; everything starts `Unchecked`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum LinkState {
+    Unchecked,
+    Resolved,
+    Broken,
+}
+
 /// One link: `start..end` is its whole span (delimiters included) in bytes
 /// from the start of line `line`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -29,6 +40,7 @@ pub(super) struct StoredLink {
     pub start: u32,
     pub end: u32,
     pub kind: LinkKind,
+    pub state: LinkState,
 }
 
 pub(super) struct LinkTable {
@@ -46,6 +58,11 @@ fn scan_into(out: &mut Vec<StoredLink>, number: u32, line: &str) {
             start: link.span.start as u32,
             end: link.span.end as u32,
             kind: link.kind,
+            // A URL on the web is not the vault's to check.
+            state: match link.kind {
+                LinkKind::Wiki | LinkKind::Inline => LinkState::Unchecked,
+                LinkKind::Autolink | LinkKind::BareUrl => LinkState::Resolved,
+            },
         });
     });
 }
@@ -176,6 +193,70 @@ impl LinkTable {
         }
     }
 
+    /// Forgets which links resolved, after the vault's notes changed.
+    pub(super) fn invalidate(&mut self) {
+        for link in &mut self.links {
+            if matches!(link.kind, LinkKind::Wiki | LinkKind::Inline) {
+                link.state = LinkState::Unchecked;
+            }
+        }
+    }
+
+    /// Settles every `Unchecked` link: `is_live(kind, dest)` says whether its
+    /// target exists. Only links scanned since the last call are asked, so a
+    /// keystroke costs a lookup for the links on its own line. Returns whether
+    /// any of them came out broken.
+    pub(super) fn resolve(
+        &mut self,
+        text: &str,
+        doc: &DocumentCache,
+        mut is_live: impl FnMut(LinkKind, &str) -> bool,
+    ) -> bool {
+        let mut any_broken = false;
+        for i in 0..self.links.len() {
+            let stored = self.links[i];
+            if stored.state != LinkState::Unchecked {
+                continue;
+            }
+            let line = stored.line as usize;
+            let line_text = &text[doc.line_start_byte(line)..doc.line_end_byte(line)];
+            let mut live = true;
+            scan_line(line_text, |link| {
+                if link.span.start == stored.start as usize && link.kind == stored.kind {
+                    live = is_live(link.kind, &line_text[link.dest]);
+                }
+            });
+            let state = if live {
+                LinkState::Resolved
+            } else {
+                LinkState::Broken
+            };
+            any_broken |= state == LinkState::Broken;
+            self.links[i].state = state;
+        }
+        any_broken
+    }
+
+    /// How many links are known to point at nothing.
+    #[cfg_attr(
+        not(any(test, feature = "debug-socket")),
+        allow(dead_code, reason = "read by the harness's `app` query")
+    )]
+    pub(super) fn broken_count(&self) -> usize {
+        self.links
+            .iter()
+            .filter(|l| l.state == LinkState::Broken)
+            .count()
+    }
+
+    /// The byte ranges within `line` of its links whose target is missing.
+    pub(super) fn broken_on_line(&self, line: usize) -> impl Iterator<Item = Range<usize>> + '_ {
+        self.on_line(line)
+            .iter()
+            .filter(|l| l.state == LinkState::Broken)
+            .map(|l| l.start as usize..l.end as usize)
+    }
+
     #[cfg_attr(
         not(any(test, feature = "debug-socket")),
         allow(dead_code, reason = "read by the harness's `app` query")
@@ -193,7 +274,6 @@ impl LinkTable {
     }
 
     /// The link on `line` whose span covers byte `column` of that line.
-    #[cfg_attr(not(test), allow(dead_code, reason = "click-through reads it next"))]
     pub(super) fn at(&self, line: usize, column: usize) -> Option<&StoredLink> {
         self.on_line(line)
             .iter()
@@ -249,6 +329,60 @@ mod tests {
         assert_eq!(table.at(0, 11), None, "the end is exclusive");
         assert_eq!(table.at(0, 5), None);
         assert_eq!(table.at(9, 0), None);
+    }
+
+    /// A table over `text` whose wikilink and path-link targets exist only if
+    /// they contain "ok".
+    fn resolved(text: &str) -> (LinkTable, DocumentCache) {
+        let cache = DocumentCache::new(text);
+        let mut table = LinkTable::new(text, &cache);
+        table.resolve(text, &cache, |_, dest| dest.contains("ok"));
+        (table, cache)
+    }
+
+    fn states(table: &LinkTable) -> Vec<LinkState> {
+        table.links.iter().map(|l| l.state).collect()
+    }
+
+    #[test]
+    fn resolve_marks_missing_targets_and_leaves_web_links_alone() {
+        let text = "[[ok]] [[gone]] [a](ok.md) [b](gone.md) <https://x.y> https://z.w";
+        let (table, _) = resolved(text);
+        use LinkState::{Broken, Resolved};
+        assert_eq!(
+            states(&table),
+            [Resolved, Broken, Resolved, Broken, Resolved, Resolved]
+        );
+        assert_eq!(table.broken_count(), 2);
+        assert_eq!(table.broken_on_line(0).collect::<Vec<_>>(), [7..15, 27..39]);
+    }
+
+    #[test]
+    fn an_edit_unchecks_only_the_links_it_rescanned() {
+        let text = "[[gone]]\n[[ok]]\nplain";
+        let mut cache = DocumentCache::new(text);
+        let mut table = LinkTable::new(text, &cache);
+        table.resolve(text, &cache, |_, dest| dest.contains("ok"));
+        let new_text = "[[gone]]\n[[ok]] x\nplain";
+        let edit = TextEdit {
+            start_byte: 15,
+            old_end_byte: 15,
+            new_end_byte: 18,
+        };
+        let patch = cache.record_edit(new_text, edit).unwrap();
+        table.patch(new_text, &cache, &patch);
+        assert_eq!(states(&table), [LinkState::Broken, LinkState::Unchecked]);
+        table.resolve(new_text, &cache, |_, _| true);
+        assert_eq!(states(&table), [LinkState::Broken, LinkState::Resolved]);
+    }
+
+    #[test]
+    fn invalidate_unchecks_vault_links_but_not_web_ones() {
+        let (mut table, cache) = resolved("[[gone]] <https://x.y>");
+        table.invalidate();
+        assert_eq!(states(&table), [LinkState::Unchecked, LinkState::Resolved]);
+        table.resolve("[[gone]] <https://x.y>", &cache, |_, _| true);
+        assert_eq!(table.broken_count(), 0);
     }
 
     #[test]

@@ -37,6 +37,8 @@ pub(super) struct InlineColors {
     pub code: Hsla,
     pub wikilink: Hsla,
     pub link: Hsla,
+    /// A link whose target does not exist.
+    pub broken: Hsla,
     /// Blockquote and list-marker text.
     pub subtle: Hsla,
     callouts: [Hsla; CALLOUT_ROLES.len()],
@@ -49,6 +51,7 @@ impl InlineColors {
             code: palette.color(Role::Code),
             wikilink: palette.color(Role::Wikilink),
             link: palette.color(Role::Link),
+            broken: palette.color(Role::Error),
             subtle: palette.color(Role::TextSubtle),
             callouts: CALLOUT_ROLES.map(|role| palette.color(role)),
         }
@@ -72,6 +75,7 @@ impl From<Hsla> for InlineColors {
             code: color,
             wikilink: color,
             link: color,
+            broken: color,
             subtle: color,
             callouts: [color; CALLOUT_ROLES.len()],
         }

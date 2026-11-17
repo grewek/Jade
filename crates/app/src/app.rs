@@ -14,7 +14,7 @@ use gpui_kit::component::{IconName, IndexPath, Sizable as _, Theme, WindowExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use jade_core::link_scan::LinkKind;
-use jade_core::{LinkTarget, Vault, search_targets};
+use jade_core::{LinkTarget, PathLinkError, Vault, search_targets};
 
 /// One entry of the Settings theme dropdown; the value is the theme id.
 #[derive(Clone)]
@@ -195,6 +195,21 @@ fn parent_of(id: &str) -> Option<&str> {
     id.rsplit_once('/').map(|(parent, _)| parent)
 }
 
+/// Whether a link written in note `from` points at something that exists.
+/// Web links are not checked, and neither is a link within the same note.
+fn link_is_live(vault: &Vault, from: &str, kind: LinkKind, dest: &str) -> bool {
+    if kind == LinkKind::Wiki {
+        return vault.resolve_wikilink(dest).is_some();
+    }
+    if jade_core::link_scan::scheme(dest).is_some() {
+        return true;
+    }
+    match vault.resolve_path_link(from, dest) {
+        Ok(_) | Err(PathLinkError::SameNote | PathLinkError::External) => true,
+        Err(PathLinkError::OutsideVault | PathLinkError::NotFound) => false,
+    }
+}
+
 impl JadeApp {
     pub(crate) fn new(vault_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar_focus = cx.focus_handle();
@@ -265,6 +280,7 @@ impl JadeApp {
     fn new_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> Option<Tab> {
         let text = self.vault.read_note(id).ok()?;
         let editor = cx.new(|cx| Editor::new(text, cx));
+        self.resolve_links_in(&editor, id, false, cx);
         let subscription =
             cx.subscribe_in(
                 &editor,
@@ -424,7 +440,37 @@ impl JadeApp {
             .find(|t| t.editor.entity_id() == editor)
         {
             tab.dirty = true;
+            let (editor, id) = (tab.editor.clone(), tab.note_id.clone());
             self.autosave(cx);
+            self.resolve_links_in(&editor, &id, false, cx);
+        }
+    }
+
+    /// Marks the links in `editor` (the open note `id`) whose target is
+    /// missing. With `all`, re-checks every link, not just the unchecked ones.
+    fn resolve_links_in(
+        &self,
+        editor: &Entity<Editor>,
+        id: &str,
+        all: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let vault = &self.vault;
+        editor.update(cx, |editor, cx| {
+            editor.resolve_links(all, |kind, dest| link_is_live(vault, id, kind, dest), cx);
+        });
+    }
+
+    /// After the vault's notes changed: every open note's links may now
+    /// resolve or break.
+    fn refresh_links(&mut self, cx: &mut Context<Self>) {
+        let tabs: Vec<(Entity<Editor>, String)> = self
+            .tabs
+            .iter()
+            .map(|tab| (tab.editor.clone(), tab.note_id.clone()))
+            .collect();
+        for (editor, id) in tabs {
+            self.resolve_links_in(&editor, &id, true, cx);
         }
     }
 
@@ -482,6 +528,7 @@ impl JadeApp {
         if let Ok(id) = self.vault.create_note("Untitled", parent) {
             self.search_stale = true;
             self.open_note(id, window, cx);
+            self.refresh_links(cx);
             self.sidebar_focus.focus(window, cx);
         }
     }
@@ -515,6 +562,7 @@ impl JadeApp {
         };
         self.search_stale = true;
         self.retarget_tabs(|old| (old == id).then(|| new_id.clone()), window, cx);
+        self.refresh_links(cx);
     }
 
     fn delete_note(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -523,6 +571,7 @@ impl JadeApp {
             if let Some(ix) = self.tab_of(id) {
                 self.remove_tab(ix);
             }
+            self.refresh_links(cx);
         }
         cx.notify();
     }
@@ -555,6 +604,7 @@ impl JadeApp {
             window,
             cx,
         );
+        self.refresh_links(cx);
     }
 
     fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
@@ -568,6 +618,7 @@ impl JadeApp {
                     self.remove_tab(ix);
                 }
             }
+            self.refresh_links(cx);
         }
         cx.notify();
     }
@@ -4872,6 +4923,44 @@ mod tests {
         assert_eq!(tabs_of(cx, &app), (vec!["B".into(), "A".into()], Some(1)));
         click_editor_line(cx, window, 3);
         assert_eq!(tabs_of(cx, &app), (vec!["B".into(), "C".into()], Some(1)));
+    }
+
+    #[gpui_kit::test]
+    fn links_to_missing_notes_are_marked_and_follow_the_vault(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        std::fs::write(
+            dir.path().join("A.md"),
+            "[[B]] [[Nowhere]] [x](C.md) [y](gone.md) https://x.y",
+        )
+        .unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "A", 1);
+        let broken = |cx: &mut TestAppContext, app: &Entity<JadeApp>| {
+            app.read_with(cx, |app, cx| {
+                app.tabs[0].editor.read(cx).broken_link_count()
+            })
+        };
+        assert_eq!(broken(cx, &app), 2, "Nowhere and gone.md");
+
+        // Typing a link marks it once typed, without re-checking the others.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.input("[[Missing]]", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        assert_eq!(broken(cx, &app), 3);
+
+        // Creating the note the link names fixes it.
+        cx.update_window(window, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                app.vault.create_note("Nowhere", None).unwrap();
+                app.refresh_links(cx);
+                let _ = window;
+            });
+        })
+        .unwrap();
+        assert_eq!(broken(cx, &app), 2, "Nowhere now exists");
     }
 
     #[gpui_kit::test]

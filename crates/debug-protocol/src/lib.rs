@@ -238,6 +238,8 @@ pub struct AppState {
     pub chars: usize,
     /// Links in the active note (0 with no note).
     pub links: usize,
+    /// Of those, how many point at nothing.
+    pub broken_links: usize,
     /// `"vault"` or `"search"`.
     pub sidebar_tab: String,
     pub search_query: String,
@@ -574,6 +576,7 @@ mod tests {
                 words: 4,
                 chars: 21,
                 links: 3,
+                broken_links: 1,
                 sidebar_tab: "search".into(),
                 search_query: "q".into(),
                 search_results: 2,
