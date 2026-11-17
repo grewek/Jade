@@ -7,9 +7,55 @@
 
 use std::path::PathBuf;
 
-use crate::link_scan::scheme;
+use crate::link_scan::{LinkKind, scheme};
 use crate::note_name::split_md;
 use crate::vault::Vault;
+
+/// What a written link points at.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Destination<'a> {
+    /// A note in the vault, by id.
+    Note(String),
+    /// Another file inside the vault (a PDF, an image), by absolute path.
+    File(PathBuf),
+    /// Has a URL scheme; opening it is the caller's decision.
+    External(&'a str),
+    /// Only a `#fragment` or `?query`: it points into the note it is written in.
+    SameNote,
+    /// Nothing the vault has, or outside it.
+    Missing,
+}
+
+impl Vault {
+    /// What the link written as `written` in note `from` points at. The one
+    /// place a link's meaning is decided: clicks, broken-link marking,
+    /// backlink context and rename rewriting all ask here, so they cannot
+    /// disagree. `kind` says how it is written: a wikilink names a note, the
+    /// rest are paths or URLs.
+    pub fn link_destination<'a>(
+        &self,
+        from: &str,
+        kind: LinkKind,
+        written: &'a str,
+    ) -> Destination<'a> {
+        if kind == LinkKind::Wiki {
+            return match self.resolve_wikilink(written) {
+                Some(id) => Destination::Note(id.to_string()),
+                None => Destination::Missing,
+            };
+        }
+        if let Some(scheme) = scheme(written) {
+            return Destination::External(scheme);
+        }
+        match self.resolve_path_link(from, written) {
+            Ok(LinkTarget::Note(id)) => Destination::Note(id),
+            Ok(LinkTarget::File(path)) => Destination::File(path),
+            Err(PathLinkError::SameNote) => Destination::SameNote,
+            Err(PathLinkError::External) => Destination::External(""),
+            Err(PathLinkError::OutsideVault | PathLinkError::NotFound) => Destination::Missing,
+        }
+    }
+}
 
 /// A destination longer than this is not a path anyone wrote by hand.
 const MAX_DEST_BYTES: usize = 4096;
@@ -88,7 +134,7 @@ impl Vault {
     /// `.md` path or an extension-less one that names a note gives
     /// [`LinkTarget::Note`]; any other existing file inside the vault gives
     /// [`LinkTarget::File`].
-    pub fn resolve_path_link(
+    pub(crate) fn resolve_path_link(
         &self,
         from_note_id: &str,
         dest: &str,

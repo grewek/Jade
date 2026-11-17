@@ -2,9 +2,9 @@
 //! Read from the source notes' files on demand with the shared scanner, so no
 //! context is kept in memory between calls.
 
-use crate::fence::{FenceRole, step};
-use crate::link_scan::{LinkKind, scan_line, scheme};
-use crate::resolve::LinkTarget;
+use crate::fence::plain_lines;
+use crate::link_scan::scan_line;
+use crate::resolve::Destination;
 use crate::vault::Vault;
 
 /// How far a snippet reaches on each side of its link, in bytes.
@@ -41,8 +41,6 @@ impl Vault {
         sources: &[String],
         limit: usize,
     ) -> Vec<SourceContexts> {
-        let index = self.title_index();
-        let want = LinkTarget::Note(target.to_string());
         let mut text = String::new();
         let mut found = Vec::new();
         for source in sources {
@@ -54,11 +52,8 @@ impl Vault {
             }
             let mut contexts = Vec::new();
             let mut total = 0;
-            let mut fence = None;
-            for (n, line) in text.split('\n').enumerate() {
-                let (role, next) = step(fence, line);
-                fence = next;
-                if role != FenceRole::Plain || !(line.contains("[[") || line.contains("](")) {
+            for (n, line) in plain_lines(&text) {
+                if !(line.contains("[[") || line.contains("](")) {
                     continue;
                 }
                 let mut first = None;
@@ -67,14 +62,10 @@ impl Vault {
                         return;
                     }
                     let written = &line[link.dest.clone()];
-                    let hit = match link.kind {
-                        LinkKind::Wiki => self.resolve(written, &index).as_deref() == Some(target),
-                        LinkKind::Inline => {
-                            scheme(written).is_none()
-                                && self.resolve_path_link(source, written).as_ref() == Ok(&want)
-                        }
-                        LinkKind::Autolink | LinkKind::BareUrl => false,
-                    };
+                    let hit = matches!(
+                        self.link_destination(source, link.kind, written),
+                        Destination::Note(id) if id == target
+                    );
                     if hit {
                         first = Some(link.span);
                     }

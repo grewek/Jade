@@ -36,6 +36,34 @@ pub fn step(state: FenceState, line: &str) -> (FenceRole, FenceState) {
     }
 }
 
+/// Walks a note's lines in order, saying for each whether it is code.
+#[derive(Default)]
+pub struct FenceWalk(FenceState);
+
+impl FenceWalk {
+    pub fn role(&mut self, line: &str) -> FenceRole {
+        let (role, next) = step(self.0, line);
+        self.0 = next;
+        role
+    }
+}
+
+/// The `\n`-separated lines of `text` with their zero-based numbers and
+/// roles.
+pub fn lines_with_roles(text: &str) -> impl Iterator<Item = (usize, &str, FenceRole)> {
+    let mut walk = FenceWalk::default();
+    text.split('\n')
+        .enumerate()
+        .map(move |(n, line)| (n, line, walk.role(line)))
+}
+
+/// The lines of `text` outside fenced code, with their zero-based numbers:
+/// what a pass that looks for Markdown, not code, should read.
+pub fn plain_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    lines_with_roles(text)
+        .filter_map(|(n, line, role)| (role == FenceRole::Plain).then_some((n, line)))
+}
+
 /// `line`'s fence character and run length, if it opens a fence: three or
 /// more `` ` `` or `~` at the very start of the line (CommonMark's allowance
 /// of up to three leading spaces is not handled), optionally followed by an

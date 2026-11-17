@@ -1,3 +1,4 @@
+use crate::fence::{FenceRole, FenceWalk, plain_lines};
 use crate::link_scan::{LinkKind, scan_line};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,23 +64,28 @@ pub fn link_targets_from_file(path: &std::path::Path) -> std::io::Result<Box<[Bo
     let mut reader = std::io::BufReader::new(std::fs::File::open(path)?);
     let mut line = String::new();
     let mut targets: std::collections::BTreeSet<Box<str>> = Default::default();
+    let mut fences = FenceWalk::default();
     loop {
         line.clear();
         if reader.read_line(&mut line)? == 0 {
             return Ok(targets.into_iter().collect());
         }
-        for_each_wikilink_in_line(&line, |target, _, _| {
-            if !targets.contains(target) {
-                targets.insert(target.into());
-            }
-        });
+        // The editor's lines exclude the newline, and fence rules see that.
+        let text = line.strip_suffix('\n').unwrap_or(&line);
+        if fences.role(text) == FenceRole::Plain {
+            for_each_wikilink_in_line(text, |target, _, _| {
+                if !targets.contains(target) {
+                    targets.insert(target.into());
+                }
+            });
+        }
     }
 }
 
 /// The distinct link targets in `text`, sorted (see [`link_targets_from_file`]).
 pub fn link_targets(text: &str) -> Box<[Box<str>]> {
     let mut targets: std::collections::BTreeSet<Box<str>> = Default::default();
-    for line in text.lines() {
+    for (_, line) in plain_lines(text) {
         for_each_wikilink_in_line(line, |target, _, _| {
             if !targets.contains(target) {
                 targets.insert(target.into());
@@ -92,6 +98,19 @@ pub fn link_targets(text: &str) -> Box<[Box<str>]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn links_in_fenced_code_are_not_targets_from_text_or_file() {
+        let text = "[[a]]\n```\n[[b]]\n```\n[[c]]\n~~~\n[[d]]";
+        let want: Vec<&str> = vec!["a", "c"];
+        let got = |t: &[Box<str>]| t.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(got(&link_targets(text)), want);
+        let dir = std::env::temp_dir().join(format!("jade-fence-{}", std::process::id()));
+        std::fs::write(&dir, text).unwrap();
+        let from_file = link_targets_from_file(&dir).unwrap();
+        std::fs::remove_file(&dir).unwrap();
+        assert_eq!(got(&from_file), want);
+    }
 
     #[test]
     fn plain_link() {

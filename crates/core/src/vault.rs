@@ -1,3 +1,4 @@
+use std::cell::OnceCell;
 use std::collections::hash_map::Entry;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -16,6 +17,13 @@ pub struct Vault {
     /// [`Note`]), so this is the only way `backlinks()` can know what a note
     /// links to. Targets only: headings and aliases are never read here.
     wikilinks: HashMap<String, Box<[Box<str>]>>,
+    /// Lowercased title and id of each note to the id a link by that name
+    /// means. Built on first use and dropped whenever the notes change, so
+    /// every lookup (a click, a rewrite, a backlink) shares one build.
+    title_index: OnceCell<HashMap<String, String>>,
+    /// [`Vault::backlinks`], built on first use and dropped when notes or
+    /// their links change, so asking per frame costs a read.
+    backlink_index: OnceCell<HashMap<String, Vec<String>>>,
 }
 
 impl Vault {
@@ -30,6 +38,8 @@ impl Vault {
             notes,
             folders,
             wikilinks,
+            title_index: OnceCell::new(),
+            backlink_index: OnceCell::new(),
         })
     }
 
@@ -40,6 +50,8 @@ impl Vault {
             notes: HashMap::new(),
             folders: HashSet::new(),
             wikilinks: HashMap::new(),
+            title_index: OnceCell::new(),
+            backlink_index: OnceCell::new(),
         }
     }
 
@@ -50,6 +62,7 @@ impl Vault {
     /// Creates a note titled `title` inside `parent` (vault root if `None`),
     /// dedupeing by appending " 1", " 2", ... if that title is already taken there.
     pub fn create_note(&mut self, title: &str, parent: Option<&str>) -> std::io::Result<String> {
+        self.notes_changed();
         let dir = match parent {
             Some(parent) => self.root.join(parent),
             None => self.root.clone(),
@@ -98,6 +111,7 @@ impl Vault {
     /// Writes `text` to the note's file and refreshes its cached wikilinks
     /// from it. Takes a borrow so the editor's text is never copied to save.
     pub fn save_note(&mut self, id: &str, text: &str) -> std::io::Result<()> {
+        self.backlink_index.take();
         let note = self.notes.get(id).ok_or_else(|| not_found(id))?;
         note.save(text)?;
         self.wikilinks.insert(id.to_string(), link_targets(text));
@@ -131,6 +145,7 @@ impl Vault {
     /// Renames the note's file to exactly `title` (which [`Self::free_title`]
     /// has checked) and returns its new id.
     pub(crate) fn rename_note_to(&mut self, id: &str, title: &str) -> std::io::Result<String> {
+        self.notes_changed();
         let old_path = self
             .notes
             .get(id)
@@ -155,6 +170,7 @@ impl Vault {
 
     /// Deletes a note's underlying file and removes it from the vault.
     pub fn delete_note(&mut self, id: &str) -> std::io::Result<()> {
+        self.notes_changed();
         let path = self
             .notes
             .get(id)
@@ -193,6 +209,7 @@ impl Vault {
     /// Renames folder `id` to exactly `name` (checked by
     /// [`Self::free_folder_name`]) and returns its new id.
     pub(crate) fn rename_folder_to(&mut self, id: &str, name: &str) -> std::io::Result<String> {
+        self.notes_changed();
         if !self.folders.contains(id) {
             return Err(folder_not_found(id));
         }
@@ -231,6 +248,7 @@ impl Vault {
     /// Deletes a folder's underlying directory, recursively, along with everything
     /// inside it, and removes it and its contents from the vault.
     pub fn delete_folder(&mut self, id: &str) -> std::io::Result<()> {
+        self.notes_changed();
         if !self.folders.contains(id) {
             return Err(folder_not_found(id));
         }
@@ -246,22 +264,30 @@ impl Vault {
         Ok(())
     }
 
-    pub fn backlinks(&self) -> HashMap<String, Vec<String>> {
-        // Built once per call rather than scanned per wikilink — `resolve`'s
-        // fallback used to walk every note for every unresolved link, making this
-        // effectively O(notes² × links) on vaults where most links don't match an
-        // id exactly (title lookups, case differences). See the benchmark in
-        // `benches/vault_operations.rs` for just how far that scaled.
-        let index = self.title_index();
+    /// Forgets what was derived from the set of notes; call before changing it.
+    fn notes_changed(&mut self) {
+        self.title_index.take();
+        self.backlink_index.take();
+    }
+
+    /// For each note, the notes that link to it by wikilink (sorted, each
+    /// once). Cached until a note is added, removed, renamed or saved.
+    pub fn backlinks(&self) -> &HashMap<String, Vec<String>> {
+        self.backlink_index.get_or_init(|| self.build_backlinks())
+    }
+
+    /// [`Self::backlinks`] without the cache, for benchmarks of the build.
+    #[doc(hidden)]
+    pub fn build_backlinks(&self) -> HashMap<String, Vec<String>> {
         let mut backlinks: HashMap<String, Vec<String>> = HashMap::new();
         // Reads the cached `wikilinks` map instead of re-running `extract_wikilinks`
-        // on every note's content here — that cache is what turns this from a full
-        // re-parse of the whole vault into a cheap read on every keystroke.
+        // on every note's content here: that cache is what turns this from a full
+        // re-parse of the whole vault into a cheap read.
         for (note_id, targets) in &self.wikilinks {
             for target in targets.iter() {
-                if let Some(target_id) = self.resolve(target, &index) {
+                if let Some(target_id) = self.resolve_wikilink(target) {
                     backlinks
-                        .entry(target_id)
+                        .entry(target_id.to_string())
                         .or_default()
                         .push(note_id.clone());
                 }
@@ -276,53 +302,43 @@ impl Vault {
         backlinks
     }
 
-    /// Maps each note's lowercased title and id to its id, for `resolve`'s
-    /// case-insensitive fallback. When several notes share a key, the
-    /// preferred one wins (see [`preferred`]), so the answer does not depend
-    /// on `HashMap` order.
-    pub(crate) fn title_index(&self) -> HashMap<String, String> {
-        let mut index: HashMap<String, String> = HashMap::with_capacity(self.notes.len() * 2);
-        for note in self.notes.values() {
-            for key in [note.title.to_lowercase(), note.id.to_lowercase()] {
-                match index.entry(key) {
-                    Entry::Occupied(mut slot) => {
-                        if preferred(&note.id, slot.get()) {
+    /// Maps each note's lowercased title and id to its id. When several notes
+    /// share a key, the preferred one wins (see [`preferred`]), so the answer
+    /// does not depend on `HashMap` order.
+    fn title_index(&self) -> &HashMap<String, String> {
+        self.title_index.get_or_init(|| {
+            let mut index: HashMap<String, String> = HashMap::with_capacity(self.notes.len() * 2);
+            for note in self.notes.values() {
+                for key in [note.title.to_lowercase(), note.id.to_lowercase()] {
+                    match index.entry(key) {
+                        Entry::Occupied(mut slot) => {
+                            if preferred(&note.id, slot.get()) {
+                                slot.insert(note.id.clone());
+                            }
+                        }
+                        Entry::Vacant(slot) => {
                             slot.insert(note.id.clone());
                         }
                     }
-                    Entry::Vacant(slot) => {
-                        slot.insert(note.id.clone());
-                    }
                 }
             }
-        }
-        index
-    }
-
-    pub(crate) fn resolve(&self, target: &str, index: &HashMap<String, String>) -> Option<String> {
-        let target = split_md(target).0;
-        if self.notes.contains_key(target) {
-            return Some(target.to_string());
-        }
-        index.get(&target.to_lowercase()).cloned()
+            index
+        })
     }
 
     /// The id of the note a wikilink `target` names: an exact id, else a
     /// case-insensitive match on id or title (`[[note]]` finds `Note`,
     /// `[[Note.md]]` finds `Note`). Among several matches the shortest id
-    /// wins, then the alphabetically first. Scans the notes, so call it on a
-    /// click, not per frame; `backlinks` uses the same rule.
+    /// wins, then the alphabetically first. The one rule behind clicks,
+    /// backlinks and link rewriting.
     pub fn resolve_wikilink(&self, target: &str) -> Option<&str> {
         let target = split_md(target).0;
         if let Some(note) = self.notes.get(target) {
             return Some(&note.id);
         }
-        let want = target.to_lowercase();
-        self.notes
-            .values()
-            .filter(|n| n.title.to_lowercase() == want || n.id.to_lowercase() == want)
-            .map(|n| n.id.as_str())
-            .reduce(|best, id| if preferred(id, best) { id } else { best })
+        self.title_index()
+            .get(&target.to_lowercase())
+            .map(String::as_str)
     }
 
     /// Notes whose title or on-disk text contains `query` (case-insensitive).

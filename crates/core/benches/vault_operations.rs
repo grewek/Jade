@@ -77,7 +77,7 @@ fn bench_backlinks(c: &mut Criterion) {
     let mut group = c.benchmark_group("Vault::backlinks");
     for &(label, words) in SIZES {
         let (_dir, vault) = vault_with_notes(200, words);
-        group.bench_function(label, |b| b.iter(|| vault.backlinks()));
+        group.bench_function(label, |b| b.iter(|| vault.build_backlinks()));
     }
     group.finish();
 }

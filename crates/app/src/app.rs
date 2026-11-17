@@ -14,7 +14,7 @@ use gpui_kit::component::{IconName, IndexPath, Sizable as _, Theme, WindowExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use jade_core::link_scan::LinkKind;
-use jade_core::{LinkTarget, PathLinkError, Vault, search_targets};
+use jade_core::{Destination, Vault, search_targets};
 
 /// One entry of the Settings theme dropdown; the value is the theme id.
 #[derive(Clone)]
@@ -214,16 +214,10 @@ const BACKLINK_CONTEXT_LINES: usize = 3;
 /// Whether a link written in note `from` points at something that exists.
 /// Web links are not checked, and neither is a link within the same note.
 fn link_is_live(vault: &Vault, from: &str, kind: LinkKind, dest: &str) -> bool {
-    if kind == LinkKind::Wiki {
-        return vault.resolve_wikilink(dest).is_some();
-    }
-    if jade_core::link_scan::scheme(dest).is_some() {
-        return true;
-    }
-    match vault.resolve_path_link(from, dest) {
-        Ok(_) | Err(PathLinkError::SameNote | PathLinkError::External) => true,
-        Err(PathLinkError::OutsideVault | PathLinkError::NotFound) => false,
-    }
+    !matches!(
+        vault.link_destination(from, kind, dest),
+        Destination::Missing
+    )
 }
 
 impl JadeApp {
@@ -338,43 +332,41 @@ impl JadeApp {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if kind == LinkKind::Wiki {
-            if let Some(id) = self.vault.resolve_wikilink(dest).map(str::to_owned) {
-                self.open_note(id, window, cx);
-                if let Some(heading) = heading {
-                    self.jump_to_heading(heading, cx);
-                }
-            }
+        let Some(from) = self.active().map(|tab| tab.note_id.clone()) else {
             return;
-        }
-        match jade_core::link_scan::scheme(dest) {
-            Some("http" | "https" | "mailto") => cx.open_url(dest),
-            Some(_) => {}
-            None => {
-                let Some(from) = self.active().map(|tab| tab.note_id.clone()) else {
-                    return;
-                };
-                // `#heading` (not `?query`) after the path.
-                let heading = dest
-                    .split_once('#')
-                    .and_then(|(_, h)| jade_core::percent_decode(h));
-                match self.vault.resolve_path_link(&from, dest) {
-                    Ok(LinkTarget::Note(id)) => {
-                        self.open_note(id, window, cx);
-                        if let Some(heading) = heading {
-                            self.jump_to_heading(&heading, cx);
-                        }
-                    }
-                    Ok(LinkTarget::File(path)) => cx.open_with_system(&path),
-                    // `[x](#heading)` points into the note it is written in.
-                    Err(PathLinkError::SameNote) => {
-                        if let Some(heading) = heading {
-                            self.jump_to_heading(&heading, cx);
-                        }
-                    }
-                    Err(_) => {}
+        };
+        // A wikilink carries its `#heading` apart from its target; the rest
+        // write it after the path (percent-escaped; `?query` is not one).
+        let heading = heading.map(str::to_owned).or_else(|| {
+            let (_, fragment) = dest.split_once('#')?;
+            jade_core::percent_decode(fragment)
+        });
+        match self.vault.link_destination(&from, kind, dest) {
+            Destination::Note(id) => self.open_note_at(id, heading.as_deref(), window, cx),
+            // `[x](#heading)` points into the note it is written in.
+            Destination::SameNote => {
+                if let Some(heading) = heading {
+                    self.jump_to_heading(&heading, cx);
                 }
             }
+            Destination::File(path) => cx.open_with_system(&path),
+            Destination::External("http" | "https" | "mailto") => cx.open_url(dest),
+            // Another scheme, a missing target or one outside the vault.
+            Destination::External(_) | Destination::Missing => {}
+        }
+    }
+
+    /// Opens note `id` and, if given, moves to its heading.
+    fn open_note_at(
+        &mut self,
+        id: String,
+        heading: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_note(id, window, cx);
+        if let Some(heading) = heading {
+            self.jump_to_heading(heading, cx);
         }
     }
 
@@ -4804,7 +4796,7 @@ mod tests {
         std::fs::write(dir.path().join("Note A.md"), "content").unwrap();
         let (window, _app) = open_app(cx, dir.path().to_path_buf());
 
-        let mut sidebar_shown = |cx: &mut TestAppContext, click: bool| {
+        let sidebar_shown = |cx: &mut TestAppContext, click: bool| {
             cx.update_window(window, |_, window, cx| {
                 if click {
                     window.click("toggle-sidebar", cx);
@@ -5329,7 +5321,7 @@ mod tests {
         for name in &names {
             std::fs::write(dir.path().join(format!("{name}.md")), "x").unwrap();
         }
-        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        let (window, _app) = open_app(cx, dir.path().to_path_buf());
         for name in &names {
             open_via_menu(cx, window, name, 1);
         }

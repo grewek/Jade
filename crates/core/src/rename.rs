@@ -2,20 +2,19 @@
 //!
 //! Links are rewritten with the same scanner that finds them for rendering
 //! and clicking ([`crate::link_scan`]), and with the same rules for what a
-//! link points at ([`Vault::resolve_wikilink`], [`Vault::resolve_path_link`]),
+//! link points at ([`Vault::link_destination`]),
 //! so exactly the links that opened the note before now open it under its new
 //! name. Fenced code is left alone. Only the part of a link that names the
 //! note changes: a wikilink keeps its `#heading` and `|alias`, a path link its
 //! folders, extension and `#fragment`.
 
-use std::collections::HashMap;
 use std::ops::Range;
 use std::path::Path;
 
-use crate::fence::{FenceRole, step};
-use crate::link_scan::{LinkKind, scan_line, scheme};
+use crate::fence::{FenceRole, lines_with_roles};
+use crate::link_scan::{LinkKind, scan_line};
 use crate::note_name::split_md;
-use crate::resolve::{LinkTarget, percent_decode, split_fragment};
+use crate::resolve::{Destination, percent_decode, split_fragment};
 use crate::vault::Vault;
 
 /// What a rename did.
@@ -44,9 +43,8 @@ impl Vault {
         let title = self.free_title(id, new_title)?;
         // Decided against the vault as it is now, before the file moves.
         let dir = id.rsplit_once('/').map_or("", |(dir, _)| dir);
-        let plan = self.plan_rewrites(|index, from, line| {
-            note_line_edits(self, index, from, line, id, dir, &title)
-        });
+        let plan =
+            self.plan_rewrites(|from, line| note_line_edits(self, from, line, id, dir, &title));
         let new_id = self.rename_note_to(id, &title)?;
 
         let mut rewritten = Vec::new();
@@ -89,8 +87,8 @@ impl Vault {
             .root
             .canonicalize()
             .unwrap_or_else(|_| self.root.clone());
-        let plan = self.plan_rewrites(|index, from, line| {
-            folder_line_edits(self, index, &root, from, line, id, &old_name, &name)
+        let plan = self.plan_rewrites(|from, line| {
+            folder_line_edits(self, &root, from, line, id, &old_name, &name)
         });
         let new_id = self.rename_folder_to(id, &name)?;
 
@@ -116,17 +114,14 @@ impl Vault {
         })
     }
 
-    /// Each note with at least one link `edits_for(index, note_id, line)`
-    /// wants changed, with its rewritten text. `index` is the vault's title
-    /// index, built once: resolving each wikilink by scanning the notes would
-    /// be quadratic in the vault.
+    /// Each note with at least one link `edits_for(note_id, line)` wants
+    /// changed, with its rewritten text.
     fn plan_rewrites(
         &self,
-        mut edits_for: impl FnMut(&HashMap<String, String>, &str, &str) -> Vec<(Range<usize>, String)>,
+        mut edits_for: impl FnMut(&str, &str) -> Vec<(Range<usize>, String)>,
     ) -> Vec<(String, String)> {
         let mut plan = Vec::new();
         let mut text = String::new();
-        let index = self.title_index();
         for note in self.notes.values() {
             if note.read_content_into(&mut text).is_err() {
                 continue;
@@ -134,7 +129,7 @@ impl Vault {
             if !text.contains("[[") && !text.contains("](") {
                 continue;
             }
-            if let Some(new_text) = rewrite_text(&text, |line| edits_for(&index, &note.id, line)) {
+            if let Some(new_text) = rewrite_text(&text, |line| edits_for(&note.id, line)) {
                 plan.push((note.id.clone(), new_text));
             }
         }
@@ -150,13 +145,10 @@ fn rewrite_text(
 ) -> Option<String> {
     let mut out = String::new();
     let mut changed = false;
-    let mut fence = None;
-    for (n, line) in text.split('\n').enumerate() {
+    for (n, line, role) in lines_with_roles(text) {
         if n > 0 {
             out.push('\n');
         }
-        let (role, next) = step(fence, line);
-        fence = next;
         let edits = if role == FenceRole::Plain {
             edits_for(line)
         } else {
@@ -178,60 +170,64 @@ fn rewrite_text(
     changed.then_some(out)
 }
 
-/// The replacements, in order of position, that retarget `line`'s links
-/// (written in note `from`) at note `target` renamed to `title` (`dir` is its
+/// The replacements, in order of position, that `change` asks for among the
+/// links of `line` (written in note `from`). `change` sees how a link is
+/// written, its text and where it points, and answers with a range within
+/// that text and what to put there.
+fn link_edits(
+    vault: &Vault,
+    from: &str,
+    line: &str,
+    mut change: impl FnMut(LinkKind, &str, &Destination) -> Option<(Range<usize>, String)>,
+) -> Vec<(Range<usize>, String)> {
+    let mut edits = Vec::new();
+    scan_line(line, |link| {
+        let written = &line[link.dest.clone()];
+        let destination = vault.link_destination(from, link.kind, written);
+        if let Some((range, new)) = change(link.kind, written, &destination)
+            && new != written[range.clone()]
+        {
+            let at = link.dest.start;
+            edits.push((at + range.start..at + range.end, new));
+        }
+    });
+    edits
+}
+
+/// Retargets `line`'s links at note `target`, renamed to `title` (`dir` is its
 /// folder, unchanged by a rename).
 fn note_line_edits(
     vault: &Vault,
-    index: &HashMap<String, String>,
     from: &str,
     line: &str,
     target: &str,
     dir: &str,
     title: &str,
 ) -> Vec<(Range<usize>, String)> {
-    let mut edits = Vec::new();
-    scan_line(line, |link| match link.kind {
-        LinkKind::Wiki => {
-            let written = &line[link.dest.clone()];
-            if vault.resolve(written, index).as_deref() == Some(target) {
-                let new = wikilink_target(written, dir, title);
-                if new != written {
-                    edits.push((link.dest, new));
-                }
-            }
+    link_edits(vault, from, line, |kind, written, destination| {
+        if !matches!(destination, Destination::Note(id) if id == target) {
+            return None;
         }
-        LinkKind::Inline => {
-            let written = &line[link.dest.clone()];
-            if scheme(written).is_some() {
-                return;
-            }
-            if vault.resolve_path_link(from, written) == Ok(LinkTarget::Note(target.to_string())) {
+        match kind {
+            LinkKind::Wiki => Some((0..written.len(), wikilink_target(written, dir, title))),
+            _ => {
                 let (path, _) = split_fragment(written);
                 let name_at = path.rfind('/').map_or(0, |i| i + 1);
                 let (name, ext) = split_md(&path[name_at..]);
-                let start = link.dest.start + name_at;
-                let end = start + name.len() + ext.len();
-                let new = format!("{}{ext}", encode_segment(title));
-                if new != line[start..end] {
-                    edits.push((start..end, new));
-                }
+                let end = name_at + name.len() + ext.len();
+                Some((name_at..end, format!("{}{ext}", encode_segment(title))))
             }
         }
-        LinkKind::Autolink | LinkKind::BareUrl => {}
-    });
-    edits
+    })
 }
 
-/// The replacements that retarget `line`'s links (written in note `from`)
-/// that point into folder `folder` (whose last component is `old_name`),
-/// renamed to `new_name`. The folder's component is found by counting back
-/// from the end of the written path: the rest of the target's path inside the
-/// folder has a known number of components.
-#[allow(clippy::too_many_arguments)]
+/// Retargets `line`'s links that point into folder `folder` (whose last
+/// component is `old_name`) at it renamed to `new_name`. The folder's
+/// component is found by counting back from the end of the written path: the
+/// rest of the target's path inside the folder has a known number of
+/// components.
 fn folder_line_edits(
     vault: &Vault,
-    index: &HashMap<String, String>,
     root: &Path,
     from: &str,
     line: &str,
@@ -240,59 +236,33 @@ fn folder_line_edits(
     new_name: &str,
 ) -> Vec<(Range<usize>, String)> {
     let prefix = format!("{folder}/");
-    let mut edits = Vec::new();
-    scan_line(line, |link| match link.kind {
-        LinkKind::Wiki => {
-            let written = &line[link.dest.clone()];
+    link_edits(vault, from, line, |kind, written, destination| {
+        let inside = match destination {
+            Destination::Note(id) => id.strip_prefix(&prefix),
+            Destination::File(path) => path
+                .strip_prefix(root)
+                .ok()
+                .and_then(Path::to_str)
+                .and_then(|p| p.strip_prefix(&prefix)),
+            _ => None,
+        }?;
+        let after = inside.split('/').count();
+        if kind == LinkKind::Wiki {
             // A bare title does not mention the folder.
             if !written.contains('/') {
-                return;
+                return None;
             }
-            let Some(target) = vault.resolve(written, index) else {
-                return;
-            };
-            let Some(rest) = target.strip_prefix(&prefix) else {
-                return;
-            };
             let (stem, _) = split_md(written);
-            let found = folder_segment(stem, rest.split('/').count(), |seg| {
-                seg.eq_ignore_ascii_case(old_name)
-            });
-            if let Some(seg) = found {
-                let at = link.dest.start;
-                edits.push((at + seg.start..at + seg.end, new_name.to_string()));
-            }
-        }
-        LinkKind::Inline => {
-            let written = &line[link.dest.clone()];
-            if scheme(written).is_some() {
-                return;
-            }
-            let rest = match vault.resolve_path_link(from, written) {
-                Ok(LinkTarget::Note(id)) => id.strip_prefix(&prefix).map(str::to_owned),
-                Ok(LinkTarget::File(path)) => path
-                    .strip_prefix(root)
-                    .ok()
-                    .and_then(Path::to_str)
-                    .map(|p| p.replace('\\', "/"))
-                    .and_then(|p| p.strip_prefix(&prefix).map(str::to_owned)),
-                Err(_) => None,
-            };
-            let Some(rest) = rest else {
-                return;
-            };
+            let seg = folder_segment(stem, after, |s| s.eq_ignore_ascii_case(old_name))?;
+            Some((seg, new_name.to_string()))
+        } else {
             let (path, _) = split_fragment(written);
-            let found = folder_segment(path, rest.split('/').count(), |seg| {
-                percent_decode(seg).is_some_and(|decoded| decoded == old_name)
-            });
-            if let Some(seg) = found {
-                let at = link.dest.start;
-                edits.push((at + seg.start..at + seg.end, encode_segment(new_name)));
-            }
+            let seg = folder_segment(path, after, |s| {
+                percent_decode(s).is_some_and(|decoded| decoded == old_name)
+            })?;
+            Some((seg, encode_segment(new_name)))
         }
-        LinkKind::Autolink | LinkKind::BareUrl => {}
-    });
-    edits
+    })
 }
 
 /// The byte range of the `/`-separated component of `path` that sits `after`
@@ -422,8 +392,8 @@ mod tests {
         );
         // Every rewritten link opens the renamed note.
         assert_eq!(
-            v.resolve_path_link("f/X", "A%20%28b%29%20c.md#h"),
-            Ok(LinkTarget::Note("f/A (b) c".into()))
+            v.link_destination("f/X", LinkKind::Inline, "A%20%28b%29%20c.md#h"),
+            Destination::Note("f/A (b) c".into())
         );
     }
 
@@ -526,8 +496,8 @@ mod tests {
         );
         // Everything rewritten still opens what it did.
         assert_eq!(
-            v.resolve_path_link("Top", "My%20Docs/Note.md#h"),
-            Ok(LinkTarget::Note("My Docs/Note".into()))
+            v.link_destination("Top", LinkKind::Inline, "My%20Docs/Note.md#h"),
+            Destination::Note("My Docs/Note".into())
         );
         assert_eq!(v.resolve_wikilink("My Docs/Other"), Some("My Docs/Other"));
     }
