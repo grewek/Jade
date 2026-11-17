@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use crate::debug_server::{self, targets::DebugName};
 use crate::text_editor::{Editor, EditorEvent, InsertTab};
+use crate::theme::{ConfigDirs, ThemeEngine};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
 use gpui_kit::component::dialog::DialogFooter;
@@ -1635,6 +1636,9 @@ pub fn run() {
         .run(move |cx| {
             gpui_kit::init(cx);
             install_fonts(cx);
+            for notice in ThemeEngine::install(ConfigDirs::from_environment(), cx) {
+                eprintln!("jade: {notice}");
+            }
             cx.bind_keys([
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),

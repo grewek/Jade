@@ -76,10 +76,11 @@ pub enum ThemeError {
         name: String,
         value: f32,
     },
-    /// A role resolves to a name the theme's palette does not define.
+    /// Roles resolve to a name the palette does not define; one error per
+    /// name, so a missing color is not reported once per role using it.
     UnknownPaletteName {
-        role: Role,
         name: String,
+        roles: Vec<Role>,
     },
     /// `roles.toml` itself lacks a role or alpha.
     MissingDefault {
@@ -118,11 +119,12 @@ impl fmt::Display for ThemeError {
             Self::BadAlpha { name, value } => {
                 write!(f, "alpha {name} = {value} is outside 0.0..=1.0")
             }
-            Self::UnknownPaletteName { role, name } => {
+            Self::UnknownPaletteName { name, roles } => {
+                let used_by: Vec<&str> = roles.iter().map(|r| r.name()).collect();
                 write!(
                     f,
-                    "role {} uses {name:?}, which the palette does not define",
-                    role.name()
+                    "palette does not define {name:?} (used by {}); define it or override those roles",
+                    used_by.join(", ")
                 )
             }
             Self::MissingDefault { name } => write!(f, "roles.toml does not define {name:?}"),
@@ -343,26 +345,28 @@ fn resolve_roles(
         }
     }
     let mut colors = [Rgb { r: 0, g: 0, b: 0 }; Role::COUNT];
+    let mut missing: BTreeMap<&str, Vec<Role>> = BTreeMap::new();
     for &role in Role::ALL {
         let value = chosen[role.index()];
-        let resolved = if value.starts_with('#') {
-            Rgb::parse_hex(value).ok_or_else(|| ThemeError::BadHex {
-                place: role.name().to_owned(),
-                value: value.to_owned(),
-            })
+        if value.starts_with('#') {
+            match Rgb::parse_hex(value) {
+                Some(rgb) => colors[role.index()] = rgb,
+                None => errors.push(ThemeError::BadHex {
+                    place: role.name().to_owned(),
+                    value: value.to_owned(),
+                }),
+            }
+        } else if let Some(&rgb) = palette.get(value) {
+            colors[role.index()] = rgb;
         } else {
-            palette
-                .get(value)
-                .copied()
-                .ok_or_else(|| ThemeError::UnknownPaletteName {
-                    role,
-                    name: value.to_owned(),
-                })
-        };
-        match resolved {
-            Ok(rgb) => colors[role.index()] = rgb,
-            Err(e) => errors.push(e),
+            missing.entry(value).or_default().push(role);
         }
+    }
+    for (name, roles) in missing {
+        errors.push(ThemeError::UnknownPaletteName {
+            name: name.to_owned(),
+            roles,
+        });
     }
     colors
 }

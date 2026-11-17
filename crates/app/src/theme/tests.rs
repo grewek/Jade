@@ -201,8 +201,8 @@ fn missing_palette_name_is_reported_per_role() {
     assert_eq!(
         errors_of(&src),
         vec![ThemeError::UnknownPaletteName {
-            role: Role::Accent,
-            name: "lavender".into()
+            roles: vec![Role::Accent],
+            name: "lavender".into(),
         }]
     );
     // An override makes the default's palette name unnecessary.
@@ -291,4 +291,199 @@ fn load_time_is_small() {
         "THEME parse: {:?} per theme (debug build)",
         start.elapsed() / 500
     );
+}
+
+mod engine_setup {
+    use std::ffi::OsString;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+
+    use gpui_kit::{AppContext as _, TestAppContext};
+    use tempfile::{TempDir, tempdir};
+
+    use crate::theme::builtin::{self, DEFAULT_ID};
+    use crate::theme::loader::{load_startup, resolve};
+    use crate::theme::{ConfigDirs, Role, ThemeEngine};
+
+    fn dirs_in(tmp: &TempDir) -> ConfigDirs {
+        let dirs = ConfigDirs::new(tmp.path().to_path_buf());
+        fs::create_dir_all(dirs.theme_dir()).expect("theme dir");
+        dirs
+    }
+
+    fn write(path: &Path, content: impl AsRef<[u8]>) {
+        fs::write(path, content).expect("write");
+    }
+
+    fn user_theme(dirs: &ConfigDirs, id: &str, content: impl AsRef<[u8]>) {
+        write(&dirs.theme_dir().join(format!("{id}.toml")), content);
+    }
+
+    #[test]
+    fn config_dir_resolution() {
+        let os = Some(PathBuf::from("/home/u/.config"));
+        let over = Some(OsString::from("/tmp/x"));
+        let resolve = ConfigDirs::resolve;
+        assert_eq!(
+            resolve(over.clone(), os.clone(), false),
+            Some(ConfigDirs::new("/tmp/x".into()))
+        );
+        assert_eq!(
+            resolve(over, os.clone(), true),
+            Some(ConfigDirs::new("/tmp/x".into()))
+        );
+        assert_eq!(
+            resolve(None, os.clone(), false),
+            Some(ConfigDirs::new("/home/u/.config/jade".into()))
+        );
+        assert_eq!(
+            resolve(Some(OsString::new()), os.clone(), false),
+            Some(ConfigDirs::new("/home/u/.config/jade".into())),
+            "an empty override is ignored"
+        );
+        assert_eq!(resolve(None, None, false), None);
+        // A debug build never reaches the OS directory.
+        let dev = resolve(None, os, true).expect("dev dir");
+        assert!(
+            dev.theme_dir().ends_with("target/jade-dev/theme"),
+            "{:?}",
+            dev.theme_dir()
+        );
+        assert!(!dev.theme_dir().starts_with("/home/u"));
+    }
+
+    #[test]
+    fn dirs_layout() {
+        let dirs = ConfigDirs::new("/c".into());
+        assert_eq!(dirs.theme_dir(), PathBuf::from("/c/theme"));
+        assert_eq!(dirs.config_file(), PathBuf::from("/c/config.toml"));
+    }
+
+    #[test]
+    fn startup_defaults_without_any_config() {
+        let defaults = builtin::defaults();
+        let none = load_startup(&defaults, None);
+        assert_eq!(none.id, DEFAULT_ID);
+        assert!(
+            none.notices.iter().all(|n| n.contains("warning")),
+            "{:?}",
+            none.notices
+        );
+        let tmp = tempdir().expect("tmp");
+        let empty = load_startup(
+            &defaults,
+            Some(&ConfigDirs::new(tmp.path().join("missing"))),
+        );
+        assert_eq!(empty.id, DEFAULT_ID);
+    }
+
+    #[test]
+    fn config_toml_picks_a_builtin_theme() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        write(
+            &dirs.config_file(),
+            "theme = \"catppuccin-mocha\"\nfuture_option = 3\n",
+        );
+        let loaded = load_startup(&builtin::defaults(), Some(&dirs));
+        assert_eq!(loaded.id, "catppuccin-mocha");
+        assert_eq!(loaded.theme.name, "Catppuccin Mocha");
+    }
+
+    #[test]
+    fn user_file_shadows_a_builtin_and_adds_new_themes() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        let custom = super::SHIPPED[4].1.replace("Catppuccin Mocha", "My Mocha");
+        user_theme(&dirs, "catppuccin-mocha", &custom);
+        user_theme(&dirs, "mine", super::SHIPPED[1].1);
+        let defaults = builtin::defaults();
+        let theme_dir = dirs.theme_dir();
+        let shadowed = resolve(&defaults, Some(&theme_dir), "catppuccin-mocha").expect("loads");
+        assert_eq!(shadowed.name, "My Mocha");
+        assert!(resolve(&defaults, Some(&theme_dir), "mine").is_ok());
+        assert_eq!(
+            resolve(&defaults, Some(&theme_dir), "jade-light")
+                .expect("builtin")
+                .name,
+            "Jade Light"
+        );
+    }
+
+    #[test]
+    fn broken_theme_falls_back_with_messages() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        write(&dirs.config_file(), "theme = \"broken\"");
+        user_theme(
+            &dirs,
+            "broken",
+            super::mini("\n[overrides]\nwikilnk = \"blue\"\n"),
+        );
+        let loaded = load_startup(&builtin::defaults(), Some(&dirs));
+        assert_eq!(loaded.id, DEFAULT_ID);
+        assert!(
+            loaded.notices.iter().any(|n| n.contains("wikilnk")),
+            "{:?}",
+            loaded.notices
+        );
+        assert!(loaded.notices.iter().any(|n| n.contains("built-in")));
+    }
+
+    #[test]
+    fn bad_inputs_fall_back_without_panicking() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        let defaults = builtin::defaults();
+        user_theme(&dirs, "binary", [0xff, 0xfe, 0x00, 0x80]);
+        user_theme(&dirs, "huge", vec![b'#'; 200_000]);
+        fs::create_dir(dirs.theme_dir().join("isdir.toml")).expect("dir");
+        for (config, why) in [
+            ("theme = \"binary\"", "UTF-8"),
+            ("theme = \"huge\"", "limit"),
+            ("theme = \"isdir\"", "not found"),
+            ("theme = \"nope\"", "not found"),
+            ("theme = \"../escape\"", "not allowed"),
+            ("theme = \"\"", "not allowed"),
+            ("theme = \"roles\"", "not allowed"),
+            ("theme = 5", "config.toml"),
+            ("not = [toml", "config.toml"),
+        ] {
+            write(&dirs.config_file(), config);
+            let loaded = load_startup(&defaults, Some(&dirs));
+            assert_eq!(loaded.id, DEFAULT_ID, "{config}");
+            assert!(
+                loaded.notices.iter().any(|n| n.contains(why)),
+                "{config}: {:?}",
+                loaded.notices
+            );
+        }
+        write(&dirs.config_file(), [0xff, 0xff]);
+        assert_eq!(load_startup(&defaults, Some(&dirs)).id, DEFAULT_ID);
+    }
+
+    #[test]
+    fn user_roles_toml_is_never_a_theme() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        user_theme(&dirs, "roles", "garbage");
+        assert!(resolve(&builtin::defaults(), Some(&dirs.theme_dir()), "roles").is_err());
+    }
+
+    #[gpui_kit::test]
+    fn engine_installs_the_configured_theme(cx: &mut TestAppContext) {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        write(&dirs.config_file(), "theme = \"catppuccin-mocha\"");
+        cx.update(|cx| {
+            let notices = ThemeEngine::install(Some(dirs), cx);
+            assert!(notices.iter().all(|n| n.contains("warning")), "{notices:?}");
+            let engine = ThemeEngine::global(cx);
+            assert_eq!(engine.active_id(), "catppuccin-mocha");
+            let bg = engine.palette().color(Role::Background);
+            let expected: gpui_kit::Hsla = gpui_kit::rgb(0x1e1e2e).into();
+            assert_eq!(bg, expected);
+            let _ = cx.new(|_| ());
+        });
+    }
 }
