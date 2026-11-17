@@ -936,6 +936,7 @@ impl JadeApp {
             SidebarSide::Left => ("sidebar-resize", self.sidebar_width),
             SidebarSide::Right => ("backlinks-resize", self.backlinks_width),
         };
+        let accent = Theme::global(cx).primary;
         let handle = div()
             .id(id)
             .test_support()
@@ -943,7 +944,9 @@ impl JadeApp {
             .top_0()
             .bottom_0()
             .w(RESIZE_HANDLE_WIDTH)
-            .cursor_col_resize();
+            .cursor_col_resize()
+            .hover(move |style| style.bg(accent.opacity(0.4)))
+            .active(move |style| style.bg(accent.opacity(0.7)));
         let handle = match side {
             SidebarSide::Left => handle.right_0(),
             SidebarSide::Right => handle.left_0(),
