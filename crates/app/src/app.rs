@@ -56,6 +56,47 @@ const AUTOSAVE_DEBOUNCE: std::time::Duration = std::time::Duration::from_millis(
 
 actions!(jade, [RenameNote, DeleteNote, OpenCommandPalette]);
 
+const SIDEBAR_WIDTH_DEFAULT: Pixels = px(220.);
+const SIDEBAR_WIDTH_MIN: Pixels = px(140.);
+const SIDEBAR_WIDTH_MAX: Pixels = px(480.);
+/// Grab area on the sidebar's inner edge; wider than the 1px border so it is easy to hit.
+const RESIZE_HANDLE_WIDTH: Pixels = px(6.);
+
+/// Which sidebar a resize drag moves; also the drag payload.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum SidebarSide {
+    Left,
+    Right,
+}
+
+/// Pointer x and sidebar width at mouse-down; the drag is measured from here, so
+/// no layout positions (rails, window padding) need to be known.
+#[derive(Clone, Copy)]
+struct ResizeStart {
+    side: SidebarSide,
+    pointer_x: Pixels,
+    width: Pixels,
+}
+
+/// The (invisible) view GPUI shows under the cursor while dragging.
+struct ResizeGhost;
+
+impl Render for ResizeGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        Empty
+    }
+}
+
+/// The left sidebar grows as the pointer moves right, the right one as it moves left.
+fn resized_width(start: ResizeStart, pointer_x: Pixels) -> Pixels {
+    let delta = pointer_x - start.pointer_x;
+    let width = match start.side {
+        SidebarSide::Left => start.width + delta,
+        SidebarSide::Right => start.width - delta,
+    };
+    width.clamp(SIDEBAR_WIDTH_MIN, SIDEBAR_WIDTH_MAX)
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum SidebarTab {
     #[default]
@@ -84,6 +125,9 @@ pub(crate) struct JadeApp {
     pub(crate) sidebar_collapsed: bool,
     /// Hides the right sidebar (backlinks); its toggle rail stays.
     pub(crate) backlinks_collapsed: bool,
+    pub(crate) sidebar_width: Pixels,
+    pub(crate) backlinks_width: Pixels,
+    resize_start: Option<ResizeStart>,
     search_input: Entity<InputState>,
     pub(crate) search_query: String,
     /// Search reads note files, so results are computed once per change
@@ -139,6 +183,9 @@ impl JadeApp {
             sidebar_tab: SidebarTab::default(),
             sidebar_collapsed: false,
             backlinks_collapsed: false,
+            sidebar_width: SIDEBAR_WIDTH_DEFAULT,
+            backlinks_width: SIDEBAR_WIDTH_DEFAULT,
+            resize_start: None,
             search_input,
             search_query: String::new(),
             search_results: Vec::new(),
@@ -883,6 +930,56 @@ impl JadeApp {
         backlinks_panel
     }
 
+    /// The draggable strip on a sidebar's inner edge.
+    fn render_resize_handle(&self, side: SidebarSide, cx: &mut Context<Self>) -> AnyElement {
+        let (id, width) = match side {
+            SidebarSide::Left => ("sidebar-resize", self.sidebar_width),
+            SidebarSide::Right => ("backlinks-resize", self.backlinks_width),
+        };
+        let handle = div()
+            .id(id)
+            .test_support()
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .w(RESIZE_HANDLE_WIDTH)
+            .cursor_col_resize();
+        let handle = match side {
+            SidebarSide::Left => handle.right_0(),
+            SidebarSide::Right => handle.left_0(),
+        };
+        handle
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |this, event: &MouseDownEvent, _window, _cx| {
+                    this.resize_start = Some(ResizeStart {
+                        side,
+                        pointer_x: event.position.x,
+                        width,
+                    });
+                }),
+            )
+            .on_drag(side, |_, _, _, cx| cx.new(|_| ResizeGhost))
+            .debug_name(id)
+            .into_any_element()
+    }
+
+    fn resize_sidebar(&mut self, pointer_x: Pixels, side: SidebarSide, cx: &mut Context<Self>) {
+        let Some(start) = self.resize_start.filter(|start| start.side == side) else {
+            return;
+        };
+        let width = resized_width(start, pointer_x);
+        assert!((SIDEBAR_WIDTH_MIN..=SIDEBAR_WIDTH_MAX).contains(&width));
+        let target = match side {
+            SidebarSide::Left => &mut self.sidebar_width,
+            SidebarSide::Right => &mut self.backlinks_width,
+        };
+        if *target != width {
+            *target = width;
+            cx.notify();
+        }
+    }
+
     fn render_sidebar_tab_button(
         &self,
         tab: SidebarTab,
@@ -1058,14 +1155,17 @@ impl Render for JadeApp {
         };
 
         let sidebar = div()
+            .relative()
             .flex()
             .flex_col()
+            .flex_none()
             .gap_1()
-            .w(px(220.))
+            .w(self.sidebar_width)
             .p_2()
             .border_r_1()
             .child(tab_bar)
-            .child(sidebar_content);
+            .child(sidebar_content)
+            .child(self.render_resize_handle(SidebarSide::Left, cx));
 
         let content: AnyElement = if let Some(err) = &self.error {
             div()
@@ -1148,10 +1248,11 @@ impl Render for JadeApp {
             .p_1()
             .child(backlinks_toggle);
         let right_sidebar = div()
+            .relative()
             .flex()
             .flex_col()
             .gap_1()
-            .w(px(220.))
+            .w(self.backlinks_width)
             .flex_none()
             .p_2()
             .border_l_1()
@@ -1160,12 +1261,19 @@ impl Render for JadeApp {
                     .as_deref()
                     .filter(|_| self.error.is_none())
                     .map(|id| self.render_backlinks_panel(id, cx)),
-            );
+            )
+            .child(self.render_resize_handle(SidebarSide::Right, cx));
 
         div()
             .flex()
             .flex_row()
             .size_full()
+            .on_drag_move(
+                cx.listener(|this, event: &DragMoveEvent<SidebarSide>, _window, cx| {
+                    let side = *event.drag(cx);
+                    this.resize_sidebar(event.event.position.x, side, cx);
+                }),
+            )
             .child(rail)
             .when(!self.sidebar_collapsed, |this| {
                 this.child(sidebar.debug_name("sidebar"))
@@ -1246,7 +1354,10 @@ fn bind_open_command_palette(cx: &mut App) {
 // shadows the plain `#[test]` its own expansion relies on and recurses forever.
 #[cfg(test)]
 mod tests {
-    use super::{DeleteNote, Editor, InsertTab, JadeApp, OpenCommandPalette, RenameNote};
+    use super::{
+        DeleteNote, Editor, InsertTab, JadeApp, OpenCommandPalette, RenameNote,
+        SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN,
+    };
     use gpui_kit::component::WindowExt;
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
@@ -3870,6 +3981,49 @@ mod tests {
         assert!(sidebar_shown(cx, false), "sidebar starts expanded");
         assert!(!sidebar_shown(cx, true), "toggle hides the sidebar");
         assert!(sidebar_shown(cx, true), "toggle again restores it");
+    }
+
+    #[gpui_kit::test]
+    fn dragging_a_sidebar_edge_resizes_it_within_bounds(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("Note A.md"), "content").unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        let widths = |cx: &mut TestAppContext| {
+            app.read_with(cx, |app, _| (app.sidebar_width, app.backlinks_width))
+        };
+        let drag_by = |cx: &mut TestAppContext, handle: &'static str, dx: f32| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find(handle).bounds();
+                let from = bounds.center();
+                window.drag(from, point(from.x + px(dx), from.y), cx);
+            })
+            .unwrap();
+        };
+        assert_eq!(widths(cx), (SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_DEFAULT));
+
+        drag_by(cx, "sidebar-resize", 60.);
+        assert_eq!(
+            widths(cx).0,
+            px(280.),
+            "dragging right widens the left sidebar"
+        );
+        drag_by(cx, "sidebar-resize", -1000.);
+        assert_eq!(widths(cx).0, SIDEBAR_WIDTH_MIN, "clamped to the minimum");
+
+        drag_by(cx, "backlinks-resize", -40.);
+        assert_eq!(
+            widths(cx).1,
+            px(260.),
+            "dragging left widens the right sidebar"
+        );
+        drag_by(cx, "backlinks-resize", -1000.);
+        assert_eq!(widths(cx).1, SIDEBAR_WIDTH_MAX, "clamped to the maximum");
+        assert_eq!(
+            widths(cx).0,
+            SIDEBAR_WIDTH_MIN,
+            "the other sidebar is untouched"
+        );
     }
 
     #[gpui_kit::test]
