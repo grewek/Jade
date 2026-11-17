@@ -1380,6 +1380,9 @@ mod tests {
     ) -> (AnyWindowHandle, Entity<JadeApp>) {
         cx.update(gpui_kit::init);
         cx.update(|cx| {
+            // Dialog entrance animations run on the real clock: under CPU load
+            // the "ok" button was still sliding when a test clicked its centre.
+            cx.set_reduce_motion(true);
             cx.bind_keys([
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
