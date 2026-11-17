@@ -2281,6 +2281,7 @@ mod tests {
     use super::super::block_preview::LineRole;
     use super::super::live_preview::LineIndent;
     use super::super::table_preview::classify_tables;
+    use super::super::test_support::apply_edit;
     use super::super::{Editor, InsertTab};
     use super::LineState;
     use super::{TableLineKind, is_active_line, row_count_for_line, shape_display_line};
@@ -3427,29 +3428,6 @@ mod tests {
             );
         })
         .unwrap();
-    }
-
-    /// Applies one edit to `text` (replacing `start..old_end` with `insert`)
-    /// and returns the resulting text alongside the `TextEdit` describing
-    /// it — same shape as `document_cache.rs`'s own test helper of the same
-    /// name, duplicated rather than shared since that one is private to
-    /// that module.
-    fn apply_edit(
-        text: &str,
-        start: usize,
-        old_end: usize,
-        insert: &str,
-    ) -> (String, super::super::document_cache::TextEdit) {
-        let mut new_text = String::with_capacity(text.len() - (old_end - start) + insert.len());
-        new_text.push_str(&text[..start]);
-        new_text.push_str(insert);
-        new_text.push_str(&text[old_end..]);
-        let edit = super::super::document_cache::TextEdit {
-            start_byte: start,
-            old_end_byte: old_end,
-            new_end_byte: start + insert.len(),
-        };
-        (new_text, edit)
     }
 
     /// Every line's current row count, read out of `rows` via its own

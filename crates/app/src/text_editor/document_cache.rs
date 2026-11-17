@@ -904,23 +904,7 @@ fn lines_from(text: &str, start_byte: usize) -> impl Iterator<Item = (&str, usiz
 mod tests {
     use super::*;
 
-    /// Applies one edit to `text` (replacing `start..old_end` with `insert`)
-    /// and returns the resulting text alongside the `TextEdit` describing
-    /// it — the same shape every real mutation call site in `editor.rs`/
-    /// `input_handler.rs` constructs, just built directly here instead of
-    /// going through a real `EditorBuffer`.
-    fn apply_edit(text: &str, start: usize, old_end: usize, insert: &str) -> (String, TextEdit) {
-        let mut new_text = String::with_capacity(text.len() - (old_end - start) + insert.len());
-        new_text.push_str(&text[..start]);
-        new_text.push_str(insert);
-        new_text.push_str(&text[old_end..]);
-        let edit = TextEdit {
-            start_byte: start,
-            old_end_byte: old_end,
-            new_end_byte: start + insert.len(),
-        };
-        (new_text, edit)
-    }
+    use crate::text_editor::test_support::apply_edit;
 
     /// The property `patch_block_preview` actually relies on: after any
     /// sequence of edits (including ones that change the document's line

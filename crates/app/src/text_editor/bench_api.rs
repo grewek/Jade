@@ -15,6 +15,39 @@ pub fn line_strides(text: &str) -> Vec<i64> {
     strides_of(text)
 }
 
+/// An edit that alternately inserts `insert` at `at` and removes it again, so
+/// a bench loop returns the document to its start state every second step.
+pub struct Toggle {
+    at: usize,
+    insert: &'static str,
+    inserted: bool,
+}
+
+impl Toggle {
+    pub fn new(at: usize, insert: &'static str) -> Self {
+        Self {
+            at,
+            insert,
+            inserted: false,
+        }
+    }
+
+    /// Applies the next step to `text`; returns `(at, old_end, new_end)`, the
+    /// arguments the `edit`/`record_edit` calls take.
+    pub fn apply(&mut self, text: &mut String) -> (usize, usize, usize) {
+        let (at, len) = (self.at, self.insert.len());
+        let (old_end, new_end) = if self.inserted {
+            text.replace_range(at..at + len, "");
+            (at + len, at)
+        } else {
+            text.insert_str(at, self.insert);
+            (at, at + len)
+        };
+        self.inserted = !self.inserted;
+        (at, old_end, new_end)
+    }
+}
+
 /// The per-document classification cache every keystroke patches.
 pub struct Cache(DocumentCache);
 

@@ -163,8 +163,8 @@ impl DocStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_editor::document_cache::TextEdit;
     use crate::text_editor::line_chunks::PARALLEL_MIN_BYTES;
+    use crate::text_editor::test_support::{Rng, random_edit};
 
     #[test]
     fn counts_words_with_letters_or_digits_and_every_character() {
@@ -215,43 +215,12 @@ mod tests {
     #[test]
     fn patched_totals_match_a_fresh_count_after_random_edits() {
         let alphabet: Vec<&str> = vec!["a", "bc", " ", "  ", "\n", "- ", "\u{e9}", "|", "1"];
-        let mut seed = 0x2545_f491_4f6c_dd1du64;
-        let mut next = move |n: usize| {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            (seed % n as u64) as usize
-        };
+        let mut rng = Rng::new(0x2545_f491_4f6c_dd1d);
         let mut text = String::from("start of the note\n\n- a list item\nlast line");
         let mut cache = DocumentCache::new(&text);
         let mut stats = DocStats::new(&text);
         for step in 0..400 {
-            let char_starts: Vec<usize> = text
-                .char_indices()
-                .map(|(i, _)| i)
-                .chain([text.len()])
-                .collect();
-            let a = char_starts[next(char_starts.len())];
-            let b = char_starts[next(char_starts.len())];
-            let (start, old_end) = (a.min(b), a.max(b).min(a.min(b) + 12));
-            let old_end = char_starts
-                .iter()
-                .copied()
-                .filter(|&c| c <= old_end)
-                .max()
-                .unwrap();
-            let insert: String = (0..next(4))
-                .map(|_| alphabet[next(alphabet.len())])
-                .collect();
-            let mut new_text = String::with_capacity(text.len() + insert.len());
-            new_text.push_str(&text[..start]);
-            new_text.push_str(&insert);
-            new_text.push_str(&text[old_end..]);
-            let edit = TextEdit {
-                start_byte: start,
-                old_end_byte: old_end,
-                new_end_byte: start + insert.len(),
-            };
+            let (new_text, edit) = random_edit(&text, &mut rng, &alphabet);
             match cache.record_edit(&new_text, edit) {
                 Some(patch) => stats.patch(&new_text, &cache, &patch),
                 None => stats.rebuild(&new_text),

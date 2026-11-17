@@ -24,6 +24,8 @@ mod paint_trace;
 #[path = "paint_trace_stub.rs"]
 mod paint_trace;
 mod table_preview;
+#[cfg(test)]
+mod test_support;
 
 pub use buffer::EditorBuffer;
 pub use editor::{Editor, EditorEvent, InsertTab};

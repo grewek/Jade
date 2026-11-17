@@ -253,6 +253,7 @@ mod tests {
     use super::*;
     use crate::text_editor::document_cache::TextEdit;
     use crate::text_editor::line_chunks::PARALLEL_MIN_BYTES;
+    use crate::text_editor::test_support::{Rng, random_edit};
 
     fn table_of(text: &str) -> LinkTable {
         LinkTable::new(text, &DocumentCache::new(text))
@@ -387,36 +388,13 @@ mod tests {
             "\\",
         ];
         for seed in [0x2545_f491_4f6c_dd1d_u64, 7, 0xdead_beef_cafe_f00d] {
-            let mut state = seed;
-            let mut next = move |n: usize| {
-                state ^= state << 13;
-                state ^= state >> 7;
-                state ^= state << 17;
-                (state % n as u64) as usize
-            };
+            let mut rng = Rng::new(seed);
             let mut text =
                 String::from("start [[a]]\n\n- [t](u)\n```\n[[in fence]]\n```\nend <https://x>");
             let mut cache = DocumentCache::new(&text);
             let mut table = LinkTable::new(&text, &cache);
             for step in 0..600 {
-                let starts: Vec<usize> = text
-                    .char_indices()
-                    .map(|(i, _)| i)
-                    .chain([text.len()])
-                    .collect();
-                let a = starts[next(starts.len())];
-                let b = starts[next(starts.len())];
-                let (start, far) = (a.min(b), a.max(b).min(a.min(b) + 12));
-                let old_end = starts.iter().copied().filter(|&c| c <= far).max().unwrap();
-                let insert: String = (0..next(4))
-                    .map(|_| alphabet[next(alphabet.len())])
-                    .collect();
-                let new_text = format!("{}{insert}{}", &text[..start], &text[old_end..]);
-                let edit = TextEdit {
-                    start_byte: start,
-                    old_end_byte: old_end,
-                    new_end_byte: start + insert.len(),
-                };
+                let (new_text, edit) = random_edit(&text, &mut rng, &alphabet);
                 match cache.record_edit(&new_text, edit) {
                     Some(patch) => table.patch(&new_text, &cache, &patch),
                     None => table.rebuild(&new_text, &cache),

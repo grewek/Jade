@@ -196,6 +196,9 @@ fn scan_range(line: &str, start: usize, end: usize, depth: usize, f: &mut impl F
 pub fn find_closing(line: &str, start: usize, end: usize, delim: &str) -> Option<usize> {
     let mut search_start = start;
     loop {
+        if search_start > end {
+            return None;
+        }
         let abs = search_start + line[search_start..end].find(delim)?;
         if abs > 0 && line.as_bytes()[abs - 1] == b'\\' {
             search_start = abs + 1;
@@ -360,6 +363,13 @@ pub fn parse_bare_url(line: &str, start: usize, end: usize) -> Link {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A range whose start lies past its end (a caller's opener ran to the
+    /// end of the line) has no closing delimiter; it once panicked on the slice.
+    #[test]
+    fn find_closing_in_an_inverted_range_finds_nothing() {
+        assert_eq!(find_closing("*#\\**()", 6, 5, "*"), None);
+    }
 
     fn links(line: &str) -> Vec<Link> {
         let mut out = Vec::new();

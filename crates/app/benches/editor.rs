@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use jade_app::bench_api::{Cache, Counts, EditorBuffer, Index, Links, line_strides};
+use jade_app::bench_api::{Cache, Counts, EditorBuffer, Index, Links, Toggle, line_strides};
 
 const TYPICAL_BYTES: usize = 150 * 1024;
 
@@ -67,19 +67,12 @@ fn bench_counts(c: &mut Criterion) {
         let mut text = stress.clone();
         let mut counts = Counts::new(&text);
         let at = middle_line_start(&text);
-        let mut inserted = false;
+        let mut toggle = Toggle::new(at, insert);
         c.bench_function(&format!("word_count/patch_{label}/stress"), |b| {
             b.iter_custom(|iters| {
                 let mut timed = Duration::ZERO;
                 for _ in 0..iters {
-                    let (old_end, new_end) = if inserted {
-                        text.replace_range(at..at + insert.len(), "");
-                        (at + insert.len(), at)
-                    } else {
-                        text.insert_str(at, insert);
-                        (at, at + insert.len())
-                    };
-                    inserted = !inserted;
+                    let (at, old_end, new_end) = toggle.apply(&mut text);
                     counts.edit(&text, at, old_end, new_end);
                     let start = Instant::now();
                     black_box(counts.count(&text));
@@ -111,19 +104,12 @@ fn bench_links(c: &mut Criterion) {
         let mut text = stress.clone();
         let mut links = Links::new(&text);
         let at = middle_line_start(&text);
-        let mut inserted = false;
+        let mut toggle = Toggle::new(at, insert);
         c.bench_function(&format!("link_table/patch_{label}/stress"), |b| {
             b.iter_custom(|iters| {
                 let mut timed = Duration::ZERO;
                 for _ in 0..iters {
-                    let (old_end, new_end) = if inserted {
-                        text.replace_range(at..at + insert.len(), "");
-                        (at + insert.len(), at)
-                    } else {
-                        text.insert_str(at, insert);
-                        (at, at + insert.len())
-                    };
-                    inserted = !inserted;
+                    let (at, old_end, new_end) = toggle.apply(&mut text);
                     links.edit(&text, at, old_end, new_end);
                     let start = Instant::now();
                     black_box(links.patch(&text));
@@ -165,23 +151,22 @@ fn bench_passes(c: &mut Criterion) {
 
 /// Times `Cache::record_edit` only: each iteration applies `insert` at `at`
 /// or removes it again, so the document returns to its start state.
-fn bench_edit(c: &mut Criterion, name: &str, source: &str, at: Option<usize>, insert: &str) {
+fn bench_edit(
+    c: &mut Criterion,
+    name: &str,
+    source: &str,
+    at: Option<usize>,
+    insert: &'static str,
+) {
     let mut text = source.to_owned();
     let mut cache = Cache::new(&text);
     let at = at.unwrap_or_else(|| middle_line_start(&text));
-    let mut inserted = false;
+    let mut toggle = Toggle::new(at, insert);
     c.bench_function(name, |b| {
         b.iter_custom(|iters| {
             let mut timed = Duration::ZERO;
             for _ in 0..iters {
-                let (old_end, new_end) = if inserted {
-                    text.replace_range(at..at + insert.len(), "");
-                    (at + insert.len(), at)
-                } else {
-                    text.insert_str(at, insert);
-                    (at, at + insert.len())
-                };
-                inserted = !inserted;
+                let (at, old_end, new_end) = toggle.apply(&mut text);
                 let start = Instant::now();
                 black_box(cache.record_edit(&text, at, old_end, new_end));
                 timed += start.elapsed();

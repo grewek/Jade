@@ -5,7 +5,7 @@
 //! Run with `cargo bench -p jade-app --features bench-support --bench
 //! allocations`.
 
-use jade_app::bench_api::{Cache, Index, Links};
+use jade_app::bench_api::{Cache, Index, Links, Toggle};
 use jade_app::headless::{AllocSnapshot, CountingAllocator, HeadlessApp, reset, snapshot};
 
 #[global_allocator]
@@ -69,19 +69,6 @@ fn middle_line_start(text: &str) -> usize {
     text[mid..].find('\n').map_or(0, |i| mid + i + 1)
 }
 
-/// Applies `insert` at `at` (or removes it again), then reports the edit.
-fn toggle_edit(cache: &mut Cache, text: &mut String, at: usize, insert: &str, inserted: &mut bool) {
-    let (old_end, new_end) = if *inserted {
-        text.replace_range(at..at + insert.len(), "");
-        (at + insert.len(), at)
-    } else {
-        text.insert_str(at, insert);
-        (at, at + insert.len())
-    };
-    *inserted = !*inserted;
-    cache.record_edit(text, at, old_end, new_end);
-}
-
 fn cache_edits(report: &mut Report, stress: &str) {
     let header = stress.find("\n> [!").map_or(0, |i| i + 1);
     let cases = [
@@ -98,9 +85,10 @@ fn cache_edits(report: &mut Report, stress: &str) {
         let mut text = stress.to_owned();
         let mut cache = Cache::new(&text);
         let at = at.unwrap_or_else(|| middle_line_start(&text));
-        let mut inserted = false;
+        let mut toggle = Toggle::new(at, insert);
         report.check(name, max, || {
-            toggle_edit(&mut cache, &mut text, at, insert, &mut inserted);
+            let (at, old_end, new_end) = toggle.apply(&mut text);
+            cache.record_edit(&text, at, old_end, new_end);
         });
     }
 }
@@ -114,16 +102,9 @@ fn link_table(report: &mut Report, stress: &str) {
         let mut text = stress.to_owned();
         let mut links = Links::new(&text);
         let at = middle_line_start(&text);
-        let mut inserted = false;
+        let mut toggle = Toggle::new(at, insert);
         report.check(name, 64, || {
-            let (old_end, new_end) = if inserted {
-                text.replace_range(at..at + insert.len(), "");
-                (at + insert.len(), at)
-            } else {
-                text.insert_str(at, insert);
-                (at, at + insert.len())
-            };
-            inserted = !inserted;
+            let (at, old_end, new_end) = toggle.apply(&mut text);
             links.edit(&text, at, old_end, new_end);
             reset();
             links.patch(&text);
