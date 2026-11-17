@@ -10,10 +10,11 @@
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::Path;
 
 use crate::fence::{FenceRole, step};
 use crate::link_scan::{LinkKind, scan_line, scheme};
-use crate::resolve::{LinkTarget, split_fragment};
+use crate::resolve::{LinkTarget, percent_decode, split_fragment};
 use crate::vault::Vault;
 
 /// What a rename did.
@@ -41,7 +42,10 @@ impl Vault {
     ) -> std::io::Result<Renamed> {
         let title = self.free_title(id, new_title)?;
         // Decided against the vault as it is now, before the file moves.
-        let plan = self.plan_link_rewrites(id, &title);
+        let dir = id.rsplit_once('/').map_or("", |(dir, _)| dir);
+        let plan = self.plan_rewrites(|index, from, line| {
+            note_line_edits(self, index, from, line, id, dir, &title)
+        });
         let new_id = self.rename_note_to(id, &title)?;
 
         let mut rewritten = Vec::new();
@@ -66,14 +70,61 @@ impl Vault {
         })
     }
 
-    /// Each note that links to `id`, with its text rewritten for the file
-    /// being renamed to `title`.
-    fn plan_link_rewrites(&self, id: &str, title: &str) -> Vec<(String, String)> {
-        let dir = id.rsplit_once('/').map_or("", |(dir, _)| dir);
+    /// Renames a folder like [`Vault::rename_folder`], then rewrites the links
+    /// that pointed into it: path links to its notes and other files, and
+    /// path-style wikilinks (`[[folder/Note]]`) to its notes. A link that names
+    /// a note by title alone is unaffected by a folder's name and is left as
+    /// written. Same cost and caveats as [`Vault::rename_note_updating_links`];
+    /// `new_id` is the folder's new id and `rewritten` holds note ids after the
+    /// move.
+    pub fn rename_folder_updating_links(
+        &mut self,
+        id: &str,
+        new_name: &str,
+    ) -> std::io::Result<Renamed> {
+        let name = self.free_folder_name(id, new_name)?;
+        let old_name = id.rsplit('/').next().unwrap_or(id).to_string();
+        let root = self
+            .root
+            .canonicalize()
+            .unwrap_or_else(|_| self.root.clone());
+        let plan = self.plan_rewrites(|index, from, line| {
+            folder_line_edits(self, index, &root, from, line, id, &old_name, &name)
+        });
+        let new_id = self.rename_folder_to(id, &name)?;
+
+        let old_prefix = format!("{id}/");
+        let mut rewritten = Vec::new();
+        let mut failed = Vec::new();
+        for (old_note_id, text) in plan {
+            let now = match old_note_id.strip_prefix(&old_prefix) {
+                Some(rest) => format!("{new_id}/{rest}"),
+                None => old_note_id,
+            };
+            match self.save_note(&now, &text) {
+                Ok(()) => rewritten.push(now),
+                Err(_) => failed.push(now),
+            }
+        }
+        rewritten.sort_unstable();
+        failed.sort_unstable();
+        Ok(Renamed {
+            new_id,
+            rewritten,
+            failed,
+        })
+    }
+
+    /// Each note with at least one link `edits_for(index, note_id, line)`
+    /// wants changed, with its rewritten text. `index` is the vault's title
+    /// index, built once: resolving each wikilink by scanning the notes would
+    /// be quadratic in the vault.
+    fn plan_rewrites(
+        &self,
+        mut edits_for: impl FnMut(&HashMap<String, String>, &str, &str) -> Vec<(Range<usize>, String)>,
+    ) -> Vec<(String, String)> {
         let mut plan = Vec::new();
         let mut text = String::new();
-        // Built once: resolving each wikilink by scanning the notes would be
-        // quadratic in the vault.
         let index = self.title_index();
         for note in self.notes.values() {
             if note.read_content_into(&mut text).is_err() {
@@ -82,7 +133,7 @@ impl Vault {
             if !text.contains("[[") && !text.contains("](") {
                 continue;
             }
-            if let Some(new_text) = rewrite_text(self, &index, &note.id, &text, id, dir, title) {
+            if let Some(new_text) = rewrite_text(&text, |line| edits_for(&index, &note.id, line)) {
                 plan.push((note.id.clone(), new_text));
             }
         }
@@ -90,17 +141,11 @@ impl Vault {
     }
 }
 
-/// `text` with every link in note `from` that points at note `target` changed
-/// to name `title` instead (`dir` is the target's folder, unchanged by a
-/// rename). `None` when no link changed.
+/// `text` with the edits `edits_for` returns for each line outside fenced code
+/// applied (ranges within the line, in order). `None` when nothing changed.
 fn rewrite_text(
-    vault: &Vault,
-    index: &HashMap<String, String>,
-    from: &str,
     text: &str,
-    target: &str,
-    dir: &str,
-    title: &str,
+    mut edits_for: impl FnMut(&str) -> Vec<(Range<usize>, String)>,
 ) -> Option<String> {
     let mut out = String::new();
     let mut changed = false;
@@ -112,7 +157,7 @@ fn rewrite_text(
         let (role, next) = step(fence, line);
         fence = next;
         let edits = if role == FenceRole::Plain {
-            line_edits(vault, index, from, line, target, dir, title)
+            edits_for(line)
         } else {
             Vec::new()
         };
@@ -132,8 +177,10 @@ fn rewrite_text(
     changed.then_some(out)
 }
 
-/// The replacements, in order of position, that retarget `line`'s links.
-fn line_edits(
+/// The replacements, in order of position, that retarget `line`'s links
+/// (written in note `from`) at note `target` renamed to `title` (`dir` is its
+/// folder, unchanged by a rename).
+fn note_line_edits(
     vault: &Vault,
     index: &HashMap<String, String>,
     from: &str,
@@ -173,6 +220,97 @@ fn line_edits(
         LinkKind::Autolink | LinkKind::BareUrl => {}
     });
     edits
+}
+
+/// The replacements that retarget `line`'s links (written in note `from`)
+/// that point into folder `folder` (whose last component is `old_name`),
+/// renamed to `new_name`. The folder's component is found by counting back
+/// from the end of the written path: the rest of the target's path inside the
+/// folder has a known number of components.
+#[allow(clippy::too_many_arguments)]
+fn folder_line_edits(
+    vault: &Vault,
+    index: &HashMap<String, String>,
+    root: &Path,
+    from: &str,
+    line: &str,
+    folder: &str,
+    old_name: &str,
+    new_name: &str,
+) -> Vec<(Range<usize>, String)> {
+    let prefix = format!("{folder}/");
+    let mut edits = Vec::new();
+    scan_line(line, |link| match link.kind {
+        LinkKind::Wiki => {
+            let written = &line[link.dest.clone()];
+            // A bare title does not mention the folder.
+            if !written.contains('/') {
+                return;
+            }
+            let Some(target) = vault.resolve(written, index) else {
+                return;
+            };
+            let Some(rest) = target.strip_prefix(&prefix) else {
+                return;
+            };
+            let (stem, _) = split_extension(written);
+            let found = folder_segment(stem, rest.split('/').count(), |seg| {
+                seg.eq_ignore_ascii_case(old_name)
+            });
+            if let Some(seg) = found {
+                let at = link.dest.start;
+                edits.push((at + seg.start..at + seg.end, new_name.to_string()));
+            }
+        }
+        LinkKind::Inline => {
+            let written = &line[link.dest.clone()];
+            if scheme(written).is_some() {
+                return;
+            }
+            let rest = match vault.resolve_path_link(from, written) {
+                Ok(LinkTarget::Note(id)) => id.strip_prefix(&prefix).map(str::to_owned),
+                Ok(LinkTarget::File(path)) => path
+                    .strip_prefix(root)
+                    .ok()
+                    .and_then(Path::to_str)
+                    .map(|p| p.replace('\\', "/"))
+                    .and_then(|p| p.strip_prefix(&prefix).map(str::to_owned)),
+                Err(_) => None,
+            };
+            let Some(rest) = rest else {
+                return;
+            };
+            let (path, _) = split_fragment(written);
+            let found = folder_segment(path, rest.split('/').count(), |seg| {
+                percent_decode(seg).is_some_and(|decoded| decoded == old_name)
+            });
+            if let Some(seg) = found {
+                let at = link.dest.start;
+                edits.push((at + seg.start..at + seg.end, encode_segment(new_name)));
+            }
+        }
+        LinkKind::Autolink | LinkKind::BareUrl => {}
+    });
+    edits
+}
+
+/// The byte range of the `/`-separated component of `path` that sits `after`
+/// components before its end, if `matches` accepts it.
+fn folder_segment(
+    path: &str,
+    after: usize,
+    matches: impl Fn(&str) -> bool,
+) -> Option<Range<usize>> {
+    let count = path.split('/').count();
+    let wanted = count.checked_sub(after + 1)?;
+    let mut start = 0;
+    for (i, seg) in path.split('/').enumerate() {
+        if i == wanted {
+            return matches(seg).then_some(start..start + seg.len());
+        }
+        start += seg.len() + 1;
+    }
+    None
 }
 
 /// A wikilink's new target: a path through folders stays a path to the new
@@ -352,6 +490,79 @@ mod tests {
         ]);
         v.rename_note_updating_links("Old", "N").unwrap();
         assert_eq!(read(&dir, "A.md"), "a [[N]]\r\n\r\n\u{e9} [[N]]\n");
+    }
+
+    #[test]
+    fn renaming_a_folder_rewrites_path_links_into_it() {
+        let (dir, mut v) = vault(&[
+            (
+                "docs/Note.md",
+                "in [[docs/Other]] [a](Other.md) [b](docs/Other.md) [c](../Top.md)",
+            ),
+            ("docs/Other.md", ""),
+            ("docs/sub/Deep.md", "[up](../Note.md) [abs](/docs/Other.md)"),
+            ("docs/file.pdf", "pdf"),
+            (
+                "Top.md",
+                "[[docs/Note#h|n]] [[Note]] [x](docs/Note.md#h) [y](docs/sub/Deep) [z](docs/file.pdf) [w](docs/missing.md)",
+            ),
+            (
+                "other/Away.md",
+                "[l](../docs/Note.md) [m](../docs/file.pdf)",
+            ),
+        ]);
+        let done = v.rename_folder_updating_links("docs", "My Docs").unwrap();
+        assert_eq!(done.new_id, "My Docs");
+        assert_eq!(
+            done.rewritten,
+            ["My Docs/Note", "My Docs/sub/Deep", "Top", "other/Away"]
+        );
+        assert_eq!(
+            read(&dir, "My Docs/Note.md"),
+            "in [[My Docs/Other]] [a](Other.md) [b](My%20Docs/Other.md) [c](../Top.md)"
+        );
+        assert_eq!(
+            read(&dir, "My Docs/sub/Deep.md"),
+            "[up](../Note.md) [abs](/My%20Docs/Other.md)"
+        );
+        assert_eq!(
+            read(&dir, "Top.md"),
+            "[[My Docs/Note#h|n]] [[Note]] [x](My%20Docs/Note.md#h) [y](My%20Docs/sub/Deep) [z](My%20Docs/file.pdf) [w](docs/missing.md)"
+        );
+        assert_eq!(
+            read(&dir, "other/Away.md"),
+            "[l](../My%20Docs/Note.md) [m](../My%20Docs/file.pdf)"
+        );
+        // Everything rewritten still opens what it did.
+        assert_eq!(
+            v.resolve_path_link("Top", "My%20Docs/Note.md#h"),
+            Ok(LinkTarget::Note("My Docs/Note".into()))
+        );
+        assert_eq!(v.resolve_wikilink("My Docs/Other"), Some("My Docs/Other"));
+    }
+
+    #[test]
+    fn a_nested_folder_and_a_repeated_name_are_counted_from_the_end() {
+        let (dir, mut v) = vault(&[
+            ("a/a/Note.md", ""),
+            ("a/Note.md", ""),
+            ("Top.md", "[x](a/a/Note.md) [y](a/Note.md) [[a/a/Note]]"),
+        ]);
+        // Renaming the inner `a/a` must not touch the outer `a`.
+        v.rename_folder_updating_links("a/a", "b").unwrap();
+        assert_eq!(
+            read(&dir, "Top.md"),
+            "[x](a/b/Note.md) [y](a/Note.md) [[a/b/Note]]"
+        );
+    }
+
+    #[test]
+    fn a_folder_rename_leaves_code_and_title_links_alone() {
+        let text = "```\n[x](docs/N.md)\n```\n[[N]] `[[docs/N]]`";
+        let (dir, mut v) = vault(&[("docs/N.md", ""), ("T.md", text)]);
+        let done = v.rename_folder_updating_links("docs", "d2").unwrap();
+        assert!(done.rewritten.is_empty());
+        assert_eq!(read(&dir, "T.md"), text);
     }
 
     #[test]

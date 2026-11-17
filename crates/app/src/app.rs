@@ -633,9 +633,11 @@ impl JadeApp {
         // Save the open notes first (same reasoning as `rename_note`).
         self.persist_all_tabs(cx);
 
-        let Ok(new_id) = self.vault.rename_folder(id, new_name) else {
+        // Links into the folder, from every note, follow its new name.
+        let Ok(renamed) = self.vault.rename_folder_updating_links(id, new_name) else {
             return;
         };
+        let new_id = renamed.new_id;
         self.search_stale = true;
 
         if self.collapsed_folders.remove(id) {
@@ -643,10 +645,12 @@ impl JadeApp {
         }
 
         let prefix = format!("{id}/");
+        // Notes inside moved; other rewritten notes changed on disk under
+        // their open tabs. Both reload.
         self.retarget_tabs(
-            |old| {
-                old.strip_prefix(&prefix)
-                    .map(|rest| format!("{new_id}/{rest}"))
+            |old| match old.strip_prefix(&prefix) {
+                Some(rest) => Some(format!("{new_id}/{rest}")),
+                None => renamed.rewritten.iter().find(|n| *n == old).cloned(),
             },
             window,
             cx,
@@ -5137,6 +5141,31 @@ mod tests {
             app.active_editor_for_test(cx).broken_link_count()
         });
         assert_eq!(broken, 0, "the rewritten links resolve");
+    }
+
+    #[gpui_kit::test]
+    fn renaming_a_folder_rewrites_links_into_it(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::create_dir(dir.path().join("docs")).unwrap();
+        std::fs::write(dir.path().join("docs/N.md"), "n").unwrap();
+        std::fs::write(dir.path().join("T.md"), "[a](docs/N.md) [[docs/N]]").unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "T", 1);
+        cx.update_window(window, |_, window, cx| {
+            app.update(cx, |app, cx| {
+                app.rename_folder("docs", "Docs 2", window, cx)
+            });
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let open_text = app.read_with(cx, |app, cx| {
+            app.active_editor_for_test(cx).buffer().text().to_string()
+        });
+        assert_eq!(open_text, "[a](Docs%202/N.md) [[Docs 2/N]]");
+        let broken = app.read_with(cx, |app, cx| {
+            app.active_editor_for_test(cx).broken_link_count()
+        });
+        assert_eq!(broken, 0);
     }
 
     #[gpui_kit::test]

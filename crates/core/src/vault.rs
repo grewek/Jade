@@ -193,6 +193,13 @@ impl Vault {
     /// everything inside it along with it) and returns its new id. Dedupes against
     /// sibling folder names the same way `create_folder` does.
     pub fn rename_folder(&mut self, id: &str, new_name: &str) -> std::io::Result<String> {
+        let name = self.free_folder_name(id, new_name)?;
+        self.rename_folder_to(id, &name)
+    }
+
+    /// `new_name`, or the first of `new_name 1`, `new_name 2`, ... not already
+    /// a sibling of folder `id`.
+    pub(crate) fn free_folder_name(&self, id: &str, new_name: &str) -> std::io::Result<String> {
         if !self.folders.contains(id) {
             return Err(folder_not_found(id));
         }
@@ -209,8 +216,18 @@ impl Vault {
             candidate = format!("{new_name} {suffix}");
             suffix += 1;
         }
+        Ok(candidate)
+    }
 
-        let new_path = parent_dir.join(&candidate);
+    /// Renames folder `id` to exactly `name` (checked by
+    /// [`Self::free_folder_name`]) and returns its new id.
+    pub(crate) fn rename_folder_to(&mut self, id: &str, name: &str) -> std::io::Result<String> {
+        if !self.folders.contains(id) {
+            return Err(folder_not_found(id));
+        }
+        let old_path = self.root.join(id);
+        let parent_dir = old_path.parent().unwrap_or(&self.root).to_path_buf();
+        let new_path = parent_dir.join(name);
         std::fs::rename(&old_path, &new_path)?;
 
         // The directory (and everything inside it) already moved on disk; drop the
