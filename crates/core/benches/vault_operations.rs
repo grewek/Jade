@@ -49,6 +49,27 @@ fn bench_extract_wikilinks(c: &mut Criterion) {
     group.finish();
 }
 
+/// Opening a vault scans every note line by line for wikilinks, so one stress
+/// note (11.8MB, 320K lines, 27K links) times that scan; autosave rescans the
+/// same way. Skipped when the fixture is absent.
+fn bench_open_stress_note(c: &mut Criterion) {
+    let path = concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../app/benches/fixtures/large_markdown_stress_test.md"
+    );
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::write(dir.path().join("Stress.md"), text).unwrap();
+    let mut group = c.benchmark_group("Vault::open");
+    group.sample_size(20);
+    group.bench_function("stress_note", |b| {
+        b.iter(|| Vault::open(dir.path()).unwrap());
+    });
+    group.finish();
+}
+
 /// 200 notes is a modest-but-real vault size; `backlinks()`/`search()` are
 /// both full scans over every note, so this is where vault-wide operations
 /// would first start to show up as sluggish.
@@ -88,6 +109,7 @@ criterion_group!(
     bench_extract_wikilinks,
     bench_backlinks,
     bench_search,
-    bench_search_snapshot
+    bench_search_snapshot,
+    bench_open_stress_note
 );
 criterion_main!(benches);
