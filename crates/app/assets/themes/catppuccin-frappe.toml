@@ -1,0 +1,77 @@
+# Jade theme. Format: FORMAT.md. Same [roles] in every theme, only [palette] differs.
+name = "Catppuccin Frappé"
+kind = "dark"   # "light" or "dark"
+
+[palette]
+rosewater = "#f2d5cf"
+flamingo  = "#eebebe"
+pink      = "#f4b8e4"
+mauve     = "#ca9ee6"
+red       = "#e78284"
+maroon    = "#ea999c"
+peach     = "#ef9f76"
+yellow    = "#e5c890"
+green     = "#a6d189"
+teal      = "#81c8be"
+sky       = "#99d1db"
+sapphire  = "#85c1dc"
+blue      = "#8caaee"
+lavender  = "#babbf1"
+text      = "#c6d0f5"
+subtext1  = "#b5bfe2"
+subtext0  = "#a5adce"
+overlay2  = "#949cbb"
+overlay1  = "#838ba7"
+overlay0  = "#737994"
+surface2  = "#626880"
+surface1  = "#51576d"
+surface0  = "#414559"
+base      = "#303446"
+mantle    = "#292c3c"
+crust     = "#232634"
+
+[roles]
+# Backgrounds
+background           = "base"      # window, editor, active tab, dialogs
+background_secondary = "mantle"    # sidebars, tab bar, status bar
+background_tertiary  = "crust"     # toggle rails, window frame
+
+# Surfaces: interactive things that sit on a background
+surface        = "surface0"        # buttons, inputs, hovered rows
+surface_hover  = "surface1"        # hovered buttons, selected row, active sidebar tab
+surface_active = "surface2"        # pressed buttons
+
+# Lines
+border        = "surface1"         # dividers between rails, sidebars, tabs, editor, status bar
+border_strong = "overlay0"         # editor decoration: quote bar, table grid, horizontal rule
+
+# Text
+text           = "text"            # body, headings, active tab
+text_muted     = "subtext0"        # labels, inactive tabs, status bar, placeholders and empty states
+text_subtle    = "overlay1"        # blockquote text, list markers
+text_on_accent = "base"            # text on an accent-colored fill
+
+# Interaction
+accent    = "lavender"             # focus, primary buttons, resize handle
+cursor    = "rosewater"            # text cursor
+selection = "overlay2"             # text selection (see [alpha])
+
+# Inline text in notes
+link     = "blue"                  # [text](url), autolinks
+wikilink = "sapphire"              # [[wikilink]]
+code     = "green"                 # inline code
+
+# Semantic: callout accents, later diagnostics
+info    = "blue"                   # Note, Info
+summary = "mauve"                  # Summary
+tip     = "teal"                   # Tip
+success = "green"                  # Todo, Success
+warning = "yellow"                 # Question, Warning
+error   = "red"                    # Failure, Danger, Bug
+neutral = "overlay2"               # Example, Quote
+
+[alpha]
+callout_background = 0.10          # callout band tint
+selection          = 0.25          # text selection fill
+accent_hover       = 0.40          # resize handle hovered
+accent_active      = 0.70          # resize handle pressed
