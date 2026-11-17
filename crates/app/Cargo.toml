@@ -18,6 +18,8 @@ jade-core = { path = "../core" }
 jade-debug-protocol = { path = "../debug-protocol", optional = true }
 serde = { version = "1.0", features = ["derive"] }
 toml = "1.2"
+dirs = "6.0"
+notify = "8.2"
 
 [dev-dependencies]
 jade-debug-protocol = { path = "../debug-protocol" }

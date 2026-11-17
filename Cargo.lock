@@ -3796,9 +3796,11 @@ name = "jade-app"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "dirs 6.0.0",
  "gpui-kit",
  "jade-core",
  "jade-debug-protocol",
+ "notify",
  "serde",
  "tempfile",
  "toml 1.2.1+spec-1.1.0",
