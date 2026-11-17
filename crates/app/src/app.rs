@@ -152,6 +152,10 @@ pub(crate) struct JadeApp {
     autosave_task: Option<Task<()>>,
     _quit_subscription: Subscription,
     pub(crate) error: Option<String>,
+    /// Bumped whenever a note's text on disk or the set of notes changes;
+    /// tells `backlink_cache` it is out of date.
+    content_generation: u64,
+    backlink_cache: std::cell::RefCell<Option<BacklinkCache>>,
     sidebar_focus: FocusHandle,
     collapsed_folders: std::collections::HashSet<String>,
     pub(crate) sidebar_tab: SidebarTab,
@@ -194,6 +198,18 @@ fn group_digits(n: usize) -> String {
 fn parent_of(id: &str) -> Option<&str> {
     id.rsplit_once('/').map(|(parent, _)| parent)
 }
+
+/// The lines that link to one note, shown under its backlinks; rebuilt (by
+/// reading the source notes) only when its inputs change.
+struct BacklinkCache {
+    target: String,
+    generation: u64,
+    sources: Vec<String>,
+    contexts: Vec<jade_core::SourceContexts>,
+}
+
+/// Lines of context shown under each backlink.
+const BACKLINK_CONTEXT_LINES: usize = 3;
 
 /// Whether a link written in note `from` points at something that exists.
 /// Web links are not checked, and neither is a link within the same note.
@@ -244,6 +260,8 @@ impl JadeApp {
             collapsed_folders: Default::default(),
             sidebar_tab: SidebarTab::default(),
             sidebar_collapsed: false,
+            content_generation: 0,
+            backlink_cache: std::cell::RefCell::new(None),
             backlinks_collapsed: false,
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             backlinks_width: SIDEBAR_WIDTH_DEFAULT,
@@ -360,6 +378,13 @@ impl JadeApp {
         }
     }
 
+    /// Moves the active note's cursor to the start of zero-based `line`.
+    fn jump_to_line(&self, line: usize, cx: &mut Context<Self>) {
+        if let Some(editor) = self.editor() {
+            editor.update(cx, |editor, cx| editor.jump_to_line(line, cx));
+        }
+    }
+
     /// Moves the active note's cursor to `heading`, if it has one.
     fn jump_to_heading(&self, heading: &str, cx: &mut Context<Self>) {
         if let Some(editor) = self.editor() {
@@ -456,6 +481,7 @@ impl JadeApp {
             .save_note(&tab.note_id, tab.editor.read(cx).buffer().text());
         tab.dirty = false;
         self.search_stale = true;
+        self.content_generation += 1;
     }
 
     /// Saves every open note: before vault operations that change note ids, and
@@ -498,6 +524,7 @@ impl JadeApp {
     /// After the vault's notes changed: every open note's links may now
     /// resolve or break.
     fn refresh_links(&mut self, cx: &mut Context<Self>) {
+        self.content_generation += 1;
         let tabs: Vec<(Entity<Editor>, String)> = self
             .tabs
             .iter()
@@ -1266,9 +1293,28 @@ impl JadeApp {
             );
         } else {
             let row_hover = ThemeEngine::color(cx, Role::Surface);
+            let muted = ThemeEngine::color(cx, Role::TextMuted);
+            let sources: Vec<String> = backlink_entries.iter().map(|(id, _)| id.clone()).collect();
+            let mut cache = self.backlink_cache.borrow_mut();
+            let stale = cache.as_ref().is_none_or(|c| {
+                c.target != note_id
+                    || c.generation != self.content_generation
+                    || c.sources != sources
+            });
+            if stale {
+                *cache = Some(BacklinkCache {
+                    target: note_id.to_string(),
+                    generation: self.content_generation,
+                    contexts: self
+                        .vault
+                        .link_contexts(note_id, &sources, BACKLINK_CONTEXT_LINES),
+                    sources,
+                });
+            }
+            let contexts = cache.as_ref().map(|c| c.contexts.as_slice()).unwrap_or(&[]);
             for (source_id, title) in backlink_entries {
                 let target_id = source_id.clone();
-                backlinks_panel = backlinks_panel.child(
+                let mut entry = div().flex().flex_col().child(
                     div()
                         .id(format!("backlink-{source_id}"))
                         .test_support()
@@ -1283,6 +1329,41 @@ impl JadeApp {
                         }))
                         .debug_name_with(|| format!("backlink-{source_id}").into()),
                 );
+                let Some(found) = contexts.iter().find(|c| c.source == source_id) else {
+                    backlinks_panel = backlinks_panel.child(entry);
+                    continue;
+                };
+                for context in &found.contexts {
+                    let (open_id, line) = (source_id.clone(), context.line);
+                    entry = entry.child(
+                        div()
+                            .id(format!("backlink-{source_id}-line-{line}"))
+                            .test_support()
+                            .pl_4()
+                            .pr_2()
+                            .text_xs()
+                            .text_color(muted)
+                            .rounded_md()
+                            .cursor_pointer()
+                            .hover(move |style| style.bg(row_hover))
+                            .child(context.snippet.clone())
+                            .on_click(cx.listener(move |this, _event, window, cx| {
+                                this.open_note(open_id.clone(), window, cx);
+                                this.jump_to_line(line, cx);
+                            }))
+                            .debug_name_with(|| format!("backlink-{source_id}-line-{line}").into()),
+                    );
+                }
+                if found.total > found.contexts.len() {
+                    entry = entry.child(
+                        div()
+                            .pl_4()
+                            .text_xs()
+                            .text_color(muted)
+                            .child(format!("+{} more", found.total - found.contexts.len())),
+                    );
+                }
+                backlinks_panel = backlinks_panel.child(entry);
             }
         }
 
@@ -5166,6 +5247,44 @@ mod tests {
             app.active_editor_for_test(cx).broken_link_count()
         });
         assert_eq!(broken, 0);
+    }
+
+    #[gpui_kit::test]
+    fn backlinks_show_the_linking_lines_and_jump_to_them(cx: &mut TestAppContext) {
+        let dir = temp_vault();
+        std::fs::write(dir.path().join("T.md"), "target").unwrap();
+        let a = "intro\nsee [[T]] here\n[[T]] 2\n[[T]] 3\n[[T]] 4";
+        std::fs::write(dir.path().join("A.md"), a).unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "T", 1);
+        let shown = |cx: &mut TestAppContext, id: &'static str| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                window.try_find(id).is_some()
+            })
+            .unwrap()
+        };
+        assert!(shown(cx, "backlink-A"));
+        assert!(shown(cx, "backlink-A-line-1"));
+        assert!(shown(cx, "backlink-A-line-3"), "three lines are shown");
+        assert!(
+            !shown(cx, "backlink-A-line-4"),
+            "the fourth is only counted"
+        );
+
+        cx.update_window(window, |_, window, cx| {
+            window.click("backlink-A-line-2", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        let (id, cursor) = app.read_with(cx, |app, cx| {
+            (
+                app.active().map(|t| t.note_id.clone()),
+                app.active_editor_for_test(cx).buffer().cursor(),
+            )
+        });
+        assert_eq!(id.as_deref(), Some("A"));
+        assert_eq!(cursor, a.find("[[T]] 2").unwrap());
     }
 
     #[gpui_kit::test]

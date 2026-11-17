@@ -214,6 +214,17 @@ impl Editor {
         }
     }
 
+    /// Moves the cursor to the start of zero-based `line` (the last line if
+    /// there are fewer) and scrolls to it.
+    pub fn jump_to_line(&mut self, line: usize, cx: &mut Context<Self>) {
+        let offset = {
+            let doc = self.document_cache.borrow();
+            doc.line_start_byte(line.min(doc.line_count().saturating_sub(1)))
+        };
+        self.buffer.set_cursor(offset, false);
+        cx.notify();
+    }
+
     /// Moves the cursor to the first heading matching `heading` and scrolls
     /// to it. Returns whether there was one.
     pub fn jump_to_heading(&mut self, heading: &str, cx: &mut Context<Self>) -> bool {

@@ -1,3 +1,4 @@
+mod context;
 pub mod fence;
 pub mod link_scan;
 mod links;
@@ -6,6 +7,7 @@ mod rename;
 mod resolve;
 mod vault;
 
+pub use context::{LinkContext, SourceContexts};
 pub use links::{WikiLink, extract_wikilinks};
 pub use note::Note;
 pub use rename::Renamed;
