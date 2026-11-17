@@ -29,7 +29,7 @@ struct ConfigFile {
 }
 
 /// Ids become file names, so anything that could leave the theme folder is out.
-fn valid_id(id: &str) -> bool {
+pub(super) fn valid_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= MAX_ID_BYTES
         && id != RESERVED_ID
@@ -39,7 +39,7 @@ fn valid_id(id: &str) -> bool {
 }
 
 /// Reads at most `MAX_THEME_BYTES`; a bigger file is an error, not a big read.
-fn read_bounded(path: &Path) -> Result<String, String> {
+pub(super) fn read_bounded(path: &Path) -> Result<String, String> {
     let file = File::open(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let mut bytes = Vec::new();
     let limit = MAX_THEME_BYTES as u64 + 1;

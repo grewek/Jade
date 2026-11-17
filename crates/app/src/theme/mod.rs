@@ -4,6 +4,7 @@
 
 mod apply;
 mod builtin;
+mod choices;
 mod contrast;
 mod engine;
 mod loader;
@@ -15,6 +16,7 @@ mod roles;
 mod tests;
 mod watch;
 
+pub use choices::Choice;
 pub use contrast::ContrastWarning;
 pub use engine::ThemeEngine;
 pub use loader::{Loaded, load_startup};

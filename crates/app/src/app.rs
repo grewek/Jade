@@ -559,22 +559,44 @@ impl JadeApp {
         });
     }
 
-    /// A placeholder — nothing here is wired up to anything yet (themes,
-    /// text size, general editor preferences are all still to come, see
-    /// CLAUDE.md's Backlog). A plain associated function, not a `&mut self`
-    /// method like the dialog-openers below it: unlike those, it never
-    /// needs to call back into `JadeApp`'s own state, so there's no reason
-    /// to thread an `Entity<Self>` through it.
+    /// The Settings dialog; for now only the theme chooser (text size and
+    /// editor preferences are to come). A plain associated function: it
+    /// never needs `JadeApp`'s state. The theme list is read once on open;
+    /// the checked radio follows the engine on every render.
     fn open_settings_dialog(window: &mut Window, cx: &mut App) {
-        let muted = ThemeEngine::color(cx, Role::TextMuted);
-        window.open_dialog(cx, move |dialog, _window, _cx| {
+        use gpui_kit::component::radio::Radio;
+        let themes = ThemeEngine::available(cx);
+        window.open_dialog(cx, move |dialog, _window, cx| {
+            let active = ThemeEngine::global(cx).active_id().to_owned();
+            let muted = ThemeEngine::color(cx, Role::TextMuted);
+            let options = themes.iter().enumerate().map(|(index, choice)| {
+                let id = choice.id.clone();
+                let debug_id = id.clone();
+                div()
+                    .child(
+                        Radio::new(("theme-option", index))
+                            .label(choice.name.clone())
+                            .checked(choice.id == active)
+                            .on_click(move |_, _, cx| {
+                                if let Err(messages) = ThemeEngine::choose(&id, cx) {
+                                    for message in messages {
+                                        eprintln!("jade: {message}");
+                                    }
+                                }
+                            }),
+                    )
+                    .debug_name_with(move || format!("theme-{debug_id}").into())
+            });
             dialog.title("Settings").child(
                 div()
                     .id("settings-panel")
                     .test_support()
                     .p_4()
-                    .text_color(muted)
-                    .child("Settings aren't implemented yet — themes, text size, and general editor preferences are coming soon.")
+                    .flex()
+                    .flex_col()
+                    .gap_2()
+                    .child(div().text_color(muted).child("Theme"))
+                    .children(options)
                     .debug_name("settings-panel"),
             )
         });
@@ -3283,6 +3305,56 @@ mod tests {
         };
         assert!(message.contains("not found"), "{message}");
         assert_eq!(step(cx, window, &mut client, query), Answer::Theme(after));
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn clicking_a_theme_in_settings_switches_the_theme(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, Query};
+        let dir = temp_vault();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("ctrl-p", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.press("enter", cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+
+        let Answer::Targets { targets } = step(cx, window, &mut client, Command::ListTargets)
+        else {
+            panic!("expected targets");
+        };
+        for id in ["jade-light", "catppuccin-latte", "catppuccin-mocha"] {
+            let name = format!("theme-{id}");
+            assert!(targets.iter().any(|t| t.name == name), "missing {name}");
+        }
+        assert_eq!(
+            step(
+                cx,
+                window,
+                &mut client,
+                click_named("theme-catppuccin-mocha")
+            ),
+            Answer::Ok
+        );
+        let Answer::Theme(state) = step(
+            cx,
+            window,
+            &mut client,
+            Command::Query { what: Query::Theme },
+        ) else {
+            panic!("expected a theme");
+        };
+        assert_eq!(state.id, "catppuccin-mocha");
         std::fs::remove_file(&sock).unwrap();
     }
 

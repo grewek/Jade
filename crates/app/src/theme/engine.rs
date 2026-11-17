@@ -7,6 +7,7 @@ use gpui_kit::{App, Global, Hsla};
 
 use super::apply;
 use super::builtin;
+use super::choices::{self, Choice};
 use super::loader;
 use super::palette::Palette;
 use super::parse::{Kind, ResolvedTheme};
@@ -67,6 +68,22 @@ impl ThemeEngine {
             Ok(())
         } else {
             Err(vec!["could not apply the theme to the widgets".to_owned()])
+        }
+    }
+
+    /// Themes the user can pick; reads the theme folder, so call it when a
+    /// chooser opens, not per frame.
+    pub fn available(cx: &App) -> Vec<Choice> {
+        choices::available(&builtin::defaults(), Self::global(cx).dirs.as_ref())
+    }
+
+    /// A user's pick: switches now and remembers it in `config.toml`. The
+    /// switch holds even when remembering fails; the error says why.
+    pub fn choose(id: &str, cx: &mut App) -> Result<(), Vec<String>> {
+        Self::set(id, cx)?;
+        match Self::global(cx).dirs.as_ref() {
+            Some(dirs) => choices::remember(dirs, id).map_err(|e| vec![e]),
+            None => Ok(()),
         }
     }
 

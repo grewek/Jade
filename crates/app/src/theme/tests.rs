@@ -302,7 +302,9 @@ mod engine_setup {
     use tempfile::{TempDir, tempdir};
 
     use crate::theme::builtin::{self, DEFAULT_ID};
+    use crate::theme::choices;
     use crate::theme::loader::{load_checked, load_startup, resolve};
+    use crate::theme::tests::mini;
     use crate::theme::{ConfigDirs, Role, ThemeEngine};
 
     fn dirs_in(tmp: &TempDir) -> ConfigDirs {
@@ -531,6 +533,70 @@ mod engine_setup {
             assert!(notices.iter().any(|n| n.contains("keeping")), "{notices:?}");
             assert_eq!(ThemeEngine::global(cx).active_id(), "catppuccin-mocha");
             assert_eq!(ThemeEngine::color(cx, Role::Background), mocha);
+            let _ = cx.new(|_| ());
+        });
+    }
+
+    #[test]
+    fn available_lists_built_ins_then_user_themes() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        let user = mini("").replace("Mini", "Zed Custom");
+        user_theme(&dirs, "zed", &user);
+        user_theme(&dirs, "broken", "format_version = 1\nbroken = [");
+        user_theme(&dirs, "has space", &user);
+        write(&dirs.theme_dir().join("notes.txt"), "x");
+        let found = choices::available(&builtin::defaults(), Some(&dirs));
+        let ids: Vec<_> = found.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids[0], DEFAULT_ID);
+        assert_eq!(ids.len(), builtin::THEMES.len() + 1, "{ids:?}");
+        assert_eq!(ids.last(), Some(&"zed"));
+        assert_eq!(found.last().map(|c| c.name.as_str()), Some("Zed Custom"));
+        let without = choices::available(&builtin::defaults(), None);
+        assert_eq!(without.len(), builtin::THEMES.len());
+    }
+
+    #[test]
+    fn remember_keeps_other_keys_and_never_clobbers_a_broken_file() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        choices::remember(&dirs, "catppuccin-latte").expect("creates the file");
+        let table: toml::Table = fs::read_to_string(dirs.config_file())
+            .expect("read")
+            .parse()
+            .expect("toml");
+        assert_eq!(table["theme"].as_str(), Some("catppuccin-latte"));
+
+        write(&dirs.config_file(), "theme = \"a\"\ntext_size = 14\n");
+        choices::remember(&dirs, "b").expect("rewrites");
+        let table: toml::Table = fs::read_to_string(dirs.config_file())
+            .expect("read")
+            .parse()
+            .expect("toml");
+        assert_eq!(table["theme"].as_str(), Some("b"));
+        assert_eq!(table["text_size"].as_integer(), Some(14));
+
+        write(&dirs.config_file(), "theme = [");
+        assert!(choices::remember(&dirs, "c").is_err());
+        assert_eq!(
+            fs::read_to_string(dirs.config_file()).expect("read"),
+            "theme = ["
+        );
+    }
+
+    #[gpui_kit::test]
+    fn choose_switches_and_remembers(cx: &mut TestAppContext) {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            ThemeEngine::install(Some(dirs.clone()), cx);
+            ThemeEngine::choose("catppuccin-mocha", cx).expect("chosen");
+            assert_eq!(ThemeEngine::global(cx).active_id(), "catppuccin-mocha");
+            let startup = load_startup(&builtin::defaults(), Some(&dirs));
+            assert_eq!(startup.id, "catppuccin-mocha");
+            assert!(ThemeEngine::choose("nope", cx).is_err());
+            assert_eq!(ThemeEngine::global(cx).active_id(), "catppuccin-mocha");
             let _ = cx.new(|_| ());
         });
     }
