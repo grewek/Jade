@@ -17,6 +17,7 @@ pub struct ThemeEngine {
     active_id: String,
     kind: Kind,
     palette: Palette,
+    dirs: Option<ConfigDirs>,
 }
 
 impl Global for ThemeEngine {}
@@ -32,6 +33,7 @@ impl ThemeEngine {
             notices.push("could not apply the theme to the widgets".to_owned());
         }
         cx.set_global(ThemeEngine {
+            dirs,
             palette,
             kind: loaded.theme.kind,
             active_id: loaded.id,
@@ -50,16 +52,34 @@ impl ThemeEngine {
             }
         };
         let mut notices = loaded.notices;
-        if !apply_to_widgets(&loaded.theme, cx) {
+        if !Self::activate(loaded.id, &loaded.theme, cx) {
             notices.push("could not apply the theme to the widgets".to_owned());
-            return notices;
+        }
+        notices
+    }
+
+    /// Switches to theme `id` for this run only; `config.toml` is untouched
+    /// and the next reload goes back to the configured theme.
+    pub fn set(id: &str, cx: &mut App) -> Result<(), Vec<String>> {
+        let theme_dir = Self::global(cx).dirs.as_ref().map(ConfigDirs::theme_dir);
+        let theme = loader::resolve(&builtin::defaults(), theme_dir.as_deref(), id)?;
+        if Self::activate(id.to_owned(), &theme, cx) {
+            Ok(())
+        } else {
+            Err(vec!["could not apply the theme to the widgets".to_owned()])
+        }
+    }
+
+    fn activate(id: String, theme: &ResolvedTheme, cx: &mut App) -> bool {
+        if !apply_to_widgets(theme, cx) {
+            return false;
         }
         let engine = cx.global_mut::<ThemeEngine>();
-        engine.palette = Palette::from_resolved(&loaded.theme);
-        engine.kind = loaded.theme.kind;
-        engine.active_id = loaded.id;
+        engine.palette = Palette::from_resolved(theme);
+        engine.kind = theme.kind;
+        engine.active_id = id;
         cx.refresh_windows();
-        notices
+        true
     }
 
     pub fn global(cx: &App) -> &ThemeEngine {

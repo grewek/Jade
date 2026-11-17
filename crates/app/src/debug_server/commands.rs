@@ -3,11 +3,12 @@
 use gpui_kit::component::WindowExt;
 use gpui_kit::{App, Focusable, WeakEntity};
 use jade_debug_protocol::{
-    Answer, AppState, Command, EditorState, Event, MAX_TEXT_BYTES, Query, Topic,
+    Answer, AppState, Command, EditorState, Event, MAX_TEXT_BYTES, Query, ThemeState, Topic,
 };
 
 use super::input;
 use crate::JadeApp;
+use crate::theme::{Kind, Role, ThemeEngine};
 
 fn error(message: impl Into<String>) -> Answer {
     Answer::Error {
@@ -26,6 +27,11 @@ pub(super) fn execute(command: Command, app: &WeakEntity<JadeApp>, cx: &mut App)
         Command::Query {
             what: Query::AppState,
         } => app_state(app, cx),
+        Command::Query { what: Query::Theme } => theme_state(cx),
+        Command::SetTheme { id } => match ThemeEngine::set(&id, cx) {
+            Ok(()) => Answer::Ok,
+            Err(messages) => error(messages.join("; ")),
+        },
         Command::ReadEditorText { start, len } => read_text(app, start, len, cx),
         // The pump quits after the reply is sent.
         Command::Quit => Answer::Ok,
@@ -35,6 +41,27 @@ pub(super) fn execute(command: Command, app: &WeakEntity<JadeApp>, cx: &mut App)
         command if input::is_input(&command) => inject(&command, cx),
         other => error(format!("not implemented yet: {other:?}")),
     }
+}
+
+fn hex(color: gpui_kit::Hsla) -> String {
+    let c = gpui_kit::Rgba::from(color);
+    let byte = |v: f32| (v * 255.0).round() as u8;
+    format!("#{:02x}{:02x}{:02x}", byte(c.r), byte(c.g), byte(c.b))
+}
+
+fn theme_state(cx: &App) -> Answer {
+    let engine = ThemeEngine::global(cx);
+    let kind = match engine.kind() {
+        Kind::Light => "light",
+        Kind::Dark => "dark",
+    };
+    Answer::Theme(ThemeState {
+        id: engine.active_id().to_owned(),
+        kind: kind.into(),
+        background: hex(engine.palette().color(Role::Background)),
+        text: hex(engine.palette().color(Role::Text)),
+        accent: hex(engine.palette().color(Role::Accent)),
+    })
 }
 
 fn first_window(cx: &App) -> Option<gpui_kit::AnyWindowHandle> {

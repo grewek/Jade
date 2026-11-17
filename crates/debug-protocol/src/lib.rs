@@ -69,11 +69,17 @@ pub enum Query {
     FrameTimes,
     EditorState,
     WindowSize,
+    /// The active theme: id, kind and a few resolved colors.
+    Theme,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
 pub enum Command {
+    /// Switches the running app to theme `id` without touching `config.toml`.
+    SetTheme {
+        id: String,
+    },
     /// Types text, one keystroke per character (`\n` and `\t` are Enter and Tab).
     Type {
         text: String,
@@ -242,6 +248,17 @@ pub struct AppState {
     pub error: Option<String>,
 }
 
+/// The active theme; colors are `#rrggbb`.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ThemeState {
+    pub id: String,
+    /// `"light"` or `"dark"`.
+    pub kind: String,
+    pub background: String,
+    pub text: String,
+    pub accent: String,
+}
+
 /// What the open note's editor currently holds.
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct EditorState {
@@ -285,6 +302,7 @@ pub enum Answer {
     },
     EditorState(EditorState),
     AppState(AppState),
+    Theme(ThemeState),
     /// Reply to `ReadEditorText`: `text` starts at byte `start`; `total_len`
     /// is the whole note, so `start + text.len() < total_len` means more.
     Text {
@@ -453,6 +471,10 @@ mod tests {
             Command::Query {
                 what: Query::FrameTimes,
             },
+            Command::Query { what: Query::Theme },
+            Command::SetTheme {
+                id: "catppuccin-mocha".into(),
+            },
             Command::Subscribe {
                 topic: Topic::Paint,
             },
@@ -556,6 +578,13 @@ mod tests {
                 backlinks_width: 300.5,
                 dialog_open: true,
                 error: None,
+            }),
+            Answer::Theme(ThemeState {
+                id: "jade-light".into(),
+                kind: "light".into(),
+                background: "#ffffff".into(),
+                text: "#000000".into(),
+                accent: "#7287fd".into(),
             }),
             Answer::Text {
                 start: 1,

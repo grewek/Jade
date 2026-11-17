@@ -17,6 +17,7 @@ observe
   app                           selected note, sidebar tab, search, dialog open
   text [START] [LEN]            slice of the open note (default 0, 2000)
   frames [--raw]                recent editor frame times vs the 16.66ms budget
+  theme [ID]                    active theme, or switch to ID for this run (not saved)
   memory | size                 process memory | window size
   subscribe|unsubscribe TOPIC   topics: paint memory frames input (script only)
   await TOPIC [TIMEOUT_MS]      the next event on TOPIC
@@ -110,6 +111,11 @@ pub(crate) fn parse_action(words: &[String]) -> Result<Action, String> {
         "app" => send(Command::Query {
             what: Query::AppState,
         }),
+        "theme" => match pos.as_slice() {
+            [] => send(Command::Query { what: Query::Theme }),
+            [id] => send(Command::SetTheme { id: (*id).into() }),
+            _ => Err("theme takes at most one ID".into()),
+        },
         "memory" => send(Command::Query {
             what: Query::Memory,
         }),
@@ -389,6 +395,16 @@ mod tests {
             Action::Send(command) => command,
             _ => panic!("{line:?} is not a plain command"),
         }
+    }
+
+    #[test]
+    fn theme_queries_without_an_id_and_switches_with_one() {
+        assert_eq!(command("theme"), Command::Query { what: Query::Theme });
+        assert_eq!(
+            command("theme mocha"),
+            Command::SetTheme { id: "mocha".into() }
+        );
+        assert!(parse_action(&words("theme a b")).is_err());
     }
 
     #[test]

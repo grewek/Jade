@@ -3248,6 +3248,45 @@ mod tests {
     }
 
     #[gpui_kit::test]
+    fn the_theme_is_read_and_switched_over_the_debug_socket(cx: &mut TestAppContext) {
+        use jade_debug_protocol::{Answer, Command, Query};
+        let dir = temp_vault();
+        let (mut client, sock, window, _app) =
+            open_app_with_debug_client(cx, dir.path().to_path_buf());
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let query = Command::Query { what: Query::Theme };
+        let Answer::Theme(before) = step(cx, window, &mut client, query.clone()) else {
+            panic!("expected a theme");
+        };
+        assert_eq!(
+            (before.id.as_str(), before.kind.as_str()),
+            ("jade-light", "light")
+        );
+
+        let set = Command::SetTheme {
+            id: "catppuccin-mocha".into(),
+        };
+        assert_eq!(step(cx, window, &mut client, set), Answer::Ok);
+        let Answer::Theme(after) = step(cx, window, &mut client, query.clone()) else {
+            panic!("expected a theme");
+        };
+        assert_eq!(after.id, "catppuccin-mocha");
+        assert_eq!(
+            (after.kind.as_str(), after.background.as_str()),
+            ("dark", "#1e1e2e")
+        );
+
+        let bad = Command::SetTheme { id: "nope".into() };
+        let Answer::Error { message } = step(cx, window, &mut client, bad) else {
+            panic!("an unknown theme is an error");
+        };
+        assert!(message.contains("not found"), "{message}");
+        assert_eq!(step(cx, window, &mut client, query), Answer::Theme(after));
+        std::fs::remove_file(&sock).unwrap();
+    }
+
+    #[gpui_kit::test]
     fn alert_dialogs_are_driven_with_enter_and_escape(cx: &mut TestAppContext) {
         use jade_debug_protocol::{Answer, Command, Query};
         let dir = temp_vault();
