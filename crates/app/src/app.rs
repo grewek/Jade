@@ -591,11 +591,24 @@ impl JadeApp {
         // happen before that, not after.
         self.persist_all_tabs(cx);
 
-        let Ok(new_id) = self.vault.rename_note(id, new_title) else {
+        // Every link to the note, in every note, is rewritten to its new name.
+        let Ok(renamed) = self.vault.rename_note_updating_links(id, new_title) else {
             return;
         };
         self.search_stale = true;
-        self.retarget_tabs(|old| (old == id).then(|| new_id.clone()), window, cx);
+        // The renamed note moved; each other rewritten note changed on disk
+        // under its open tab, so both are reloaded.
+        self.retarget_tabs(
+            |old| {
+                if old == id {
+                    Some(renamed.new_id.clone())
+                } else {
+                    renamed.rewritten.iter().find(|n| *n == old).cloned()
+                }
+            },
+            window,
+            cx,
+        );
         self.refresh_links(cx);
     }
 
@@ -5085,6 +5098,45 @@ mod tests {
         // The cursor starts on line 0, which therefore shows raw Markdown.
         click_editor_line(cx, window, 0);
         assert_eq!(tabs_of(cx, &app), (vec!["A".into()], Some(0)));
+    }
+
+    #[gpui_kit::test]
+    fn renaming_a_note_rewrites_the_links_to_it_in_open_and_closed_notes(cx: &mut TestAppContext) {
+        let dir = three_note_vault();
+        std::fs::write(dir.path().join("A.md"), "to [[B]] and [c](B.md#x)").unwrap();
+        std::fs::write(dir.path().join("C.md"), "also [[b|bee]]").unwrap();
+        let (window, app) = open_app(cx, dir.path().to_path_buf());
+        open_via_menu(cx, window, "A", 1);
+        // An unsaved edit in the open note survives, links included.
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            window.input("typed ", cx);
+        })
+        .unwrap();
+
+        cx.update_window(window, |_, window, cx| {
+            app.update(cx, |app, cx| app.rename_note("B", "Bee", window, cx));
+        })
+        .unwrap();
+        cx.run_until_parked();
+
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("C.md")).unwrap(),
+            "also [[Bee|bee]]"
+        );
+        let open_text = app.read_with(cx, |app, cx| {
+            app.active_editor_for_test(cx).buffer().text().to_string()
+        });
+        assert_eq!(open_text, "typed to [[Bee]] and [c](Bee.md#x)");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("A.md")).unwrap(),
+            open_text,
+            "the open tab and the file agree"
+        );
+        let broken = app.read_with(cx, |app, cx| {
+            app.active_editor_for_test(cx).broken_link_count()
+        });
+        assert_eq!(broken, 0, "the rewritten links resolve");
     }
 
     #[gpui_kit::test]

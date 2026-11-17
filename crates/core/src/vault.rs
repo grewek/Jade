@@ -122,6 +122,13 @@ impl Vault {
     /// Renames a note's underlying file (keeping it in the same folder) and returns its new id.
     /// Dedupes against existing titles the same way `create_note` does.
     pub fn rename_note(&mut self, id: &str, new_title: &str) -> std::io::Result<String> {
+        let title = self.free_title(id, new_title)?;
+        self.rename_note_to(id, &title)
+    }
+
+    /// `new_title`, or the first of `new_title 1`, `new_title 2`, ... not
+    /// already taken in `id`'s folder by another note.
+    pub(crate) fn free_title(&self, id: &str, new_title: &str) -> std::io::Result<String> {
         let old_path = self
             .notes
             .get(id)
@@ -140,8 +147,20 @@ impl Vault {
             candidate = format!("{new_title} {suffix}");
             suffix += 1;
         }
+        Ok(candidate)
+    }
 
-        let new_path = parent.join(format!("{candidate}.md"));
+    /// Renames the note's file to exactly `title` (which [`Self::free_title`]
+    /// has checked) and returns its new id.
+    pub(crate) fn rename_note_to(&mut self, id: &str, title: &str) -> std::io::Result<String> {
+        let old_path = self
+            .notes
+            .get(id)
+            .ok_or_else(|| not_found(id))?
+            .path
+            .clone();
+        let parent = old_path.parent().unwrap_or(&self.root).to_path_buf();
+        let new_path = parent.join(format!("{title}.md"));
         std::fs::rename(&old_path, &new_path)?;
 
         self.notes.remove(id);
@@ -273,7 +292,7 @@ impl Vault {
     /// case-insensitive fallback. When several notes share a key, the
     /// preferred one wins (see [`preferred`]), so the answer does not depend
     /// on `HashMap` order.
-    fn title_index(&self) -> HashMap<String, String> {
+    pub(crate) fn title_index(&self) -> HashMap<String, String> {
         let mut index: HashMap<String, String> = HashMap::with_capacity(self.notes.len() * 2);
         for note in self.notes.values() {
             for key in [note.title.to_lowercase(), note.id.to_lowercase()] {
@@ -292,7 +311,7 @@ impl Vault {
         index
     }
 
-    fn resolve(&self, target: &str, index: &HashMap<String, String>) -> Option<String> {
+    pub(crate) fn resolve(&self, target: &str, index: &HashMap<String, String>) -> Option<String> {
         let target = without_md(target);
         if self.notes.contains_key(target) {
             return Some(target.to_string());

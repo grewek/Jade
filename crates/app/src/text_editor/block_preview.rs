@@ -34,7 +34,7 @@ pub enum LineRole {
 /// how long its opening run was — the *entire* cross-line state this
 /// classifier carries (see [`step`]), which is what makes it resumable from
 /// any line given just this one small value.
-pub(super) type FenceState = Option<(u8, usize)>;
+pub(super) type FenceState = jade_core::fence::FenceState;
 
 /// Lossless 8-byte form of a [`FenceState`] (24 bytes as an `Option`), for
 /// the per-line state array in `document_cache.rs`.
@@ -63,19 +63,14 @@ pub(super) fn unpack_fence(packed: u64) -> FenceState {
 /// cached entering state instead of only ever starting fresh from the
 /// document's first line.
 pub(super) fn step(state: FenceState, line: &str) -> (LineRole, FenceState) {
-    match state {
-        None => match fence_delimiter(line) {
-            Some(fence) => (LineRole::FenceDelimiter, Some(fence)),
-            None => (LineRole::Plain, None),
-        },
-        Some((fence_char, min_len)) => {
-            if closes_fence(line, fence_char, min_len) {
-                (LineRole::FenceDelimiter, None)
-            } else {
-                (LineRole::FenceContent, Some((fence_char, min_len)))
-            }
-        }
-    }
+    use jade_core::fence::{FenceRole, step};
+    let (role, next) = step(state, line);
+    let role = match role {
+        FenceRole::Plain => LineRole::Plain,
+        FenceRole::Delimiter => LineRole::FenceDelimiter,
+        FenceRole::Content => LineRole::FenceContent,
+    };
+    (role, next)
 }
 
 /// Classifies every `\n`-delimited line in `source` by [`LineRole`], via a
@@ -120,34 +115,6 @@ pub(super) fn classify_lines_from(source: &str, state: FenceState) -> Vec<(LineR
             (role, next)
         })
         .collect()
-}
-
-/// `line`'s fence character and run length, if it opens a code fence: 3 or
-/// more `` ` `` or `~` at the very start of the line (CommonMark's
-/// allowance for up to 3 leading spaces isn't handled — same simplification
-/// `live_preview.rs`'s `heading_prefix` makes), optionally followed by a
-/// language info string (its content doesn't matter for classification,
-/// just that the fence-character run itself is long enough).
-fn fence_delimiter(line: &str) -> Option<(u8, usize)> {
-    let fence_char = *line.as_bytes().first()?;
-    if fence_char != b'`' && fence_char != b'~' {
-        return None;
-    }
-    let len = line.bytes().take_while(|&b| b == fence_char).count();
-    if len < 3 {
-        return None;
-    }
-    Some((fence_char, len))
-}
-
-/// Whether `line` closes a fence opened with `fence_char` repeated at least
-/// `min_len` times. CommonMark allows trailing whitespace after the closing
-/// run and requires only that it be at least as long as the opener;
-/// simplified here to "a run of exactly `fence_char`, at least `min_len`
-/// long, and nothing else on the line".
-fn closes_fence(line: &str, fence_char: u8, min_len: usize) -> bool {
-    let len = line.bytes().take_while(|&b| b == fence_char).count();
-    len >= min_len && len == line.len()
 }
 
 #[cfg(test)]

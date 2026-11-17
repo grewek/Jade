@@ -104,12 +104,35 @@ fn bench_search_snapshot(c: &mut Criterion) {
     });
 }
 
+/// A rename reads every note once and rewrites each one linking to the
+/// renamed note; the synthetic notes all link to `Note 0`, so every one does.
+fn bench_rename(c: &mut Criterion) {
+    let mut group = c.benchmark_group("Vault::rename_note_updating_links");
+    group.sample_size(10);
+    for &(label, words) in SIZES {
+        let (_dir, mut vault) = vault_with_notes(200, words);
+        let mut name = "Note 0".to_string();
+        let mut flip = false;
+        group.bench_function(format!("200_notes/{label}"), |b| {
+            b.iter(|| {
+                flip = !flip;
+                let next = if flip { "Renamed" } else { "Note 0" };
+                let done = vault.rename_note_updating_links(&name, next).unwrap();
+                name = done.new_id;
+                done.rewritten.len()
+            })
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_extract_wikilinks,
     bench_backlinks,
     bench_search,
     bench_search_snapshot,
-    bench_open_stress_note
+    bench_open_stress_note,
+    bench_rename
 );
 criterion_main!(benches);
