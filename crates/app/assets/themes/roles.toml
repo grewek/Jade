@@ -2,6 +2,8 @@
 # a role gets the palette color named here, so palette names are Catppuccin's
 # (rosewater ... crust, see catppuccin-*.toml). Format: FORMAT.md.
 
+format_version = 1
+
 [roles]
 # Backgrounds
 background           = "base"      # window, editor, active tab, dialogs

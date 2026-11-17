@@ -9,6 +9,7 @@
 #   background_tertiary   white: the toggle rails have no fill today
 #   surface*        #E8E8F8 / #D0D0F0 (rows); buttons are #E4E4E4 / #D3D3D3 pressed today
 #   surface_active  #D3D3D3 (a pressed button); no row is "pressed" today
+format_version = 1
 name = "Jade Light"
 kind = "light"
 

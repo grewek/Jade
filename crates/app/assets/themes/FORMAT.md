@@ -4,12 +4,14 @@ Themes are TOML files. `roles.toml` assigns every role a palette color once, so 
 
 ```toml
 # roles.toml: shared by every theme
+format_version = 1        # required in every file; bumped when the format changes
 [roles]                   # every role below is required; a value is a palette name or "#rrggbb"
 background = "base"
 [alpha]                   # every key below is required; 0.0..=1.0
 selection = 0.25
 
 # a theme file
+format_version = 1
 name = "Catppuccin Latte"
 kind = "light"            # "light" | "dark": which gpui-component base theme to start from
 [palette]                 # raw colors, "#rrggbb", any names (roles.toml uses Catppuccin's)
@@ -20,7 +22,7 @@ link = "#1761f5"
 selection = 0.35
 ```
 
-A role resolves to its `[overrides]` value if the theme has one, else to `roles.toml`'s. Validation (to be enforced by the loader): no unknown keys or roles, hex is `#rrggbb`, alpha is 0..=1, and every name a resolved role uses exists in the theme's `[palette]` (a theme that overrides a role does not need the palette name `roles.toml` would have used).
+A role resolves to its `[overrides]` value if the theme has one, else to `roles.toml`'s. Validation (enforced by `theme::ResolvedTheme::parse`, which reports every problem at once): `format_version` is 1, no unknown keys or roles, name 1-64 bytes, at most 256 palette entries, file at most 64 KiB, hex is `#rrggbb`, alpha is 0..=1, and every name a resolved role uses exists in the theme's `[palette]` (a theme that overrides a role does not need the palette name `roles.toml` would have used).
 
 Use an override for a real difference (contrast, a palette that lacks the default color), not to restyle one element: that breaks "same role, same look" across themes.
 

@@ -17,6 +17,7 @@ mod memory_probe;
 #[cfg(any(test, feature = "bench-support"))]
 mod test_alloc;
 mod text_editor;
+pub mod theme;
 
 /// Test-build-only — see `test_alloc`'s own module doc for why. No effect
 /// on release/`cargo run` (this whole item is `#[cfg(test)]`-gated).

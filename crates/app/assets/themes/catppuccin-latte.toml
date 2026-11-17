@@ -1,4 +1,5 @@
 # Jade theme. Format: FORMAT.md. Roles come from roles.toml; only [palette] (and any [overrides]) differ.
+format_version = 1
 name = "Catppuccin Latte"
 kind = "light"   # "light" or "dark"
 
