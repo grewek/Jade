@@ -15,6 +15,10 @@ pub const THEMES: &[(&str, &str)] = &[
         include_str!("../../assets/themes/jade-neon.toml"),
     ),
     (
+        "jade-neon-light",
+        include_str!("../../assets/themes/jade-neon-light.toml"),
+    ),
+    (
         "catppuccin-latte",
         include_str!("../../assets/themes/catppuccin-latte.toml"),
     ),

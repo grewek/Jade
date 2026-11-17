@@ -12,6 +12,10 @@ const SHIPPED: &[(&str, &str)] = &[
         include_str!("../../assets/themes/jade-neon.toml"),
     ),
     (
+        "jade-neon-light",
+        include_str!("../../assets/themes/jade-neon-light.toml"),
+    ),
+    (
         "latte",
         include_str!("../../assets/themes/catppuccin-latte.toml"),
     ),
@@ -119,6 +123,16 @@ fn jade_neon_is_dark_with_a_mint_accent() {
     assert_eq!(neon.color(Role::Selection), rgb("3bae76"));
     assert_eq!(neon.color(Role::Error), rgb("ff5c7a"), "default kept");
     assert_eq!(neon.alpha(Alpha::Selection), 0.35);
+    assert!(neon.warnings.is_empty(), "{:?}", neon.warnings);
+}
+
+#[test]
+fn jade_neon_light_is_light_with_a_deep_mint_accent() {
+    let neon = load("jade-neon-light");
+    assert_eq!(neon.kind, Kind::Light);
+    assert_eq!(neon.color(Role::Accent), rgb("087a4b"));
+    assert_eq!(neon.color(Role::Selection), rgb("9be8ba"));
+    assert_eq!(neon.alpha(Alpha::Selection), 0.55);
     assert!(neon.warnings.is_empty(), "{:?}", neon.warnings);
 }
 

@@ -1,0 +1,56 @@
+# Jade theme. Format: FORMAT.md. Pale jade ground with deepened neon hues: pure
+# neon fails contrast on a light ground, so each hue keeps its Jade Neon identity
+# but is darkened until it reads as text. Palette names are Catppuccin's, as in
+# jade-neon.toml.
+format_version = 1
+name = "Jade Neon Light"
+kind = "light"
+
+[palette]
+# Ground, lightest to darkest
+base     = "#f6faf7"
+mantle   = "#edf3ef"
+crust    = "#e2eae5"
+surface0 = "#dfe9e3"
+surface1 = "#cfddd5"
+surface2 = "#bdcfc5"
+overlay0 = "#93aa9d"
+overlay1 = "#5a7064"
+overlay2 = "#4b6155"
+subtext0 = "#3d5146"
+subtext1 = "#2d4036"
+text     = "#122019"
+
+# Hues: the neon names, deepened
+rosewater = "#a8466a"
+flamingo  = "#b23d78"
+pink      = "#b8168f"
+mauve     = "#8238c8"
+red       = "#c01f3c"
+maroon    = "#ae2f4c"
+peach     = "#aa4c0c"
+yellow    = "#7f6200"
+green     = "#087a4b"   # Mint, deepened: the brand accent
+teal      = "#08766a"
+sky       = "#08708a"
+sapphire  = "#07699e"
+blue      = "#1f5cc2"
+lavender  = "#4e52cf"
+
+# The jade family (from the logo) and extras
+lime        = "#587300"
+jade_light  = "#9be8ba"
+jade        = "#3bae76"
+jade_deep   = "#1f8659"
+jade_shadow = "#123d2b"
+
+[overrides]
+# Same identity roles as Jade Neon: mint accent, cursor and wikilink, jade selection.
+accent         = "green"
+text_on_accent = "base"
+cursor         = "green"
+wikilink       = "green"
+selection      = "jade_light"
+
+[alpha]
+selection = 0.55
