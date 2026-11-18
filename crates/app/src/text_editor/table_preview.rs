@@ -418,6 +418,16 @@ pub fn pad(text: &str, width: usize, align: Align) -> String {
 /// that a many-column table doesn't collapse every column to nothing.
 const MIN_COLUMN_WIDTH: usize = 3;
 
+/// Whether `columns` keep their natural widths within `max_total_chars`
+/// (or there is no cap). Then every cell fits its column, so no row wraps.
+pub fn fits_unshrunk(columns: &[Column], max_total_chars: impl Into<Option<usize>>) -> bool {
+    let Some(max) = max_total_chars.into() else {
+        return true;
+    };
+    let content_budget = max.saturating_sub(3 * columns.len() + 1);
+    columns.iter().map(|c| c.width).sum::<usize>() <= content_budget
+}
+
 /// Shrinks `columns`' natural widths — proportionally to each column's own
 /// share of the total, floored at [`MIN_COLUMN_WIDTH`] — so their total
 /// (plus border/padding overhead) fits within `max_total_chars`, if it
@@ -430,16 +440,10 @@ const MIN_COLUMN_WIDTH: usize = 3;
 /// columns — see `live_preview::build_table_row`.
 pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usize> {
     let natural: Vec<usize> = columns.iter().map(|c| c.width).collect();
-    if columns.is_empty() {
+    if columns.is_empty() || fits_unshrunk(columns, max_total_chars) {
         return natural;
     }
-
-    let border_overhead = 3 * columns.len() + 1;
-    let content_budget = max_total_chars.saturating_sub(border_overhead);
-    let natural_total: usize = natural.iter().sum();
-    if natural_total <= content_budget {
-        return natural;
-    }
+    let content_budget = max_total_chars.saturating_sub(3 * columns.len() + 1);
 
     let floor_total = MIN_COLUMN_WIDTH * columns.len();
     if content_budget <= floor_total {
@@ -833,6 +837,28 @@ mod tests {
                         "line {line:?} exceeds width {width} for input {text:?}"
                     );
                 }
+            }
+        }
+    }
+
+    /// A table that fits unshrunk never wraps a row, so the row pass may skip it.
+    #[test]
+    fn a_table_that_fits_unshrunk_has_no_wrapped_row() {
+        let columns: Vec<Column> = [6, 3, 12].iter().map(|&w| col(w)).collect();
+        let rows = [
+            "| a | b | c |",
+            "| abcdef | abc | abcdefghijkl |",
+            "| \\| | x | y |",
+        ];
+        for budget in [None, Some(10), Some(24), Some(32), Some(60), Some(200)] {
+            let widths = resolve_widths(&columns, budget);
+            if fits_unshrunk(&columns, budget) {
+                assert_eq!(widths, [6, 3, 12], "budget {budget:?}");
+                for row in rows {
+                    assert_eq!(row_line_count(row, &widths), 1, "{row} at {budget:?}");
+                }
+            } else {
+                assert_ne!(widths, [6, 3, 12], "budget {budget:?}");
             }
         }
     }

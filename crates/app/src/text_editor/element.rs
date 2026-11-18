@@ -633,7 +633,7 @@ fn pure_row_counts_in(
     let budget = char_budget(available_width, char_width);
     let one_level_fit = fit_with_indent(available_width, char_width, 1);
     let mut next_table = view.tables.partition_point(|t| t.end_line <= range.start);
-    let mut table_state: Option<(usize, Vec<usize>)> = None;
+    let mut table_state: Option<(usize, Option<Vec<usize>>)> = None;
     for i in range {
         let end = if i + 1 < line_count {
             view.starts[i + 1] - 1
@@ -650,20 +650,25 @@ fn pure_row_counts_in(
             Some(table) => {
                 let is_header = callout_at_line(view.callouts, i).is_some_and(|c| c.is_header(i));
                 let plain = matches!(view.roles[i], LineRole::Plain) && !is_header;
-                if table_state.as_ref().is_none_or(|(n, _)| *n != next_table) {
-                    let widths = table_preview::resolve_widths(&table.columns, budget);
+                if table_state.as_ref().is_none_or(|(n, ..)| *n != next_table) {
+                    // A table that fits its width has no wrapped cell in any row,
+                    // so its widths (and its rows' text) are never looked at.
+                    let widths = if table_preview::fits_unshrunk(&table.columns, budget) {
+                        None
+                    } else {
+                        Some(table_preview::resolve_widths(&table.columns, budget))
+                    };
                     table_state = Some((next_table, widths));
                 }
                 match &table_state {
                     // An inactive, plainly rendered table: a delimiter is one hidden
                     // row, a row is as tall as its tallest wrapped cell.
-                    Some((n, widths)) if plain && active_table != Some(*n) => {
-                        if table.is_delimiter(i) {
-                            1
-                        } else {
+                    Some((n, widths)) if plain && active_table != Some(*n) => match widths {
+                        Some(widths) if !table.is_delimiter(i) => {
                             table_preview::row_line_count(line, widths)
                         }
-                    }
+                        _ => 1,
+                    },
                     _ => {
                         shaped.push(i);
                         0
