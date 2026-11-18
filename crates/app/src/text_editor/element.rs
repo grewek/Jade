@@ -371,72 +371,39 @@ impl RowHeightCache {
         window: &mut Window,
     ) {
         let line_count = doc.line_count();
-        let mut counts = Vec::with_capacity(line_count);
-        // One sequential pass: every line's start comes from one sweep of
-        // the line index (scanning the 12MB text for newlines costs more
-        // than the rest of this loop) and `tables` are sorted, so table
-        // membership comes from a cursor instead of a binary search per
-        // line. What is the same for every row of a table (active or not,
-        // column widths) is worked out once per table.
-        let tables = doc.tables();
-        let budget = char_budget(available_width, char_width);
-        let one_level_fit = fit_with_indent(available_width, char_width, 1);
         let starts = doc.line_start_offsets();
-        let mut next_table = 0;
-        let mut table_state: Option<(usize, bool, Vec<usize>)> = None;
-        for i in 0..line_count {
-            let end = if i + 1 < line_count {
-                starts[i + 1] - 1
-            } else {
-                starts[i + 1]
-            };
-            let line = &text[starts[i]..end];
-            while tables.get(next_table).is_some_and(|t| t.end_line <= i) {
-                next_table += 1;
-            }
-            let table = tables.get(next_table).filter(|t| t.start_line <= i);
-            let count = match table {
-                None => {
-                    estimate_row_count(line, doc, i, char_width, available_width, one_level_fit)
-                }
-                Some(table) => {
-                    let is_header =
-                        callout_at_line(doc.callouts(), i).is_some_and(|c| c.is_header(i));
-                    let plain = matches!(doc.line_roles()[i], LineRole::Plain) && !is_header;
-                    if table_state.as_ref().is_none_or(|(n, ..)| *n != next_table) {
-                        let widths = table_preview::resolve_widths(&table.columns, budget);
-                        table_state =
-                            Some((next_table, is_table_active(doc, i, cursor, focused), widths));
-                    }
-                    match &table_state {
-                        // An inactive, plainly rendered table: a delimiter is one
-                        // hidden row, a row is as tall as its tallest wrapped
-                        // cell. Anything else takes the exact path.
-                        Some((_, false, widths)) if plain => {
-                            if table.is_delimiter(i) {
-                                1
-                            } else {
-                                table_preview::row_line_count(line, widths)
-                            }
-                        }
-                        _ => row_count_for_line(
-                            text,
-                            doc,
-                            i,
-                            cursor,
-                            focused,
-                            char_width,
-                            font,
-                            font_size,
-                            text_color,
-                            available_width,
-                            window,
-                        ),
-                    }
-                }
-            };
-            counts.push(count as i64);
+        let view = DocView {
+            roles: doc.line_roles(),
+            contexts: doc.block_contexts(),
+            tables: doc.tables(),
+            callouts: doc.callouts(),
+            starts: &starts,
+        };
+        let rows = RowParams {
+            active_table: active_table(doc, cursor, focused),
+            available_width,
+            char_width,
+        };
+        let (mut counts, shaped) = pure_row_counts(text, &view, &rows);
+        // Lines that need the window (an active or irregular table row) are the
+        // few the threads left out.
+        for i in shaped {
+            let count = row_count_for_line(
+                text,
+                doc,
+                i,
+                cursor,
+                focused,
+                char_width,
+                font,
+                font_size,
+                text_color,
+                available_width,
+                window,
+            );
+            counts[i] = count as i64;
         }
+        assert_eq!(counts.len(), line_count);
         self.rows = Fenwick::from_vec(counts);
         self.active_line = if focused {
             Some(doc.line_at(cursor))
@@ -578,6 +545,137 @@ impl RowHeightCache {
     }
 }
 
+/// The parts of a [`DocumentCache`] a row count reads, as plain slices (the
+/// cache itself holds `Rc`s, so it cannot cross to worker threads).
+struct DocView<'a> {
+    roles: &'a [LineRole],
+    contexts: &'a [LineContext],
+    tables: &'a [Table],
+    callouts: &'a [Callout],
+    /// Byte offset of each line, plus the text length.
+    starts: &'a [usize],
+}
+
+/// What a row count depends on besides the document.
+struct RowParams {
+    /// The table the cursor is in while focused: it renders as raw text.
+    active_table: Option<usize>,
+    available_width: Pixels,
+    char_width: Pixels,
+}
+
+/// The index of the table [`is_table_active`] would call active, found once so
+/// workers need not ask per line.
+fn active_table(doc: &DocumentCache, cursor: usize, focused: bool) -> Option<usize> {
+    if !focused {
+        return None;
+    }
+    let tables = doc.tables();
+    let idx = tables.partition_point(|t| doc.table_byte_range(t).end < cursor);
+    let table = tables.get(idx)?;
+    (doc.table_byte_range(table).start <= cursor).then_some(idx)
+}
+
+/// Below this many lines a thread per core costs more than it saves.
+const PARALLEL_MIN_LINES: usize = 20_000;
+
+/// Every line's row count that needs no `Window`, split over threads on big
+/// notes, plus the lines that do need one (their entry is a placeholder `0`).
+fn pure_row_counts(text: &str, view: &DocView, rows: &RowParams) -> (Vec<i64>, Vec<usize>) {
+    let line_count = view.roles.len();
+    let threads = if line_count < PARALLEL_MIN_LINES {
+        1
+    } else {
+        std::thread::available_parallelism().map_or(1, |n| n.get().min(8))
+    };
+    let step = line_count.div_ceil(threads).max(1);
+    let parts: Vec<(Vec<i64>, Vec<usize>)> = if threads == 1 {
+        vec![pure_row_counts_in(text, view, rows, 0..line_count)]
+    } else {
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..threads)
+                .map(|k| (k * step).min(line_count)..((k + 1) * step).min(line_count))
+                .map(|range| scope.spawn(move || pure_row_counts_in(text, view, rows, range)))
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+                .collect()
+        })
+    };
+    let mut counts = Vec::with_capacity(line_count);
+    let mut shaped = Vec::new();
+    for (part, part_shaped) in parts {
+        counts.extend(part);
+        shaped.extend(part_shaped);
+    }
+    (counts, shaped)
+}
+
+/// [`pure_row_counts`] for the lines in `range`.
+fn pure_row_counts_in(
+    text: &str,
+    view: &DocView,
+    rows: &RowParams,
+    range: std::ops::Range<usize>,
+) -> (Vec<i64>, Vec<usize>) {
+    let RowParams {
+        active_table,
+        available_width,
+        char_width,
+    } = *rows;
+    let line_count = view.roles.len();
+    let mut counts = Vec::with_capacity(range.len());
+    let mut shaped = Vec::new();
+    // One sequential pass: `tables` are sorted, so table membership comes from
+    // a cursor instead of a binary search per line. What is the same for every
+    // row of a table (column widths) is worked out once per table.
+    let budget = char_budget(available_width, char_width);
+    let one_level_fit = fit_with_indent(available_width, char_width, 1);
+    let mut next_table = view.tables.partition_point(|t| t.end_line <= range.start);
+    let mut table_state: Option<(usize, Vec<usize>)> = None;
+    for i in range {
+        let end = if i + 1 < line_count {
+            view.starts[i + 1] - 1
+        } else {
+            view.starts[i + 1]
+        };
+        let line = &text[view.starts[i]..end];
+        while view.tables.get(next_table).is_some_and(|t| t.end_line <= i) {
+            next_table += 1;
+        }
+        let table = view.tables.get(next_table).filter(|t| t.start_line <= i);
+        let count = match table {
+            None => estimate_row_count(line, view, i, char_width, available_width, one_level_fit),
+            Some(table) => {
+                let is_header = callout_at_line(view.callouts, i).is_some_and(|c| c.is_header(i));
+                let plain = matches!(view.roles[i], LineRole::Plain) && !is_header;
+                if table_state.as_ref().is_none_or(|(n, _)| *n != next_table) {
+                    let widths = table_preview::resolve_widths(&table.columns, budget);
+                    table_state = Some((next_table, widths));
+                }
+                match &table_state {
+                    // An inactive, plainly rendered table: a delimiter is one hidden
+                    // row, a row is as tall as its tallest wrapped cell.
+                    Some((n, widths)) if plain && active_table != Some(*n) => {
+                        if table.is_delimiter(i) {
+                            1
+                        } else {
+                            table_preview::row_line_count(line, widths)
+                        }
+                    }
+                    _ => {
+                        shaped.push(i);
+                        0
+                    }
+                }
+            }
+        };
+        counts.push(count as i64);
+    }
+    (counts, shaped)
+}
+
 /// A cheap, allocation-free over-estimate of `line`'s (line `i`'s) row count
 /// — the cold-`rebuild` fast path for an *ordinary* line; the caller must
 /// not pass a table row or delimiter, which get the exact computation
@@ -603,7 +701,7 @@ impl RowHeightCache {
 /// `build_display_lines`'s own fence-content override).
 fn estimate_row_count(
     line: &str,
-    doc: &DocumentCache,
+    doc: &DocView,
     i: usize,
     char_width: Pixels,
     available_width: Pixels,
@@ -613,17 +711,17 @@ fn estimate_row_count(
     // indented at most one level (a list marker; blockquotes need a `>`), so
     // if even that narrower width holds its bytes it is a single row — most
     // lines, decided without looking at its indent at all.
-    if matches!(doc.block_contexts()[i], LineContext::Plain)
-        && !matches!(doc.line_roles()[i], LineRole::FenceContent)
+    if matches!(doc.contexts[i], LineContext::Plain)
+        && !matches!(doc.roles[i], LineRole::FenceContent)
         && line.as_bytes().first() != Some(&b'>')
         && line.len() <= one_level_fit
     {
         return 1;
     }
-    let indent_level = if matches!(doc.line_roles()[i], LineRole::FenceContent) {
+    let indent_level = if matches!(doc.roles[i], LineRole::FenceContent) {
         0
     } else {
-        match doc.block_contexts()[i] {
+        match doc.contexts[i] {
             LineContext::Plain => line_indent(line).level(),
             LineContext::ListMarkerLine(depth) => depth,
             LineContext::LazyContinuation(indent) => indent.level(),
