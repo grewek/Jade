@@ -360,6 +360,46 @@ pub fn parse_bare_url(line: &str, start: usize, end: usize) -> Link {
     }
 }
 
+/// The file extensions Obsidian embeds as images (its accepted-formats list).
+pub const IMAGE_EXTENSIONS: [&str; 8] = ["avif", "bmp", "gif", "jpeg", "jpg", "png", "svg", "webp"];
+
+/// A line that is nothing but one image embed. Ranges are byte offsets into
+/// the line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageEmbed {
+    /// Where the file is: the `![[target]]` or `![alt](target)` path.
+    pub target: Range<usize>,
+    /// The `![alt](..)` text, or the `![[target|alias]]` alias (often a size
+    /// such as `200`); empty when there is none.
+    pub alt: Range<usize>,
+}
+
+/// `line` as a vault-local image embed, `![alt](path.png)` or `![[path.png]]`,
+/// when that is the whole line (surrounding whitespace aside). Remote URLs
+/// (`https://..`, `data:..`) and other extensions are not embeds.
+pub fn parse_image_embed_line(line: &str) -> Option<ImageEmbed> {
+    let end = line.trim_end().len();
+    let start = end - line[..end].trim_start().len();
+    let rest = &line[start..end];
+    let (link, target, alt) = if rest.starts_with("![[") {
+        let link = parse_wikilink(line, start + 1, end)?;
+        let alt = link.alias.clone().unwrap_or(link.dest.end..link.dest.end);
+        (link.span.end, link.dest, alt)
+    } else if rest.starts_with("![") {
+        let link = parse_inline_link(line, start + 1, end)?;
+        (link.span.end, link.dest, link.text)
+    } else {
+        return None;
+    };
+    let path = &line[target.clone()];
+    let extension = path.rsplit_once('.')?.1;
+    let local = scheme(path).is_none();
+    let image = IMAGE_EXTENSIONS
+        .iter()
+        .any(|known| known.eq_ignore_ascii_case(extension));
+    (link == end && local && image).then_some(ImageEmbed { target, alt })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,6 +577,49 @@ mod tests {
                 }
                 assert!(l.span.start <= l.text.start && l.text.end <= l.span.end);
             });
+        }
+    }
+
+    #[test]
+    fn an_image_embed_line_is_recognized_in_both_syntaxes() {
+        let line = "![a diagram](img/a.PNG)";
+        let embed = parse_image_embed_line(line).unwrap();
+        assert_eq!(&line[embed.target], "img/a.PNG");
+        assert_eq!(&line[embed.alt], "a diagram");
+        let line = "  ![[pics/b.webp|200]]  ";
+        let embed = parse_image_embed_line(line).unwrap();
+        assert_eq!(&line[embed.target], "pics/b.webp");
+        assert_eq!(&line[embed.alt], "200");
+        let embed = parse_image_embed_line("![[c.svg]]").unwrap();
+        assert!(embed.alt.is_empty());
+    }
+
+    #[test]
+    fn every_obsidian_image_extension_is_an_embed() {
+        for ext in IMAGE_EXTENSIONS {
+            assert!(
+                parse_image_embed_line(&format!("![[x.{ext}]]")).is_some(),
+                "{ext}"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_unknown_and_inline_embeds_are_not_blocks() {
+        for line in [
+            "![a](https://example.com/a.png)",
+            "![a](data:image/png;base64,AAAA)",
+            "![[notes.md]]",
+            "![a](file)",
+            "![a](a.png) trailing",
+            "text ![a](a.png)",
+            "![](a.png",
+            "![[a.png",
+            "![[]]",
+            "[a](a.png)",
+            "",
+        ] {
+            assert_eq!(parse_image_embed_line(line), None, "{line:?}");
         }
     }
 }

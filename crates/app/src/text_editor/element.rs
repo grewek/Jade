@@ -6,6 +6,7 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::*;
 
 use super::Editor;
+use super::block::{self, image_block};
 use super::block_preview::LineRole;
 use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
@@ -712,6 +713,16 @@ fn estimate_row_count(
     available_width: Pixels,
     one_level_fit: usize,
 ) -> usize {
+    // A block's height does not depend on the width or the line's length, and is
+    // more than the one row the fast path below would give it.
+    if block::may_be_image(line)
+        && matches!(doc.roles[i], LineRole::Plain)
+        && matches!(doc.contexts[i], LineContext::Plain)
+        && callout_at_line(doc.callouts, i).is_none()
+        && let Some(embed) = block::image_embed_line(line)
+    {
+        return block::block_rows(&embed);
+    }
     // A line with no context of its own that doesn't start with `>` is
     // indented at most one level (a list marker; blockquotes need a `>`), so
     // if even that narrower width holds its bytes it is a single row — most
@@ -1295,7 +1306,10 @@ pub(super) fn build_display_lines(
         active,
         ..
     } = *state;
+    let block_rows = image_block(line, state).map(|embed| block::block_rows(&embed));
     let mut display_lines: Vec<DisplayLine> = match role {
+        // A block is `rows` stacked empty rows; `paint_lines` draws the box over them.
+        LineRole::Plain if let Some(rows) = block_rows => vec![hidden_line(line); rows],
         LineRole::FenceContent => vec![build_display_line(line, true)],
         LineRole::FenceDelimiter if !active => vec![hidden_line(line)],
         LineRole::FenceDelimiter => vec![build_display_line(line, active)],
@@ -1921,6 +1935,43 @@ fn offset_for_position(
     }
 }
 
+/// A bordered box with the file name, standing where an image block's rows are
+/// until the image itself is drawn.
+fn paint_image_placeholder(
+    path: &str,
+    area: Bounds<Pixels>,
+    (font, font_size): (&Font, Pixels),
+    (border, label): (Hsla, Hsla),
+    (window, cx): (&mut Window, &mut App),
+) {
+    let frame = Bounds {
+        origin: area.origin + point(px(0.), px(2.)),
+        size: size(area.size.width, area.size.height - px(4.)),
+    };
+    window.paint_quad(outline(frame, border, BorderStyle::Solid));
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let run = TextRun {
+        len: name.len(),
+        font: font.clone(),
+        color: label,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped = window
+        .text_system()
+        .shape_line(name.to_string().into(), font_size, &[run], None);
+    let line_height = window.line_height();
+    let _ = shaped.paint(
+        frame.origin + point(px(8.), px(4.)),
+        line_height,
+        TextAlign::Left,
+        None,
+        window,
+        cx,
+    );
+}
+
 /// Accumulated while `paint_lines` walks one table's lines, top to bottom —
 /// everything `paint_table_grid_lines` needs, gathered once `top`/`column_x`
 /// are known (the table's header row) and finalized once `bottom` is known
@@ -2178,6 +2229,7 @@ fn paint_lines(
         layout.correct_row_count(i, (total_height / line_height).round() as usize);
         if let Some(trace) = trace.as_mut() {
             let tag = match (callout, table_line_kind(tables, i), line_roles[i]) {
+                _ if image_block(line_text, &state).is_some() => "image",
                 (Some(c), ..) if c.is_header(i) => "callout-header",
                 (Some(_), ..) => "callout",
                 (None, TableLineKind::Row(_) | TableLineKind::Delimiter(_), _) => "table",
@@ -2228,6 +2280,19 @@ fn paint_lines(
                 },
                 rule,
             ));
+        }
+
+        if let Some(embed) = image_block(line_text, &state) {
+            paint_image_placeholder(
+                &line_text[embed.target],
+                Bounds {
+                    origin: point(bounds.origin.x, bounds.origin.y + y_offset),
+                    size: size(bounds.size.width, total_height),
+                },
+                (font, font_size),
+                (rule, inline.subtle),
+                (window, cx),
+            );
         }
 
         if !state.table_active {
@@ -3656,7 +3721,7 @@ mod tests {
 
         let mut text = String::from(
             "intro\n```\ncode line one\ncode line two\n```\nplain\n> quote\n- item\n  - nested\nmore plain text here\n\
-             | a | b |\n| --- | --- |\n| 1 | 2 |\nafter table\n# Heading\nFinal line",
+             | a | b |\n| --- | --- |\n| 1 | 2 |\nafter table\n![pic](pic.png)\n# Heading\nFinal line",
         );
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
@@ -3919,6 +3984,49 @@ mod tests {
                 window,
             );
             assert_eq!(row_counts(&row_cache), expected);
+        })
+        .unwrap();
+    }
+
+    /// An image embed alone on an ordinary line is a block of fixed height; the
+    /// same text anywhere else (remote, code, quote, list) stays one row, and the
+    /// line under the cursor shows its source. The cold rebuild's estimate must
+    /// agree with the exact count, or callout bands would sit at stale heights.
+    #[gpui_kit::test]
+    fn an_image_embed_line_is_a_block_with_the_placeholder_height(cx: &mut TestAppContext) {
+        use super::super::block::PLACEHOLDER_ROWS;
+        use super::super::document_cache::DocumentCache;
+        use super::{RowHeightCache, mono_char_width};
+
+        let text = "intro\n![a](a.png)\n![[b.png|200]]\n![x](https://e.com/x.png)\n```\n![c](c.png)\n```\n\
+                    > ![d](d.png)\n- ![e](e.png)\nend";
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let text_color = text_style.color;
+            let width = px(800.);
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+            let doc = DocumentCache::new(text);
+            let mut rows = RowHeightCache::empty();
+            rows.rebuild(
+                text, &doc, 0, false, width, char_width, &font, font_size, text_color, window,
+            );
+            let exact = exact_row_counts(
+                text, &doc, 0, false, char_width, &font, font_size, text_color, width, window,
+            );
+            let block = PLACEHOLDER_ROWS as i64;
+            assert_eq!(exact, [1, block, block, 1, 1, 1, 1, 1, 1, 1]);
+            assert_eq!(row_counts(&rows), exact, "the estimate must match");
+            // The cursor on the embed shows its source.
+            let on_embed = doc.line_start_byte(1);
+            let active = super::row_count_for_line(
+                text, &doc, 1, on_embed, true, char_width, &font, font_size, text_color, width,
+                window,
+            );
+            assert_eq!(active, 1);
         })
         .unwrap();
     }

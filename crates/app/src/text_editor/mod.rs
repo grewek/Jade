@@ -4,6 +4,7 @@
 //! "Custom editor" section for the phased plan this is built in.
 
 pub mod bench_api;
+mod block;
 mod block_preview;
 mod buffer;
 mod callout;

@@ -29,6 +29,20 @@ fn typical_prefix(text: &str) -> &str {
     &text[..end]
 }
 
+/// `text` with an image embed after every 200th line (outside tables), so a
+/// block is always near the viewport and the row cache holds thousands of them.
+fn with_image_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 200);
+    for (i, line) in text.lines().enumerate() {
+        out.push_str(line);
+        out.push('\n');
+        if i % 200 == 199 && !line.starts_with('|') {
+            out.push_str("![[img/photo.png]]\n");
+        }
+    }
+    out
+}
+
 fn bench_open_note(c: &mut Criterion, name: &str, text: &str) {
     let mut group = c.benchmark_group("open_note");
     group.sample_size(10);
@@ -110,6 +124,7 @@ fn bench_layout(c: &mut Criterion) {
     bench_open_note(c, "stress", &stress);
     bench_steady_state(c, "typical", typical);
     bench_steady_state(c, "stress", &stress);
+    bench_steady_state(c, "stress_blocks", &with_image_blocks(&stress));
 }
 
 criterion_group!(benches, bench_layout);
