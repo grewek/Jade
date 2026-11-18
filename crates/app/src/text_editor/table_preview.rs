@@ -144,25 +144,50 @@ fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>)) -> (bool
 
 /// How many lines `line` renders on when each of its cells is wrapped to
 /// `widths` — exactly the number of lines `live_preview::build_table_row`
-/// returns for it, without building them. A cell with no more characters
-/// than its column is wide always fits one line (wrapping only ever removes
-/// whitespace), which is nearly every cell, so only an over-wide one pays
-/// for the real [`wrap_cell_text`]. A row with fewer cells than `widths`
-/// counts the missing ones as one empty line; extra cells are ignored.
+/// returns for it, without building them. A cell no longer than its column is
+/// wide always fits one line (wrapping only ever removes whitespace), which is
+/// nearly every cell, so only an over-wide one is counted word by word. A row
+/// with fewer cells than `widths` counts the missing ones as one empty line;
+/// extra cells are ignored.
 pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
     let mut lines = 1;
     let mut column = 0;
     for_each_cell_range(line, |raw| {
         if let Some(&width) = widths.get(column) {
             let cell = line[raw].trim();
-            if cell.chars().count() > width {
-                let text = cell.replace("\\|", "|");
-                lines = lines.max(wrap_cell_text(&text, width).len());
+            // Bytes are never fewer than characters.
+            if cell.len() > width {
+                lines = lines.max(wrapped_line_count(cell, width));
             }
         }
         column += 1;
     });
     lines
+}
+
+/// `wrap_cell_text(&cell.replace("\\|", "|"), width).len()` without building a
+/// string: the same greedy fill, counting instead of copying. `cell` is a raw
+/// (still escaped) cell; `\|` counts as the one character it renders as.
+pub fn wrapped_line_count(cell: &str, width: usize) -> usize {
+    let width = width.max(1);
+    let (mut lines, mut used) = (0, 0);
+    for word in cell.split_whitespace() {
+        let len = word.chars().count() - word.matches("\\|").count();
+        let separator = usize::from(used > 0);
+        if used + separator + len <= width {
+            used += separator + len;
+        } else if len <= width {
+            // Starts a new line.
+            lines += 1;
+            used = len;
+        } else {
+            // Longer than a whole line: hard-broken into full lines, the rest
+            // left open for the next word.
+            lines += usize::from(used > 0) + (len - 1) / width;
+            used = len - (len - 1) / width * width;
+        }
+    }
+    lines + usize::from(used > 0 || lines == 0)
 }
 
 /// How many cells [`scan_row`] would return, without building them.
@@ -837,6 +862,49 @@ mod tests {
                         "line {line:?} exceeds width {width} for input {text:?}"
                     );
                 }
+            }
+        }
+    }
+
+    /// The counting version must agree with the real wrap on any cell: random
+    /// words (some longer than the column), runs of spaces, escaped pipes and
+    /// multi-byte characters, at every width a column can shrink to.
+    #[test]
+    fn wrapped_line_count_matches_wrap_cell_text() {
+        use super::super::test_support::Rng;
+        let pieces = [
+            "a",
+            "bb",
+            "ccc",
+            "dddd",
+            "eeeee",
+            "ffffffff",
+            "ggggggggggggg",
+            "\\|",
+            "x\\|y",
+            "ünï",
+            "日本語",
+            "  ",
+            " ",
+            "\t",
+        ];
+        let mut rng = Rng::new(0x7AB1E);
+        for _ in 0..20_000 {
+            let mut cell = String::new();
+            for _ in 0..rng.below(14) {
+                cell.push_str(pieces[rng.below(pieces.len())]);
+                if rng.below(3) > 0 {
+                    cell.push(' ');
+                }
+            }
+            let cell = cell.trim();
+            let text = cell.replace("\\|", "|");
+            for width in 0..=14 {
+                assert_eq!(
+                    wrapped_line_count(cell, width),
+                    wrap_cell_text(&text, width).len(),
+                    "{cell:?} at {width}"
+                );
             }
         }
     }
