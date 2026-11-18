@@ -39,6 +39,7 @@ Use an override for a real difference (contrast, a palette that lacks the defaul
 | `surface_active` | pressed buttons | (new) |
 | `border` | dividers between panes, tabs, status bar | theme `border` |
 | `border_strong` | quote bar, table grid, horizontal rule | `MUTED_COLOR` as a line |
+| `table_header` | table header row background | (new) |
 | `text` | body, headings, active tab | theme `foreground`, `tab_active_foreground` |
 | `text_muted` | labels, inactive tabs, status bar, placeholders, empty states | `#888888` (4 places), theme `muted_foreground` |
 | `text_subtle` | blockquote text, list markers | `MUTED_COLOR` as text |

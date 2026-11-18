@@ -67,32 +67,15 @@ impl Table {
     pub fn is_first_row(&self, line: usize) -> bool {
         line == self.start_line
     }
-
-    /// Whether `line` is this table's very last line — a body row usually,
-    /// but the delimiter row itself if the table has no body rows at all
-    /// (`end_line` is exclusive, so the last real line is `end_line - 1`).
-    /// Gets a bottom border frame (`└─┴─┘`) drawn below it, mirroring
-    /// `is_first_row`'s top frame.
-    pub fn is_last_line(&self, line: usize) -> bool {
-        line == self.end_line - 1
-    }
 }
 
-/// One row's parsed cells, plus whether a leading/trailing `|` was actually
-/// present in the source — both optional per GFM, and needed by the
-/// renderer to know whether there's a real pipe byte there to visually
-/// replace or whether it's inserting one with no raw counterpart at all.
+/// One row's parsed cells.
 pub struct Row {
     pub cells: Vec<Cell>,
-    pub has_leading_pipe: bool,
-    pub has_trailing_pipe: bool,
 }
 
-/// One cell's raw byte range (the content between its delimiting pipes,
-/// *not* including them, untrimmed) and its trimmed, unescaped (`\|` → a
-/// literal `|`) display text.
+/// One cell's trimmed, unescaped (`\|` → a literal `|`) text.
 pub struct Cell {
-    pub raw: Range<usize>,
     pub text: String,
 }
 
@@ -102,19 +85,14 @@ pub struct Cell {
 /// isn't part of any cell's own range.
 pub fn scan_row(line: &str) -> Row {
     let mut cells = Vec::new();
-    let (has_leading_pipe, has_trailing_pipe) =
-        for_each_cell_range(line, |raw| cells.push(make_cell(line, raw)));
-    Row {
-        cells,
-        has_leading_pipe,
-        has_trailing_pipe,
-    }
+    for_each_cell_range(line, |raw| cells.push(make_cell(line, raw)));
+    Row { cells }
 }
 
 /// Calls `visit` with the byte range of each cell of `line`, in order, and
 /// returns `(has_leading_pipe, has_trailing_pipe)`. The one place the
 /// cell-splitting rules live, shared by [`scan_row`] and [`row_line_count`].
-fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>)) -> (bool, bool) {
+pub(super) fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>)) -> (bool, bool) {
     let bytes = line.as_bytes();
     let has_leading_pipe = bytes.first() == Some(&b'|');
     let start = usize::from(has_leading_pipe);
@@ -213,8 +191,9 @@ fn cell_width(line: &str, raw: Range<usize>) -> usize {
 }
 
 fn make_cell(line: &str, raw: Range<usize>) -> Cell {
-    let text = line[raw.clone()].replace("\\|", "|").trim().to_string();
-    Cell { raw, text }
+    Cell {
+        text: line[raw].replace("\\|", "|").trim().to_string(),
+    }
 }
 
 /// The alignment a delimiter cell (e.g. `---`, `:--`, `--:`, `:-:`)
@@ -409,35 +388,6 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
     (table_for_line, tables)
 }
 
-/// The (left, right) character counts needed to pad a `len`-character cell
-/// to `width` according to `align` — `(0, 0)` if already at least `width`
-/// characters (a column's own width is always at least as wide as every
-/// cell that determined it, but a mismatched row can still have a cell
-/// wider than this table's resolved width if a future change ever grows a
-/// lenient path for that). Exposed separately from [`pad`] itself so a
-/// caller that needs to interleave real (byte-mapped) content between the
-/// two pad amounts, rather than building one opaque combined string, can.
-pub fn pad_amounts(len: usize, width: usize, align: Align) -> (usize, usize) {
-    if len >= width {
-        return (0, 0);
-    }
-    let fill = width - len;
-    match align {
-        Align::Left => (0, fill),
-        Align::Right => (fill, 0),
-        Align::Center => {
-            let left = fill / 2;
-            (left, fill - left)
-        }
-    }
-}
-
-/// Pads `text` to `width` *characters* according to `align`.
-pub fn pad(text: &str, width: usize, align: Align) -> String {
-    let (left, right) = pad_amounts(text.chars().count(), width, align);
-    format!("{}{text}{}", " ".repeat(left), " ".repeat(right))
-}
-
 /// The minimum a column is ever shrunk to by [`cap_column_widths`] — small
 /// enough to still show a few characters per wrapped line, large enough
 /// that a many-column table doesn't collapse every column to nothing.
@@ -506,36 +456,6 @@ pub fn resolve_widths(columns: &[Column], max_total_chars: Option<usize>) -> Vec
     }
 }
 
-/// The character offsets (from the start of a rendered table row) of every
-/// vertical grid line that row's text leaves blank for — the left outer
-/// edge, one between each pair of adjacent columns, and the right outer
-/// edge (so `widths.len() + 1` offsets in total). Mirrors the exact column
-/// layout `live_preview::build_table_row_line` lays out in characters (a
-/// 2-character leading gap, each cell padded to its own `widths[i]`,
-/// separated by a 3-character gap — except the final gap, which is only
-/// 2 characters) without needing to lay out any text at all; `element.rs`
-/// converts each offset to a pixel x (this editor's font is always
-/// monospace, so one multiply by a measured character-advance width is
-/// enough) and paints a real vector line there, rather than relying on a
-/// box-drawing glyph to land pixel-exact against its neighbors.
-pub fn column_divider_char_offsets(widths: &[usize]) -> Vec<usize> {
-    let mut offsets = Vec::with_capacity(widths.len() + 1);
-    let mut pos = 0;
-    offsets.push(pos);
-    pos += 2; // leading gap
-    for (i, &width) in widths.iter().enumerate() {
-        pos += width;
-        if i + 1 != widths.len() {
-            offsets.push(pos + 1); // middle of the 3-character gap
-            pos += 3;
-        } else {
-            offsets.push(pos + 1); // second character of the final 2-character gap
-            pos += 2;
-        }
-    }
-    offsets
-}
-
 /// Word-wraps `text` into lines no wider than `width` *characters* — a
 /// plain greedy fill (pack whole words onto the current line until the
 /// next one wouldn't fit, then start a new one), character-counted rather
@@ -544,6 +464,7 @@ pub fn column_divider_char_offsets(widths: &[usize]) -> Vec<usize> {
 /// hard-broken at `width` characters rather than left overflowing.
 /// `width` is floored at `1` so a pathologically narrow cap can't cause a
 /// zero-width (infinite) break loop.
+#[cfg(test)]
 pub fn wrap_cell_text(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut lines = Vec::new();
@@ -598,24 +519,12 @@ mod tests {
     fn scan_row_splits_a_simple_row_with_leading_and_trailing_pipes() {
         let row = scan_row("| Name | Age |");
         assert_eq!(cell_texts(&row), vec!["Name", "Age"]);
-        assert!(row.has_leading_pipe);
-        assert!(row.has_trailing_pipe);
     }
 
     #[test]
     fn scan_row_handles_missing_leading_and_trailing_pipes() {
         let row = scan_row("Name | Age");
         assert_eq!(cell_texts(&row), vec!["Name", "Age"]);
-        assert!(!row.has_leading_pipe);
-        assert!(!row.has_trailing_pipe);
-    }
-
-    #[test]
-    fn scan_row_reports_each_cells_raw_byte_range() {
-        let line = "| Name | Age |";
-        let row = scan_row(line);
-        assert_eq!(&line[row.cells[0].raw.clone()], " Name ");
-        assert_eq!(&line[row.cells[1].raw.clone()], " Age ");
     }
 
     #[test]
@@ -737,26 +646,6 @@ mod tests {
         assert_eq!(tables.len(), 2);
     }
 
-    #[test]
-    fn pad_left_aligns_by_default() {
-        assert_eq!(pad("ab", 5, Align::Left), "ab   ");
-    }
-
-    #[test]
-    fn pad_right_aligns() {
-        assert_eq!(pad("ab", 5, Align::Right), "   ab");
-    }
-
-    #[test]
-    fn pad_centers_with_extra_space_on_the_right_for_an_odd_remainder() {
-        assert_eq!(pad("ab", 5, Align::Center), " ab  ");
-    }
-
-    #[test]
-    fn pad_is_a_no_op_when_already_wide_enough() {
-        assert_eq!(pad("already wide", 3, Align::Left), "already wide");
-    }
-
     fn col(width: usize) -> Column {
         Column {
             width,
@@ -800,30 +689,6 @@ mod tests {
     fn resolve_widths_caps_when_a_budget_is_given() {
         let columns = vec![col(20), col(20), col(20), col(20)];
         assert_eq!(resolve_widths(&columns, Some(5)), vec![MIN_COLUMN_WIDTH; 4]);
-    }
-
-    #[test]
-    fn column_divider_char_offsets_matches_build_table_row_lines_own_layout() {
-        // Mirrors "│ Alice │ 30  │" (widths 5, 3): border characters land
-        // at positions 0, 8, and 14 — see `build_table_row_pads_cells_to_
-        // column_width_and_adds_borders` in `live_preview.rs` for the
-        // string this layout corresponds to (now rendered as blank gaps,
-        // with these exact offsets telling `element.rs` where to paint a
-        // real line instead).
-        assert_eq!(column_divider_char_offsets(&[5, 3]), vec![0, 8, 14]);
-    }
-
-    #[test]
-    fn column_divider_char_offsets_handles_a_single_column() {
-        // "|  x  |" style single-column row: leading gap (2) + width (5) +
-        // trailing gap (2) = 9 characters total, border at 0 and 8.
-        assert_eq!(column_divider_char_offsets(&[5]), vec![0, 8]);
-    }
-
-    #[test]
-    fn column_divider_char_offsets_returns_one_more_offset_than_columns() {
-        let widths = vec![4, 6, 3];
-        assert_eq!(column_divider_char_offsets(&widths).len(), widths.len() + 1);
     }
 
     #[test]
@@ -932,7 +797,7 @@ mod tests {
     }
 
     #[test]
-    fn row_line_count_matches_how_many_lines_build_table_row_returns() {
+    fn row_line_count_matches_the_laid_out_row_height() {
         let columns: Vec<Column> = [6, 3, 12].iter().map(|&w| col(w)).collect();
         let lines = [
             "| a | b | c |",
@@ -954,7 +819,9 @@ mod tests {
             for line in lines {
                 assert_eq!(
                     row_line_count(line, &widths),
-                    crate::text_editor::live_preview::build_table_row(line, &columns, budget).len(),
+                    crate::text_editor::table_box::row_height(
+                        &crate::text_editor::table_box::layout_row(line, &widths)
+                    ),
                     "line {line:?} budget {budget:?} widths {widths:?}"
                 );
             }

@@ -14,11 +14,11 @@ use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
 use super::link_table::LinkTable;
 use super::live_preview::{
-    DisplayLine, InlineStyle, LineContext, LineIndent, build_callout_header_line,
-    build_display_line, build_display_line_in_context, build_table_row, hidden_line,
-    is_thematic_break, line_indent,
+    DisplayLine, InlineStyle, LineContext, LineIndent, build_callout_header_line, build_cell_line,
+    build_display_line, build_display_line_in_context, hidden_line, is_thematic_break, line_indent,
 };
 use super::paint_trace::{FrameInfo, PaintTrace};
+use super::table_box::{self, layout_row};
 use super::table_preview::{self, Table, table_index_at};
 use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
@@ -84,7 +84,7 @@ impl<'a> LineState<'a> {
 /// `table_line_kind`.
 pub(super) enum TableLineKind<'a> {
     None,
-    Delimiter(&'a Table),
+    Delimiter,
     Row(&'a Table),
 }
 
@@ -95,7 +95,7 @@ pub(super) fn table_line_kind(tables: &[Table], line_index: usize) -> TableLineK
         Some(idx) => {
             let table = &tables[idx];
             if table.is_delimiter(line_index) {
-                TableLineKind::Delimiter(table)
+                TableLineKind::Delimiter
             } else {
                 TableLineKind::Row(table)
             }
@@ -1234,7 +1234,7 @@ fn wrap_width_for(
     }
     match table_kind {
         TableLineKind::None => Some((available_width - indent_px(indent_level)).max(px(1.))),
-        TableLineKind::Delimiter(_) | TableLineKind::Row(_) => None,
+        TableLineKind::Delimiter | TableLineKind::Row(_) => None,
     }
 }
 
@@ -1320,11 +1320,13 @@ pub(super) fn build_display_lines(
         LineRole::Plain => match table_kind {
             TableLineKind::None if !active && is_thematic_break(line) => vec![hidden_line(line)],
             TableLineKind::None => vec![build_display_line_in_context(line, active, block_ctx)],
-            TableLineKind::Delimiter(_) => vec![hidden_line(line)],
+            TableLineKind::Delimiter => vec![hidden_line(line)],
+            // `paint_table_row` draws the cells over these empty rows.
             TableLineKind::Row(table) => {
                 let max_chars =
                     table_row_char_budget(available_width, font, font_size, text_color, window);
-                build_table_row(line, &table.columns, max_chars)
+                let widths = table_preview::resolve_widths(&table.columns, max_chars);
+                vec![hidden_line(line); table_preview::row_line_count(line, &widths)]
             }
         },
     };
@@ -1415,56 +1417,81 @@ pub(super) fn shape_display_line(
     display_lines
         .into_iter()
         .map(|display_line| {
-            let mut runs: Vec<TextRun> = display_line
-                .segments
-                .iter()
-                .filter(|seg| !seg.is_hidden())
-                .map(|seg| {
-                    let is_broken = matches!(seg.style, InlineStyle::Link | InlineStyle::WikiLink)
-                        && broken
-                            .iter()
-                            .any(|r| r.start <= seg.raw.start && seg.raw.end <= r.end);
-                    let color = if is_broken {
-                        colors.broken
-                    } else {
-                        color_for_style(seg.style, &colors, callout)
-                    };
-                    TextRun {
-                        len: seg.display.len(),
-                        font: font_for_style(seg.style, font),
-                        color,
-                        background_color: None,
-                        underline: None,
-                        strikethrough: strikethrough_for_style(seg.style, color),
-                    }
-                })
-                .collect();
-            if runs.is_empty() {
-                runs.push(TextRun {
-                    len: 0,
-                    font: font.clone(),
-                    color: text_color,
-                    background_color: None,
-                    underline: None,
-                    strikethrough: None,
-                });
-            }
-
-            let wrapped = window
-                .text_system()
-                .shape_text(
-                    display_line.display_text.clone().into(),
-                    font_size,
-                    &runs,
-                    wrap_width,
-                    None,
-                )
-                .expect("shaping a single line of text should not fail")
-                .pop()
-                .expect("shape_text on a \\n-free string returns exactly one WrappedLine");
+            let wrapped = shape_entry(
+                &display_line,
+                wrap_width,
+                (font, font_size),
+                &colors,
+                (broken, callout),
+                false,
+                window,
+            );
             (wrapped, display_line)
         })
         .collect()
+}
+
+/// Shapes one display line. `bold` makes every run bold (a table header).
+fn shape_entry(
+    display_line: &DisplayLine,
+    wrap_width: Option<Pixels>,
+    (font, font_size): (&Font, Pixels),
+    colors: &InlineColors,
+    (broken, callout): (&[Range<usize>], Option<&Callout>),
+    bold: bool,
+    window: &mut Window,
+) -> WrappedLine {
+    let text_color = colors.text;
+    let mut runs: Vec<TextRun> = display_line
+        .segments
+        .iter()
+        .filter(|seg| !seg.is_hidden())
+        .map(|seg| {
+            let is_broken = matches!(seg.style, InlineStyle::Link | InlineStyle::WikiLink)
+                && broken
+                    .iter()
+                    .any(|r| r.start <= seg.raw.start && seg.raw.end <= r.end);
+            let color = if is_broken {
+                colors.broken
+            } else {
+                color_for_style(seg.style, colors, callout)
+            };
+            let mut font = font_for_style(seg.style, font);
+            if bold {
+                font.weight = FontWeight::BOLD;
+            }
+            TextRun {
+                len: seg.display.len(),
+                font,
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: strikethrough_for_style(seg.style, color),
+            }
+        })
+        .collect();
+    if runs.is_empty() {
+        runs.push(TextRun {
+            len: 0,
+            font: font.clone(),
+            color: text_color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        });
+    }
+    window
+        .text_system()
+        .shape_text(
+            display_line.display_text.clone().into(),
+            font_size,
+            &runs,
+            wrap_width,
+            None,
+        )
+        .expect("shaping a single line of text should not fail")
+        .pop()
+        .expect("shape_text on a \\n-free string returns exactly one WrappedLine")
 }
 
 /// This editor's monospace advance width — one character's pixel width,
@@ -1895,6 +1922,28 @@ fn offset_for_position(
         // already sized to fit) sub-row of that row — same click-then-find
         // the right sub-row logic, just one level deeper.
         let multi_entry = results.len() > 1;
+        let state = LineState::of(&doc, i, cursor, focused);
+        if let (false, TableLineKind::Row(table)) = (state.table_active, &state.table_kind) {
+            let height: Pixels = results
+                .iter()
+                .map(|(wrapped, _)| wrapped.size(line_height).height)
+                .sum();
+            if relative_y < y_offset + height {
+                let columns = TableColumns::of(
+                    table,
+                    bounds.size.width,
+                    (font, font_size, text_color),
+                    window,
+                );
+                let row = ((relative_y - y_offset) / line_height) as usize;
+                let x = (position.x - bounds.origin.x) / columns.char_width;
+                let offset =
+                    table_box::offset_at(line_text, &columns.widths, &columns.aligns, x, row);
+                return layout.line_range(i).start + offset;
+            }
+            y_offset += height;
+            continue;
+        }
         for (wrapped, display_line) in &results {
             let height = wrapped.size(line_height).height;
             if relative_y < y_offset + height {
@@ -1972,69 +2021,175 @@ fn paint_image_placeholder(
     );
 }
 
-/// Accumulated while `paint_lines` walks one table's lines, top to bottom —
-/// everything `paint_table_grid_lines` needs, gathered once `top`/`column_x`
-/// are known (the table's header row) and finalized once `bottom` is known
-/// (the table's own last line), at which point it's painted and dropped.
-struct TablePaint {
-    top: Pixels,
-    /// The y to paint the header/body divider line at — `None` until the
-    /// delimiter row is reached (always set by the time painting actually
-    /// happens, since every table `classify_tables` produces has one).
-    divider_y: Option<Pixels>,
-    /// Pixel x-position of every vertical grid line this table needs: the
-    /// left outer edge, one between each pair of adjacent columns, and the
-    /// right outer edge — converted once, from `table_preview::column_
-    /// divider_char_offsets`, when the header row is reached, and reused
-    /// unchanged for every other line (a table's columns don't change
-    /// width partway through it).
-    column_x: Vec<Pixels>,
+/// Corner radius of a table's box.
+const TABLE_RADIUS: Pixels = px(6.);
+
+/// What painting a table needs about the columns it is drawn with.
+struct TableColumns {
+    widths: Vec<usize>,
+    aligns: Vec<table_preview::Align>,
+    char_width: Pixels,
 }
 
-/// Paints one table's grid as real vector lines — the outer box, a vertical
-/// divider between every pair of columns, and the header/body divider —
-/// rather than relying on box-drawing glyphs (`┌`/`│`/`┼`/etc.) shaped and
-/// painted as ordinary text. A monospace font's glyphs don't reliably abut
-/// pixel-for-pixel across separately-shaped/painted lines or at junctions,
-/// which reads as visible seams/gaps between them; a quad painted directly
-/// at the right pixel position has no such seam regardless of font/hinting
-/// — the same reasoning `paint_lines`'s own blockquote quote-bar already
-/// uses a painted quad for, rather than a vertical-bar character.
-fn paint_table_grid_lines(paint: &TablePaint, bottom: Pixels, color: Hsla, window: &mut Window) {
-    for &x in &paint.column_x {
-        window.paint_quad(fill(
+impl TableColumns {
+    fn of(
+        table: &Table,
+        width: Pixels,
+        (font, font_size, text_color): (&Font, Pixels, Hsla),
+        window: &mut Window,
+    ) -> Self {
+        let char_width = mono_char_width(font, font_size, text_color, window);
+        let max_chars = char_budget(width, char_width);
+        Self {
+            widths: table_preview::resolve_widths(&table.columns, max_chars),
+            aligns: table.columns.iter().map(|c| c.align).collect(),
+            char_width,
+        }
+    }
+
+    fn x(&self, chars: f32) -> Pixels {
+        self.char_width * chars
+    }
+}
+
+/// The boxes of the tables in `range` that render as tables (not raw while the
+/// cursor is in them): header tint, column dividers, row separators and the
+/// outline, all from the row cache's heights, before any text so the cells go
+/// on top. Heights past the verified window are estimates, but that is off
+/// screen.
+#[allow(clippy::too_many_arguments)]
+fn paint_table_boxes(
+    range: &Range<usize>,
+    view: &FrameView,
+    doc: &DocumentCache,
+    palette: &crate::theme::Palette,
+    window: &mut Window,
+) {
+    let tables = doc.tables();
+    let FrameView {
+        layout,
+        cursor,
+        focused,
+        bounds,
+        font,
+        font_size,
+        text_color,
+        ..
+    } = view;
+    let first = tables.partition_point(|t| t.end_line <= range.start);
+    let (strong, light) = (
+        palette.color(Role::BorderStrong),
+        palette.color(Role::Border),
+    );
+    for table in tables[first..]
+        .iter()
+        .take_while(|t| t.start_line < range.end)
+    {
+        if is_table_active(doc, table.start_line, *cursor, *focused) {
+            continue;
+        }
+        let columns = TableColumns::of(
+            table,
+            bounds.size.width,
+            (font, *font_size, *text_color),
+            window,
+        );
+        let at = |line: usize| bounds.origin.y + layout.cumulative_at(line);
+        let (left, top, bottom) = (bounds.origin.x, at(table.start_line), at(table.end_line));
+        let width = columns.x(table_box::box_width(&columns.widths));
+        let header_bottom = at(table.start_line + 2).min(bottom);
+        let line = |x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla| {
+            fill(
+                Bounds {
+                    origin: point(x, y),
+                    size: size(w, h),
+                },
+                color,
+            )
+        };
+        window.paint_quad(quad(
             Bounds {
-                origin: point(x, paint.top),
-                size: size(TABLE_LINE_WIDTH, bottom - paint.top),
+                origin: point(left, top),
+                size: size(width, header_bottom - top),
             },
-            color,
+            Corners {
+                top_left: TABLE_RADIUS,
+                top_right: TABLE_RADIUS,
+                bottom_left: px(0.),
+                bottom_right: px(0.),
+            },
+            palette.color(Role::TableHeader),
+            px(0.),
+            Hsla::transparent_black(),
+            BorderStyle::Solid,
+        ));
+        for column in 1..columns.widths.len() {
+            let x = left + columns.x(table_box::column_left(&columns.widths, column));
+            window.paint_quad(line(x, top, TABLE_LINE_WIDTH, bottom - top, light));
+        }
+        // Between body rows, in the visible part only.
+        let rows = (table.start_line + 2).max(range.start.saturating_sub(1))
+            ..(table.end_line - 1).min(range.end);
+        for row in rows {
+            let y = at(row + 1) - TABLE_LINE_WIDTH;
+            window.paint_quad(line(left, y, width, TABLE_LINE_WIDTH, light));
+        }
+        window.paint_quad(line(
+            left,
+            header_bottom - TABLE_LINE_WIDTH,
+            width,
+            TABLE_LINE_WIDTH,
+            strong,
+        ));
+        window.paint_quad(quad(
+            Bounds {
+                origin: point(left, top),
+                size: size(width, bottom - top),
+            },
+            TABLE_RADIUS,
+            Hsla::transparent_black(),
+            TABLE_LINE_WIDTH,
+            strong,
+            BorderStyle::Solid,
         ));
     }
-    let left = paint.column_x.first().copied().unwrap_or(px(0.));
-    let right = paint.column_x.last().copied().unwrap_or(px(0.));
-    let width = right - left;
-    window.paint_quad(fill(
-        Bounds {
-            origin: point(left, paint.top),
-            size: size(width, TABLE_LINE_WIDTH),
-        },
-        color,
-    ));
-    window.paint_quad(fill(
-        Bounds {
-            origin: point(left, bottom - TABLE_LINE_WIDTH),
-            size: size(width, TABLE_LINE_WIDTH),
-        },
-        color,
-    ));
-    if let Some(divider_y) = paint.divider_y {
-        window.paint_quad(fill(
-            Bounds {
-                origin: point(left, divider_y),
-                size: size(width, TABLE_LINE_WIDTH),
-            },
-            color,
-        ));
+}
+
+/// One table row's cell text, each cell's lines placed in its column by the
+/// table's alignment. `origin` is the row's top-left; `header` makes it bold.
+#[allow(clippy::too_many_arguments)]
+fn paint_table_row(
+    line: &str,
+    columns: &TableColumns,
+    origin: Point<Pixels>,
+    header: bool,
+    (font, font_size, line_height): (&Font, Pixels, Pixels),
+    colors: &InlineColors,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    for (c, cell) in layout_row(line, &columns.widths).iter().enumerate() {
+        let column_width = columns.x(columns.widths[c] as f32);
+        let left = origin.x + columns.x(table_box::text_left(&columns.widths, c));
+        let fraction = table_box::align_fraction(columns.aligns[c]);
+        for (j, range) in cell.lines.iter().enumerate() {
+            if range.is_empty() {
+                continue;
+            }
+            let shown = build_cell_line(&line[range.clone()]);
+            let wrapped = shape_entry(
+                &shown,
+                None,
+                (font, font_size),
+                colors,
+                (&[], None),
+                header,
+                window,
+            );
+            let spare = (column_width - wrapped.size(line_height).width).max(px(0.));
+            let at = point(left + spare * fraction, origin.y + line_height * j as f32);
+            let _ = wrapped.paint(at, line_height, TextAlign::Left, None, window, cx);
+        }
     }
 }
 
@@ -2156,44 +2311,8 @@ fn paint_lines(
     }
 
     let mut y_offset = layout.cumulative_at(range.start);
-    // Accumulated across a table's own lines, then painted and cleared
-    // once its last line is reached — see `TablePaint`/`paint_table_grid_
-    // lines`. Never started at all for a table that's rendering raw
-    // (`table_active`), matching every other construct's own "border
-    // disappears while active" behavior. Pre-seeded from the estimate
-    // (`layout.cumulative_at`) if this window starts *inside* a table whose
-    // header row is off-screen — the main loop below only ever discovers
-    // a table's start by actually visiting its header row, which doesn't
-    // happen if that row is outside `range`.
-    let mut table_paint: Option<TablePaint> = None;
-    if let Some(idx) = table_index_at(tables, range.start) {
-        let table = &tables[idx];
-        if table.start_line < range.start {
-            let max_chars =
-                table_row_char_budget(bounds.size.width, font, font_size, text_color, window);
-            let widths = table_preview::resolve_widths(&table.columns, max_chars);
-            let char_width = mono_char_width(font, font_size, text_color, window);
-            // A table's own indent is always `None`, so its header row's
-            // `line_origin.x` (what the real `is_first_row` branch below
-            // would use) is always just `bounds.origin.x` — safe to use
-            // directly even though that row itself is off-screen.
-            let column_x: Vec<Pixels> = table_preview::column_divider_char_offsets(&widths)
-                .into_iter()
-                .map(|offset| bounds.origin.x + char_width * offset as f32)
-                .collect();
-            let delimiter_line = table.start_line + 1;
-            let divider_y = (delimiter_line < range.start).then(|| {
-                bounds.origin.y
-                    + layout.cumulative_at(delimiter_line)
-                    + layout.height(delimiter_line) / 2.
-            });
-            table_paint = Some(TablePaint {
-                top: bounds.origin.y + layout.cumulative_at(table.start_line),
-                divider_y,
-                column_x,
-            });
-        }
-    }
+    paint_table_boxes(&range, view, doc, &palette, window);
+    let mut columns: Option<(usize, TableColumns)> = None;
 
     for i in range.clone() {
         let line_range = layout.line_range(i);
@@ -2232,7 +2351,7 @@ fn paint_lines(
                 _ if image_block(line_text, &state).is_some() => "image",
                 (Some(c), ..) if c.is_header(i) => "callout-header",
                 (Some(_), ..) => "callout",
-                (None, TableLineKind::Row(_) | TableLineKind::Delimiter(_), _) => "table",
+                (None, TableLineKind::Row(_) | TableLineKind::Delimiter, _) => "table",
                 (None, _, LineRole::FenceContent) => "code",
                 _ => "plain",
             };
@@ -2295,50 +2414,30 @@ fn paint_lines(
             );
         }
 
-        if !state.table_active {
-            // `table_kind` was already moved into `shape_display_line`
-            // above — cheap to resolve again (a plain array lookup) rather
-            // than restructuring this loop just to keep the first value
-            // alive.
-            let table_kind_for_geometry = table_line_kind(tables, i);
-            if let TableLineKind::Row(table) | TableLineKind::Delimiter(table) =
-                &table_kind_for_geometry
-            {
-                if table.is_first_row(i) {
-                    let max_chars = table_row_char_budget(
-                        bounds.size.width,
-                        font,
-                        font_size,
-                        text_color,
-                        window,
-                    );
-                    let widths = table_preview::resolve_widths(&table.columns, max_chars);
-                    let char_width = mono_char_width(font, font_size, text_color, window);
-                    let column_x = table_preview::column_divider_char_offsets(&widths)
-                        .into_iter()
-                        .map(|offset| line_origin.x + char_width * offset as f32)
-                        .collect();
-                    table_paint = Some(TablePaint {
-                        top: bounds.origin.y + y_offset,
-                        divider_y: None,
-                        column_x,
-                    });
-                }
-                if table.is_delimiter(i)
-                    && let Some(paint) = table_paint.as_mut()
-                {
-                    paint.divider_y = Some(bounds.origin.y + y_offset + total_height / 2.);
-                }
-                if table.is_last_line(i)
-                    && let Some(paint) = table_paint.take()
-                {
-                    paint_table_grid_lines(
-                        &paint,
-                        bounds.origin.y + y_offset + total_height,
-                        rule,
-                        window,
-                    );
-                }
+        let rendered_table_row =
+            !state.table_active && matches!(state.table_kind, TableLineKind::Row(_));
+        if let (true, TableLineKind::Row(table)) = (rendered_table_row, &state.table_kind) {
+            let index = table_index_at(tables, i).unwrap_or_default();
+            if columns.as_ref().is_none_or(|(n, _)| *n != index) {
+                let boxed = TableColumns::of(
+                    table,
+                    bounds.size.width,
+                    (font, font_size, text_color),
+                    window,
+                );
+                columns = Some((index, boxed));
+            }
+            if let Some((_, columns)) = &columns {
+                paint_table_row(
+                    line_text,
+                    columns,
+                    bounds.origin + point(px(0.), y_offset),
+                    table.is_first_row(i),
+                    (font, font_size, line_height),
+                    &inline,
+                    window,
+                    cx,
+                );
             }
         }
 
@@ -2361,7 +2460,7 @@ fn paint_lines(
             }
         }
 
-        if results.len() > 1 {
+        if results.len() > 1 || rendered_table_row {
             // A wrapped table row — see `shape_display_line`'s own doc
             // comment on why this sub-row split can't carry a byte-exact
             // raw↔display mapping the way a regular wrapped paragraph
@@ -3420,7 +3519,7 @@ mod tests {
     }
 
     #[gpui_kit::test]
-    fn a_table_renders_as_a_grid_until_the_cursor_enters_it_then_renders_raw(
+    fn a_table_renders_as_a_box_until_the_cursor_enters_it_then_renders_raw(
         cx: &mut TestAppContext,
     ) {
         let text = "| Name | Age |\n| --- | --- |\n| Alice | 30 |";
@@ -3450,12 +3549,9 @@ mod tests {
                 assert_eq!(results.len(), 1, "expected exactly one entry");
                 results.remove(0)
             };
-            // Columns resolve to width 5 ("Alice" is the widest cell in
-            // column 0) and width 3 ("Age"/"Age" is widest in column 1).
-            // The blank gaps at the border positions aren't drawn as text —
-            // `element.rs`'s `paint_table_grid_lines` paints real vector
-            // lines over them instead, see that function's own doc comment.
-            assert_eq!(grid.display_text, "  Name    Age  ");
+            // A rendered row is empty text: `paint_table_row` draws its cells and
+            // `paint_table_boxes` the box over it.
+            assert_eq!(grid.display_text, "");
 
             let (_, raw) = {
                 let mut results = shape_display_line(

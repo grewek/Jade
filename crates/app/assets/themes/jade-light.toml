@@ -52,6 +52,7 @@ surface_active = "gray_83"               # pressed buttons
 # Lines
 border        = "gray_90"                # dividers between rails, sidebars, tabs, editor, status bar
 border_strong = "gray_60"                # editor decoration: quote bar, table grid, horizontal rule
+table_header  = "lavender_light"         # table header row background
 
 # Text
 text           = "ink"                   # body, headings, active tab

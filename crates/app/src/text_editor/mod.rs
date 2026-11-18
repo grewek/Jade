@@ -24,6 +24,7 @@ mod paint_trace;
 #[cfg(not(any(test, feature = "debug-socket")))]
 #[path = "paint_trace_stub.rs"]
 mod paint_trace;
+mod table_box;
 mod table_preview;
 #[cfg(test)]
 mod test_support;

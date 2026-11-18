@@ -19,6 +19,7 @@ surface_active = "surface2"        # pressed buttons
 # Lines
 border        = "surface1"         # dividers between rails, sidebars, tabs, editor, status bar
 border_strong = "overlay0"         # editor decoration: quote bar, table grid, horizontal rule
+table_header  = "surface0"         # table header row background
 
 # Text
 text           = "text"            # body, headings, active tab

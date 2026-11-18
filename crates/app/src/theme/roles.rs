@@ -35,6 +35,7 @@ named_enum!(Role {
     SurfaceActive => "surface_active",
     Border => "border",
     BorderStrong => "border_strong",
+    TableHeader => "table_header",
     Text => "text",
     TextMuted => "text_muted",
     TextSubtle => "text_subtle",
