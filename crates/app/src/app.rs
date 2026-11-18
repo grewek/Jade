@@ -2934,7 +2934,12 @@ mod tests {
 
         assert!(!frames.is_empty(), "no paint frames arrived");
         let (_, first) = &frames[0];
-        assert!(first.contains("wrap_width=unknown"), "first frame: {first}");
+        // Rows are rebuilt for the real width while painting, so even the first frame
+        // wraps at the width it paints at.
+        assert!(
+            first.contains("bounds=(277,51 982x") && first.contains("wrap_width=982"),
+            "first frame: {first}"
+        );
         assert!(
             first.contains("callout"),
             "the fixture opens on callouts: {first}"
@@ -2942,6 +2947,84 @@ mod tests {
         for (consistent, trace) in &frames {
             assert!(*consistent && !trace.contains("INCONSISTENT"), "{trace}");
         }
+    }
+
+    /// Closing or opening a sidebar changes the editor's width; the row cache must be
+    /// rebuilt for that width in the same frame, or callout bands sit at stale heights.
+    #[gpui_kit::test]
+    fn toggling_a_sidebar_paints_rows_at_the_new_width(cx: &mut TestAppContext) {
+        use crate::debug_server::test_client::{TestClient, start_test_server};
+        use jade_debug_protocol::{Answer, Command, Event, Message, Topic};
+        let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
+        let Ok(content) = std::fs::read_to_string(fixture_path) else {
+            eprintln!("stress fixture not found at {fixture_path:?}, skipping");
+            return;
+        };
+        let sock = start_test_server();
+        let mut client = TestClient::connect(&sock);
+        assert_eq!(
+            client.call(Command::Subscribe {
+                topic: Topic::Paint
+            }),
+            Answer::Ok
+        );
+        let (_dir, window, _editor) = open_stress_fixture(cx, &content);
+        // The number after `key=(x,y ` up to the next `x`, e.g. `bounds=(277,51 982x8785139)`.
+        let width_of = |trace: &str, key: &str| -> Option<f32> {
+            let rest = trace.split(key).nth(1)?;
+            let rest = rest.split_once(' ').map_or(rest, |(_, r)| r);
+            rest.split('x').next()?.parse().ok()
+        };
+        for toggle in [
+            "toggle-backlinks",
+            "toggle-backlinks",
+            "toggle-sidebar",
+            "toggle-sidebar",
+        ] {
+            while client
+                .try_recv(std::time::Duration::from_millis(1))
+                .is_some()
+            {}
+            cx.update_window(window, |_, window, cx| {
+                window.click(toggle, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            // The headless window does not redraw itself after `notify`.
+            for _ in 0..3 {
+                cx.run_until_parked();
+                cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                    .unwrap();
+            }
+            let mut last = None;
+            while let Some(message) = client.try_recv(std::time::Duration::from_millis(100)) {
+                if let Message::Event {
+                    event:
+                        Event::Paint {
+                            consistent, trace, ..
+                        },
+                } = message
+                {
+                    assert!(consistent, "{toggle}: {trace}");
+                    last = Some(trace);
+                }
+            }
+            let trace = last.unwrap_or_else(|| panic!("{toggle}: no paint frame"));
+            let (bounds, wrapped) = (
+                width_of(&trace, "bounds=(").expect("bounds width"),
+                trace
+                    .split("wrap_width=")
+                    .nth(1)
+                    .and_then(|r| r.split_whitespace().next())
+                    .and_then(|w| w.parse::<f32>().ok())
+                    .expect("wrap width"),
+            );
+            assert!(
+                (bounds - wrapped).abs() < 1.0,
+                "{toggle}: painted at {bounds}px but rows wrapped at {wrapped}px: {trace}"
+            );
+        }
+        std::fs::remove_file(&sock).unwrap();
     }
 
     #[gpui_kit::test]

@@ -819,6 +819,27 @@ impl LineLayout {
         };
     }
 
+    /// The width the cached row counts were built for.
+    pub(super) fn rows_built_for(&self) -> Pixels {
+        self.row_cache.borrow().available_width
+    }
+
+    /// Rebuilds every row count for `width`; see the call in `render_editor`.
+    pub(super) fn rebuild_rows_for(
+        &self,
+        text: &str,
+        (cursor, focused): (usize, bool),
+        width: Pixels,
+        char_width: Pixels,
+        (font, font_size, text_color): (&Font, Pixels, Hsla),
+        window: &mut Window,
+    ) {
+        let doc = self.doc_cache.borrow();
+        self.row_cache.borrow_mut().rebuild(
+            text, &doc, cursor, focused, width, char_width, font, font_size, text_color, window,
+        );
+    }
+
     /// The line containing buffer byte offset `cursor`.
     pub(super) fn line_at(&self, cursor: usize) -> usize {
         self.doc_cache.borrow().line_at(cursor)
@@ -1509,6 +1530,27 @@ pub(super) fn render_editor(
                         last_autoscrolled_cursor.set(Some(cursor));
                     }
                     let viewport = scroll_handle.bounds();
+                    // `render` sized the rows from the previous layout's width, so a
+                    // sidebar toggle reaches it one frame late. Layout is final here:
+                    // rebuild for the real width before anything is placed from the
+                    // rows, and `notify` so the next render sizes the scroll extent.
+                    let real_width = viewport.size.width;
+                    if real_width > px(0.) && layout.rows_built_for() != real_width {
+                        editor_entity.update(cx, |editor, _| {
+                            let char_width = mono_char_width(&font, font_size, text_color, window);
+                            layout.rebuild_rows_for(
+                                editor.buffer().text(),
+                                (cursor, focused),
+                                real_width,
+                                char_width,
+                                (&font, font_size, text_color),
+                                window,
+                            );
+                        });
+                        // A `notify` made while painting is dropped; defer it.
+                        let entity = editor_entity.clone();
+                        window.defer(cx, move |_, cx| entity.update(cx, |_, cx| cx.notify()));
+                    }
                     let view = Rc::new(FrameView {
                         layout: layout.clone(),
                         cursor,
