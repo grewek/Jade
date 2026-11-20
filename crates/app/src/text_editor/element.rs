@@ -2484,7 +2484,13 @@ fn paint_table_row(
     {
         let column_width = columns.x(columns.widths[c] as f32);
         let left = origin.x + columns.x(table_box::text_left(&columns.widths, c));
-        let fraction = table_box::align_fraction(columns.aligns[c]);
+        // The cell being edited is always left-aligned, so typing starts at its
+        // left edge whatever the column's alignment.
+        let fraction = if editing == Some(c) {
+            0.0
+        } else {
+            table_box::align_fraction(columns.aligns[c])
+        };
         for (j, range) in cell.lines.iter().enumerate() {
             if range.is_empty() {
                 continue;
@@ -2561,7 +2567,6 @@ fn paint_editing_cell(
         columns.x(table_box::x_in_line(
             line,
             &columns.widths,
-            &columns.aligns,
             column,
             range,
             offset,
@@ -2590,7 +2595,7 @@ fn paint_editing_cell(
     }
     if let Some(caret) = caret.filter(|c| *c >= line_start) {
         let offset = caret - line_start;
-        let (row, x) = table_box::caret_at(line, &columns.widths, &columns.aligns, column, offset);
+        let (row, x) = table_box::caret_at(line, &columns.widths, column, offset);
         window.paint_quad(fill(
             Bounds {
                 origin: point(origin.x + columns.x(x), origin.y + line_height * row as f32),

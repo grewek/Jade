@@ -82,7 +82,12 @@ pub(super) fn offset_at_editing(
     };
     let chars = shown.display_text.chars().count();
     let spare = widths[column].saturating_sub(chars) as f32;
-    let aligned = text_left(widths, column) + spare * align_fraction(aligns[column]);
+    let fraction = if editing == Some(column) {
+        0.0
+    } else {
+        align_fraction(aligns[column])
+    };
+    let aligned = text_left(widths, column) + spare * fraction;
     let n = ((x - aligned).round().max(0.0) as usize).min(chars);
     let byte = shown
         .display_text
@@ -307,13 +312,7 @@ fn shown_len(word: &str) -> usize {
 
 /// Where byte `offset` of the edited cell `column` of `line` is: the row of the
 /// cell it is on, and its x in characters from the table's left edge.
-pub(super) fn caret_at(
-    line: &str,
-    widths: &[usize],
-    aligns: &[Align],
-    column: usize,
-    offset: usize,
-) -> (usize, f32) {
+pub(super) fn caret_at(line: &str, widths: &[usize], column: usize, offset: usize) -> (usize, f32) {
     let cell = &layout_row_editing(line, widths, Some(column))[column];
     let row = cell
         .lines
@@ -322,7 +321,7 @@ pub(super) fn caret_at(
         .unwrap_or(cell.lines.len() - 1);
     (
         row,
-        x_in_line(line, widths, aligns, column, &cell.lines[row], offset),
+        x_in_line(line, widths, column, &cell.lines[row], offset),
     )
 }
 
@@ -330,16 +329,13 @@ pub(super) fn caret_at(
 pub(super) fn x_in_line(
     line: &str,
     widths: &[usize],
-    aligns: &[Align],
     column: usize,
     range: &Range<usize>,
     offset: usize,
 ) -> f32 {
     let at = offset.clamp(range.start, range.end);
     let before = line[range.start..at].chars().count();
-    let chars = line[range.clone()].chars().count();
-    let spare = widths[column].saturating_sub(chars) as f32;
-    text_left(widths, column) + spare * align_fraction(aligns[column]) + before as f32
+    text_left(widths, column) + before as f32
 }
 
 /// The byte of the edited cell line `range` nearest `x` characters from the
@@ -347,14 +343,12 @@ pub(super) fn x_in_line(
 pub(super) fn offset_in_line(
     line: &str,
     widths: &[usize],
-    aligns: &[Align],
     column: usize,
     range: &Range<usize>,
     x: f32,
 ) -> usize {
     let chars = line[range.clone()].chars().count();
-    let spare = widths[column].saturating_sub(chars) as f32;
-    let first = text_left(widths, column) + spare * align_fraction(aligns[column]);
+    let first = text_left(widths, column);
     let n = ((x - first).round().max(0.0) as usize).min(chars);
     let byte = line[range.clone()]
         .char_indices()
@@ -446,21 +440,36 @@ mod tests {
     /// end of a full cell must not wrap the caret onto a new line.
     #[test]
     fn trailing_spaces_in_an_edited_cell_stay_on_its_line() {
-        let aligns = [Align::Left];
         for line in ["| ab  |", "| ab    |", "| a b  |"] {
             let ranges = cell_ranges(line);
             let shown = edit_range(line, ranges[0].clone());
-            let (row, _) = caret_at(
-                line,
-                &[line[shown.clone()].trim().len()],
-                &aligns,
-                0,
-                shown.end,
-            );
+            let (row, _) = caret_at(line, &[line[shown.clone()].trim().len()], 0, shown.end);
             assert_eq!(row, 0, "{line:?}");
             let lines = layout_row_editing(line, &[line[shown].trim().len()], Some(0));
             assert_eq!(lines[0].lines.len(), 1, "{line:?}");
         }
+    }
+
+    /// Whatever the column's alignment, the cell being edited starts at its
+    /// left edge, and a click maps back to the same bytes.
+    #[test]
+    fn the_edited_cell_is_left_aligned_in_a_right_aligned_column() {
+        let line = "| xxxxxxxx | ab |";
+        let widths = [8, 8];
+        let aligns = [Align::Left, Align::Right];
+        let range = cell_ranges(line)[1].clone();
+        let shown = edit_range(line, range);
+        let (row, x) = caret_at(line, &widths, 1, shown.start);
+        assert_eq!((row, x), (0, text_left(&widths, 1)));
+        let click = offset_at_editing(
+            line,
+            &widths,
+            &aligns,
+            text_left(&widths, 1) + 1.0,
+            0,
+            Some(1),
+        );
+        assert_eq!(click, shown.start + 1);
     }
 
     #[test]

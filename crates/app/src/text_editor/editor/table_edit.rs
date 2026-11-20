@@ -423,8 +423,7 @@ impl Editor {
             let text = self.buffer.text();
             let content = &text[cell.line_start..doc.line_end_byte(cell.line)];
             let at = self.buffer.cursor() - cell.line_start;
-            let (row, x) =
-                table_box::caret_at(content, &columns.widths, &columns.aligns, cell.column, at);
+            let (row, x) = table_box::caret_at(content, &columns.widths, cell.column, at);
             let rows = table_box::layout_row_editing(content, &columns.widths, Some(cell.column))
                 [cell.column]
                 .lines
@@ -439,7 +438,6 @@ impl Editor {
                 let offset = table_box::offset_in_line(
                     content,
                     &columns.widths,
-                    &columns.aligns,
                     cell.column,
                     &lines[wanted],
                     x,
@@ -466,14 +464,8 @@ impl Editor {
                         } else {
                             &lines[lines.len() - 1]
                         };
-                        let offset = table_box::offset_in_line(
-                            other,
-                            &columns.widths,
-                            &columns.aligns,
-                            column,
-                            range,
-                            x,
-                        );
+                        let offset =
+                            table_box::offset_in_line(other, &columns.widths, column, range, x);
                         Some(start + offset)
                     }
                 }
