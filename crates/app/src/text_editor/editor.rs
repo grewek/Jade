@@ -7,11 +7,13 @@ use std::sync::Arc;
 use gpui_kit::*;
 
 mod column_edit;
+pub(super) use column_edit::ColumnMenu;
 mod table_edit;
 
 use super::EditorBuffer;
 use super::block;
 use super::callout::callout_index_at;
+use super::column_handles::ColumnDrag;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{
@@ -140,6 +142,10 @@ pub struct Editor {
     pub(super) table_hover: Option<(usize, Vec<Handle>)>,
     /// A column or row grip being dragged.
     pub(super) table_drag: Option<TableDrag>,
+    /// The columns region whose controls are shown for the pointer.
+    pub(super) column_hover: Option<usize>,
+    /// A divider being dragged.
+    pub(super) column_drag: Option<ColumnDrag>,
     /// The vault root and this note's id, for finding image embeds' files.
     /// `None` (tests, a note not in a vault) leaves image blocks at their
     /// placeholder height.
@@ -171,6 +177,8 @@ impl Editor {
             raw_region_pinned: None,
             table_hover: None,
             table_drag: None,
+            column_hover: None,
+            column_drag: None,
             image_context: None,
         }
     }

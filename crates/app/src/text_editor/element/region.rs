@@ -127,8 +127,8 @@ fn column_bounds(bounds: Bounds<Pixels>, column: &ShapedColumn) -> Bounds<Pixels
 pub(super) fn paint_region(
     env: &PaintEnv,
     shaped: &ShapedRegion,
-    bounds: Bounds<Pixels>,
-    top: Pixels,
+    region: &Columns,
+    (bounds, top): (Bounds<Pixels>, Pixels),
     (window, cx): (&mut Window, &mut App),
 ) {
     let doc = env.doc;
@@ -147,6 +147,7 @@ pub(super) fn paint_region(
             divider,
         ));
     }
+    paint_region_controls(env, shaped, region, (bounds, top), (window, cx));
     for column in &shaped.columns {
         let frame = column_bounds(bounds, column);
         paint_column_blocks(env, column, frame, top, (window, cx));
@@ -166,6 +167,87 @@ pub(super) fn paint_region(
             };
             paint_line(env, &slot, &mut tables, window, cx);
         }
+    }
+}
+
+/// The divider grips, `+` and unwrap while the pointer is over the region, or
+/// the dragged grip and its drop line.
+fn paint_region_controls(
+    env: &PaintEnv,
+    shaped: &ShapedRegion,
+    region: &Columns,
+    (bounds, top): (Bounds<Pixels>, Pixels),
+    (window, cx): (&mut Window, &mut App),
+) {
+    let doc = env.doc;
+    let Some(index) = doc.region_index_at(region.start_line) else {
+        return;
+    };
+    let drag = env.column_drag.filter(|d| d.region == index);
+    if drag.is_none() && env.column_hover != Some(index) {
+        return;
+    }
+    let (Some(first), Some(last)) = (shaped.columns.first(), shaped.columns.last()) else {
+        return;
+    };
+    let width = f32::from(last.x + last.width);
+    let height = f32::from(env.line_height * shaped.rows as f32);
+    let dividers = shaped
+        .columns
+        .windows(2)
+        .map(|pair| f32::from((pair[0].x + pair[0].width + pair[1].x) / 2.))
+        .collect();
+    let frame = column_handles::Frame {
+        dividers,
+        width,
+        height,
+        can_add: region.count < columns::MAX_COLUMNS,
+    };
+    let origin = point(bounds.origin.x + first.x, bounds.origin.y + top);
+    let at = |handle| {
+        let (x, y, w, h) = column_handles::rect_of(&frame, handle);
+        Bounds {
+            origin: origin + point(px(x), px(y)),
+            size: size(px(w), px(h)),
+        }
+    };
+    let colors = handle_colors(env.palette, env.text_color);
+    if let Some(drag) = drag {
+        // Only the dragged grip, at the divider the shares would give.
+        let Some(split) = columns::split(width, &drag.percent) else {
+            return;
+        };
+        let moved = column_handles::Frame {
+            dividers: (0..split.count - 1).map(|k| split.divider_x(k)).collect(),
+            ..frame
+        };
+        let handle = column_handles::Handle::Divider(drag.divider);
+        let (x, y, w, h) = column_handles::rect_of(&moved, handle);
+        let grip = Bounds {
+            origin: origin + point(px(x), px(y)),
+            size: size(px(w), px(h)),
+        };
+        let line = Bounds {
+            origin: origin + point(px(moved.dividers[drag.divider]) - px(1.), px(0.)),
+            size: size(px(2.), px(moved.height)),
+        };
+        window.paint_quad(fill(line, colors.accent));
+        paint_control(
+            grip,
+            "icons/grip-vertical.svg",
+            (false, true),
+            &colors,
+            (window, cx),
+        );
+        return;
+    }
+    for handle in column_handles::shown(&frame) {
+        let (round, icon) = match handle {
+            column_handles::Handle::Divider(_) => (false, "icons/grip-vertical.svg"),
+            column_handles::Handle::Add => (true, "icons/plus.svg"),
+            column_handles::Handle::Unwrap => (true, "icons/x.svg"),
+        };
+        paint_control(at(handle), icon, (round, false), &colors, (window, cx));
     }
 }
 

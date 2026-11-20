@@ -13,8 +13,11 @@ use super::block::{self, image_block};
 use super::block_preview::LineRole;
 use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
+use super::column_handles::{self, ColumnDrag};
+use super::column_ops;
 use super::columns::{self, Columns};
 use super::document_cache::{DocumentCache, EditPatch};
+use super::editor::ColumnMenu;
 use super::fenwick::Fenwick;
 use super::image_cache::{self, ImageCache};
 use super::images::{self, ImageInfo, ImageSizes};
@@ -1994,6 +1997,8 @@ pub(super) fn render_editor(
                         text_color,
                         table_hover: editor_entity.read(cx).table_hover.clone(),
                         table_drag: editor_entity.read(cx).table_drag,
+                        column_hover: editor_entity.read(cx).column_hover,
+                        column_drag: editor_entity.read(cx).column_drag.clone(),
                     });
                     editor_entity.update(cx, |editor, cx| {
                         if editor.hovering_link {
@@ -2052,8 +2057,12 @@ fn table_menu(
     editor: Entity<Editor>,
 ) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
     move |menu, _window, cx| {
+        let columns = column_menu(&editor, cx);
         let Some(state) = editor.read(cx).table_menu_state() else {
-            return menu;
+            return match columns {
+                Some((first, second)) => menu.item(first).item(second),
+                None => menu,
+            };
         };
         let item = |label: &'static str, op: Op, enabled: bool| {
             let editor = editor.clone();
@@ -2068,6 +2077,12 @@ fn table_menu(
         let align = |label: &'static str, to: Align| {
             item(label, Op::Align(to), true).checked(state.align == to)
         };
+        let (first, second) = columns.unwrap_or_else(|| {
+            (
+                PopupMenuItem::new("Make columns").disabled(true),
+                PopupMenuItem::new("Unwrap columns").disabled(true),
+            )
+        });
         menu.item(item("Insert row above", Op::RowAbove, state.can_edit_row))
             .item(item("Insert row below", Op::RowBelow, true))
             .item(item("Insert column left", Op::ColumnLeft, true))
@@ -2083,7 +2098,42 @@ fn table_menu(
             .item(align("Align left", Align::Left))
             .item(align("Align center", Align::Center))
             .item(align("Align right", Align::Right))
+            .separator()
+            .item(first)
+            .item(second)
     }
+}
+
+/// The two column entries for the caret: add a column and unwrap inside a
+/// region, "Make columns" (and a disabled unwrap) on a block, none elsewhere.
+fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<(PopupMenuItem, PopupMenuItem)> {
+    let state = editor.read(cx).column_menu_state()?;
+    let run = |label: &'static str,
+               enabled: bool,
+               action: fn(&mut Editor, &mut Window, &mut Context<Editor>) -> bool| {
+        let editor = editor.clone();
+        PopupMenuItem::new(label)
+            .disabled(!enabled)
+            .on_click(move |_, window, cx| {
+                editor.update(cx, |editor, cx| {
+                    action(editor, window, cx);
+                });
+            })
+    };
+    Some(match state {
+        ColumnMenu::Block => (
+            run("Make columns", true, Editor::make_columns),
+            PopupMenuItem::new("Unwrap columns").disabled(true),
+        ),
+        ColumnMenu::Region { can_add } => (
+            run("Add column", can_add, |e, w, c| {
+                e.run_region_menu(true, w, c)
+            }),
+            run("Unwrap columns", true, |e, w, c| {
+                e.run_region_menu(false, w, c)
+            }),
+        ),
+    })
 }
 
 /// Registers this frame's mouse listeners: press to focus and place the
@@ -2099,6 +2149,50 @@ fn register_mouse_handling(
 ) {
     let bounds = view.bounds;
 
+    // A press on a region's divider grip starts a ratio drag; `+` adds a
+    // column and the cross unwraps. Capture phase, like the table controls.
+    window.on_mouse_event({
+        let editor_entity = editor_entity.clone();
+        let view = view.clone();
+        move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Left
+                || window.has_active_dialog(cx)
+            {
+                return;
+            }
+            let Some((region, handle)) =
+                column_handle_for_pointer(editor_entity.read(cx), &view, event.position)
+            else {
+                return;
+            };
+            cx.stop_propagation();
+            editor_entity.update(cx, |editor, cx| {
+                editor.column_hover = None;
+                match handle {
+                    column_handles::Handle::Add => {
+                        editor.add_region_column(region, window, cx);
+                    }
+                    column_handles::Handle::Unwrap => {
+                        editor.unwrap_region(region, window, cx);
+                    }
+                    column_handles::Handle::Divider(divider) => {
+                        let percent = {
+                            let doc = editor.document_cache.borrow();
+                            let r = doc.columns()[region];
+                            r.percent[..r.count].to_vec()
+                        };
+                        editor.column_drag = Some(ColumnDrag {
+                            region,
+                            divider,
+                            percent,
+                        });
+                        cx.notify();
+                    }
+                }
+            });
+        }
+    });
     // A press on a table's `+` adds the row or column there, on a grip starts
     // dragging it. In the capture phase, and stopping the event, since the
     // controls straddle the table's edge, partly outside `bounds`.
@@ -2151,7 +2245,7 @@ fn register_mouse_handling(
             let offset =
                 hit_for_position(editor_entity.read(cx), &view, event.position, window).offset;
             editor_entity.update(cx, |editor, cx| {
-                if editor.is_table_line_at(offset) {
+                if editor.is_table_line_at(offset) || editor.buffer().selection().is_none() {
                     editor.buffer_mut().set_cursor(offset, false);
                     cx.notify();
                 }
@@ -2222,6 +2316,17 @@ fn register_mouse_handling(
                 return;
             }
             let dialog = window.has_active_dialog(cx);
+            if let Some(drag) = editor_entity.read(cx).column_drag.clone() {
+                let percent =
+                    column_drag_percent(editor_entity.read(cx), &view, &drag, event.position);
+                if let Some(percent) = percent.filter(|p| !dialog && *p != drag.percent) {
+                    editor_entity.update(cx, |editor, cx| {
+                        editor.column_drag = Some(ColumnDrag { percent, ..drag });
+                        cx.notify();
+                    });
+                }
+                return;
+            }
             if let Some(drag) = editor_entity.read(cx).table_drag {
                 let over =
                     drop_for_pointer(editor_entity.read(cx), &view, drag, event.position, window);
@@ -2240,6 +2345,17 @@ fn register_mouse_handling(
                 } else {
                     hover_for_pointer(editor_entity.read(cx), &view, event.position, window)
                 };
+                let over = (!dialog)
+                    .then(|| {
+                        column_hover_for_pointer(editor_entity.read(cx), &view, event.position)
+                    })
+                    .flatten();
+                if editor_entity.read(cx).column_hover != over {
+                    editor_entity.update(cx, |editor, cx| {
+                        editor.column_hover = over;
+                        cx.notify();
+                    });
+                }
                 if editor_entity.read(cx).table_hover != hover {
                     editor_entity.update(cx, |editor, cx| {
                         editor.table_hover = hover;
@@ -2285,6 +2401,9 @@ fn register_mouse_handling(
             if editor.table_drag.is_some() {
                 editor.finish_table_drag(window, cx);
             }
+            if editor.column_drag.is_some() {
+                editor.finish_column_drag(window, cx);
+            }
             if editor.is_dragging {
                 editor.is_dragging = false;
                 cx.notify();
@@ -2309,6 +2428,9 @@ struct FrameView {
     /// The table controls shown and the grip being dragged, as of this frame.
     table_hover: Option<(usize, Vec<Handle>)>,
     table_drag: Option<TableDrag>,
+    /// The columns region whose controls show, and the divider being dragged.
+    column_hover: Option<usize>,
+    column_drag: Option<ColumnDrag>,
 }
 
 /// The byte offset closest to `position` (window coordinates): the line
@@ -2838,6 +2960,81 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
     (Grid { col_x, row_y }, top)
 }
 
+/// The side-by-side region under the pointer (or just above it, where its
+/// buttons are): its index, its controls' frame and the pointer in it.
+fn column_frame_at(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+) -> Option<(usize, column_handles::Frame, (f32, f32))> {
+    let doc = editor.document_cache.borrow();
+    let regions = doc.columns();
+    let y = position.y - view.bounds.origin.y;
+    let margin = px(column_handles::MARGIN);
+    let index = regions
+        .partition_point(|r| view.layout.cumulative_at(r.start_line) - margin <= y)
+        .checked_sub(1)?;
+    let region = regions[index];
+    let (_, split) = doc.side_by_side(region.start_line)?;
+    let top = view.layout.cumulative_at(region.start_line);
+    let height = view.layout.height(region.start_line);
+    let last = region.count - 1;
+    let frame = column_handles::Frame {
+        dividers: (0..last).map(|k| split.divider_x(k)).collect(),
+        width: split.x(last) + split.width(last),
+        height: f32::from(height),
+        can_add: region.count < columns::MAX_COLUMNS,
+    };
+    let p = (
+        f32::from(position.x - view.bounds.origin.x),
+        f32::from(y - top),
+    );
+    Some((index, frame, p))
+}
+
+/// The region whose controls show for the pointer.
+fn column_hover_for_pointer(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+) -> Option<usize> {
+    let (index, frame, p) = column_frame_at(editor, view, position)?;
+    column_handles::hover_at(&frame, p).then_some(index)
+}
+
+/// The control under the pointer, when its region's controls are shown.
+fn column_handle_for_pointer(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+) -> Option<(usize, column_handles::Handle)> {
+    let (index, frame, p) = column_frame_at(editor, view, position)?;
+    let handle = column_handles::handle_at(&frame, p)?;
+    Some((index, handle))
+}
+
+/// The shares dragging `drag`'s divider to the pointer would give.
+fn column_drag_percent(
+    editor: &Editor,
+    view: &FrameView,
+    drag: &ColumnDrag,
+    position: Point<Pixels>,
+) -> Option<Vec<u8>> {
+    let doc = editor.document_cache.borrow();
+    let region = *doc.columns().get(drag.region)?;
+    let (_, split) = doc.side_by_side(region.start_line)?;
+    let k = drag.divider;
+    let x = f32::from(position.x - view.bounds.origin.x);
+    // Column `k`'s right edge is half a gap left of the pointer.
+    let width = x - columns::GAP / 2. - split.x(k);
+    let usable: f32 = (0..region.count).map(|c| split.width(c)).sum();
+    Some(column_ops::dragged(
+        &region.percent[..region.count],
+        k,
+        width / usable * 100.,
+    ))
+}
+
 /// The rendered table the pointer is over (or in the margin left of or above
 /// it), its grid, and the pointer relative to the table's top left.
 fn table_at_pointer(
@@ -3105,6 +3302,40 @@ struct HandleColors {
 
 /// Draws a table's edge controls: a filled `+` circle, a bordered grip (filled
 /// with the accent while it is dragged), and while dragging the drop line.
+/// One control: a round accent button (`round`) or a bordered grip, accent
+/// while `active`.
+fn paint_control(
+    bounds: Bounds<Pixels>,
+    icon: &'static str,
+    (round, active): (bool, bool),
+    colors: &HandleColors,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let filled = round || active;
+    let (fill, border, glyph) = if filled {
+        (colors.accent, Hsla::transparent_black(), colors.on_accent)
+    } else {
+        (colors.fill, colors.border, colors.icon)
+    };
+    let radius = if round {
+        bounds.size.width / 2.0
+    } else {
+        px(4.)
+    };
+    let edge = if filled { px(0.) } else { px(1.) };
+    window.paint_quad(quad(bounds, radius, fill, edge, border, BorderStyle::Solid));
+    let inner = if round { px(10.) } else { px(8.) };
+    let glyph_bounds = Bounds {
+        origin: bounds.origin
+            + point(
+                (bounds.size.width - inner) / 2.0,
+                (bounds.size.height - inner) / 2.0,
+            ),
+        size: size(inner, inner),
+    };
+    paint_icon(icon, glyph_bounds, glyph, (window, cx));
+}
+
 fn paint_table_handles(
     grid: &Grid,
     origin: Point<Pixels>,
@@ -3119,42 +3350,14 @@ fn paint_table_handles(
             size: size(px(w), px(h)),
         }
     };
-    let mut draw = |handle: Handle, window: &mut Window, cx: &mut App| {
-        let bounds = at(handle);
+    let draw = |handle: Handle, window: &mut Window, cx: &mut App| {
         let (is_add, icon) = match handle {
             Handle::AddColumn(_) | Handle::AddRow(_) => (true, "icons/plus.svg"),
             Handle::ColumnGrip(_) => (false, "icons/grip-horizontal.svg"),
             Handle::RowGrip(_) => (false, "icons/grip-vertical.svg"),
         };
         let active = dragging.is_some_and(|d| d.grip == handle);
-        let (fill, border, glyph) = if is_add || active {
-            (colors.accent, Hsla::transparent_black(), colors.on_accent)
-        } else {
-            (colors.fill, colors.border, colors.icon)
-        };
-        let radius = if is_add {
-            bounds.size.width / 2.0
-        } else {
-            px(4.)
-        };
-        window.paint_quad(quad(
-            bounds,
-            radius,
-            fill,
-            if is_add || active { px(0.) } else { px(1.) },
-            border,
-            BorderStyle::Solid,
-        ));
-        let inner = if is_add { px(10.) } else { px(8.) };
-        let glyph_bounds = Bounds {
-            origin: bounds.origin
-                + point(
-                    (bounds.size.width - inner) / 2.0,
-                    (bounds.size.height - inner) / 2.0,
-                ),
-            size: size(inner, inner),
-        };
-        paint_icon(icon, glyph_bounds, glyph, (window, cx));
+        paint_control(at(handle), icon, (is_add, active), colors, (window, cx));
     };
     // While dragging, only the dragged grip is drawn (and the drop line).
     let drawn: Vec<Handle> = match dragging {
@@ -3445,6 +3648,8 @@ fn paint_lines(
         selection,
         table_hover: view.table_hover.as_ref(),
         table_drag: view.table_drag,
+        column_hover: view.column_hover,
+        column_drag: view.column_drag.as_ref(),
         show_cursor,
         cursor,
         line_height,
@@ -3472,7 +3677,7 @@ fn paint_lines(
                 (inline, Some(links)),
                 window,
             );
-            region::paint_region(&env, &shaped, bounds, y_offset, (window, cx));
+            region::paint_region(&env, &shaped, &region, (bounds, y_offset), (window, cx));
             // Exact rows from shaping, as the row cache does for any line.
             layout.correct_row_count(i, shaped.rows);
             if let Some(trace) = trace.as_mut() {
@@ -3595,6 +3800,8 @@ struct PaintEnv<'a> {
     /// The table controls shown and the grip being dragged.
     table_hover: Option<&'a (usize, Vec<Handle>)>,
     table_drag: Option<TableDrag>,
+    column_hover: Option<usize>,
+    column_drag: Option<&'a ColumnDrag>,
     show_cursor: bool,
     cursor: usize,
     line_height: Pixels,
@@ -5103,6 +5310,8 @@ mod tests {
                 text_color,
                 table_hover: None,
                 table_drag: None,
+                column_hover: None,
+                column_drag: None,
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;
             // The table is the right column's first block, at the region's top
@@ -5139,6 +5348,116 @@ mod tests {
                 handle_for_pointer(editor, &view, centre, window),
                 Some((0, grip))
             );
+        })
+        .unwrap();
+    }
+
+    /// Up and Down walk a side-by-side region in source order and never leave
+    /// the caret on a marker or padding line; the keys that would join a
+    /// column to one do nothing.
+    /// A region's controls show over it and just above it, a press finds a
+    /// grip, and dragging it gives the snapped shares.
+    #[gpui_kit::test]
+    fn region_controls_hover_press_and_drag(cx: &mut TestAppContext) {
+        use super::super::column_handles::{self, ColumnDrag};
+        use super::super::table_handles::Handle;
+        use super::{FrameView, LineLayout, RowHeightCache};
+        use super::{column_drag_percent, column_handle_for_pointer, column_hover_for_pointer};
+        use super::{mono_char_width, px};
+        use gpui::{Bounds, size};
+        use std::{cell::RefCell, rc::Rc};
+
+        let text = "intro\n\n::: columns\n\nleft\n\n---\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n:::\n\nafter";
+        let (window, editor) = open_editor(cx, text);
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let (text_color, line_height) = (text_style.color, window.line_height());
+            let width = px(800.);
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+            let doc_cache = editor.read(cx).document_cache.clone();
+            doc_cache.borrow_mut().set_column_width(Some(800.));
+            let mut rows = RowHeightCache::empty();
+            rows.rebuild(
+                text,
+                &doc_cache.borrow(),
+                0,
+                true,
+                width,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                window,
+            );
+            let layout = LineLayout {
+                doc_cache: doc_cache.clone(),
+                row_cache: Rc::new(RefCell::new(rows)),
+                line_height,
+            };
+            let bounds = Bounds {
+                origin: point(px(100.), px(50.)),
+                size: size(width, px(500.)),
+            };
+            let view = FrameView {
+                layout,
+                cursor: 0,
+                focused: true,
+                bounds,
+                viewport: bounds,
+                line_height,
+                font: font.clone(),
+                font_size,
+                text_color,
+                table_hover: None,
+                table_drag: None,
+                column_hover: None,
+                column_drag: None,
+            };
+            let split = doc_cache.borrow().side_by_side(2).unwrap().1;
+            // The table is the right column's first block, at the region's top
+            // (the region starts on row 2).
+            let top = bounds.origin.y + line_height * 2.;
+            let at = |x: f32, y: Pixels| point(bounds.origin.x + px(x), top + y);
+            let over_table = at(split.x(1) + 20., line_height * 1.5);
+            let over_left = at(split.x(0) + 20., line_height * 1.5);
+
+            let editor = editor.read(cx);
+            assert_eq!(column_hover_for_pointer(editor, &view, over_left), Some(0));
+            assert_eq!(column_hover_for_pointer(editor, &view, over_table), Some(0));
+            let above = at(split.x(1), px(-10.));
+            assert_eq!(column_hover_for_pointer(editor, &view, above), Some(0));
+            let far = at(split.x(1), px(-60.));
+            assert_eq!(column_hover_for_pointer(editor, &view, far), None);
+
+            // A press on the divider's grip finds it.
+            let doc = doc_cache.borrow();
+            let region = doc.columns()[0];
+            let frame = column_handles::Frame {
+                dividers: vec![split.divider_x(0)],
+                width: split.x(1) + split.width(1),
+                height: f32::from(view.layout.height(region.start_line)),
+                can_add: true,
+            };
+            let (x, y, w, h) = column_handles::rect_of(&frame, column_handles::Handle::Divider(0));
+            let grip = at(x + w / 2., px(y + h / 2.));
+            assert_eq!(
+                column_handle_for_pointer(editor, &view, grip),
+                Some((0, column_handles::Handle::Divider(0)))
+            );
+
+            // Dragging it to the right of the middle gives a wider left column.
+            let drag = ColumnDrag {
+                region: 0,
+                divider: 0,
+                percent: vec![50, 50],
+            };
+            let to = at(split.x(1) + 100., px(10.));
+            let percent = column_drag_percent(editor, &view, &drag, to).unwrap();
+            assert!(percent[0] > 50 && percent[0] % 5 == 0 && percent[0] + percent[1] == 100);
         })
         .unwrap();
     }
@@ -5190,6 +5509,63 @@ mod tests {
             e.buffer_mut().set_cursor(end - 2, false);
             assert!(!e.at_region_edge(false));
         });
+    }
+
+    /// The structure edits on regions are one undo step each and give back
+    /// valid regions.
+    #[gpui_kit::test]
+    fn structure_edits_make_change_and_unwrap_a_region(cx: &mut TestAppContext) {
+        use super::{ColumnMenu, Context, Window};
+        let text = "intro\n\nfirst block\nsecond line\n\nafter";
+        let (window, editor) = open_editor(cx, text);
+        let text_of =
+            |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().text().to_owned());
+        let run =
+            |cx: &mut TestAppContext,
+             f: &dyn Fn(&mut Editor, &mut Window, &mut Context<Editor>) -> bool| {
+                cx.update_window(window, |_, window, cx| {
+                    editor.update(cx, |e, cx| f(e, window, cx))
+                })
+                .unwrap()
+            };
+        editor.update(cx, |e, _| {
+            e.buffer_mut()
+                .set_cursor(text.find("second").unwrap(), false)
+        });
+        assert!(editor.read_with(cx, |e, _| e.column_menu_state() == Some(ColumnMenu::Block)));
+        assert!(run(cx, &|e, w, c| e.make_columns(w, c)));
+        assert_eq!(
+            text_of(cx),
+            "intro\n\n::: columns\n\nfirst block\nsecond line\n\n---\n\n:::\n\nafter"
+        );
+        assert!(editor.read_with(cx, |e, _| matches!(
+            e.column_menu_state(),
+            Some(ColumnMenu::Region { can_add: true })
+        )));
+        assert!(run(cx, &|e, w, c| e.set_region_ratio(
+            0,
+            vec![60, 40],
+            w,
+            c
+        )));
+        assert!(text_of(cx).contains("::: columns 60/40\n"));
+        assert!(run(cx, &|e, w, c| e.add_region_column(0, w, c)));
+        assert!(
+            text_of(cx).contains("::: columns\n\nfirst block\nsecond line\n\n---\n\n---\n\n:::")
+        );
+        assert!(run(cx, &|e, w, c| e.unwrap_region(0, w, c)));
+        assert_eq!(text_of(cx), "intro\n\nfirst block\nsecond line\n\nafter");
+        // Each edit was one undo step.
+        for _ in 0..4 {
+            cx.update_window(window, |_, window, cx| {
+                editor.update(cx, |e, cx| {
+                    let edit = e.buffer_mut().undo().expect("an edit to undo");
+                    e.record_edit(edit, window, cx);
+                })
+            })
+            .unwrap();
+        }
+        assert_eq!(text_of(cx), text);
     }
 
     #[gpui_kit::test]

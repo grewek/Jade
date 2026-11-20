@@ -144,7 +144,7 @@ impl Pending {
 }
 
 /// `100 / count` each, the remainder going to the last column.
-fn equal_shares(count: usize) -> [u8; MAX_COLUMNS] {
+pub fn equal_shares(count: usize) -> [u8; MAX_COLUMNS] {
     assert!((2..=MAX_COLUMNS).contains(&count));
     let each = (100 / count) as u8;
     let mut percent = [0; MAX_COLUMNS];
