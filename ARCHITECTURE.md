@@ -74,6 +74,11 @@ Lets a tool (Claude) drive and observe the live app. Code: `crates/debug-protoco
 
 ## Backlog
 
+- **Floats, the plan toward paper-like expressiveness** (agreed 2026-11-20; the goal is that a note can be laid out as freely as on paper while staying a flow document; free placement anywhere stays with the future canvas). Branch flow: features branch from `develop` and merge back with `--no-ff`; `master` only gets releases.
+  1. **Several floats around one text**: done on `feature/multi-float-aside` (see the Aside entry). Open: a bug the user found on 2026-11-21 and will describe; how sections 15a/15b of the float stress note look; the row-height estimate for text beside floats is only corrected after first paint.
+  2. **Floats that flow on their own**: a float placed before a paragraph, the following paragraphs wrapping around it until it ends, with no wrapper around the text. Fixes the gap under short text beside a tall float and lets a float be moved by dragging it to another paragraph. The hard part: a float then changes the height of lines that belong to no region, and `RowHeightCache` assumes each line's height is independent. Likely shape: a float opens a unit reaching over the lines it affects (like a region's first line holding the height), with its extent worked out from the layout. Measure against the 16.66ms budget before calling it done.
+  3. **Paper-style handling**: drag a float to another paragraph, resize it by its edges, a "clear" marker that forces text below a float.
+  Deferred and not a priority: hyphenation and optimal (Knuth-Plass) line breaking, which would even out narrow measures (rows beside a float are 70-90% full below about 55 characters) but need per-language support; `MIN_CHANNEL` (560px) is the interim fix.
 Deliberately deferred — don't pick up without checking in (see `CLAUDE.md`).
 
 - **Search on huge vaults**: search runs on a background thread, but its snapshot (`Vault::search_targets`, ~80ns/note on the UI thread) is O(notes): ~8ms at 100K notes, over budget past ~200K. Next step there: a cached `Arc` snapshot invalidated by note-set mutations, or an on-disk index.
