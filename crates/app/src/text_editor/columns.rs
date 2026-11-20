@@ -272,6 +272,66 @@ pub fn scan<'a>(lines: impl Iterator<Item = (&'a str, bool)>) -> Vec<Columns> {
     derive(&place_markers(0, lines, true, true))
 }
 
+/// Space between two columns, in pixels; the divider is drawn in its middle.
+pub const GAP: f32 = 24.;
+/// A column narrower than this makes the whole region stack (about 20
+/// characters at the editor's size).
+pub const MIN_COLUMN: f32 = 160.;
+
+/// Where the columns of one region sit across a line `total` pixels wide.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Split {
+    pub count: usize,
+    x: [f32; MAX_COLUMNS],
+    width: [f32; MAX_COLUMNS],
+}
+
+impl Split {
+    /// Column `k`'s left edge, from the line's left edge.
+    pub fn x(&self, k: usize) -> f32 {
+        assert!(k < self.count);
+        self.x[k]
+    }
+
+    pub fn width(&self, k: usize) -> f32 {
+        assert!(k < self.count);
+        self.width[k]
+    }
+
+    /// The x of the divider between column `k` and `k + 1`.
+    pub fn divider_x(&self, k: usize) -> f32 {
+        assert!(k + 1 < self.count);
+        self.x[k + 1] - GAP / 2.
+    }
+}
+
+/// The columns' places for shares `percent` (summing to 100) across `total`
+/// pixels, or `None` when any would be under [`MIN_COLUMN`]: the region then
+/// stacks. The gaps come off the total first, so shares are of what is left.
+pub fn split(total: f32, percent: &[u8]) -> Option<Split> {
+    let count = percent.len();
+    assert!((2..=MAX_COLUMNS).contains(&count), "{count} columns");
+    if !total.is_finite() {
+        return None;
+    }
+    let usable = total - GAP * (count - 1) as f32;
+    let mut out = Split {
+        count,
+        x: [0.; MAX_COLUMNS],
+        width: [0.; MAX_COLUMNS],
+    };
+    let mut x = 0.;
+    for (k, &share) in percent.iter().enumerate() {
+        let width = usable * f32::from(share) / 100.;
+        if width < MIN_COLUMN {
+            return None;
+        }
+        (out.x[k], out.width[k]) = (x, width);
+        x += width + GAP;
+    }
+    Some(out)
+}
+
 /// Whether `line` is the open or close marker of one of `regions` (sorted).
 pub fn is_frame_line(regions: &[Columns], line: usize) -> bool {
     let i = regions.partition_point(|r| r.end_line <= line);
@@ -429,5 +489,32 @@ mod tests {
             .collect();
         assert_eq!(framed, expected);
         assert!(!is_frame_line(&regions, regions[0].separators()[0]));
+    }
+    #[test]
+    fn split_shares_what_the_gaps_leave() {
+        let s = split(1000., &[60, 40]).unwrap();
+        // 1000 - 24 = 976 usable.
+        assert!((s.width(0) - 585.6).abs() < 0.01 && (s.width(1) - 390.4).abs() < 0.01);
+        assert_eq!((s.x(0), s.count), (0., 2));
+        assert!((s.x(1) - (585.6 + GAP)).abs() < 0.01);
+        assert!((s.x(1) + s.width(1) - 1000.).abs() < 0.01, "fills the line");
+        assert!((s.divider_x(0) - (585.6 + GAP / 2.)).abs() < 0.01);
+    }
+
+    #[test]
+    fn split_of_four_fills_the_line() {
+        let s = split(1000., &[25, 25, 25, 25]).unwrap();
+        let end = s.x(3) + s.width(3);
+        assert!((end - 1000.).abs() < 0.01, "{end}");
+    }
+
+    #[test]
+    fn a_column_under_the_minimum_stacks_the_region() {
+        // 20%: (total - 24) * 0.2 >= 160 needs total >= 824.
+        assert!(split(830., &[20, 80]).is_some());
+        assert!(split(820., &[20, 80]).is_none());
+        assert!(split(100., &[50, 50]).is_none());
+        assert!(split(f32::NAN, &[50, 50]).is_none());
+        assert!(split(f32::INFINITY, &[50, 50]).is_none());
     }
 }
