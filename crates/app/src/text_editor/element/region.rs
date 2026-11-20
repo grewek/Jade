@@ -54,6 +54,8 @@ pub(super) struct ShapedRegion {
     pub columns: Vec<ShapedColumn>,
     /// The region's height in rows: its tallest column, at least one.
     pub rows: usize,
+    /// The line's whole width.
+    pub total: Pixels,
 }
 
 /// Shapes every column of `region` at its own width. Cost is the region's
@@ -67,7 +69,7 @@ pub(super) fn shape_region(
     (colors, links): (InlineColors, Option<&LinkTable>),
     window: &mut Window,
 ) -> ShapedRegion {
-    if split.aside.is_some() {
+    if split.aside {
         return shape_aside(
             text,
             doc,
@@ -118,6 +120,7 @@ pub(super) fn shape_region(
     ShapedRegion {
         columns: shaped,
         rows,
+        total: px(split.total),
     }
 }
 
@@ -159,12 +162,61 @@ fn flowable(state: &LineState, display_line: &DisplayLine, line_text: &str) -> b
         })
 }
 
-/// Lays out an aside: the float (part 0) at its width on its side, and the
-/// text (part 1) flowing around it: each line is as wide as the channel beside
-/// the float while it starts there, and the line that crosses the float's
-/// bottom is cut at a row boundary into the rows beside it and the rest below,
-/// at the whole line's width. A table or callout that starts beside the float
-/// stays in the channel, so its box keeps one width.
+/// Which side's floats a band is cut for.
+const LEFT: usize = 0;
+const RIGHT: usize = 1;
+
+/// The raw ranges in `broken` that fall in `piece`, rebased to it.
+fn broken_in(broken: &[Range<usize>], piece: &Range<usize>) -> Vec<Range<usize>> {
+    broken
+        .iter()
+        .filter(|r| r.end > piece.start && r.start < piece.end)
+        .map(|r| r.start.max(piece.start) - piece.start..r.end.min(piece.end) - piece.start)
+        .collect()
+}
+
+/// Where the text may run at one row of an aside: the floats stacked down a
+/// side keep that side's rows (and a row of air after them) to themselves.
+struct Bands {
+    /// Rows each side is taken for, including the air below its last float.
+    occupied: [usize; 2],
+    /// Each side's width with its gap to the text, in pixels.
+    reserved: [Pixels; 2],
+    total: Pixels,
+}
+
+impl Bands {
+    /// The left edge and width of the text at `row`.
+    fn at(&self, row: usize) -> (Pixels, Pixels) {
+        let side = |s: usize| {
+            if row < self.occupied[s] {
+                self.reserved[s]
+            } else {
+                px(0.)
+            }
+        };
+        let (left, right) = (side(LEFT), side(RIGHT));
+        (left, self.total - left - right)
+    }
+
+    /// How many rows from `row` on stay in the same band (`usize::MAX` once no
+    /// float is left).
+    fn rows_from(&self, row: usize) -> usize {
+        self.occupied
+            .iter()
+            .filter(|&&o| row < o)
+            .map(|&o| o - row)
+            .min()
+            .unwrap_or(usize::MAX)
+    }
+}
+
+/// Lays out an aside: each float (parts `0..count - 1`) at its side's width,
+/// floats on one side stacked with a row between, and the text (the last part)
+/// flowing between them: each paragraph is as wide as the band its first row
+/// is in, and where a band changes (a side's floats end) it is cut at a row
+/// boundary and the rest continues in the new band. A table or callout that
+/// starts in a band stays in it, so its box keeps one width.
 fn shape_aside(
     text: &str,
     doc: &DocumentCache,
@@ -174,58 +226,72 @@ fn shape_aside(
     (colors, links): (InlineColors, Option<&LinkTable>),
     window: &mut Window,
 ) -> ShapedRegion {
-    let right = split.aside == Some(true);
     let total = px(split.total);
-    let (float_x, float_w) = (px(split.x(0)), px(split.width(0)));
-    let (channel_x, channel_w) = (px(split.x(1)), px(split.width(1)));
-
-    let mut float_lines = Vec::new();
-    let mut y = px(0.);
-    for i in region.column_lines(0) {
-        let (results, broken, height) = shape_at(
-            text,
-            doc,
-            i,
-            float_w,
-            (cursor, focused),
-            (font, font_size, colors),
-            (links, window),
-        );
-        let len = doc.line_end_byte(i) - doc.line_start_byte(i);
-        float_lines.push(ShapedLine {
-            line: i,
-            y,
-            height,
-            results,
-            broken,
-            x: float_x,
-            width: float_w,
-            raw: 0..len,
-        });
-        y += height;
+    let text_part = region.count - 1;
+    let mut columns = Vec::with_capacity(region.count);
+    let mut side_y = [px(0.); 2];
+    let mut side_width = [px(0.); 2];
+    for k in 0..text_part {
+        let side = usize::from(split.float_is_right(k));
+        let (x, width) = (px(split.x(k)), px(split.width(k)));
+        side_width[side] = width;
+        let top = side_y[side];
+        let mut lines = Vec::new();
+        let mut y = top;
+        for i in region.column_lines(k) {
+            let (results, broken, height) = shape_at(
+                text,
+                doc,
+                i,
+                width,
+                (cursor, focused),
+                (font, font_size, colors),
+                (links, window),
+            );
+            lines.push(ShapedLine {
+                line: i,
+                y,
+                height,
+                results,
+                broken,
+                x,
+                width,
+                raw: 0..doc.line_end_byte(i) - doc.line_start_byte(i),
+            });
+            y += height;
+        }
+        // A row of air below a float, before text or the next float.
+        side_y[side] = if y > top { y + line_height } else { top };
+        columns.push(ShapedColumn { x, width, lines });
     }
-    let float_rows = (y / line_height).round() as usize;
-    // One row of air below the float before the text uses the whole width.
-    let channel_rows = if float_rows > 0 { float_rows + 1 } else { 0 };
+    let rows_of = |y: Pixels| (y / line_height).round() as usize;
+    let bands = Bands {
+        occupied: [rows_of(side_y[LEFT]), rows_of(side_y[RIGHT])],
+        reserved: side_width.map(|w| {
+            if w > px(0.) {
+                w + px(columns::GAP)
+            } else {
+                px(0.)
+            }
+        }),
+        total,
+    };
+    let float_rows = bands.occupied.iter().map(|&o| o.saturating_sub(1)).max();
 
     let mut flow_lines: Vec<ShapedLine> = Vec::new();
     let mut y = px(0.);
-    let mut narrow_block: Option<(bool, usize)> = None;
-    for i in region.column_lines(1) {
-        let rows_before = (y / line_height).round() as usize;
-        let beside = channel_rows.saturating_sub(rows_before);
+    let mut block_band: Option<((bool, usize), Pixels, Pixels)> = None;
+    for i in region.column_lines(text_part) {
+        let row = rows_of(y);
         let block = table_index_at(doc.tables(), i)
             .map(|t| (true, t))
             .or_else(|| callout_index_at(doc.callouts(), i).map(|c| (false, c)));
-        let continues = block.is_some() && block == narrow_block;
-        let narrow = beside > 0 || continues;
-        narrow_block = narrow.then_some(block).flatten();
-        let (width, x) = if narrow {
-            (channel_w, channel_x)
-        } else {
-            (total, px(0.))
+        let (x, width) = match (block, block_band) {
+            (Some(b), Some((id, x, w))) if b == id => (x, w),
+            _ => bands.at(row),
         };
-        let (mut results, broken, height) = shape_at(
+        block_band = block.map(|b| (b, x, width));
+        let (results, broken, height) = shape_at(
             text,
             doc,
             i,
@@ -237,66 +303,75 @@ fn shape_aside(
         let range = doc.line_start_byte(i)..doc.line_end_byte(i);
         let len = range.len();
         let line_text = &text[range];
-        let rows = (height / line_height).round() as usize;
+        let rows = rows_of(height);
         let state = column_state(doc, i, (cursor, focused), &broken);
-        let cut = (narrow && !continues && beside > 0 && rows > beside && results.len() == 1)
-            .then(|| &results[0])
-            .filter(|(_, dl)| flowable(&state, dl, line_text))
-            .and_then(|(wrapped, dl)| {
-                let at = justify::row_start(wrapped, beside)?;
-                let (head, tail, raw_cut) = dl.split_at(at);
-                (!head.display_text.is_empty() && !tail.display_text.is_empty())
-                    .then_some((head, tail, raw_cut))
-            });
-        if let Some((head, tail, raw_cut)) = cut {
+        let continues = block.is_some();
+        let cuttable = !continues
+            && rows > bands.rows_from(row)
+            && results.len() == 1
+            && flowable(&state, &results[0].1, line_text);
+        if cuttable {
             let callout = state.callout;
-            let shape =
-                |dl: &DisplayLine, width: Pixels, broken: &[Range<usize>], window: &mut Window| {
+            let mut rest = results[0].1.clone();
+            let (mut base, mut at_row) = (0usize, row);
+            loop {
+                let (bx, bw) = bands.at(at_row);
+                let room = bands.rows_from(at_row);
+                let whole = shape_entry(
+                    &rest,
+                    Some(bw),
+                    (font, font_size),
+                    &colors,
+                    (&broken_in(&broken, &(base..len)), callout),
+                    false,
+                    window,
+                );
+                let cut = (rows_of(whole.size(line_height).height) > room)
+                    .then(|| justify::row_start(&whole, room))
+                    .flatten()
+                    .map(|at| rest.split_at(at))
+                    .filter(|(head, tail, _)| {
+                        !head.display_text.is_empty() && !tail.display_text.is_empty()
+                    });
+                let (piece, next, raw) = match cut {
+                    Some((head, tail, raw_cut)) => (head, Some(tail), base..base + raw_cut),
+                    None => (rest.clone(), None, base..len),
+                };
+                let piece_broken = broken_in(&broken, &raw);
+                let wrapped = if next.is_some() {
                     shape_entry(
-                        dl,
-                        Some(width),
+                        &piece,
+                        Some(bw),
                         (font, font_size),
                         &colors,
-                        (broken, callout),
+                        (&piece_broken, callout),
                         false,
                         window,
                     )
+                } else {
+                    whole
                 };
-            let first = shape(&head, channel_w, &broken, window);
-            let tail_broken: Vec<Range<usize>> = broken
-                .iter()
-                .filter(|r| r.end > raw_cut)
-                .map(|r| r.start.saturating_sub(raw_cut)..r.end - raw_cut)
-                .collect();
-            let second = shape(&tail, total, &tail_broken, window);
-            let (h1, h2) = (
-                first.size(line_height).height,
-                second.size(line_height).height,
-            );
-            flow_lines.push(ShapedLine {
-                line: i,
-                y,
-                height: h1,
-                results: vec![(first, head)],
-                broken,
-                x: channel_x,
-                width: channel_w,
-                raw: 0..raw_cut,
-            });
-            flow_lines.push(ShapedLine {
-                line: i,
-                y: y + h1,
-                height: h2,
-                results: vec![(second, tail)],
-                broken: tail_broken,
-                x: px(0.),
-                width: total,
-                raw: raw_cut..len,
-            });
-            y += h1 + h2;
+                let h = wrapped.size(line_height).height;
+                flow_lines.push(ShapedLine {
+                    line: i,
+                    y,
+                    height: h,
+                    results: vec![(wrapped, piece)],
+                    broken: piece_broken,
+                    x: bx,
+                    width: bw,
+                    raw: raw.clone(),
+                });
+                y += h;
+                let Some(tail) = next else {
+                    break;
+                };
+                at_row += rows_of(h);
+                base = raw.end;
+                rest = tail;
+            }
             continue;
         }
-        results.shrink_to_fit();
         flow_lines.push(ShapedLine {
             line: i,
             y,
@@ -309,24 +384,17 @@ fn shape_aside(
         });
         y += height;
     }
-    let flow_rows = (y / line_height).round() as usize;
-    let float = ShapedColumn {
-        x: float_x,
-        width: float_w,
-        lines: float_lines,
-    };
-    let flow = ShapedColumn {
-        x: channel_x,
-        width: channel_w,
+    let flow_rows = rows_of(y);
+    columns.push(ShapedColumn {
+        x: px(split.x(text_part)),
+        width: px(split.width(text_part)),
         lines: flow_lines,
-    };
+    });
+    columns.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     ShapedRegion {
-        columns: if right {
-            vec![flow, float]
-        } else {
-            vec![float, flow]
-        },
-        rows: float_rows.max(flow_rows).max(1),
+        columns,
+        rows: float_rows.unwrap_or(0).max(flow_rows).max(1),
+        total,
     }
 }
 
@@ -438,6 +506,16 @@ pub(super) fn paint_region(
     }
 }
 
+/// An aside's floats with the shares `percent` gives them.
+pub(super) fn dragged_floats(region: &Columns, percent: &[u8]) -> Vec<columns::FloatSpec> {
+    region
+        .floats()
+        .iter()
+        .zip(percent)
+        .map(|(f, &share)| columns::FloatSpec { share, ..*f })
+        .collect()
+}
+
 /// The divider grips, `+` and unwrap while the pointer is over the region, or
 /// the dragged grip and its drop line.
 fn paint_region_controls(
@@ -455,21 +533,20 @@ fn paint_region_controls(
     if drag.is_none() && env.column_hover != Some(index) {
         return;
     }
-    let (Some(first), Some(last)) = (shaped.columns.first(), shaped.columns.last()) else {
+    let (Some(first), Some((_, split))) =
+        (shaped.columns.first(), doc.side_by_side(region.start_line))
+    else {
         return;
     };
-    let width = f32::from(last.x + last.width);
+    let width = f32::from(shaped.total);
     let height = f32::from(env.line_height * shaped.rows as f32);
-    let dividers = shaped
-        .columns
-        .windows(2)
-        .map(|pair| f32::from((pair[0].x + pair[0].width + pair[1].x) / 2.))
-        .collect();
     let frame = column_handles::Frame {
-        dividers,
+        dividers: (0..split.divider_count())
+            .map(|k| split.divider_x(k))
+            .collect(),
         width,
         height,
-        can_add: region.count < columns::MAX_COLUMNS && !region.is_aside(),
+        can_add: region.count < columns::MAX_COLUMNS,
     };
     let origin = point(bounds.origin.x + first.x, bounds.origin.y + top);
     let at = |handle| {
@@ -483,14 +560,18 @@ fn paint_region_controls(
     if let Some(drag) = drag {
         // Only the dragged grip, at the divider the shares would give.
         let moved_split = match region.kind {
-            columns::Kind::Aside { right } => columns::aside_split(width, right, drag.percent[0]),
+            columns::Kind::Aside => {
+                columns::aside_split(width, &dragged_floats(region, &drag.percent))
+            }
             columns::Kind::Columns => columns::split(width, &drag.percent),
         };
         let Some(split) = moved_split else {
             return;
         };
         let moved = column_handles::Frame {
-            dividers: (0..split.count - 1).map(|k| split.divider_x(k)).collect(),
+            dividers: (0..split.divider_count())
+                .map(|k| split.divider_x(k))
+                .collect(),
             ..frame
         };
         let handle = column_handles::Handle::Divider(drag.divider);

@@ -3165,12 +3165,13 @@ fn column_frame_at(
     let (_, split) = doc.side_by_side(region.start_line)?;
     let top = view.layout.cumulative_at(region.start_line);
     let height = view.layout.height(region.start_line);
-    let last = region.count - 1;
     let frame = column_handles::Frame {
-        dividers: (0..last).map(|k| split.divider_x(k)).collect(),
+        dividers: (0..split.divider_count())
+            .map(|k| split.divider_x(k))
+            .collect(),
         width: split.total,
         height: f32::from(height),
-        can_add: region.count < columns::MAX_COLUMNS && !region.is_aside(),
+        can_add: region.count < columns::MAX_COLUMNS,
     };
     let p = (
         f32::from(position.x - view.bounds.origin.x),
@@ -3215,11 +3216,17 @@ fn column_drag_percent(
     let total = doc.column_width()?;
     let k = drag.divider;
     let x = f32::from(position.x - view.bounds.origin.x);
-    if let columns::Kind::Aside { right } = region.kind {
-        // The float's edge is half a gap from the pointer; its share of the
-        // line without the gap, snapped and kept within bounds.
-        let usable = total - columns::GAP;
-        let float = if right {
+    if region.kind == columns::Kind::Aside {
+        // Divider `k` is the inner edge of a side's floats: the pointer is half
+        // a gap from it. Every float on that side takes the share, snapped and
+        // kept within bounds.
+        let floats = region.floats();
+        let sides = usize::from(floats.iter().any(|f| !f.right))
+            + usize::from(floats.iter().any(|f| f.right));
+        let usable = total - columns::GAP * sides as f32;
+        let right_side =
+            floats.iter().any(|f| !f.right) as usize <= k && floats.iter().any(|f| f.right);
+        let float = if right_side {
             total - x - columns::GAP / 2.
         } else {
             x - columns::GAP / 2.
@@ -3227,11 +3234,16 @@ fn column_drag_percent(
         let step = f32::from(column_ops::SNAP);
         let share = (float / usable * 100. / step).round() * step;
         let share = share.clamp(f32::from(columns::ASIDE_MIN), f32::from(columns::ASIDE_MAX)) as u8;
-        return Some(vec![share, 100 - share]);
+        let mut shares = region.percent[..region.count].to_vec();
+        for (f, s) in floats.iter().zip(shares.iter_mut()) {
+            if f.right == right_side {
+                *s = share;
+            }
+        }
+        return Some(shares);
     }
     // Column `k`'s right edge is half a gap left of the pointer.
-    let (left, usable) =
-        columns::column_left_unchecked(total, region.kind, &region.percent[..region.count], k);
+    let (left, usable) = columns::column_left_unchecked(total, &region.percent[..region.count], k);
     let width = x - columns::GAP / 2. - left;
     let char_width = f32::from(mono_char_width(
         &view.font,
@@ -3612,7 +3624,7 @@ fn paint_stacked_controls(
         let x = view.bounds.origin.x
             + px(columns::divider_x_unchecked(
                 total,
-                region.kind,
+                &region,
                 &drag.percent,
                 drag.divider,
             ));
@@ -5790,6 +5802,78 @@ mod tests {
                 handle_for_pointer(editor, &view, centre, window),
                 Some((0, grip))
             );
+        })
+        .unwrap();
+    }
+
+    /// Floats on both sides leave the text between them; where a side's floats
+    /// end the text widens, cutting the paragraph at that row, and floats stacked
+    /// down one side keep a row between them.
+    #[gpui_kit::test]
+    fn text_flows_between_floats_and_widens_as_each_side_ends(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+
+        let para = "flowing words ".repeat(60);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: aside left 25%\n\nshort left\n\n--- right 25%\n\nright one\n\nright one b\n\n--- right 25%\n\nright two\n\n---\n\n{para}\n\n:::\n"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("an aside lays out");
+            assert_eq!(region.floats().len(), 3);
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let text_line = region.column_lines(3).start;
+            let flow: Vec<_> = shaped
+                .columns
+                .iter()
+                .flat_map(|c| &c.lines)
+                .filter(|sl| sl.line == text_line)
+                .collect();
+            assert!(flow.len() >= 3, "cut where each side ends: {}", flow.len());
+            // Narrow between both floats, then only the right one, then all.
+            assert_eq!(flow[0].x, px(split.x(3)));
+            assert_eq!(flow[0].width, px(split.width(3)));
+            assert_eq!(flow[1].x, px(0.));
+            assert!(flow[1].width > flow[0].width && flow[1].width < px(1400.));
+            assert_eq!(flow.last().unwrap().width, px(1400.));
+            // The pieces tile the raw line.
+            for pair in flow.windows(2) {
+                assert_eq!(pair[0].raw.end, pair[1].raw.start);
+            }
+            assert_eq!(flow.last().unwrap().raw.end, para.len());
+            // Two floats on the right are stacked, a row between them.
+            let right_one = shaped
+                .columns
+                .iter()
+                .flat_map(|c| &c.lines)
+                .find(|sl| text[doc.line_start_byte(sl.line)..].starts_with("right one b"));
+            let right_two = shaped
+                .columns
+                .iter()
+                .flat_map(|c| &c.lines)
+                .find(|sl| text[doc.line_start_byte(sl.line)..].starts_with("right two"));
+            let (one, two) = (right_one.unwrap(), right_two.unwrap());
+            assert_eq!(two.y, one.y + one.height + lh, "a row of air between");
+            assert_eq!(one.x, two.x);
         })
         .unwrap();
     }

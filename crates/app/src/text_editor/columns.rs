@@ -40,15 +40,33 @@ pub const ASIDE_DEFAULT: u8 = 40;
 const CLOSE: &str = ":::";
 const SEPARATOR: &str = "---";
 
-/// What a region lays out as: equal-height columns, or a block floated to one
-/// side with the following text flowing around it (`::: aside right 40%`).
-/// An aside is a two-part region (the floated block, `---`, the text), its
-/// `percent` being `[share, 100 - share]` of the float and the rest.
+/// What a region lays out as: equal-height columns, or blocks floated to the
+/// sides with the last part, the text, flowing around them (`::: aside right
+/// 40%`). An aside has 1 to [`MAX_FLOATS`] floats, each a part of its own,
+/// then the text as the last part; the first float's side and share are on the
+/// open marker, each further float's on the `--- left 30%` separator that
+/// starts it, and the plain `---` starts the text. Its `percent` holds the
+/// floats' shares, then 0 for the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
     Columns,
-    Aside { right: bool },
+    Aside,
 }
+
+/// The floats an aside can have.
+pub const MAX_FLOATS: usize = MAX_COLUMNS - 1;
+
+/// One float's side and share (percent of the line, without the gaps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FloatSpec {
+    pub right: bool,
+    pub share: u8,
+}
+
+const NO_FLOAT: FloatSpec = FloatSpec {
+    right: true,
+    share: ASIDE_DEFAULT,
+};
 
 /// One recognised region, by line numbers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,12 +82,36 @@ pub struct Columns {
     pub percent: [u8; MAX_COLUMNS],
     /// The separator lines; the first `count - 1` are used.
     separators: [usize; MAX_COLUMNS - 1],
+    /// An aside's floats; the first `count - 1` are used.
+    floats: [FloatSpec; MAX_FLOATS],
 }
 
 impl Columns {
-    /// Whether this is a floated block with text around it.
+    /// Whether this is floated blocks with text around them.
     pub fn is_aside(&self) -> bool {
-        matches!(self.kind, Kind::Aside { .. })
+        self.kind == Kind::Aside
+    }
+
+    /// An aside's floats, in order, with their shares as written.
+    pub fn floats(&self) -> &[FloatSpec] {
+        if self.is_aside() {
+            &self.floats[..self.count - 1]
+        } else {
+            &[]
+        }
+    }
+
+    /// This region with `shares` instead of its own (one per column; for an
+    /// aside, per float and then the text's unused one).
+    pub fn with_shares(mut self, shares: &[u8]) -> Self {
+        assert_eq!(shares.len(), self.count);
+        self.percent[..self.count].copy_from_slice(shares);
+        if self.is_aside() {
+            for (f, &share) in self.floats.iter_mut().zip(shares) {
+                f.share = share;
+            }
+        }
+        self
     }
 
     /// The separator lines between the columns, in order.
@@ -127,15 +169,11 @@ pub enum Marker {
     /// `::: columns`, with its explicit ratio if one was written.
     Open(Option<Ratio>),
     /// `::: aside [left|right] [N%]`.
-    OpenAside(AsideSpec),
+    OpenAside(FloatSpec),
     Separator,
+    /// `--- [left|right] [N%]`: starts a further float of an aside.
+    FloatSeparator(FloatSpec),
     Close,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct AsideSpec {
-    pub right: bool,
-    pub share: u8,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -148,7 +186,12 @@ pub struct Ratio {
 struct Pending {
     start: usize,
     ratio: Option<Ratio>,
-    aside: Option<AsideSpec>,
+    aside: bool,
+    floats: [FloatSpec; MAX_FLOATS],
+    /// The floats so far (an aside's open marker is the first).
+    float_count: usize,
+    /// Whether the plain `---` that starts an aside's text was seen.
+    text_seen: bool,
     separators: [usize; MAX_COLUMNS - 1],
     seen: usize,
 }
@@ -158,20 +201,23 @@ impl Pending {
     /// disagree.
     fn close(self, line: usize) -> Option<Columns> {
         let count = self.seen + 1;
-        if let Some(AsideSpec { right, share }) = self.aside {
-            // A float and its text: exactly two parts.
-            if count != 2 {
+        if self.aside {
+            // Floats, then the text after the one plain separator.
+            if !self.text_seen || self.float_count != count - 1 {
                 return None;
             }
             let mut percent = [0; MAX_COLUMNS];
-            (percent[0], percent[1]) = (share, 100 - share);
+            for (p, f) in percent.iter_mut().zip(&self.floats[..self.float_count]) {
+                *p = f.share;
+            }
             return Some(Columns {
-                kind: Kind::Aside { right },
+                kind: Kind::Aside,
                 start_line: self.start,
                 end_line: line + 1,
                 count,
                 percent,
                 separators: self.separators,
+                floats: self.floats,
             });
         }
         let percent = match self.ratio {
@@ -186,6 +232,7 @@ impl Pending {
             count,
             percent,
             separators: self.separators,
+            floats: [NO_FLOAT; MAX_FLOATS],
         })
     }
 }
@@ -207,6 +254,9 @@ fn marker_of(line: &str) -> Option<Marker> {
     if line == SEPARATOR {
         return Some(Marker::Separator);
     }
+    if let Some(rest) = line.strip_prefix(SEPARATOR).filter(|r| r.starts_with(' ')) {
+        return parse_aside(rest).map(Marker::FloatSeparator);
+    }
     if line == CLOSE {
         return Some(Marker::Close);
     }
@@ -222,7 +272,7 @@ fn marker_of(line: &str) -> Option<Marker> {
 
 /// What follows `::: aside`: nothing, or `left`/`right` and a share (`40` or
 /// `40%`) in either order, each at most once. Right and 40% by default.
-fn parse_aside(rest: &str) -> Option<AsideSpec> {
+fn parse_aside(rest: &str) -> Option<FloatSpec> {
     if !rest.is_empty() && !rest.starts_with(' ') {
         return None;
     }
@@ -245,7 +295,7 @@ fn parse_aside(rest: &str) -> Option<AsideSpec> {
             _ => return None,
         }
     }
-    Some(AsideSpec {
+    Some(FloatSpec {
         right: side.unwrap_or(true),
         share: share.unwrap_or(ASIDE_DEFAULT),
     })
@@ -328,27 +378,50 @@ pub fn derive(markers: &[Placed]) -> Vec<Columns> {
                 pending = Some(Pending {
                     start: line,
                     ratio,
-                    aside: None,
+                    aside: false,
+                    floats: [NO_FLOAT; MAX_FLOATS],
+                    float_count: 0,
+                    text_seen: false,
                     separators: [0; MAX_COLUMNS - 1],
                     seen: 0,
                 });
             }
             Marker::OpenAside(spec) => {
+                let mut floats = [NO_FLOAT; MAX_FLOATS];
+                floats[0] = spec;
                 pending = Some(Pending {
                     start: line,
                     ratio: None,
-                    aside: Some(spec),
+                    aside: true,
+                    floats,
+                    float_count: 1,
+                    text_seen: false,
                     separators: [0; MAX_COLUMNS - 1],
                     seen: 0,
                 });
             }
             Marker::Separator => {
                 if let Some(p) = pending.as_mut() {
-                    if p.seen == MAX_COLUMNS - 1 {
+                    // A second plain separator in an aside: its text is over.
+                    if p.seen == MAX_COLUMNS - 1 || (p.aside && p.text_seen) {
                         pending = None;
                     } else {
                         p.separators[p.seen] = line;
                         p.seen += 1;
+                        p.text_seen = p.aside;
+                    }
+                }
+            }
+            // Only an aside before its text takes this; elsewhere it is text.
+            Marker::FloatSeparator(spec) => {
+                if let Some(p) = pending.as_mut().filter(|p| p.aside) {
+                    if p.float_count == MAX_FLOATS || p.text_seen {
+                        pending = None;
+                    } else {
+                        p.separators[p.seen] = line;
+                        p.seen += 1;
+                        p.floats[p.float_count] = spec;
+                        p.float_count += 1;
                     }
                 }
             }
@@ -381,10 +454,18 @@ pub struct Split {
     pub count: usize,
     x: [f32; MAX_COLUMNS],
     width: [f32; MAX_COLUMNS],
-    /// For an aside: whether the float is on the right. Part 0 is the float
-    /// and part 1 the text beside it (its width is the channel; the text
-    /// below the float uses the whole line, see `total`).
-    pub aside: Option<bool>,
+    /// Whether this is an aside: parts `0..count - 1` are its floats (each at
+    /// its side's width) and the last is the text channel between them (the
+    /// text below the floats uses the whole line, see `total`).
+    pub aside: bool,
+    /// For an aside, whether float `k` is on the right.
+    float_right: [bool; MAX_FLOATS],
+    /// The x of each divider: between columns, or the inner edge of the left
+    /// and then the right side of floats.
+    dividers: [f32; MAX_COLUMNS - 1],
+    divider_count: usize,
+    /// For an aside, whether divider `k` is on the right side.
+    divider_right: [bool; 2],
     /// The line's whole width.
     pub total: f32,
 }
@@ -401,15 +482,29 @@ impl Split {
         self.width[k]
     }
 
-    /// The x of the divider between column `k` and `k + 1`.
+    /// How many dividers have a grip: between columns, or one per side that
+    /// has floats.
+    pub fn divider_count(&self) -> usize {
+        self.divider_count
+    }
+
+    /// The x of divider `k` (the one between column `k` and `k + 1`; an
+    /// aside's are its left side's and then its right side's).
     pub fn divider_x(&self, k: usize) -> f32 {
-        assert!(k + 1 < self.count);
-        match self.aside {
-            // The gap between the float and its channel, whichever is first.
-            Some(true) => self.x[1] + self.width[1] + GAP / 2.,
-            Some(false) => self.x[0] + self.width[0] + GAP / 2.,
-            None => self.x[k + 1] - GAP / 2.,
-        }
+        assert!(k < self.divider_count);
+        self.dividers[k]
+    }
+
+    /// For an aside, whether divider `k` is the right side's.
+    pub fn divider_is_right(&self, k: usize) -> bool {
+        assert!(self.aside && k < self.divider_count);
+        self.divider_right[k]
+    }
+
+    /// For an aside, whether float `k` is on the right.
+    pub fn float_is_right(&self, k: usize) -> bool {
+        assert!(self.aside && k + 1 < self.count);
+        self.float_right[k]
     }
 }
 
@@ -427,7 +522,11 @@ pub fn split(total: f32, percent: &[u8]) -> Option<Split> {
         count,
         x: [0.; MAX_COLUMNS],
         width: [0.; MAX_COLUMNS],
-        aside: None,
+        aside: false,
+        float_right: [false; MAX_FLOATS],
+        dividers: [0.; MAX_COLUMNS - 1],
+        divider_count: count - 1,
+        divider_right: [false; 2],
         total,
     };
     let mut x = 0.;
@@ -437,57 +536,118 @@ pub fn split(total: f32, percent: &[u8]) -> Option<Split> {
             return None;
         }
         (out.x[k], out.width[k]) = (x, width);
+        if k > 0 {
+            out.dividers[k - 1] = x - GAP / 2.;
+        }
         x += width + GAP;
     }
     Some(out)
 }
 
-/// A float narrower than this is not worth wrapping text around.
-pub const MIN_FLOAT: f32 = 120.;
-/// The text beside a float keeps at least this width (about 55 characters):
-/// narrower, greedy wrapping leaves rows 70-90% full and justifying them opens
-/// wide gaps. A float asking for more than that leaves is made narrower.
-pub const MIN_CHANNEL: f32 = 560.;
+/// The widest share asked on each side, `(left, right)`: floats stacked down a
+/// side are as wide as the widest of them.
+fn side_shares(floats: &[FloatSpec]) -> (Option<u8>, Option<u8>) {
+    let widest = |right: bool| {
+        floats
+            .iter()
+            .filter(|f| f.right == right)
+            .map(|f| f.share)
+            .max()
+    };
+    (widest(false), widest(true))
+}
 
-/// The places of an aside's float (`x(0)`, `width(0)`) and of the text channel
-/// beside it (`x(1)`, `width(1)`) across a line `total` pixels wide, or `None`
-/// when either is too narrow: the region then stacks.
-pub fn aside_split(total: f32, right: bool, share: u8) -> Option<Split> {
+/// The side widths `(left, right)` in pixels and the width the shares divide,
+/// before any minimum is applied.
+fn side_widths(total: f32, floats: &[FloatSpec]) -> (f32, f32, f32) {
+    let (left, right) = side_shares(floats);
+    let sides = usize::from(left.is_some()) + usize::from(right.is_some());
+    let usable = total - GAP * sides as f32;
+    let width = |share: Option<u8>| share.map_or(0., |s| usable * f32::from(s) / 100.);
+    (width(left), width(right), usable)
+}
+
+/// The places of an aside's floats and of the text channel between them across
+/// a line `total` pixels wide, or `None` when a side is too narrow or the
+/// channel too: the region then stacks. Floats on one side are as wide as the
+/// widest of them. The text keeps [`MIN_CHANNEL`]: floats asking for more than
+/// that leaves are made narrower in proportion.
+pub fn aside_split(total: f32, floats: &[FloatSpec]) -> Option<Split> {
+    assert!((1..=MAX_FLOATS).contains(&floats.len()));
     if !total.is_finite() {
         return None;
     }
-    let usable = total - GAP;
-    let float = (usable * f32::from(share) / 100.).min(usable - MIN_CHANNEL);
-    let channel = usable - float;
-    if float < MIN_FLOAT || channel < MIN_COLUMN {
+    let (mut left, mut right, usable) = side_widths(total, floats);
+    let room = usable - MIN_CHANNEL;
+    if left + right > room {
+        if room <= 0. {
+            return None;
+        }
+        let scale = room / (left + right);
+        left *= scale;
+        right *= scale;
+    }
+    let (has_left, has_right) = (left > 0., right > 0.);
+    if (has_left && left < MIN_FLOAT) || (has_right && right < MIN_FLOAT) {
         return None;
     }
+    let channel =
+        total - GAP * (usize::from(has_left) + usize::from(has_right)) as f32 - left - right;
+    if channel < MIN_COLUMN {
+        return None;
+    }
+    let count = floats.len() + 1;
     let mut out = Split {
-        count: 2,
+        count,
         x: [0.; MAX_COLUMNS],
         width: [0.; MAX_COLUMNS],
-        aside: Some(right),
+        aside: true,
+        float_right: [false; MAX_FLOATS],
+        dividers: [0.; MAX_COLUMNS - 1],
+        divider_count: usize::from(has_left) + usize::from(has_right),
+        divider_right: [false; 2],
         total,
     };
-    let (float_x, channel_x) = if right {
-        (channel + GAP, 0.)
-    } else {
-        (0., float + GAP)
-    };
-    (out.x[0], out.width[0]) = (float_x, float);
-    (out.x[1], out.width[1]) = (channel_x, channel);
+    for (k, f) in floats.iter().enumerate() {
+        out.float_right[k] = f.right;
+        (out.x[k], out.width[k]) = if f.right {
+            (total - right, right)
+        } else {
+            (0., left)
+        };
+    }
+    let channel_x = if has_left { left + GAP } else { 0. };
+    (out.x[count - 1], out.width[count - 1]) = (channel_x, channel);
+    let mut next = 0;
+    if has_left {
+        (out.dividers[next], out.divider_right[next]) = (left + GAP / 2., false);
+        next += 1;
+    }
+    if has_right {
+        (out.dividers[next], out.divider_right[next]) = (total - right - GAP / 2., true);
+    }
     Some(out)
 }
 
-/// Where the divider after column `k` would be for shares `percent`, ignoring
+/// Where divider `k` of `region` would be for the shares `percent`, ignoring
 /// every minimum width: a divider dragged so far that the region stacks still
 /// has a place to be drawn and to be dragged back from.
-pub fn divider_x_unchecked(total: f32, kind: Kind, percent: &[u8], k: usize) -> f32 {
-    match kind {
-        Kind::Aside { right } => {
-            let usable = total - GAP;
-            let float = usable * f32::from(percent[0]) / 100.;
-            (if right { usable - float } else { float }) + GAP / 2.
+pub fn divider_x_unchecked(total: f32, region: &Columns, percent: &[u8], k: usize) -> f32 {
+    match region.kind {
+        Kind::Aside => {
+            let floats: Vec<FloatSpec> = region
+                .floats()
+                .iter()
+                .zip(percent)
+                .map(|(f, &share)| FloatSpec { share, ..*f })
+                .collect();
+            let (left, right, _) = side_widths(total, &floats);
+            let (has_left, _) = side_shares(&floats);
+            if has_left.is_some() && k == 0 {
+                left + GAP / 2.
+            } else {
+                total - right - GAP / 2.
+            }
         }
         Kind::Columns => {
             let usable = total - GAP * (percent.len() - 1) as f32;
@@ -501,34 +661,49 @@ pub fn divider_x_unchecked(total: f32, kind: Kind, percent: &[u8], k: usize) -> 
 }
 
 /// The left edge of column `k` and the width the shares divide, for shares
-/// `percent`, ignoring every minimum width (see [`divider_x_unchecked`]).
-pub fn column_left_unchecked(total: f32, kind: Kind, percent: &[u8], k: usize) -> (f32, f32) {
-    match kind {
-        Kind::Aside { .. } => (0., total - GAP),
-        Kind::Columns => {
-            let usable = total - GAP * (percent.len() - 1) as f32;
-            let before: f32 = percent[..k]
-                .iter()
-                .map(|&p| usable * f32::from(p) / 100.)
-                .sum();
-            (before + GAP * k as f32, usable)
-        }
-    }
+/// `percent` of columns, ignoring every minimum width (see
+/// [`divider_x_unchecked`]).
+pub fn column_left_unchecked(total: f32, percent: &[u8], k: usize) -> (f32, f32) {
+    let usable = total - GAP * (percent.len() - 1) as f32;
+    let before: f32 = percent[..k]
+        .iter()
+        .map(|&p| usable * f32::from(p) / 100.)
+        .sum();
+    (before + GAP * k as f32, usable)
 }
 
-/// The shares that put a stacked `region` back to columns: equal ones (the
-/// default share for an aside), when they fit `total` pixels; `None` when they
-/// would still stack, as in a window too narrow for the columns.
+/// The shares that put a stacked `region` back to columns: equal ones (every
+/// float's default share for an aside), when they fit `total` pixels; `None`
+/// when they would still stack, as in a window too narrow for the columns.
 pub fn restored(region: &Columns, total: f32) -> Option<Vec<u8>> {
     match region.kind {
-        Kind::Aside { right } => aside_split(total, right, ASIDE_DEFAULT)
-            .map(|_| vec![ASIDE_DEFAULT, 100 - ASIDE_DEFAULT]),
+        Kind::Aside => {
+            let floats: Vec<FloatSpec> = region
+                .floats()
+                .iter()
+                .map(|f| FloatSpec {
+                    share: ASIDE_DEFAULT,
+                    ..*f
+                })
+                .collect();
+            aside_split(total, &floats)?;
+            let mut shares = vec![ASIDE_DEFAULT; floats.len()];
+            shares.push(0);
+            Some(shares)
+        }
         Kind::Columns => {
             let equal = equal_shares(region.count)[..region.count].to_vec();
             split(total, &equal).map(|_| equal)
         }
     }
 }
+
+/// A float narrower than this is not worth wrapping text around.
+pub const MIN_FLOAT: f32 = 120.;
+/// The text beside floats keeps at least this width (about 55 characters):
+/// narrower, greedy wrapping leaves rows 70-90% full and justifying them opens
+/// wide gaps.
+pub const MIN_CHANNEL: f32 = 560.;
 
 /// Whether `line` is the open or close marker of one of `regions` (sorted).
 pub fn is_frame_line(regions: &[Columns], line: usize) -> bool {
@@ -725,20 +900,27 @@ mod tests {
         }
     }
 
+    fn near(a: f32, b: f32) -> bool {
+        (a - b).abs() < 0.01
+    }
+
+    fn one(right: bool, share: u8) -> [FloatSpec; 1] {
+        [FloatSpec { right, share }]
+    }
+
     #[test]
     fn an_aside_opens_with_a_side_and_a_share_in_any_order() {
         let aside = |open: &str| {
             let text = format!("{open}\n\nblock\n\n---\n\ntext\n\n:::\n");
             scan_text(&text)
                 .first()
-                .map(|r| (r.kind, r.percent[0], r.percent[1]))
+                .map(|r| (r.kind, r.floats().to_vec()))
         };
-        let right = |share| Some((Kind::Aside { right: true }, share, 100 - share));
-        let left = |share| Some((Kind::Aside { right: false }, share, 100 - share));
-        assert_eq!(aside("::: aside"), right(40));
-        assert_eq!(aside("::: aside right 30%"), right(30));
-        assert_eq!(aside("::: aside left 25"), left(25));
-        assert_eq!(aside("::: aside 60% left"), left(60));
+        let expect = |right, share| Some((Kind::Aside, one(right, share).to_vec()));
+        assert_eq!(aside("::: aside"), expect(true, 40));
+        assert_eq!(aside("::: aside right 30%"), expect(true, 30));
+        assert_eq!(aside("::: aside left 25"), expect(false, 25));
+        assert_eq!(aside("::: aside 60% left"), expect(false, 60));
         for bad in [
             "::: aside middle",
             "::: aside 5%",
@@ -752,67 +934,156 @@ mod tests {
     }
 
     #[test]
-    fn an_aside_needs_exactly_two_parts() {
-        let three = "::: aside\n\na\n\n---\n\nb\n\n---\n\nc\n\n:::\n";
-        assert!(scan_text(three).is_empty());
-        let one = "::: aside\n\na\n\n:::\n";
-        assert!(scan_text(one).is_empty());
+    fn an_aside_has_floats_then_one_text_part() {
+        // Two floats, then the text: each further float starts at a `--- side N%`.
+        let two = "::: aside left 30%\n\na\n\n--- right 25%\n\nb\n\n---\n\ntext\n\n:::\n";
+        let r = scan_text(two)[0];
+        assert_eq!(r.count, 3);
+        assert_eq!(
+            r.floats(),
+            [
+                FloatSpec {
+                    right: false,
+                    share: 30
+                },
+                FloatSpec {
+                    right: true,
+                    share: 25
+                }
+            ]
+        );
+        assert_eq!(r.percent[..3], [30, 25, 0]);
+        assert_eq!(r.column_of(2), Some(0));
+        assert_eq!(r.column_of(6), Some(1));
+        assert_eq!(r.column_of(10), Some(2));
+        // Three floats is the most; a fourth is not a region.
+        let three = "::: aside\n\na\n\n--- left\n\nb\n\n--- right\n\nc\n\n---\n\ntext\n\n:::\n";
+        assert_eq!(scan_text(three)[0].floats().len(), 3);
+        let four = "::: aside\n\na\n\n--- left\n\nb\n\n--- right\n\nc\n\n--- left\n\nd\n\n---\n\ntext\n\n:::\n";
+        assert!(scan_text(four).is_empty());
+        // The text part is last and plain, and needs to be there.
+        for bad in [
+            "::: aside\n\na\n\n---\n\nb\n\n---\n\nc\n\n:::\n",
+            "::: aside\n\na\n\n---\n\nb\n\n--- left\n\nc\n\n:::\n",
+            "::: aside\n\na\n\n--- left\n\nb\n\n:::\n",
+            "::: aside\n\na\n\n:::\n",
+        ] {
+            assert!(scan_text(bad).is_empty(), "{bad}");
+        }
+        // A spec'd separator is only a separator in an aside.
+        let columns = "::: columns\n\na\n\n--- left\n\nb\n\n:::\n";
+        assert!(scan_text(columns).is_empty());
     }
 
     #[test]
     fn an_aside_split_puts_the_float_on_its_side() {
         let total = 1000.;
-        let right = aside_split(total, true, 40).unwrap();
-        let left = aside_split(total, false, 40).unwrap();
+        let right = aside_split(total, &one(true, 40)).unwrap();
+        let left = aside_split(total, &one(false, 40)).unwrap();
         let usable = total - GAP;
-        assert_eq!(right.width(0), usable * 0.4);
+        assert!(near(right.width(0), usable * 0.4));
         assert_eq!(right.x(1), 0.);
-        assert_eq!(right.x(0), right.width(1) + GAP);
+        assert!(near(right.x(0), right.width(1) + GAP));
         assert_eq!(left.x(0), 0.);
-        assert_eq!(left.x(1), left.width(0) + GAP);
+        assert!(near(left.x(1), left.width(0) + GAP));
         // The grip sits in the middle of the gap.
-        assert_eq!(right.divider_x(0), right.width(1) + GAP / 2.);
-        assert_eq!(left.divider_x(0), left.width(0) + GAP / 2.);
+        assert!(near(right.divider_x(0), right.width(1) + GAP / 2.));
+        assert!(near(left.divider_x(0), left.width(0) + GAP / 2.));
         // A channel under the minimum stacks the region.
-        assert!(aside_split(300., true, 40).is_none());
+        assert!(aside_split(300., &one(true, 40)).is_none());
         // A float asking for more than leaves the text its width gets narrower.
-        let narrow = aside_split(800., true, 50).unwrap();
-        assert_eq!(narrow.width(1), MIN_CHANNEL);
-        assert_eq!(narrow.width(0), 800. - GAP - MIN_CHANNEL);
+        let narrow = aside_split(800., &one(true, 50)).unwrap();
+        assert!(near(narrow.width(1), MIN_CHANNEL));
+        assert!(near(narrow.width(0), 800. - GAP - MIN_CHANNEL));
         // And when that leaves under the float's minimum, the region stacks.
-        assert!(aside_split(700., true, 40).is_none());
+        assert!(aside_split(700., &one(true, 40)).is_none());
         assert!(
-            aside_split(1000., true, 10).is_none(),
+            aside_split(1000., &one(true, 10)).is_none(),
             "a 98px float is too small"
         );
+    }
+
+    #[test]
+    fn floats_on_both_sides_leave_the_text_between_them() {
+        let floats = [
+            FloatSpec {
+                right: false,
+                share: 20,
+            },
+            FloatSpec {
+                right: true,
+                share: 20,
+            },
+            FloatSpec {
+                right: false,
+                share: 10,
+            },
+        ];
+        let total = 1400.;
+        let split = aside_split(total, &floats).unwrap();
+        let usable = total - 2. * GAP;
+        // The two left floats are as wide as the wider of them.
+        assert!(near(split.width(0), usable * 0.2));
+        assert!(near(split.width(2), usable * 0.2));
+        assert_eq!(split.x(0), 0.);
+        assert!(near(split.x(1), total - usable * 0.2));
+        // The text (part 3) is what is left between them.
+        assert!(near(split.x(3), usable * 0.2 + GAP));
+        assert!(near(split.width(3), total - 2. * (usable * 0.2 + GAP)));
+        // One grip per side, the left one first.
+        assert_eq!(split.divider_count(), 2);
+        assert!(!split.divider_is_right(0) && split.divider_is_right(1));
+        assert!(near(split.divider_x(0), usable * 0.2 + GAP / 2.));
+        assert!(near(split.divider_x(1), split.x(1) - GAP / 2.));
+        // Both sides asking for a lot share what the text leaves.
+        let wide = [
+            FloatSpec {
+                right: false,
+                share: 45,
+            },
+            FloatSpec {
+                right: true,
+                share: 45,
+            },
+        ];
+        let split = aside_split(1400., &wide).unwrap();
+        assert!(near(split.width(2), MIN_CHANNEL));
+        assert!((split.width(0) - split.width(1)).abs() < 0.01);
+        // Too narrow for both: the region stacks.
+        assert!(aside_split(800., &wide).is_none());
     }
 
     #[test]
     fn unchecked_geometry_matches_the_checked_one_where_both_exist() {
         let total = 1000.;
         let percent = [20, 50, 30];
+        let columns = scan_text("::: columns 20/50/30\n\na\n\n---\n\nb\n\n---\n\nc\n\n:::\n")[0];
         let split = split(total, &percent).unwrap();
         for k in 0..2 {
             assert!(
-                (divider_x_unchecked(total, Kind::Columns, &percent, k) - split.divider_x(k)).abs()
+                (divider_x_unchecked(total, &columns, &percent, k) - split.divider_x(k)).abs()
                     < 0.01
             );
         }
         for k in 0..3 {
-            let (left, usable) = column_left_unchecked(total, Kind::Columns, &percent, k);
+            let (left, usable) = column_left_unchecked(total, &percent, k);
             assert!((left - split.x(k)).abs() < 0.01);
             assert!((usable - (total - 2. * GAP)).abs() < 0.01);
         }
         for right in [true, false] {
-            let aside = aside_split(total, right, 40).unwrap();
-            let kind = Kind::Aside { right };
+            let aside = aside_split(total, &one(right, 40)).unwrap();
+            let region = scan_text(&format!(
+                "::: aside {} 40%\n\nf\n\n---\n\nt\n\n:::\n",
+                if right { "right" } else { "left" }
+            ))[0];
             assert!(
-                (divider_x_unchecked(total, kind, &[40, 60], 0) - aside.divider_x(0)).abs() < 0.01
+                (divider_x_unchecked(total, &region, &[40, 0], 0) - aside.divider_x(0)).abs()
+                    < 0.01
             );
         }
         // Where the checked one gives up, the unchecked one still has a place.
         assert!(split_is_none(total, &[95, 5]));
-        assert!(divider_x_unchecked(total, Kind::Columns, &[95, 5], 0) > 900.);
+        assert!(divider_x_unchecked(total, &columns, &[95, 5], 0) > 900.);
     }
 
     fn split_is_none(total: f32, percent: &[u8]) -> bool {
@@ -826,9 +1097,6 @@ mod tests {
         assert_eq!(restored(&region, 1000.), Some(vec![50, 50]));
         assert_eq!(restored(&region, 300.), None, "too narrow even when equal");
         let aside = scan_text("::: aside left 90%\n\na\n\n---\n\nb\n\n:::\n")[0];
-        assert_eq!(
-            restored(&aside, 1000.),
-            Some(vec![ASIDE_DEFAULT, 100 - ASIDE_DEFAULT])
-        );
+        assert_eq!(restored(&aside, 1000.), Some(vec![ASIDE_DEFAULT, 0]));
     }
 }

@@ -233,7 +233,7 @@ impl Editor {
                 return None;
             }
             Some(match region.kind {
-                Kind::Aside { right } => column_ops::with_aside_share(lines, right, percent[0]),
+                Kind::Aside => column_ops::aside_markers(lines, region, &percent, false),
                 Kind::Columns => column_ops::with_ratio(lines, &percent),
             })
         })
@@ -247,7 +247,11 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.edit_region(index, window, cx, |lines, region| {
-            column_ops::with_added_column(lines, region)
+            if region.is_aside() {
+                column_ops::with_added_float(lines, region)
+            } else {
+                column_ops::with_added_column(lines, region)
+            }
         })
     }
 

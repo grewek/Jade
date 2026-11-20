@@ -271,12 +271,10 @@ impl DocumentCache {
             .as_ref()
             .filter(|(i, s)| *i == index && s.len() == region.count)
         {
-            region.percent[..region.count].copy_from_slice(shares);
+            region = region.with_shares(shares);
         }
         let split = match region.kind {
-            columns::Kind::Aside { right } => {
-                columns::aside_split(width, right, region.percent[0])?
-            }
+            columns::Kind::Aside => columns::aside_split(width, region.floats())?,
             columns::Kind::Columns => columns::split(width, &region.percent[..region.count])?,
         };
         Some((region, split))
