@@ -6105,6 +6105,116 @@ mod tests {
         .unwrap();
     }
 
+    /// Moving a divider rewrites the region's marker; the rows of a table and a
+    /// callout in its columns must come out as a cold rebuild would have them.
+    #[gpui_kit::test]
+    fn moving_a_divider_relays_out_a_table_and_a_callout(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::{RowHeightCache, mono_char_width};
+        use gpui::Window;
+
+        let note = "> [!note] Title\n> a callout with plenty of words in it that will \
+            need to wrap onto several rows when its column is narrow, and more words";
+        let table =
+            "| Name | Notes |\n| --- | --- |\n| Alice | a long cell with many words to wrap |";
+        let para = "plain words ".repeat(20);
+        let before = format!(
+            "intro\n\n::: columns\n\n{para}\n\n---\n\n{table}\n\n---\n\n{note}\n\n:::\n\nafter"
+        );
+        let after = before.replacen("::: columns", "::: columns 20/50/30", 1);
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let char_width = mono_char_width(&font, size, style.color, window);
+            let width = px(700.);
+            let build = |text: &str, doc: &DocumentCache, window: &mut Window| {
+                let mut rows = RowHeightCache::empty();
+                rows.rebuild(
+                    text,
+                    doc,
+                    0,
+                    false,
+                    width,
+                    char_width,
+                    &font,
+                    size,
+                    style.color,
+                    window,
+                );
+                rows
+            };
+            let mut doc = DocumentCache::new(&before);
+            doc.set_column_width(Some(f32::from(width)));
+            let mut rows = build(&before, &doc, window);
+            let at = before.find("::: columns").unwrap();
+            let (new_text, edit) = apply_edit(
+                &before,
+                at,
+                at + "::: columns".len(),
+                "::: columns 20/50/30",
+            );
+            assert_eq!(new_text, after);
+            let patch = doc.record_edit(&new_text, edit).unwrap();
+            rows.patch_lines(
+                &new_text,
+                &doc,
+                patch.touched,
+                0,
+                false,
+                char_width,
+                &font,
+                size,
+                style.color,
+                window,
+            );
+            let fresh = build(&new_text, &doc, window);
+            let n = new_text.lines().count();
+            let counts = |r: &RowHeightCache| (0..n).map(|i| r.row_count(i)).collect::<Vec<_>>();
+            assert_eq!(counts(&rows), counts(&fresh));
+        })
+        .unwrap();
+    }
+
+    /// A divider drag previews its shares in the layout (so the columns' content
+    /// follows the pointer) without touching the source, and ends cleanly.
+    #[gpui_kit::test]
+    fn a_dragged_divider_previews_the_shares_until_it_ends(cx: &mut TestAppContext) {
+        use super::super::column_handles::ColumnDrag;
+        let text = "intro\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nafter";
+        let (window, editor) = open_editor(cx, text);
+        let shares = |cx: &mut TestAppContext| {
+            editor.read_with(cx, |e, _| {
+                let mut doc = e.document_cache.borrow_mut();
+                doc.set_column_width(Some(800.));
+                doc.side_by_side(2)
+                    .map(|(r, _)| r.percent[..r.count].to_vec())
+            })
+        };
+        assert_eq!(shares(cx), Some(vec![50, 50]));
+        editor.update(cx, |e, _| {
+            e.column_drag = Some(ColumnDrag {
+                region: 0,
+                divider: 0,
+                percent: vec![70, 30],
+            });
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        assert_eq!(shares(cx), Some(vec![70, 30]), "the drag is laid out live");
+        assert!(editor.read_with(cx, |e, _| e.buffer().text().contains("::: columns\n")));
+        editor.update(cx, |e, _| e.column_drag = None);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        assert_eq!(
+            shares(cx),
+            Some(vec![50, 50]),
+            "ending the drag drops the preview"
+        );
+    }
+
     /// The other half of [`super::RowHeightCache`]'s invalidation story:
     /// moving the cursor with *no* accompanying edit still needs the old
     /// and new active lines patched (`sync_active_line`), since the active

@@ -105,7 +105,14 @@ impl Editor {
             let region = focused.then(|| doc.region_index_at(line)).flatten();
             self.raw_region_pinned.filter(|&r| Some(r) == region)
         };
-        let changed = self.document_cache.borrow_mut().set_raw_region(raw);
+        // A divider being dragged lays the region out at the shares it is on.
+        let preview = self
+            .column_drag
+            .as_ref()
+            .map(|d| (d.region, d.percent.clone()));
+        let mut doc = self.document_cache.borrow_mut();
+        let changed = doc.set_raw_region(raw) | doc.set_column_preview(preview);
+        drop(doc);
         if changed {
             self.row_height_cache.borrow_mut().invalidate_width();
         }

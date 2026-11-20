@@ -176,6 +176,9 @@ pub(super) struct DocumentCache {
     editing_cell: Option<(usize, usize)>,
     /// Prose is justified: set from the settings each frame.
     justify: bool,
+    /// The shares a divider drag is previewing for one region (its index and
+    /// the shares), laid out in place of the source's until the drag ends.
+    column_preview: Option<(usize, Vec<u8>)>,
 }
 
 impl DocumentCache {
@@ -202,6 +205,7 @@ impl DocumentCache {
             raw_table: None,
             editing_cell: None,
             justify: false,
+            column_preview: None,
         };
         cache.recompute_all(text);
         cache
@@ -261,9 +265,22 @@ impl DocumentCache {
         let index = self
             .region_index_at(line)
             .filter(|&i| Some(i) != self.raw_region)?;
-        let region = &self.columns[index];
+        let mut region = self.columns[index];
+        if let Some((_, shares)) = self
+            .column_preview
+            .as_ref()
+            .filter(|(i, s)| *i == index && s.len() == region.count)
+        {
+            region.percent[..region.count].copy_from_slice(shares);
+        }
         let split = columns::split(width, &region.percent[..region.count])?;
-        Some((*region, split))
+        Some((region, split))
+    }
+
+    /// Sets the shares a divider drag previews; `true` when that changed what
+    /// is laid out, which changes the region's height.
+    pub(super) fn set_column_preview(&mut self, preview: Option<(usize, Vec<u8>)>) -> bool {
+        std::mem::replace(&mut self.column_preview, preview.clone()) != preview
     }
 
     /// Whether `line` is the open or close marker of a region shown as
