@@ -7,8 +7,8 @@
 
 use std::ops::Range;
 
-use super::live_preview::build_cell_line;
-use super::table_preview::{Align, for_each_cell_range};
+use super::live_preview::{build_cell_line, raw_cell_line};
+use super::table_preview::{Align, LINE_BREAK, for_each_cell_range};
 
 /// Space on each side of a cell's text, in characters. The grid is laid out in
 /// characters (the font is monospace); `element.rs` multiplies by the advance.
@@ -52,6 +52,7 @@ pub(super) fn align_fraction(align: Align) -> f32 {
 /// The raw offset in `line` a click lands on: `x` characters from the table's
 /// left edge, `row` lines below the row's top. The nearest character of the
 /// cell line under it, mapped through what that line shows (hidden markup).
+#[cfg(test)]
 pub(super) fn offset_at(
     line: &str,
     widths: &[usize],
@@ -59,10 +60,26 @@ pub(super) fn offset_at(
     x: f32,
     row: usize,
 ) -> usize {
+    offset_at_editing(line, widths, aligns, x, row, None)
+}
+
+/// [`offset_at`] on a row whose cell `editing` shows its text verbatim.
+pub(super) fn offset_at_editing(
+    line: &str,
+    widths: &[usize],
+    aligns: &[Align],
+    x: f32,
+    row: usize,
+    editing: Option<usize>,
+) -> usize {
     let column = column_at(widths, x);
-    let cell = &layout_row(line, widths)[column];
+    let cell = &layout_row_editing(line, widths, editing)[column];
     let range = cell.lines[row.min(cell.lines.len() - 1)].clone();
-    let shown = build_cell_line(&line[range.clone()]);
+    let shown = if editing == Some(column) {
+        raw_cell_line(&line[range.clone()])
+    } else {
+        build_cell_line(&line[range.clone()])
+    };
     let chars = shown.display_text.chars().count();
     let spare = widths[column].saturating_sub(chars) as f32;
     let aligned = text_left(widths, column) + spare * align_fraction(aligns[column]);
@@ -73,6 +90,74 @@ pub(super) fn offset_at(
         .nth(n)
         .map_or(shown.display_text.len(), |(i, _)| i);
     range.start + shown.raw_offset_for_display(byte)
+}
+
+/// The part of a cell that is edited: its raw text without the single space of
+/// padding `| a |` conventionally has on each side (`raw` is the cell's whole
+/// range between its pipes). Extra spaces are text and stay editable.
+pub(super) fn edit_range(line: &str, raw: Range<usize>) -> Range<usize> {
+    let cell = &line[raw.clone()];
+    if cell == " " {
+        return raw.start..raw.start;
+    }
+    let start = raw.start + usize::from(cell.starts_with(' '));
+    let end = raw.end - usize::from(cell.ends_with(' '));
+    start..end
+}
+
+/// The raw range of every cell of `line`, between its pipes.
+pub(super) fn cell_ranges(line: &str) -> Vec<Range<usize>> {
+    let mut ranges = Vec::new();
+    for_each_cell_range(line, |raw| ranges.push(raw));
+    ranges
+}
+
+/// The column whose cell holds byte `offset` of `line`: the one it is inside,
+/// or the nearest when it is on a pipe or past the ends.
+pub(super) fn cell_at(line: &str, offset: usize) -> usize {
+    let ranges = cell_ranges(line);
+    ranges
+        .iter()
+        .position(|r| offset <= r.end)
+        .unwrap_or(ranges.len().saturating_sub(1))
+}
+
+/// Calls `emit` with each line `text` wraps onto when shown verbatim in
+/// `width` characters: a break after the last space that fits, else a hard cut.
+/// Nothing is dropped, so the ranges are contiguous and cover `text`.
+fn raw_cuts(text: &str, width: usize, mut emit: impl FnMut(Range<usize>)) {
+    let width = width.max(1);
+    let mut start = 0;
+    loop {
+        let rest = &text[start..];
+        let Some((limit, _)) = rest.char_indices().nth(width) else {
+            emit(start..text.len());
+            return;
+        };
+        let cut = match rest[..limit].rfind(' ') {
+            Some(space) => start + space + 1,
+            None => start + limit,
+        };
+        emit(start..cut);
+        start = cut;
+    }
+}
+
+/// How many lines [`wrap_raw`] gives `text`.
+pub(super) fn raw_line_count(text: &str, width: usize) -> usize {
+    let mut count = 0;
+    raw_cuts(text, width, |_| count += 1);
+    count
+}
+
+/// The lines the edited text at `range` of `line` wraps onto in `width`
+/// characters, as byte ranges of `line`; never empty.
+fn wrap_raw(line: &str, range: Range<usize>, width: usize) -> Vec<Range<usize>> {
+    let mut lines = Vec::new();
+    raw_cuts(&line[range.clone()], width, |r| {
+        lines.push(range.start + r.start..range.start + r.end);
+    });
+    lines
 }
 
 /// One column's cell of one row.
@@ -93,13 +178,27 @@ pub(super) fn row_height(cells: &[CellBox]) -> usize {
 /// Every column's cell of `line` wrapped to `widths` (characters per column). A
 /// row with fewer cells than columns gets empty ones at its end; extra cells
 /// are ignored, as in `row_line_count`.
+#[cfg(test)]
 pub(super) fn layout_row(line: &str, widths: &[usize]) -> Vec<CellBox> {
+    layout_row_editing(line, widths, None)
+}
+
+/// [`layout_row`] for a row whose cell `editing` is being edited: that cell is
+/// laid out by [`wrap_raw`].
+pub(super) fn layout_row_editing(
+    line: &str,
+    widths: &[usize],
+    editing: Option<usize>,
+) -> Vec<CellBox> {
     let mut ranges = Vec::with_capacity(widths.len());
     for_each_cell_range(line, |raw| ranges.push(raw));
     widths
         .iter()
         .enumerate()
         .map(|(column, &width)| match ranges.get(column) {
+            Some(raw) if editing == Some(column) => CellBox {
+                lines: wrap_raw(line, edit_range(line, raw.clone()), width),
+            },
             Some(raw) => CellBox {
                 lines: wrap_ranges(line, raw.clone(), width),
             },
@@ -113,6 +212,22 @@ pub(super) fn layout_row(line: &str, widths: &[usize]) -> Vec<CellBox> {
 /// The greedy fill of `table_preview::wrapped_line_count`, returning where each
 /// line is instead of how many there are.
 fn wrap_ranges(line: &str, raw: Range<usize>, width: usize) -> Vec<Range<usize>> {
+    let cell = &line[raw.clone()];
+    if !cell.contains(LINE_BREAK) {
+        return wrap_ranges_between_breaks(line, raw, width);
+    }
+    // Each part between `<br>`s wraps on its own; the tags are not shown.
+    let mut lines = Vec::new();
+    let mut start = raw.start;
+    for part in cell.split(LINE_BREAK) {
+        let end = start + part.len();
+        lines.extend(wrap_ranges_between_breaks(line, start..end, width));
+        start = end + LINE_BREAK.len();
+    }
+    lines
+}
+
+fn wrap_ranges_between_breaks(line: &str, raw: Range<usize>, width: usize) -> Vec<Range<usize>> {
     let width = width.max(1);
     let cell = &line[raw.clone()];
     let mut lines = Vec::new();
@@ -183,9 +298,67 @@ fn shown_len(word: &str) -> usize {
     word.chars().count() - word.matches("\\|").count()
 }
 
+/// Where byte `offset` of the edited cell `column` of `line` is: the row of the
+/// cell it is on, and its x in characters from the table's left edge.
+pub(super) fn caret_at(
+    line: &str,
+    widths: &[usize],
+    aligns: &[Align],
+    column: usize,
+    offset: usize,
+) -> (usize, f32) {
+    let cell = &layout_row_editing(line, widths, Some(column))[column];
+    let row = cell
+        .lines
+        .iter()
+        .position(|r| offset < r.end)
+        .unwrap_or(cell.lines.len() - 1);
+    (
+        row,
+        x_in_line(line, widths, aligns, column, &cell.lines[row], offset),
+    )
+}
+
+/// x in characters of byte `offset` on the edited cell line `range`.
+pub(super) fn x_in_line(
+    line: &str,
+    widths: &[usize],
+    aligns: &[Align],
+    column: usize,
+    range: &Range<usize>,
+    offset: usize,
+) -> f32 {
+    let at = offset.clamp(range.start, range.end);
+    let before = line[range.start..at].chars().count();
+    let chars = line[range.clone()].chars().count();
+    let spare = widths[column].saturating_sub(chars) as f32;
+    text_left(widths, column) + spare * align_fraction(aligns[column]) + before as f32
+}
+
+/// The byte of the edited cell line `range` nearest `x` characters from the
+/// table's left edge.
+pub(super) fn offset_in_line(
+    line: &str,
+    widths: &[usize],
+    aligns: &[Align],
+    column: usize,
+    range: &Range<usize>,
+    x: f32,
+) -> usize {
+    let chars = line[range.clone()].chars().count();
+    let spare = widths[column].saturating_sub(chars) as f32;
+    let first = text_left(widths, column) + spare * align_fraction(aligns[column]);
+    let n = ((x - first).round().max(0.0) as usize).min(chars);
+    let byte = line[range.clone()]
+        .char_indices()
+        .nth(n)
+        .map_or(range.len(), |(i, _)| i);
+    range.start + byte
+}
+
 #[cfg(test)]
 mod tests {
-    use super::super::table_preview::{row_line_count, wrap_cell_text};
+    use super::super::table_preview::{row_line_count, row_line_count_editing, wrap_cell_text};
     use super::super::test_support::Rng;
     use super::*;
 
@@ -234,6 +407,32 @@ mod tests {
         let b = line.find("Bob").unwrap();
         assert_eq!(offset_at(line, &widths, &aligns, 13.6, 0), b);
         assert_eq!(offset_at(line, &widths, &aligns, 15.6, 0), b + 2);
+    }
+
+    #[test]
+    fn a_line_break_tag_ends_the_line_and_is_not_shown() {
+        let line = "| one<br>two three<br><br>x |";
+        let cells = layout_row(line, &[20]);
+        let shown: Vec<&str> = cells[0]
+            .lines
+            .iter()
+            .map(|r| line[r.clone()].trim())
+            .collect();
+        assert_eq!(shown, ["one", "two three", "", "x"]);
+        assert_eq!(row_line_count(line, &[20]), 4);
+        // Narrower: each part wraps on its own.
+        assert_eq!(
+            row_line_count(line, &[5]),
+            layout_row(line, &[5])
+                .iter()
+                .map(|c| c.lines.len())
+                .max()
+                .unwrap()
+        );
+        // Edited, the tag is plain text on one line.
+        let edited = layout_row_editing(line, &[40], Some(0));
+        assert_eq!(edited[0].lines.len(), 1);
+        assert_eq!(row_line_count_editing(line, &[40], Some(0)), 1);
     }
 
     #[test]

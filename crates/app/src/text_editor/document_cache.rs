@@ -156,6 +156,12 @@ pub(super) struct DocumentCache {
     callout_states: Vec<u8>,
     /// Natural sizes of the images the note embeds, read off the main thread.
     images: ImageSizes,
+    /// The table shown as raw text (Ctrl+/, or the caret on its delimiter
+    /// row) instead of rendered; see `Editor::sync_table_view`.
+    raw_table: Option<usize>,
+    /// The table cell the caret is in, as `(line, column)`: it shows its text
+    /// as typed and is what row counts and painting treat as being edited.
+    editing_cell: Option<(usize, usize)>,
 }
 
 impl DocumentCache {
@@ -175,6 +181,8 @@ impl DocumentCache {
             callout_states: Vec::new(),
             callout_scratch: Vec::new(),
             images: ImageSizes::default(),
+            raw_table: None,
+            editing_cell: None,
         };
         cache.recompute_all(text);
         cache
@@ -201,6 +209,25 @@ impl DocumentCache {
         if let Some(c) = self.callouts.get_mut(index).filter(|c| c.foldable) {
             c.folded = folded;
         }
+    }
+
+    pub(super) fn raw_table(&self) -> Option<usize> {
+        self.raw_table
+    }
+
+    pub(super) fn editing_cell(&self) -> Option<(usize, usize)> {
+        self.editing_cell
+    }
+
+    /// Sets the view state of the tables; `true` when the raw one changed, which
+    /// changes every row count in two tables.
+    pub(super) fn set_table_view(
+        &mut self,
+        raw_table: Option<usize>,
+        editing_cell: Option<(usize, usize)>,
+    ) -> bool {
+        self.editing_cell = editing_cell;
+        std::mem::replace(&mut self.raw_table, raw_table) != raw_table
     }
 
     pub(super) fn images(&self) -> &ImageSizes {

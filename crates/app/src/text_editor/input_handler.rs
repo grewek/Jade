@@ -107,12 +107,17 @@ impl EntityInputHandler for Editor {
         // `^`), which must replace the marked text; ignoring it duplicated
         // the preview character.
         let replace_range = resolve_replace_range(&self.buffer, &self.marked_range, range_utf16);
+        // In a table cell the text is escaped and the range kept inside it.
+        let (replace_range, text) = match self.cell_input(replace_range.clone(), text) {
+            Some((range, escaped)) => (range, std::borrow::Cow::Owned(escaped)),
+            None => (replace_range, std::borrow::Cow::Borrowed(text)),
+        };
         let edit = TextEdit {
             start_byte: replace_range.start,
             old_end_byte: replace_range.end,
             new_end_byte: replace_range.start + text.len(),
         };
-        self.buffer.replace_range_with(replace_range, text);
+        self.buffer.replace_range_with(replace_range, &text);
         self.marked_range = None;
         self.record_edit(edit, window, cx);
     }

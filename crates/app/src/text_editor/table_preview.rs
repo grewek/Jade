@@ -120,6 +120,10 @@ pub(super) fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>
     (has_leading_pipe, has_trailing_pipe)
 }
 
+/// Written in a cell where a line must end: the only HTML a cell understands,
+/// since markdown has no line break inside a table row.
+pub const LINE_BREAK: &str = "<br>";
+
 /// How many lines `line` renders on when each of its cells is wrapped to
 /// `widths` — exactly the number of lines `live_preview::build_table_row`
 /// returns for it, without building them. A cell no longer than its column is
@@ -128,14 +132,25 @@ pub(super) fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>
 /// with fewer cells than `widths` counts the missing ones as one empty line;
 /// extra cells are ignored.
 pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
+    row_line_count_editing(line, widths, None)
+}
+
+/// [`row_line_count`] for a row whose cell `editing` is being edited: that cell
+/// shows its text verbatim (see `table_box::wrap_raw`), so it wraps differently.
+pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usize>) -> usize {
     let mut lines = 1;
     let mut column = 0;
     for_each_cell_range(line, |raw| {
         if let Some(&width) = widths.get(column) {
-            let cell = line[raw].trim();
-            // Bytes are never fewer than characters.
-            if cell.len() > width {
-                lines = lines.max(wrapped_line_count(cell, width));
+            if editing == Some(column) {
+                let shown = super::table_box::edit_range(line, raw);
+                lines = lines.max(super::table_box::raw_line_count(&line[shown], width));
+            } else {
+                let cell = line[raw].trim();
+                // Bytes are never fewer than characters.
+                if cell.len() > width || cell.contains(LINE_BREAK) {
+                    lines = lines.max(wrapped_line_count(cell, width));
+                }
             }
         }
         column += 1;
@@ -147,6 +162,12 @@ pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
 /// string: the same greedy fill, counting instead of copying. `cell` is a raw
 /// (still escaped) cell; `\|` counts as the one character it renders as.
 pub fn wrapped_line_count(cell: &str, width: usize) -> usize {
+    if cell.contains(LINE_BREAK) {
+        return cell
+            .split(LINE_BREAK)
+            .map(|part| wrapped_line_count(part, width))
+            .sum();
+    }
     let width = width.max(1);
     let (mut lines, mut used) = (0, 0);
     for word in cell.split_whitespace() {

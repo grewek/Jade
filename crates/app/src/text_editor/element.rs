@@ -18,10 +18,10 @@ use super::link_table::LinkTable;
 use super::live_preview::{
     DisplayLine, InlineStyle, LineContext, LineIndent, Widget, build_callout_header_line,
     build_cell_line, build_display_line, build_display_line_in_context, hidden_line,
-    is_thematic_break, line_indent,
+    is_thematic_break, line_indent, raw_cell_line,
 };
 use super::paint_trace::{FrameInfo, PaintTrace};
-use super::table_box::{self, layout_row};
+use super::table_box::{self, layout_row_editing};
 use super::table_preview::{self, Table, table_index_at};
 use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
@@ -51,6 +51,8 @@ pub(super) struct LineState<'a> {
     pub images: Option<&'a ImageSizes>,
     /// A body line of a folded callout: no rows at all.
     pub hidden: bool,
+    /// The column of this table row the caret is in: it shows its text as typed.
+    pub editing_cell: Option<usize>,
 }
 
 impl<'a> LineState<'a> {
@@ -61,13 +63,17 @@ impl<'a> LineState<'a> {
             role: doc.line_roles()[i],
             block_ctx: doc.block_contexts()[i],
             table_kind: table_line_kind(doc.tables(), i),
-            table_active: is_table_active(doc, i, cursor, focused),
+            table_active: is_table_active(doc, i, focused),
             callout,
             callout_is_header: callout.is_some_and(|c| c.is_header(i)),
             active: is_active_line(&line_range, cursor, focused),
             broken: &[],
             images: Some(doc.images()),
             hidden: callout.is_some_and(|c| c.hides(i)),
+            editing_cell: doc
+                .editing_cell()
+                .filter(|&(line, _)| line == i)
+                .map(|(_, column)| column),
         }
     }
 
@@ -85,6 +91,7 @@ impl<'a> LineState<'a> {
             broken: &[],
             images: None,
             hidden: false,
+            editing_cell: None,
         }
     }
 }
@@ -114,27 +121,16 @@ pub(super) fn table_line_kind(tables: &[Table], line_index: usize) -> TableLineK
     }
 }
 
-/// Whether `line_index`'s table (if any) should render raw rather than as
-/// an aligned grid — true whenever the cursor sits anywhere inside that
-/// table's own byte range, not just on this specific line. Unlike every
-/// other construct's single "active line," a table's row/column alignment
-/// can't be resolved from one line considered in isolation, so there's no
-/// sensible way to keep the rest of the grid rendered while one row inside
-/// it goes raw — the whole table becomes the unit of "active," same
-/// `focused`-gating as `is_active_line`.
-pub(super) fn is_table_active(
-    doc: &DocumentCache,
-    line_index: usize,
-    cursor: usize,
-    focused: bool,
-) -> bool {
+/// Whether `line_index`'s table (if any) shows its raw source instead of the
+/// rendered box: only in raw mode (`DocumentCache::raw_table`, set by Ctrl+/ or
+/// the caret on the delimiter row). Otherwise a table with the caret in it stays
+/// rendered and its cell under the caret is edited in place.
+pub(super) fn is_table_active(doc: &DocumentCache, line_index: usize, focused: bool) -> bool {
     focused
-        && table_index_at(doc.tables(), line_index).is_some_and(|idx| {
-            let range = doc.table_byte_range(&doc.tables()[idx]);
-            cursor >= range.start && cursor <= range.end
-        })
+        && doc
+            .raw_table()
+            .is_some_and(|raw| table_index_at(doc.tables(), line_index) == Some(raw))
 }
-
 /// Pixel width of a callout's left accent bar — thicker than a plain
 /// blockquote's own `QUOTE_BAR_WIDTH`, so a callout reads as a distinct,
 /// heavier element even before its background tint is noticed.
@@ -293,6 +289,10 @@ pub(super) struct RowHeightCache {
     /// pure cursor move (no edit) patches just the lines whose active
     /// status actually changed.
     active_line: Option<usize>,
+    /// The table cell that was being edited when this cache was last built or
+    /// patched: moving the caret between cells changes row counts like moving
+    /// it between lines does.
+    editing: Option<(usize, usize)>,
     /// The `available_width` [`Self::rebuild`] last ran with — part of the
     /// render-context fingerprint `needs_full_rebuild` checks.
     available_width: Pixels,
@@ -319,6 +319,7 @@ impl RowHeightCache {
         Self {
             rows: Fenwick::new(&[]),
             active_line: None,
+            editing: None,
             available_width: px(0.),
             char_width: px(0.),
             verified: 0..0,
@@ -425,6 +426,7 @@ impl RowHeightCache {
         }
         assert_eq!(counts.len(), line_count);
         self.rows = Fenwick::from_vec(counts);
+        self.editing = doc.editing_cell();
         self.active_line = if focused {
             Some(doc.line_at(cursor))
         } else {
@@ -485,6 +487,7 @@ impl RowHeightCache {
             );
             self.rows.add_at(i, new as i64 - old);
         }
+        self.editing = doc.editing_cell();
         self.active_line = if focused {
             Some(doc.line_at(cursor))
         } else {
@@ -517,10 +520,20 @@ impl RowHeightCache {
         } else {
             None
         };
-        if new_active == self.active_line {
+        let new_editing = doc.editing_cell();
+        if new_active == self.active_line && new_editing == self.editing {
             return;
         }
-        for line in [self.active_line, new_active].into_iter().flatten() {
+        let editing_lines = [self.editing, new_editing].map(|e| e.map(|(line, _)| line));
+        let lines = [self.active_line, new_active]
+            .into_iter()
+            .chain(editing_lines);
+        let mut seen = Vec::with_capacity(4);
+        for line in lines.flatten() {
+            if seen.contains(&line) {
+                continue;
+            }
+            seen.push(line);
             if line < self.line_count() {
                 let old = self.rows.prefix_sum(line + 1) - self.rows.prefix_sum(line);
                 let new = row_count_for_line(
@@ -540,6 +553,7 @@ impl RowHeightCache {
             }
         }
         self.active_line = new_active;
+        self.editing = new_editing;
     }
 
     /// Upgrades line `i`'s row count to `real_rows` if it differs from
@@ -1377,7 +1391,10 @@ pub(super) fn build_display_lines(
                 let max_chars =
                     table_row_char_budget(available_width, font, font_size, text_color, window);
                 let widths = table_preview::resolve_widths(&table.columns, max_chars);
-                vec![hidden_line(line); table_preview::row_line_count(line, &widths)]
+                vec![
+                    hidden_line(line);
+                    table_preview::row_line_count_editing(line, &widths, state.editing_cell)
+                ]
             }
         },
     };
@@ -1706,6 +1723,7 @@ pub(super) fn render_editor(
         // doc comment for why an `on_key_down` match arm alone can't do this.
         .key_context("TextEditor")
         .on_action(cx.listener(Editor::handle_insert_tab))
+        .on_action(cx.listener(Editor::handle_back_tab))
         .on_key_down(cx.listener(Editor::handle_key_down))
         .child(
             canvas(
@@ -1899,6 +1917,7 @@ fn register_mouse_handling(
             }
             let offset = offset_for_position(editor_entity.read(cx), &view, event.position, window);
             editor_entity.update(cx, |editor, cx| {
+                let offset = editor.clamp_to_cell(offset);
                 editor.buffer_mut().set_cursor(offset, true);
                 cx.notify();
             });
@@ -2033,8 +2052,14 @@ fn hit_for_position(
                 );
                 let row = ((relative_y - y_offset) / line_height) as usize;
                 let x = (position.x - bounds.origin.x) / columns.char_width;
-                let offset =
-                    table_box::offset_at(line_text, &columns.widths, &columns.aligns, x, row);
+                let offset = table_box::offset_at_editing(
+                    line_text,
+                    &columns.widths,
+                    &columns.aligns,
+                    x,
+                    row,
+                    state.editing_cell,
+                );
                 return Hit::at(layout.line_range(i).start + offset);
             }
             y_offset += height;
@@ -2311,14 +2336,14 @@ fn paint_image_placeholder(
 const TABLE_RADIUS: Pixels = px(6.);
 
 /// What painting a table needs about the columns it is drawn with.
-struct TableColumns {
-    widths: Vec<usize>,
-    aligns: Vec<table_preview::Align>,
-    char_width: Pixels,
+pub(super) struct TableColumns {
+    pub(super) widths: Vec<usize>,
+    pub(super) aligns: Vec<table_preview::Align>,
+    pub(super) char_width: Pixels,
 }
 
 impl TableColumns {
-    fn of(
+    pub(super) fn of(
         table: &Table,
         width: Pixels,
         (font, font_size, text_color): (&Font, Pixels, Hsla),
@@ -2354,7 +2379,6 @@ fn paint_table_boxes(
     let tables = doc.tables();
     let FrameView {
         layout,
-        cursor,
         focused,
         bounds,
         font,
@@ -2371,7 +2395,7 @@ fn paint_table_boxes(
         .iter()
         .take_while(|t| t.start_line < range.end)
     {
-        if is_table_active(doc, table.start_line, *cursor, *focused) {
+        if is_table_active(doc, table.start_line, *focused) {
             continue;
         }
         let columns = TableColumns::of(
@@ -2448,13 +2472,16 @@ fn paint_table_row(
     line: &str,
     columns: &TableColumns,
     origin: Point<Pixels>,
-    header: bool,
+    (header, editing): (bool, Option<usize>),
     (font, font_size, line_height): (&Font, Pixels, Pixels),
     colors: &InlineColors,
     window: &mut Window,
     cx: &mut App,
 ) {
-    for (c, cell) in layout_row(line, &columns.widths).iter().enumerate() {
+    for (c, cell) in layout_row_editing(line, &columns.widths, editing)
+        .iter()
+        .enumerate()
+    {
         let column_width = columns.x(columns.widths[c] as f32);
         let left = origin.x + columns.x(table_box::text_left(&columns.widths, c));
         let fraction = table_box::align_fraction(columns.aligns[c]);
@@ -2462,7 +2489,11 @@ fn paint_table_row(
             if range.is_empty() {
                 continue;
             }
-            let shown = build_cell_line(&line[range.clone()]);
+            let shown = if editing == Some(c) {
+                raw_cell_line(&line[range.clone()])
+            } else {
+                build_cell_line(&line[range.clone()])
+            };
             let wrapped = shape_entry(
                 &shown,
                 None,
@@ -2478,6 +2509,100 @@ fn paint_table_row(
         }
     }
 }
+
+/// The cell being edited and where its row is.
+struct EditingCell<'a> {
+    line: &'a str,
+    /// Byte offset of `line` in the buffer.
+    line_start: usize,
+    column: usize,
+    /// The row's top left.
+    origin: Point<Pixels>,
+    line_height: Pixels,
+}
+
+/// Marks the cell being edited: an accent outline, the part of the selection
+/// inside it and the caret, over the text `paint_table_row` drew.
+fn paint_editing_cell(
+    cell: &EditingCell,
+    columns: &TableColumns,
+    (selection, caret): (Option<&Range<usize>>, Option<usize>),
+    (accent, selection_fill, cursor_color): (Hsla, Hsla, Hsla),
+    window: &mut Window,
+) {
+    let EditingCell {
+        line,
+        line_start,
+        column,
+        origin,
+        line_height,
+    } = *cell;
+    let lines = &table_box::layout_row_editing(line, &columns.widths, Some(column))[column].lines;
+    let height = line_height
+        * table_box::layout_row_editing(line, &columns.widths, Some(column))
+            .iter()
+            .map(|c| c.lines.len())
+            .max()
+            .unwrap_or(1) as f32;
+    let left = origin.x + columns.x(table_box::column_left(&columns.widths, column));
+    let width = columns.x(columns.widths[column] as f32 + 2.0 * table_box::CELL_PAD);
+    window.paint_quad(quad(
+        Bounds {
+            origin: point(left, origin.y),
+            size: size(width, height),
+        },
+        px(0.),
+        Hsla::transparent_black(),
+        CELL_OUTLINE,
+        accent,
+        BorderStyle::Solid,
+    ));
+    let x_of = |range: &Range<usize>, offset: usize| {
+        columns.x(table_box::x_in_line(
+            line,
+            &columns.widths,
+            &columns.aligns,
+            column,
+            range,
+            offset,
+        ))
+    };
+    if let Some(selection) = selection {
+        let (from, to) = (
+            selection.start.saturating_sub(line_start),
+            selection.end.saturating_sub(line_start),
+        );
+        for (row, range) in lines.iter().enumerate() {
+            let (a, b) = (from.max(range.start), to.min(range.end));
+            if a < b {
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: point(
+                            origin.x + x_of(range, a),
+                            origin.y + line_height * row as f32,
+                        ),
+                        size: size(x_of(range, b) - x_of(range, a), line_height),
+                    },
+                    selection_fill,
+                ));
+            }
+        }
+    }
+    if let Some(caret) = caret.filter(|c| *c >= line_start) {
+        let offset = caret - line_start;
+        let (row, x) = table_box::caret_at(line, &columns.widths, &columns.aligns, column, offset);
+        window.paint_quad(fill(
+            Bounds {
+                origin: point(origin.x + columns.x(x), origin.y + line_height * row as f32),
+                size: size(px(1.), line_height),
+            },
+            cursor_color,
+        ));
+    }
+}
+
+/// Width of the outline around the cell being edited.
+const CELL_OUTLINE: Pixels = px(1.5);
 
 #[allow(clippy::too_many_arguments)]
 fn paint_lines(
@@ -2762,12 +2887,29 @@ fn paint_lines(
                     line_text,
                     columns,
                     bounds.origin + point(px(0.), y_offset),
-                    table.is_first_row(i),
+                    (table.is_first_row(i), state.editing_cell),
                     (font, font_size, line_height),
                     &inline,
                     window,
                     cx,
                 );
+                if let Some(column) = state.editing_cell {
+                    let cell = EditingCell {
+                        line: line_text,
+                        line_start: line_range.start,
+                        column,
+                        origin: bounds.origin + point(px(0.), y_offset),
+                        line_height,
+                    };
+                    let (selection, caret) = (selection.as_ref(), show_cursor.then_some(cursor));
+                    paint_editing_cell(
+                        &cell,
+                        columns,
+                        (selection, caret),
+                        (palette.color(Role::Accent), selection_fill, cursor_color),
+                        window,
+                    );
+                }
             }
         }
 
@@ -2799,6 +2941,7 @@ fn paint_lines(
             // *whole* combined block if the selection touches it at all,
             // and always place the caret on its first sub-row.
             if let Some(selection) = &selection
+                && state.editing_cell.is_none()
                 && selection.start.max(line_range.start) < selection.end.min(line_range.end)
             {
                 window.paint_quad(fill(
@@ -2821,7 +2964,11 @@ fn paint_lines(
                 );
                 row_y += wrapped.size(line_height).height;
             }
-            if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
+            if show_cursor
+                && state.editing_cell.is_none()
+                && cursor >= line_range.start
+                && cursor <= line_range.end
+            {
                 window.paint_quad(fill(
                     Bounds {
                         origin: line_origin,
@@ -2928,7 +3075,7 @@ mod tests {
     use super::super::live_preview::LineIndent;
     use super::super::table_preview::classify_tables;
     use super::super::test_support::apply_edit;
-    use super::super::{Editor, InsertTab};
+    use super::super::{BackTab, Editor, InsertTab};
     use super::LineState;
     use super::{TableLineKind, is_active_line, row_count_for_line, shape_display_line};
     use gpui_kit::test::TestWindowExt;
@@ -2948,7 +3095,10 @@ mod tests {
         cx.update(|cx| {
             // Must out-rank `gpui_kit::init`'s own global "tab" binding —
             // see `Editor::handle_insert_tab`'s doc comment.
-            cx.bind_keys([KeyBinding::new("tab", InsertTab, Some("TextEditor"))]);
+            cx.bind_keys([
+                KeyBinding::new("tab", InsertTab, Some("TextEditor")),
+                KeyBinding::new("shift-tab", BackTab, Some("TextEditor")),
+            ]);
             gpui_kit::open_window(WindowOptions::default(), cx, move |_window, cx| {
                 cx.new(|cx| Editor::new(text, cx))
             })
@@ -4673,5 +4823,277 @@ mod tests {
         // A callout without a marker has nothing to fold: the click moves the cursor.
         click_line(cx, 7);
         assert_eq!(rows(cx), [1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    }
+
+    /// Table cell editing, driven through the real key and text paths.
+    mod table_cells {
+        use super::*;
+        const TABLE: &str = "| a | b |\n|---|---|\n| c | d |\n\nend";
+
+        /// An editor focused with its caret at byte `at`, one frame rendered.
+        fn open_at(
+            cx: &mut TestAppContext,
+            text: &'static str,
+            at: usize,
+        ) -> (AnyWindowHandle, Entity<Editor>) {
+            let (window, editor) = open_editor(cx, text);
+            cx.update_window(window, |_, window, cx| {
+                focus_editor(window, cx);
+                editor.update(cx, |e, _| e.buffer_mut().set_cursor(at, false));
+                window.render_frame(cx);
+            })
+            .unwrap();
+            (window, editor)
+        }
+
+        fn press(cx: &mut TestAppContext, window: AnyWindowHandle, key: &str) {
+            cx.update_window(window, |_, window, cx| window.press(key, cx))
+                .unwrap();
+        }
+
+        fn type_text(cx: &mut TestAppContext, window: AnyWindowHandle, text: &str) {
+            cx.update_window(window, |_, window, cx| {
+                window.input(text, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+        }
+
+        fn state(cx: &mut TestAppContext, editor: &Entity<Editor>) -> (String, usize) {
+            editor.read_with(cx, |e, _| {
+                (e.buffer().text().to_string(), e.buffer().cursor())
+            })
+        }
+
+        /// What the row cache holds must be what a cold rebuild would give.
+        fn assert_rows_are_exact(
+            cx: &mut TestAppContext,
+            window: AnyWindowHandle,
+            editor: &Entity<Editor>,
+        ) {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let cached: Vec<i64> = editor.read_with(cx, |e, _| {
+                    let rows = e.row_height_cache.borrow();
+                    (0..rows.line_count())
+                        .map(|l| rows.prefix_sum(l + 1) - rows.prefix_sum(l))
+                        .collect()
+                });
+                editor.update(cx, |e, _| {
+                    e.row_height_cache.borrow_mut().invalidate_width()
+                });
+                window.render_frame(cx);
+                let fresh: Vec<i64> = editor.read_with(cx, |e, _| {
+                    let rows = e.row_height_cache.borrow();
+                    (0..rows.line_count())
+                        .map(|l| rows.prefix_sum(l + 1) - rows.prefix_sum(l))
+                        .collect()
+                });
+                assert_eq!(cached, fresh);
+            })
+            .unwrap();
+        }
+
+        #[gpui_kit::test]
+        fn typing_edits_the_cell_in_place_and_escapes_pipes(cx: &mut TestAppContext) {
+            let at = TABLE.find('c').unwrap() + 1;
+            let (window, editor) = open_at(cx, TABLE, at);
+            type_text(cx, window, "x|y");
+            let (text, _) = state(cx, &editor);
+            assert_eq!(text, TABLE.replacen("| c |", "| cx\\|y |", 1));
+            assert_rows_are_exact(cx, window, &editor);
+        }
+
+        #[gpui_kit::test]
+        fn backspace_and_delete_stop_at_the_cells_border(cx: &mut TestAppContext) {
+            let at = TABLE.find('c').unwrap();
+            let (window, editor) = open_at(cx, TABLE, at);
+            press(cx, window, "backspace");
+            assert_eq!(state(cx, &editor), (TABLE.to_string(), at));
+            press(cx, window, "right");
+            press(cx, window, "delete");
+            assert_eq!(state(cx, &editor).0, TABLE, "the pipe after the cell stays");
+        }
+
+        #[gpui_kit::test]
+        fn backspace_removes_an_escaped_pipe_whole(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('c').unwrap() + 1);
+            type_text(cx, window, "|");
+            press(cx, window, "backspace");
+            assert_eq!(state(cx, &editor).0, TABLE);
+        }
+
+        #[gpui_kit::test]
+        fn tab_and_shift_tab_move_between_cells_across_rows(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('a').unwrap());
+            let cell = |cx: &mut TestAppContext| {
+                let (text, cursor) = state(cx, &editor);
+                let _ = cursor;
+                let start = editor.read_with(cx, |e, _| e.buffer().selection().map(|s| s.start));
+                text[start.unwrap_or(cursor)..].chars().next().unwrap()
+            };
+            press(cx, window, "tab");
+            assert_eq!(cell(cx), 'b');
+            press(cx, window, "tab");
+            assert_eq!(cell(cx), 'c', "wraps to the next row, past the delimiter");
+            press(cx, window, "shift-tab");
+            assert_eq!(cell(cx), 'b');
+        }
+
+        #[gpui_kit::test]
+        fn tab_in_the_last_cell_adds_a_row(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('d').unwrap());
+            press(cx, window, "tab");
+            let (text, cursor) = state(cx, &editor);
+            assert_eq!(text, TABLE.replacen("| c | d |", "| c | d |\n| | |", 1));
+            assert_eq!(cursor, TABLE.find("\n\nend").unwrap() + 2);
+            assert_rows_are_exact(cx, window, &editor);
+        }
+
+        #[gpui_kit::test]
+        fn arrows_cross_cell_borders_but_never_the_pipes(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('a').unwrap() + 1);
+            press(cx, window, "right");
+            assert_eq!(state(cx, &editor).1, TABLE.find('b').unwrap());
+            press(cx, window, "left");
+            assert_eq!(state(cx, &editor).1, TABLE.find('a').unwrap() + 1);
+            press(cx, window, "shift-right");
+            assert_eq!(
+                state(cx, &editor).1,
+                TABLE.find('a').unwrap() + 1,
+                "a selection does not leave the cell"
+            );
+        }
+
+        #[gpui_kit::test]
+        fn up_and_down_keep_the_column_and_stop_at_the_table_edge(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('d').unwrap());
+            press(cx, window, "up");
+            assert_eq!(
+                state(cx, &editor).1,
+                TABLE.find('b').unwrap(),
+                "past the delimiter"
+            );
+            press(cx, window, "down");
+            assert_eq!(state(cx, &editor).1, TABLE.find('d').unwrap());
+            press(cx, window, "down");
+            assert_eq!(
+                state(cx, &editor).1,
+                TABLE.find('d').unwrap() + 1,
+                "stays at the end"
+            );
+        }
+
+        #[gpui_kit::test]
+        fn enter_goes_down_adds_a_row_and_an_empty_row_leaves(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('a').unwrap());
+            press(cx, window, "enter");
+            assert_eq!(state(cx, &editor).1, TABLE.find('c').unwrap());
+            press(cx, window, "enter");
+            let added = TABLE.replacen("| c | d |", "| c | d |\n| | |", 1);
+            let (text, cursor) = state(cx, &editor);
+            assert_eq!(text, added);
+            assert_eq!(cursor, added.find("| |").unwrap() + 1);
+            press(cx, window, "enter");
+            let (text, cursor) = state(cx, &editor);
+            assert_eq!(text, TABLE, "the empty row is gone");
+            assert_eq!(
+                cursor,
+                TABLE.find("\n\nend").unwrap() + 1,
+                "on the blank line after"
+            );
+        }
+
+        #[gpui_kit::test]
+        fn escape_leaves_the_table_and_adds_a_line_at_the_end_of_the_note(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('a').unwrap());
+            press(cx, window, "escape");
+            assert_eq!(state(cx, &editor).1, TABLE.find("\n\nend").unwrap() + 1);
+            let ends = "| a |\n|---|\n| b |";
+            let (window, editor) = open_at(cx, ends, ends.find('b').unwrap());
+            press(cx, window, "escape");
+            assert_eq!(state(cx, &editor), (format!("{ends}\n"), ends.len() + 1));
+        }
+
+        #[gpui_kit::test]
+        fn shift_enter_inserts_a_line_break_and_backspace_removes_it_whole(
+            cx: &mut TestAppContext,
+        ) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('c').unwrap() + 1);
+            press(cx, window, "shift-enter");
+            assert_eq!(
+                state(cx, &editor).0,
+                TABLE.replacen("| c |", "| c<br> |", 1)
+            );
+            assert_rows_are_exact(cx, window, &editor);
+            press(cx, window, "backspace");
+            assert_eq!(state(cx, &editor).0, TABLE);
+        }
+
+        #[gpui_kit::test]
+        fn ctrl_slash_shows_the_whole_source_and_back(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('c').unwrap());
+            press(cx, window, "ctrl-/");
+            assert_eq!(
+                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table()),
+                Some(0)
+            );
+            assert_rows_are_exact(cx, window, &editor);
+            press(cx, window, "ctrl-/");
+            assert_eq!(
+                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table()),
+                None
+            );
+        }
+
+        #[gpui_kit::test]
+        fn the_delimiter_row_is_raw_and_leaving_it_by_arrow_edits_cells(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find("---").unwrap());
+            assert_eq!(
+                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table()),
+                Some(0)
+            );
+            press(cx, window, "ctrl-/");
+            assert_eq!(
+                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table()),
+                None
+            );
+            assert_eq!(
+                state(cx, &editor).1,
+                TABLE.find('c').unwrap(),
+                "the caret left the row"
+            );
+        }
+
+        #[gpui_kit::test]
+        fn moving_off_the_delimiter_row_goes_back_to_cell_editing(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find("---").unwrap());
+            let raw = |cx: &mut TestAppContext| {
+                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table())
+            };
+            assert_eq!(raw(cx), Some(0));
+            press(cx, window, "down");
+            assert_eq!(raw(cx), None);
+            type_text(cx, window, "|");
+            assert_eq!(state(cx, &editor).0, TABLE.replacen("| c |", "| \\|c |", 1));
+        }
+
+        #[gpui_kit::test]
+        fn select_all_selects_the_cell_and_paste_is_escaped(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('c').unwrap());
+            press(cx, window, "ctrl-a");
+            assert_eq!(
+                editor.read_with(cx, |e, _| e.buffer().selection()),
+                Some(TABLE.find('c').unwrap()..TABLE.find('c').unwrap() + 1)
+            );
+            cx.update(|cx| {
+                cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("p|q\nr".into()))
+            });
+            press(cx, window, "ctrl-v");
+            assert_eq!(
+                state(cx, &editor).0,
+                TABLE.replacen("| c |", "| p\\|q<br>r |", 1)
+            );
+        }
     }
 }

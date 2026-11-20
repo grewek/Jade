@@ -421,6 +421,21 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
     }
 }
 
+/// A table cell's text with its markup shown as typed, as the cell being
+/// edited is.
+pub fn raw_cell_line(text: &str) -> DisplayLine {
+    DisplayLine {
+        display_text: text.to_string(),
+        segments: vec![DisplaySegment {
+            raw: 0..text.len(),
+            display: 0..text.len(),
+            style: InlineStyle::Plain,
+            replaced: false,
+        }],
+        indent: LineIndent::None,
+    }
+}
+
 /// A table cell's text with its inline markup applied (bold, code, links), as
 /// one line. Unlike [`build_display_line`] it never reads a leading `>`, `-` or
 /// `#` as a block: inside a cell they are just characters.

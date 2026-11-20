@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::debug_server::{self, targets::DebugName};
-use crate::text_editor::{Editor, EditorEvent, InsertTab};
+use crate::text_editor::{BackTab, Editor, EditorEvent, InsertTab};
 use crate::theme::{Alpha, ConfigDirs, Role, ThemeEngine};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
@@ -1952,6 +1952,7 @@ pub fn run() {
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
                 KeyBinding::new("tab", InsertTab, Some("TextEditor")),
+                KeyBinding::new("shift-tab", BackTab, Some("TextEditor")),
                 KeyBinding::new("ctrl-p", OpenCommandPalette, None),
             ]);
             bind_open_command_palette(cx);
@@ -2004,7 +2005,7 @@ fn bind_open_command_palette(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        DeleteNote, Editor, InsertTab, JadeApp, OpenCommandPalette, RenameNote,
+        BackTab, DeleteNote, Editor, InsertTab, JadeApp, OpenCommandPalette, RenameNote,
         SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN,
     };
     use crate::theme::{Role, ThemeEngine};
@@ -2037,6 +2038,7 @@ mod tests {
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
                 KeyBinding::new("tab", InsertTab, Some("TextEditor")),
+                KeyBinding::new("shift-tab", BackTab, Some("TextEditor")),
                 KeyBinding::new("ctrl-p", OpenCommandPalette, None),
             ]);
             super::bind_open_command_palette(cx);

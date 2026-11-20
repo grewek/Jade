@@ -117,6 +117,39 @@ fn bench_steady_state(c: &mut Criterion, name: &str, text: &str) {
     group.finish();
 }
 
+/// `text` followed by a 20-row table that is the note's last lines, so the
+/// editor's initial click puts the caret in the table's last cell.
+fn with_trailing_table(text: &str) -> String {
+    let mut out = String::from(text);
+    out.push_str("\n| name | notes | count |\n|---|:-:|--:|\n");
+    for row in 0..20 {
+        out.push_str(&format!("| item {row} | some words in a cell | {row} |\n"));
+    }
+    out.push_str("| last | here | 0 |");
+    out
+}
+
+/// Typing into the cell of a rendered table: only that row may be laid out
+/// again, so it must cost what typing in a plain line does.
+fn bench_table_typing(c: &mut Criterion, text: &str) {
+    let mut app = HeadlessApp::new(text);
+    app.open_note();
+    app.focus_editor();
+    app.frame();
+    let mut typed = false;
+    c.benchmark_group("frame/table")
+        .bench_function("cell_keystroke_and_frame", |b| {
+            b.iter(|| {
+                if typed {
+                    app.key_and_frame("backspace", None);
+                } else {
+                    app.key_and_frame("x", Some("x"));
+                }
+                typed = !typed;
+            });
+        });
+}
+
 fn bench_layout(c: &mut Criterion) {
     let stress = stress_text();
     let typical = typical_prefix(&stress);
@@ -125,6 +158,7 @@ fn bench_layout(c: &mut Criterion) {
     bench_steady_state(c, "typical", typical);
     bench_steady_state(c, "stress", &stress);
     bench_steady_state(c, "stress_blocks", &with_image_blocks(&stress));
+    bench_table_typing(c, &with_trailing_table(typical));
 }
 
 criterion_group!(benches, bench_layout);

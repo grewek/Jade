@@ -32,4 +32,4 @@ mod table_preview;
 mod test_support;
 
 pub use buffer::EditorBuffer;
-pub use editor::{Editor, EditorEvent, InsertTab};
+pub use editor::{BackTab, Editor, EditorEvent, InsertTab};

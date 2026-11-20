@@ -6,6 +6,8 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 
+mod table_edit;
+
 use super::EditorBuffer;
 use super::block;
 use super::callout::callout_index_at;
@@ -126,6 +128,8 @@ pub struct Editor {
     pub(super) link_table: LinkTable,
     /// The mouse is over a link a click would follow: paint shows a pointer.
     pub(super) hovering_link: bool,
+    /// The table Ctrl+/ asked to show raw; it stays raw while the caret is in it.
+    raw_pinned: Option<usize>,
     /// The vault root and this note's id, for finding image embeds' files.
     /// `None` (tests, a note not in a vault) leaves image blocks at their
     /// placeholder height.
@@ -153,6 +157,7 @@ impl Editor {
             doc_stats,
             link_table,
             hovering_link: false,
+            raw_pinned: None,
             image_context: None,
         }
     }
@@ -546,8 +551,14 @@ impl Editor {
 
         if command {
             match keystroke.key.as_str() {
+                "/" => {
+                    self.toggle_raw_table(cx);
+                    return;
+                }
                 "a" => {
-                    self.buffer.select_all();
+                    if !self.select_cell() {
+                        self.buffer.select_all();
+                    }
                     cx.notify();
                     return;
                 }
@@ -572,6 +583,10 @@ impl Editor {
                             let c = self.buffer.cursor();
                             c..c
                         });
+                        if let Some((range, text)) = self.cell_input(old_range.clone(), &text) {
+                            self.replace_in_buffer(range, &text, window, cx);
+                            return;
+                        }
                         let edit = edit_for_insertion(old_range, text.len());
                         self.buffer.insert(&text);
                         self.record_edit(edit, window, cx);
@@ -601,6 +616,10 @@ impl Editor {
                 }
                 _ => {}
             }
+        }
+
+        if !command && self.table_key(keystroke.key.as_str(), shift, window, cx) {
+            return;
         }
 
         match keystroke.key.as_str() {
@@ -712,6 +731,9 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if self.tab_in_table(false, window, cx) {
+            return;
+        }
         let old_range = self.buffer.selection().unwrap_or_else(|| {
             let c = self.buffer.cursor();
             c..c
@@ -720,9 +742,19 @@ impl Editor {
         self.buffer.insert("\t");
         self.record_edit(edit, window, cx);
     }
+
+    /// Shift+Tab: the previous table cell; nothing outside a table.
+    pub(super) fn handle_back_tab(
+        &mut self,
+        _: &BackTab,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.tab_in_table(true, window, cx);
+    }
 }
 
-actions!(text_editor, [InsertTab]);
+actions!(text_editor, [InsertTab, BackTab]);
 
 impl EventEmitter<EditorEvent> for Editor {}
 
@@ -735,6 +767,7 @@ impl Focusable for Editor {
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.unfold_at_cursor();
+        self.sync_table_view(window);
         render_editor(self, cx.entity(), window, cx)
     }
 }
