@@ -2784,10 +2784,7 @@ fn paint_table_boxes(
         ..
     } = view;
     let first = tables.partition_point(|t| t.end_line <= range.start);
-    let (strong, light) = (
-        palette.color(Role::BorderStrong),
-        palette.color(Role::Border),
-    );
+    let strong = palette.color(Role::BorderStrong);
     for (offset, table) in tables[first..]
         .iter()
         .take_while(|t| t.start_line < range.end)
@@ -2804,63 +2801,16 @@ fn paint_table_boxes(
             window,
         );
         let at = |line: usize| bounds.origin.y + layout.cumulative_at(line);
-        let (left, top, bottom) = (bounds.origin.x, at(table.start_line), at(table.end_line));
-        let width = columns.x(table_box::box_width(&columns.widths));
-        let header_bottom = at(table.start_line + 2).min(bottom);
-        let line = |x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla| {
-            fill(
-                Bounds {
-                    origin: point(x, y),
-                    size: size(w, h),
-                },
-                color,
-            )
-        };
-        window.paint_quad(quad(
-            Bounds {
-                origin: point(left, top),
-                size: size(width, header_bottom - top),
-            },
-            Corners {
-                top_left: TABLE_RADIUS,
-                top_right: TABLE_RADIUS,
-                bottom_left: px(0.),
-                bottom_right: px(0.),
-            },
-            palette.color(Role::TableHeader),
-            px(0.),
-            Hsla::transparent_black(),
-            BorderStyle::Solid,
-        ));
-        for column in 1..columns.widths.len() {
-            let x = left + columns.x(table_box::column_left(&columns.widths, column));
-            window.paint_quad(line(x, top, TABLE_LINE_WIDTH, bottom - top, light));
-        }
-        // Between body rows, in the visible part only.
-        let rows = (table.start_line + 2).max(range.start.saturating_sub(1))
-            ..(table.end_line - 1).min(range.end);
-        for row in rows {
-            let y = at(row + 1) - TABLE_LINE_WIDTH;
-            window.paint_quad(line(left, y, width, TABLE_LINE_WIDTH, light));
-        }
-        window.paint_quad(line(
-            left,
-            header_bottom - TABLE_LINE_WIDTH,
-            width,
-            TABLE_LINE_WIDTH,
-            strong,
-        ));
-        window.paint_quad(quad(
-            Bounds {
-                origin: point(left, top),
-                size: size(width, bottom - top),
-            },
-            TABLE_RADIUS,
-            Hsla::transparent_black(),
-            TABLE_LINE_WIDTH,
-            strong,
-            BorderStyle::Solid,
-        ));
+        let visible_rows = range.start.saturating_sub(1)..range.end;
+        paint_table_box(
+            table,
+            &columns,
+            bounds.origin.x,
+            &at,
+            visible_rows,
+            palette,
+            window,
+        );
         let hovered = view.table_hover.as_ref().filter(|(t, _)| *t == index);
         let dragging = view.table_drag.filter(|d| d.table == index);
         if hovered.is_some() || dragging.is_some() {
@@ -2876,6 +2826,80 @@ fn paint_table_boxes(
             paint_table_handles(&grid, origin, (shown, dragging), &colors, (window, cx));
         }
     }
+}
+
+/// One rendered table's box: header tint, column dividers, row separators and
+/// the outline. `at` gives the window y of a line's top (the table's end line
+/// for its bottom); `visible_rows` limits the row separators to what is on
+/// screen.
+fn paint_table_box(
+    table: &Table,
+    columns: &TableColumns,
+    left: Pixels,
+    at: &dyn Fn(usize) -> Pixels,
+    visible_rows: Range<usize>,
+    palette: &crate::theme::Palette,
+    window: &mut Window,
+) {
+    let strong = palette.color(Role::BorderStrong);
+    let light = palette.color(Role::Border);
+    let (top, bottom) = (at(table.start_line), at(table.end_line));
+    let width = columns.x(table_box::box_width(&columns.widths));
+    let header_bottom = at(table.start_line + 2).min(bottom);
+    let line = |x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla| {
+        fill(
+            Bounds {
+                origin: point(x, y),
+                size: size(w, h),
+            },
+            color,
+        )
+    };
+    window.paint_quad(quad(
+        Bounds {
+            origin: point(left, top),
+            size: size(width, header_bottom - top),
+        },
+        Corners {
+            top_left: TABLE_RADIUS,
+            top_right: TABLE_RADIUS,
+            bottom_left: px(0.),
+            bottom_right: px(0.),
+        },
+        palette.color(Role::TableHeader),
+        px(0.),
+        Hsla::transparent_black(),
+        BorderStyle::Solid,
+    ));
+    for column in 1..columns.widths.len() {
+        let x = left + columns.x(table_box::column_left(&columns.widths, column));
+        window.paint_quad(line(x, top, TABLE_LINE_WIDTH, bottom - top, light));
+    }
+    // Between body rows, in the visible part only.
+    let rows =
+        (table.start_line + 2).max(visible_rows.start)..(table.end_line - 1).min(visible_rows.end);
+    for row in rows {
+        let y = at(row + 1) - TABLE_LINE_WIDTH;
+        window.paint_quad(line(left, y, width, TABLE_LINE_WIDTH, light));
+    }
+    window.paint_quad(line(
+        left,
+        header_bottom - TABLE_LINE_WIDTH,
+        width,
+        TABLE_LINE_WIDTH,
+        strong,
+    ));
+    window.paint_quad(quad(
+        Bounds {
+            origin: point(left, top),
+            size: size(width, bottom - top),
+        },
+        TABLE_RADIUS,
+        Hsla::transparent_black(),
+        TABLE_LINE_WIDTH,
+        strong,
+        BorderStyle::Solid,
+    ));
 }
 
 /// Colors of the controls on a table's edge.
@@ -3210,24 +3234,10 @@ fn paint_lines(
                 callout.kind,
             );
         }
-        let color = palette.color(callout_role(callout.kind));
-        let background = palette.with_alpha(callout_role(callout.kind), Alpha::CalloutBackground);
         let top = bounds.origin.y + top;
         let bottom = bounds.origin.y + bottom;
-        window.paint_quad(fill(
-            Bounds {
-                origin: point(bounds.origin.x, top),
-                size: size(bounds.size.width, bottom - top),
-            },
-            background,
-        ));
-        window.paint_quad(fill(
-            Bounds {
-                origin: point(bounds.origin.x + QUOTE_BAR_INSET, top),
-                size: size(CALLOUT_BAR_WIDTH, bottom - top),
-            },
-            color,
-        ));
+        let span = (bounds.origin.x, bounds.size.width);
+        paint_callout_band(callout, (top, bottom), span, &palette, window);
     }
 
     if range.is_empty() {
@@ -3322,6 +3332,33 @@ fn paint_lines(
 
         y_offset += total_height;
     }
+}
+
+/// A callout's background tint and accent bar, from `top` to `bottom`
+/// (window y), across `(left, width)`.
+fn paint_callout_band(
+    callout: &Callout,
+    (top, bottom): (Pixels, Pixels),
+    (left, width): (Pixels, Pixels),
+    palette: &crate::theme::Palette,
+    window: &mut Window,
+) {
+    let color = palette.color(callout_role(callout.kind));
+    let background = palette.with_alpha(callout_role(callout.kind), Alpha::CalloutBackground);
+    window.paint_quad(fill(
+        Bounds {
+            origin: point(left, top),
+            size: size(width, bottom - top),
+        },
+        background,
+    ));
+    window.paint_quad(fill(
+        Bounds {
+            origin: point(left + QUOTE_BAR_INSET, top),
+            size: size(CALLOUT_BAR_WIDTH, bottom - top),
+        },
+        color,
+    ));
 }
 
 /// What painting any line of a frame needs, whichever column it is in.
