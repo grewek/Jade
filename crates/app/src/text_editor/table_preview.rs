@@ -409,34 +409,70 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
     (table_for_line, tables)
 }
 
-/// The least a column is ever given, so a many-column table in a narrow
-/// editor still shows a few characters per wrapped line.
+/// The minimum a column is ever shrunk to by [`cap_column_widths`] — small
+/// enough to still show a few characters per wrapped line, large enough
+/// that a many-column table doesn't collapse every column to nothing.
 const MIN_COLUMN_WIDTH: usize = 3;
 
-/// `count` columns of equal width sharing `max_total_chars`, the table box
-/// included: every column takes its 3 characters of padding and border, plus
-/// one for the closing border, and the rest is divided evenly (the first
-/// columns take the remainder, a character each). Content never decides a
-/// width, so typing in a cell never moves a column.
-pub fn equal_column_widths(count: usize, max_total_chars: usize) -> Vec<usize> {
-    if count == 0 {
-        return Vec::new();
-    }
-    let content = max_total_chars.saturating_sub(3 * count + 1);
-    let (each, extra) = (content / count, content % count);
-    if each < MIN_COLUMN_WIDTH {
-        return vec![MIN_COLUMN_WIDTH; count];
-    }
-    (0..count).map(|c| each + usize::from(c < extra)).collect()
+/// Whether `columns` keep their natural widths within `max_total_chars`
+/// (or there is no cap). Then every cell fits its column, so no row wraps.
+pub fn fits_unshrunk(columns: &[Column], max_total_chars: impl Into<Option<usize>>) -> bool {
+    let Some(max) = max_total_chars.into() else {
+        return true;
+    };
+    let content_budget = max.saturating_sub(3 * columns.len() + 1);
+    columns.iter().map(|c| c.width).sum::<usize>() <= content_budget
 }
 
-/// `columns`' widths as actually used for rendering: equal shares of
-/// `max_total_chars` ([`equal_column_widths`]), or each column's own natural
-/// width without a budget. The one place the text pass and the border pass
-/// decide this, so they cannot disagree.
+/// Shrinks `columns`' natural widths — proportionally to each column's own
+/// share of the total, floored at [`MIN_COLUMN_WIDTH`] — so their total
+/// (plus border/padding overhead) fits within `max_total_chars`, if it
+/// doesn't already. A no-op (returns the natural widths unchanged) when it
+/// already fits. Border overhead is `3 * columns.len() + 1` characters: a
+/// leading 2-character gap and a trailing 2-character gap (both blank —
+/// the table's actual left/right border lines are painted as real vector
+/// quads over them, see `column_divider_char_offsets` below, not drawn as
+/// text), plus a 3-character blank gap between every pair of adjacent
+/// columns — see `live_preview::build_table_row`.
+pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usize> {
+    let natural: Vec<usize> = columns.iter().map(|c| c.width).collect();
+    if columns.is_empty() || fits_unshrunk(columns, max_total_chars) {
+        return natural;
+    }
+    let content_budget = max_total_chars.saturating_sub(3 * columns.len() + 1);
+
+    let floor_total = MIN_COLUMN_WIDTH * columns.len();
+    if content_budget <= floor_total {
+        return vec![MIN_COLUMN_WIDTH; columns.len()];
+    }
+
+    let shrinkable_budget = content_budget - floor_total;
+    let shrinkable_natural_total: usize = natural
+        .iter()
+        .map(|&w| w.saturating_sub(MIN_COLUMN_WIDTH))
+        .sum();
+    natural
+        .iter()
+        .map(|&w| {
+            let shrinkable = w.saturating_sub(MIN_COLUMN_WIDTH);
+            let share = (shrinkable * shrinkable_budget)
+                .checked_div(shrinkable_natural_total)
+                .unwrap_or(0);
+            MIN_COLUMN_WIDTH + share
+        })
+        .collect()
+}
+
+/// `columns`' widths as actually used for rendering — [`cap_column_widths`]
+/// if `max_total_chars` is given, else each column's own natural width
+/// verbatim. The one place both `live_preview::build_table_row` and
+/// `element.rs`'s border-painting code (which needs the *same* resolved
+/// widths `build_table_row` used, to position its vector lines at exactly
+/// the gaps that row's text actually left blank) make this decision, so
+/// they can't silently disagree.
 pub fn resolve_widths(columns: &[Column], max_total_chars: Option<usize>) -> Vec<usize> {
     match max_total_chars {
-        Some(max) => equal_column_widths(columns.len(), max),
+        Some(max) => cap_column_widths(columns, max),
         None => columns.iter().map(|c| c.width).collect(),
     }
 }
@@ -639,24 +675,29 @@ mod tests {
     }
 
     #[test]
-    fn columns_share_the_width_equally_and_fill_it() {
-        // 3 columns: 3 * 3 + 1 = 10 of overhead, 50 - 10 = 40 left, 13 r 1.
-        let widths = equal_column_widths(3, 50);
-        assert_eq!(widths, [14, 13, 13]);
-        assert_eq!(widths.iter().sum::<usize>() + 10, 50);
-        assert_eq!(equal_column_widths(2, 30), [12, 11]);
+    fn cap_column_widths_is_a_no_op_when_everything_already_fits() {
+        let columns = vec![col(5), col(3)];
+        // border overhead for 2 columns = 3*2+1 = 7; 5+3+7 = 15.
+        assert_eq!(cap_column_widths(&columns, 20), vec![5, 3]);
     }
 
     #[test]
-    fn columns_never_shrink_below_the_minimum() {
-        assert_eq!(equal_column_widths(4, 5), vec![MIN_COLUMN_WIDTH; 4]);
-        assert!(equal_column_widths(0, 50).is_empty());
+    fn cap_column_widths_shrinks_proportionally_to_fit() {
+        let columns = vec![col(20), col(10)];
+        // border overhead = 7; natural total = 30; budget forces a shrink.
+        let widths = cap_column_widths(&columns, 7 + 15);
+        // Integer-division flooring can leave the sum a character or two
+        // under budget, never over it.
+        assert!(widths.iter().sum::<usize>() <= 15);
+        // The wider column should still end up wider than the narrower one.
+        assert!(widths[0] > widths[1]);
     }
 
     #[test]
-    fn a_columns_width_ignores_its_content() {
-        let widths = |a, b| resolve_widths(&[col(a), col(b)], Some(40));
-        assert_eq!(widths(2, 2), widths(30, 1));
+    fn cap_column_widths_never_shrinks_below_the_minimum() {
+        let columns = vec![col(20), col(20), col(20), col(20)];
+        let widths = cap_column_widths(&columns, 5); // far too narrow for anything
+        assert_eq!(widths, vec![MIN_COLUMN_WIDTH; 4]);
     }
 
     #[test]
@@ -666,10 +707,9 @@ mod tests {
     }
 
     #[test]
-    fn resolve_widths_is_equal_shares_when_a_budget_is_given() {
-        let columns = vec![col(20), col(1), col(20), col(20)];
+    fn resolve_widths_caps_when_a_budget_is_given() {
+        let columns = vec![col(20), col(20), col(20), col(20)];
         assert_eq!(resolve_widths(&columns, Some(5)), vec![MIN_COLUMN_WIDTH; 4]);
-        assert_eq!(resolve_widths(&columns, Some(53)), [10; 4]);
     }
 
     #[test]
@@ -751,6 +791,28 @@ mod tests {
                     wrap_cell_text(&text, width).len(),
                     "{cell:?} at {width}"
                 );
+            }
+        }
+    }
+
+    /// A table that fits unshrunk never wraps a row, so the row pass may skip it.
+    #[test]
+    fn a_table_that_fits_unshrunk_has_no_wrapped_row() {
+        let columns: Vec<Column> = [6, 3, 12].iter().map(|&w| col(w)).collect();
+        let rows = [
+            "| a | b | c |",
+            "| abcdef | abc | abcdefghijkl |",
+            "| \\| | x | y |",
+        ];
+        for budget in [None, Some(10), Some(24), Some(32), Some(60), Some(200)] {
+            let widths = resolve_widths(&columns, budget);
+            if fits_unshrunk(&columns, budget) {
+                assert_eq!(widths, [6, 3, 12], "budget {budget:?}");
+                for row in rows {
+                    assert_eq!(row_line_count(row, &widths), 1, "{row} at {budget:?}");
+                }
+            } else {
+                assert_ne!(widths, [6, 3, 12], "budget {budget:?}");
             }
         }
     }

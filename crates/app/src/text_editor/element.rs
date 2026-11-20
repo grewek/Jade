@@ -672,7 +672,7 @@ fn pure_row_counts_in(
     let one_level_fit = fit_with_indent(available_width, char_width, 1);
     let mut next_table = view.tables.partition_point(|t| t.end_line <= range.start);
     let mut next_callout = view.callouts.partition_point(|c| c.end_line <= range.start);
-    let mut table_state: Option<(usize, Vec<usize>)> = None;
+    let mut table_state: Option<(usize, Option<Vec<usize>>)> = None;
     for i in range {
         while view
             .callouts
@@ -708,14 +708,20 @@ fn pure_row_counts_in(
                 let is_header = callout_at_line(view.callouts, i).is_some_and(|c| c.is_header(i));
                 let plain = matches!(view.roles[i], LineRole::Plain) && !is_header;
                 if table_state.as_ref().is_none_or(|(n, ..)| *n != next_table) {
-                    let widths = table_preview::resolve_widths(&table.columns, budget);
+                    // A table that fits its width has no wrapped cell in any row,
+                    // so its widths (and its rows' text) are never looked at.
+                    let widths = if table_preview::fits_unshrunk(&table.columns, budget) {
+                        None
+                    } else {
+                        Some(table_preview::resolve_widths(&table.columns, budget))
+                    };
                     table_state = Some((next_table, widths));
                 }
                 match &table_state {
                     // An inactive, plainly rendered table: a delimiter is one hidden
                     // row, a row is as tall as its tallest wrapped cell.
                     Some((n, widths)) if plain && active_table != Some(*n) => match widths {
-                        widths if !table.is_delimiter(i) => {
+                        Some(widths) if !table.is_delimiter(i) => {
                             table_preview::row_line_count(line, widths)
                         }
                         _ => 1,
@@ -1590,7 +1596,7 @@ pub(super) fn mono_char_width(
 /// The character budget a table row/rule should fit within, given
 /// `available_width` — `None` if that's non-positive (shouldn't happen in
 /// practice, but a column-width budget of `0` would make
-/// `table_preview::equal_column_widths` collapse every column uselessly) or
+/// `table_preview::cap_column_widths` collapse every column uselessly) or
 /// [`mono_char_width`] can't be measured for some reason.
 fn table_row_char_budget(
     available_width: Pixels,
