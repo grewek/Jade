@@ -8,6 +8,7 @@ use gpui_kit::*;
 
 use super::EditorBuffer;
 use super::block;
+use super::callout::callout_index_at;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
@@ -190,6 +191,47 @@ impl Editor {
             new_end_byte: mark + 1,
         };
         self.record_edit(edit, window, cx);
+    }
+
+    /// Folds callout `index` if it is open, else opens it. Only the view: the
+    /// text is untouched. Every row count is rebuilt on the next paint, since
+    /// the body's lines go from 0 rows to their own or back.
+    pub(super) fn toggle_fold(&mut self, index: usize, cx: &mut Context<Self>) {
+        let folded = self
+            .document_cache
+            .borrow()
+            .callouts()
+            .get(index)
+            .map(|c| c.folded);
+        if let Some(folded) = folded {
+            if !folded {
+                // A cursor left in the body would just open it again.
+                let doc = self.document_cache.borrow();
+                let header = doc.callouts()[index].start_line;
+                let line = doc.line_at(self.buffer.cursor());
+                if doc.callouts()[index].end_line > line && line > header {
+                    let start = doc.line_start_byte(header);
+                    drop(doc);
+                    self.buffer.set_cursor(start, false);
+                }
+            }
+            self.document_cache.borrow_mut().set_folded(index, !folded);
+            self.row_height_cache.borrow_mut().invalidate_width();
+            cx.notify();
+        }
+    }
+
+    /// A cursor inside a folded callout's body (an arrow key, a search jump)
+    /// opens it: the cursor must never sit on a line with no rows.
+    fn unfold_at_cursor(&mut self) {
+        let mut doc = self.document_cache.borrow_mut();
+        let line = doc.line_at(self.buffer.cursor());
+        if let Some(index) = callout_index_at(doc.callouts(), line)
+            && doc.callouts()[index].hides(line)
+        {
+            doc.set_folded(index, false);
+            self.row_height_cache.borrow_mut().invalidate_width();
+        }
     }
 
     /// Says where this note lives so its image embeds can be found, and reads
@@ -692,6 +734,7 @@ impl Focusable for Editor {
 
 impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.unfold_at_cursor();
         render_editor(self, cx.entity(), window, cx)
     }
 }

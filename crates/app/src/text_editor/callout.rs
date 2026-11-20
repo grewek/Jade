@@ -135,6 +135,9 @@ pub struct CalloutHeader {
     /// present). `None` when nothing follows the marker at all — the
     /// caller falls back to the capitalized type name instead.
     pub title: Option<Range<usize>>,
+    /// The fold marker: `Some(true)` for `-` (starts folded), `Some(false)`
+    /// for `+`; `None` when the callout cannot be folded.
+    pub fold: Option<bool>,
 }
 
 /// Parses `[!type]` (+ optional `+`/`-` fold marker, + optional ` title`)
@@ -157,10 +160,12 @@ pub fn callout_header_prefix(content: &str) -> Option<CalloutHeader> {
     let type_name = 2..close;
 
     let mut marker_end = close + 1;
-    if bytes
-        .get(marker_end)
-        .is_some_and(|&b| b == b'+' || b == b'-')
-    {
+    let fold = match bytes.get(marker_end) {
+        Some(b'+') => Some(false),
+        Some(b'-') => Some(true),
+        _ => None,
+    };
+    if fold.is_some() {
         marker_end += 1;
     }
 
@@ -180,6 +185,7 @@ pub fn callout_header_prefix(content: &str) -> Option<CalloutHeader> {
         type_name,
         marker_end,
         title,
+        fold,
     })
 }
 
@@ -196,9 +202,19 @@ pub struct Callout {
     pub kind: CalloutType,
     pub start_line: usize,
     pub end_line: usize,
+    /// The header has a `+`/`-` marker, so clicking it folds the body.
+    pub foldable: bool,
+    /// The body is hidden. Starts as the marker says (`-`); a click changes
+    /// it for this session only, the file is not touched.
+    pub folded: bool,
 }
 
 impl Callout {
+    /// Whether `line` is a body line that is currently folded away.
+    pub fn hides(&self, line: usize) -> bool {
+        self.folded && line > self.start_line && line < self.end_line
+    }
+
     /// Whether `line` is this callout's header — the one line with `[!type]`
     /// on it, showing the title/icon instead of ordinary body content.
     pub fn is_header(&self, line: usize) -> bool {
@@ -352,6 +368,8 @@ pub(super) fn step(
                     kind: header.kind,
                     start_line: i,
                     end_line: i + 1,
+                    foldable: header.fold.is_some(),
+                    folded: header.fold == Some(true),
                 });
                 callout_for_this_line = Some(idx);
                 current = Some(idx);

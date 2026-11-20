@@ -48,6 +48,8 @@ pub(super) struct LineState<'a> {
     pub broken: &'a [Range<usize>],
     /// Sizes of the note's images, for an image block's height.
     pub images: Option<&'a ImageSizes>,
+    /// A body line of a folded callout: no rows at all.
+    pub hidden: bool,
 }
 
 impl<'a> LineState<'a> {
@@ -64,6 +66,7 @@ impl<'a> LineState<'a> {
             active: is_active_line(&line_range, cursor, focused),
             broken: &[],
             images: Some(doc.images()),
+            hidden: callout.is_some_and(|c| c.hides(i)),
         }
     }
 
@@ -80,6 +83,7 @@ impl<'a> LineState<'a> {
             active: false,
             broken: &[],
             images: None,
+            hidden: false,
         }
     }
 }
@@ -652,8 +656,20 @@ fn pure_row_counts_in(
     let budget = char_budget(available_width, char_width);
     let one_level_fit = fit_with_indent(available_width, char_width, 1);
     let mut next_table = view.tables.partition_point(|t| t.end_line <= range.start);
+    let mut next_callout = view.callouts.partition_point(|c| c.end_line <= range.start);
     let mut table_state: Option<(usize, Option<Vec<usize>>)> = None;
     for i in range {
+        while view
+            .callouts
+            .get(next_callout)
+            .is_some_and(|c| c.end_line <= i)
+        {
+            next_callout += 1;
+        }
+        if view.callouts.get(next_callout).is_some_and(|c| c.hides(i)) {
+            counts.push(0);
+            continue;
+        }
         let end = if i + 1 < line_count {
             view.starts[i + 1] - 1
         } else {
@@ -805,7 +821,7 @@ fn row_count_for_line(
         .iter()
         .map(|dl| wrapped_row_count(&dl.display_text, wrap_width, char_width))
         .sum::<usize>()
-        .max(1)
+        .max(usize::from(!state.hidden))
 }
 
 /// The row count painting will see for line `i`: real shaping, so word
@@ -825,9 +841,10 @@ fn shaped_row_count_for_line(
     available_width: Pixels,
     window: &mut Window,
 ) -> usize {
+    let state = LineState::of(doc, i, cursor, focused);
     let shaped = shape_display_line(
         &text[doc.line_start_byte(i)..doc.line_end_byte(i)],
-        &LineState::of(doc, i, cursor, focused),
+        &state,
         font,
         font_size,
         text_color,
@@ -838,7 +855,7 @@ fn shaped_row_count_for_line(
         .iter()
         .map(|(wrapped, _)| wrapped.size(line_height).height)
         .sum();
-    ((height / line_height).round() as usize).max(1)
+    ((height / line_height).round() as usize).max(usize::from(!state.hidden))
 }
 
 /// Per-document, per-paint layout data that lets `measure_document`/
@@ -1331,6 +1348,9 @@ pub(super) fn build_display_lines(
         active,
         ..
     } = *state;
+    if state.hidden {
+        return (Vec::new(), None);
+    }
     let block_rows = image_block(line, state).map(|embed| {
         let sizes = state.images;
         block::block_rows(line, &embed, sizes, available_width, window.line_height())
@@ -1806,13 +1826,21 @@ fn register_mouse_handling(
             {
                 return;
             }
-            let (offset, checkbox) =
-                hit_for_position(editor_entity.read(cx), &view, event.position, window);
-            // A click on a task's checkbox glyph toggles it; the cursor stays put.
+            let Hit {
+                offset,
+                checkbox,
+                fold,
+            } = hit_for_position(editor_entity.read(cx), &view, event.position, window);
+            // A click on a task's checkbox glyph toggles it, and on a foldable
+            // callout's rendered header folds it; the cursor stays put.
             if let Some(checkbox) = checkbox {
                 editor_entity.update(cx, |editor, cx| {
                     editor.toggle_checkbox(checkbox, window, cx)
                 });
+                return;
+            }
+            if let Some(callout) = fold {
+                editor_entity.update(cx, |editor, cx| editor.toggle_fold(callout, cx));
                 return;
             }
             // On a rendered line a plain click follows a link; on the cursor's
@@ -1922,17 +1950,35 @@ fn offset_for_position(
     position: Point<Pixels>,
     window: &mut Window,
 ) -> usize {
-    hit_for_position(editor, view, position, window).0
+    hit_for_position(editor, view, position, window).offset
 }
 
-/// [`offset_for_position`], plus the raw byte range of the task checkbox
-/// (`[ ]`/`[x]`) when the point is on its glyph.
+/// What a click at a point lands on.
+struct Hit {
+    offset: usize,
+    /// The raw range of the task checkbox (`[ ]`/`[x]`) when on its glyph.
+    checkbox: Option<Range<usize>>,
+    /// The foldable callout whose rendered header is under the point.
+    fold: Option<usize>,
+}
+
+impl Hit {
+    fn at(offset: usize) -> Self {
+        Self {
+            offset,
+            checkbox: None,
+            fold: None,
+        }
+    }
+}
+
+/// [`offset_for_position`], plus what else is under the point.
 fn hit_for_position(
     editor: &Editor,
     view: &FrameView,
     position: Point<Pixels>,
     window: &mut Window,
-) -> (usize, Option<Range<usize>>) {
+) -> Hit {
     let text = editor.buffer().text();
     let doc = editor.document_cache.borrow();
     let &FrameView {
@@ -1949,7 +1995,7 @@ fn hit_for_position(
     let relative_y = (position.y - bounds.origin.y).max(px(0.));
     let range = visible_line_range(layout, bounds, viewport);
     if range.is_empty() {
-        return (0, None);
+        return Hit::at(0);
     }
 
     let mut y_offset = layout.cumulative_at(range.start);
@@ -1986,7 +2032,7 @@ fn hit_for_position(
                 let x = (position.x - bounds.origin.x) / columns.char_width;
                 let offset =
                     table_box::offset_at(line_text, &columns.widths, &columns.aligns, x, row);
-                return (layout.line_range(i).start + offset, None);
+                return Hit::at(layout.line_range(i).start + offset);
             }
             y_offset += height;
             continue;
@@ -2018,7 +2064,15 @@ fn hit_for_position(
                 let checkbox = display_line
                     .checkbox_at(display_offset)
                     .map(|r| start + r.start..start + r.end);
-                return (start + raw_offset, checkbox);
+                let fold = (state.callout_is_header && !state.active)
+                    .then(|| callout_index_at(doc.callouts(), i))
+                    .flatten()
+                    .filter(|&c| doc.callouts()[c].foldable);
+                return Hit {
+                    offset: start + raw_offset,
+                    checkbox,
+                    fold,
+                };
             }
             y_offset += height;
         }
@@ -2033,7 +2087,29 @@ fn hit_for_position(
     } else {
         layout.line_range(range.end - 1).end
     };
-    (offset, None)
+    Hit::at(offset)
+}
+
+/// One short `text` at `at`, in `color`.
+fn paint_glyph(
+    text: &str,
+    at: Point<Pixels>,
+    (font, font_size, color): (&Font, Pixels, Hsla),
+    (window, cx): (&mut Window, &mut App),
+) {
+    let run = TextRun {
+        len: text.len(),
+        font: font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped = window
+        .text_system()
+        .shape_line(text.to_string().into(), font_size, &[run], None);
+    let line_height = window.line_height();
+    let _ = shaped.paint(at, line_height, TextAlign::Left, None, window, cx);
 }
 
 /// Draws the image of `info` at the top left of `area`, starting its decode if
@@ -2445,6 +2521,9 @@ fn paint_lines(
         // multiple of `line_height` in principle, but float division can
         // land a hair off either side of the actual integer.
         layout.correct_row_count(i, (total_height / line_height).round() as usize);
+        if results.is_empty() {
+            continue;
+        }
         if let Some(trace) = trace.as_mut() {
             let tag = match (callout, table_line_kind(tables, i), line_roles[i]) {
                 _ if image_block(line_text, &state).is_some() => "image",
@@ -2498,6 +2577,16 @@ fn paint_lines(
                 },
                 rule,
             ));
+        }
+
+        if let Some(c) = callout.filter(|c| c.foldable && c.is_header(i) && !state.active) {
+            let color = palette.color(callout_role(c.kind));
+            let glyph = if c.folded { "▸" } else { "▾" };
+            let at = point(
+                bounds.origin.x + bounds.size.width - px(28.),
+                bounds.origin.y + y_offset,
+            );
+            paint_glyph(glyph, at, (font, font_size, color), (window, cx));
         }
 
         if let Some(embed) = image_block(line_text, &state) {
@@ -4368,5 +4457,82 @@ mod tests {
             "intro\n- [ ] todo\n1. [ ] done\nend",
             "one undo step each"
         );
+    }
+
+    /// A `[!note]-` callout starts folded: its body has no rows. A click on its
+    /// rendered header opens it and a second folds it again, without touching
+    /// the text; typing in the open body keeps it open; a cursor placed in a
+    /// folded body opens it. A callout with no marker is not foldable.
+    #[gpui_kit::test]
+    fn a_callout_header_click_folds_its_body(cx: &mut TestAppContext) {
+        use gpui_kit::{MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput};
+        let source = "intro\n> [!note]- Title\n> one\n> two\n\nend\n\n> [!tip] Plain\n> body";
+        let (window, editor) = open_editor(cx, source);
+        let rows = |cx: &mut TestAppContext| {
+            cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+            editor.read_with(cx, |e, _| row_counts(&e.row_height_cache.borrow()))
+        };
+        let click_line = |cx: &mut TestAppContext, line: usize| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find("editor").bounds();
+                let y = bounds.origin.y + window.line_height() * (line as f32 + 0.5);
+                let position = point(bounds.origin.x + px(60.), y);
+                let (button, modifiers) = (MouseButton::Left, Default::default());
+                let down = MouseDownEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                };
+                window.dispatch_event(PlatformInput::MouseDown(down), cx);
+                let up = MouseUpEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                };
+                window.dispatch_event(PlatformInput::MouseUp(up), cx);
+            })
+            .unwrap();
+        };
+        assert_eq!(
+            rows(cx),
+            [1, 1, 0, 0, 1, 1, 1, 1, 1],
+            "the `-` starts folded"
+        );
+
+        click_line(cx, 1);
+        assert_eq!(rows(cx), [1, 1, 1, 1, 1, 1, 1, 1, 1], "opened");
+        let text = editor.read_with(cx, |e, _| e.buffer().text().to_string());
+        assert_eq!(text, source, "folding never edits the note");
+
+        editor.update(cx, |e, cx| {
+            e.buffer_mut()
+                .set_cursor(source.find("one").unwrap(), false);
+            cx.notify();
+        });
+        click_line(cx, 1);
+        assert_eq!(rows(cx), [1, 1, 0, 0, 1, 1, 1, 1, 1], "folded again");
+        let cursor = editor.read_with(cx, |e, _| e.buffer().cursor());
+        assert_eq!(
+            cursor,
+            source.find("> [!note]").unwrap(),
+            "the cursor left the body"
+        );
+
+        // A cursor moved into the body opens it.
+        editor.update(cx, |e, cx| {
+            e.buffer_mut()
+                .set_cursor(source.find("two").unwrap(), false);
+            cx.notify();
+        });
+        assert_eq!(rows(cx)[2..4], [1, 1]);
+
+        // A callout without a marker has nothing to fold: the click moves the cursor.
+        click_line(cx, 7);
+        assert_eq!(rows(cx), [1, 1, 1, 1, 1, 1, 1, 1, 1]);
     }
 }

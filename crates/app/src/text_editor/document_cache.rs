@@ -196,6 +196,13 @@ impl DocumentCache {
         &self.callouts
     }
 
+    /// Folds or unfolds callout `index` for this session.
+    pub(super) fn set_folded(&mut self, index: usize, folded: bool) {
+        if let Some(c) = self.callouts.get_mut(index).filter(|c| c.foldable) {
+            c.folded = folded;
+        }
+    }
+
     pub(super) fn images(&self) -> &ImageSizes {
         &self.images
     }
@@ -694,6 +701,25 @@ impl DocumentCache {
             self.callouts.len()
         };
         let fresh_len = fresh.len();
+        // A callout the user folded or unfolded keeps that state when an edit
+        // re-derives it, matched by its header line (the walk restarts every
+        // callout it touches from the marker's own state).
+        let old_last = shift_line(last_touched_line, -delta);
+        let moved = |line: usize| {
+            if line <= old_last {
+                line
+            } else {
+                shift_line(line, delta)
+            }
+        };
+        for c in &mut fresh {
+            let kept = self.callouts[replace_from..replace_to]
+                .iter()
+                .find(|old| old.foldable && c.foldable && moved(old.start_line) == c.start_line);
+            if let Some(old) = kept {
+                c.folded = old.folded;
+            }
+        }
         self.callouts
             .splice(replace_from..replace_to, fresh.drain(..));
         if reconverged && delta != 0 {
@@ -1087,6 +1113,49 @@ mod tests {
                 0xC0FF_EE15_EA5E_D00Du64 ^ run.wrapping_mul(0x9E37_79B9_7F4A_7C15),
             );
         }
+    }
+
+    /// A callout the user folded or unfolded keeps that state through edits in
+    /// its body or header and through edits above it that move its lines.
+    #[test]
+    fn fold_state_survives_edits_that_rederive_the_callout() {
+        let text = "intro\n\n> [!note]- Title\n> body\n\n> [!tip]+ Open\n> body\n";
+        let mut cache = DocumentCache::new(text);
+        assert_eq!(
+            cache
+                .callouts()
+                .iter()
+                .map(|c| c.folded)
+                .collect::<Vec<_>>(),
+            [true, false]
+        );
+        cache.set_folded(0, false);
+        cache.set_folded(1, true);
+        let state = |cache: &DocumentCache| {
+            cache
+                .callouts()
+                .iter()
+                .map(|c| c.folded)
+                .collect::<Vec<_>>()
+        };
+
+        let in_body = text.find("body").unwrap();
+        let (typed, edit) = apply_edit(text, in_body, in_body, "x");
+        cache.record_edit(&typed, edit).unwrap();
+        assert_eq!(state(&cache), [false, true], "typing in a body");
+
+        let in_title = typed.find("Title").unwrap();
+        let (retitled, edit) = apply_edit(&typed, in_title, in_title, "New ");
+        cache.record_edit(&retitled, edit).unwrap();
+        assert_eq!(state(&cache), [false, true], "typing in a header");
+
+        let (entered, edit) = apply_edit(&retitled, 0, 0, "\n\n");
+        cache.record_edit(&entered, edit).unwrap();
+        assert_eq!(state(&cache), [false, true], "lines inserted above");
+        assert_eq!(cache.callouts()[0].start_line, 4);
+
+        cache.set_folded(1, false);
+        assert!(!cache.callouts()[1].folded);
     }
 
     /// A character that removes or creates a callout used to shift every
