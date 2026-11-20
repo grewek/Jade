@@ -61,6 +61,12 @@ impl Columns {
         self.end_line - 1
     }
 
+    /// The column whose content lines include `line`; `None` for a marker or
+    /// a padding blank line.
+    pub fn column_of(&self, line: usize) -> Option<usize> {
+        (0..self.count).find(|&k| self.column_lines(k).contains(&line))
+    }
+
     /// Whether `line` is the open or the close marker, the two that render as
     /// nothing (a separator renders as the usual rule).
     pub fn is_frame(&self, line: usize) -> bool {
@@ -516,5 +522,14 @@ mod tests {
         assert!(split(100., &[50, 50]).is_none());
         assert!(split(f32::NAN, &[50, 50]).is_none());
         assert!(split(f32::INFINITY, &[50, 50]).is_none());
+    }
+    #[test]
+    fn column_of_names_content_lines_only() {
+        let r = scan_text(TWO)[0];
+        assert_eq!(r.column_of(2), Some(0));
+        assert_eq!(r.column_of(6), Some(1));
+        for line in [0, 1, 3, 4, 5, 7, 8] {
+            assert_eq!(r.column_of(line), None, "line {line}");
+        }
     }
 }

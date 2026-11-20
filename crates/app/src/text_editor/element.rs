@@ -11,7 +11,7 @@ use super::block::{self, image_block};
 use super::block_preview::LineRole;
 use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
-use super::columns;
+use super::columns::{self, Columns};
 use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
 use super::image_cache::{self, ImageCache};
@@ -60,12 +60,18 @@ pub(super) struct LineState<'a> {
     pub editing_cell: Option<usize>,
     /// The open or close marker of a columns region: shows nothing unless active.
     pub column_frame: bool,
+    /// Inside a region laid out side by side, but not its first line: the
+    /// region's painter draws it in its column, so it has no rows here.
+    pub column_hidden: bool,
 }
 
 impl<'a> LineState<'a> {
     pub(super) fn of(doc: &'a DocumentCache, i: usize, cursor: usize, focused: bool) -> Self {
         let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
         let callout = callout_at_line(doc.callouts(), i);
+        let column_hidden = doc
+            .side_by_side(i)
+            .is_some_and(|(region, _)| i != region.start_line);
         LineState {
             role: doc.line_roles()[i],
             block_ctx: doc.block_contexts()[i],
@@ -76,12 +82,29 @@ impl<'a> LineState<'a> {
             active: is_active_line(&line_range, cursor, focused),
             broken: &[],
             images: Some(doc.images()),
-            hidden: callout.is_some_and(|c| c.hides(i)),
+            hidden: column_hidden || callout.is_some_and(|c| c.hides(i)),
             editing_cell: doc
                 .editing_cell()
                 .filter(|&(line, _)| line == i)
                 .map(|(_, column)| column),
             column_frame: columns::is_frame_line(doc.columns(), i),
+            column_hidden,
+        }
+    }
+
+    /// Line `i` as content of its column: laid out and painted there, so not
+    /// hidden by being inside the region (a folded callout's body still is).
+    pub(super) fn in_column(
+        doc: &'a DocumentCache,
+        i: usize,
+        cursor: usize,
+        focused: bool,
+    ) -> Self {
+        let state = Self::of(doc, i, cursor, focused);
+        LineState {
+            hidden: state.callout.is_some_and(|c| c.hides(i)),
+            column_hidden: false,
+            ..state
         }
     }
 
@@ -101,6 +124,7 @@ impl<'a> LineState<'a> {
             hidden: false,
             editing_cell: None,
             column_frame: false,
+            column_hidden: false,
         }
     }
 }
@@ -406,6 +430,8 @@ impl RowHeightCache {
             tables: doc.tables(),
             callouts: doc.callouts(),
             images: doc.images(),
+            columns: doc.columns(),
+            column_width: doc.column_width(),
             starts: &starts,
         };
         let rows = RowParams {
@@ -479,7 +505,14 @@ impl RowHeightCache {
         text_color: Hsla,
         window: &mut Window,
     ) {
+        let mut last = usize::MAX;
         for i in touched {
+            // A line in a side-by-side region changes its region's height.
+            let i = row_owner(doc, i);
+            if i == last {
+                continue;
+            }
+            last = i;
             let old = self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i);
             let new = row_count_for_line(
                 text,
@@ -539,6 +572,7 @@ impl RowHeightCache {
             .chain(editing_lines);
         let mut seen = Vec::with_capacity(4);
         for line in lines.flatten() {
+            let line = row_owner(doc, line);
             if seen.contains(&line) {
                 continue;
             }
@@ -596,6 +630,9 @@ struct DocView<'a> {
     tables: &'a [Table],
     callouts: &'a [Callout],
     images: &'a ImageSizes,
+    columns: &'a [Columns],
+    /// Set when regions are laid out side by side (see `DocumentCache::side_by_side`).
+    column_width: Option<f32>,
     /// Byte offset of each line, plus the text length.
     starts: &'a [usize],
 }
@@ -681,8 +718,31 @@ fn pure_row_counts_in(
     let one_level_fit = fit_with_indent(available_width, char_width, 1);
     let mut next_table = view.tables.partition_point(|t| t.end_line <= range.start);
     let mut next_callout = view.callouts.partition_point(|c| c.end_line <= range.start);
+    let mut next_region = view.columns.partition_point(|r| r.end_line <= range.start);
     let mut table_state: Option<(usize, Option<Vec<usize>>)> = None;
     for i in range {
+        // A side-by-side region is one block: its first line holds the height
+        // of its tallest column (which needs shaping, so it goes to `shaped`)
+        // and the rest have no rows.
+        if let Some(width) = view.column_width {
+            while view
+                .columns
+                .get(next_region)
+                .is_some_and(|r| r.end_line <= i)
+            {
+                next_region += 1;
+            }
+            let region = view.columns.get(next_region).filter(|r| r.start_line <= i);
+            if let Some(r) =
+                region.filter(|r| columns::split(width, &r.percent[..r.count]).is_some())
+            {
+                if i == r.start_line {
+                    shaped.push(i);
+                }
+                counts.push(0);
+                continue;
+            }
+        }
         while view
             .callouts
             .get(next_callout)
@@ -812,10 +872,18 @@ fn estimate_row_count(
     wrapped_row_count(line, wrap_width, char_width).max(1)
 }
 
+/// The line whose row count line `i` is part of: the first line of its
+/// side-by-side region, else itself.
+fn row_owner(doc: &DocumentCache, i: usize) -> usize {
+    doc.side_by_side(i)
+        .map_or(i, |(region, _)| region.start_line)
+}
+
 /// The row count for line `i` alone — the same per-line computation
 /// `analyze_line_layout`'s old whole-document loop ran unconditionally for
 /// every line; now only ever called for a line [`RowHeightCache`] actually
-/// needs to (re)compute.
+/// needs to (re)compute. The first line of a side-by-side region gets the
+/// region's height and its other lines none (see [`region_rows`]).
 #[allow(clippy::too_many_arguments)]
 fn row_count_for_line(
     text: &str,
@@ -830,11 +898,60 @@ fn row_count_for_line(
     available_width: Pixels,
     window: &mut Window,
 ) -> usize {
-    let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
+    if let Some((region, split)) = doc.side_by_side(i) {
+        if i != region.start_line {
+            return 0;
+        }
+        let widths = (0..region.count).map(|k| px(split.width(k)));
+        let mut height = 1;
+        for (k, width) in widths.enumerate() {
+            let rows: usize = region
+                .column_lines(k)
+                .map(|line| {
+                    let state = LineState::in_column(doc, line, cursor, focused);
+                    state_row_count(
+                        text, doc, line, &state, char_width, font, font_size, text_color, width,
+                        window,
+                    )
+                })
+                .sum();
+            height = height.max(rows);
+        }
+        return height;
+    }
     let state = LineState::of(doc, i, cursor, focused);
+    state_row_count(
+        text,
+        doc,
+        i,
+        &state,
+        char_width,
+        font,
+        font_size,
+        text_color,
+        available_width,
+        window,
+    )
+}
+
+/// Line `i`'s rows when shown as `state` says, wrapped at `available_width`.
+#[allow(clippy::too_many_arguments)]
+fn state_row_count(
+    text: &str,
+    doc: &DocumentCache,
+    i: usize,
+    state: &LineState,
+    char_width: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    available_width: Pixels,
+    window: &mut Window,
+) -> usize {
+    let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
     let (display_lines, wrap_width) = build_display_lines(
         line_text,
-        &state,
+        state,
         font,
         font_size,
         text_color,
@@ -970,6 +1087,11 @@ impl LineLayout {
         let doc = self.doc_cache.borrow();
         let mut corrections = Vec::new();
         for i in range.clone().filter(|i| !verified.contains(i)) {
+            // A side-by-side region's rows come from its columns, not from
+            // shaping its first line.
+            if doc.side_by_side(i).is_some() {
+                continue;
+            }
             if width_unknown || self.row_cache.borrow().row_count(i) > 1 {
                 let rows = shaped_row_count_for_line(
                     text,
@@ -4819,6 +4941,87 @@ mod tests {
                 );
                 text = new_text;
             }
+        })
+        .unwrap();
+    }
+
+    /// A side-by-side region is one block: its first line holds its tallest
+    /// column's rows, its other lines none, and a stacked region (too narrow)
+    /// gives every line its own rows. Patching an edit in a column matches a
+    /// fresh build.
+    #[gpui_kit::test]
+    fn a_side_by_side_region_takes_its_tallest_columns_rows(cx: &mut TestAppContext) {
+        use super::super::{columns, document_cache::DocumentCache};
+        use super::{RowHeightCache, mono_char_width, wrapped_row_count};
+        use gpui::Window;
+
+        let long = "word ".repeat(30);
+        let text = format!("intro\n\n::: columns\n\n{long}\n\n---\n\nshort\n\n:::\n\nafter");
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let text_color = text_style.color;
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+            let width = px(600.);
+            let build = |doc: &DocumentCache, width: Pixels, window: &mut Window| {
+                let mut rows = RowHeightCache::empty();
+                rows.rebuild(
+                    &text, doc, 0, false, width, char_width, &font, font_size, text_color, window,
+                );
+                rows
+            };
+
+            let mut doc = DocumentCache::new(&text);
+            doc.set_column_width(Some(f32::from(width)));
+            let rows = build(&doc, width, window);
+            let column = px(columns::split(f32::from(width), &[50, 50])
+                .unwrap()
+                .width(0));
+            let tall = wrapped_row_count(long.trim_end(), Some(column), char_width);
+            assert!(tall > 2, "the long column must wrap, got {tall} rows");
+            // Region lines 2..=10: the first holds the height, the rest none.
+            assert_eq!(rows.row_count(2), tall as i64);
+            assert!((3..=10).all(|i| rows.row_count(i) == 0));
+            assert_eq!((rows.row_count(0), rows.row_count(12)), (1, 1));
+
+            // Too narrow for 160px columns: stacked, nothing is hidden.
+            let narrow = px(300.);
+            doc.set_column_width(Some(f32::from(narrow)));
+            let stacked = build(&doc, narrow, window);
+            assert!((0..13).all(|i| stacked.row_count(i) >= 1));
+
+            // An edit in the short column makes it the taller one.
+            doc.set_column_width(Some(f32::from(width)));
+            let mut rows = build(&doc, width, window);
+            let at = text.find("short").unwrap();
+            let longer = "longer ".repeat(60);
+            let (new_text, edit) = apply_edit(&text, at, at + 5, &longer);
+            let patch = doc.record_edit(&new_text, edit).unwrap();
+            rows.patch_lines(
+                &new_text,
+                &doc,
+                patch.touched,
+                0,
+                false,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                window,
+            );
+            let mut fresh = RowHeightCache::empty();
+            fresh.rebuild(
+                &new_text, &doc, 0, false, width, char_width, &font, font_size, text_color, window,
+            );
+            let counts = |r: &RowHeightCache| (0..13).map(|i| r.row_count(i)).collect::<Vec<_>>();
+            assert_eq!(counts(&rows), counts(&fresh));
+            assert!(
+                rows.row_count(2) > tall as i64,
+                "the edited column is now taller"
+            );
         })
         .unwrap();
     }

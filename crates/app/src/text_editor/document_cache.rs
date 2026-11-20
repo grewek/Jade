@@ -161,6 +161,9 @@ pub(super) struct DocumentCache {
     column_markers: Vec<Placed>,
     /// The regions `column_markers` form.
     columns: Vec<Columns>,
+    /// The width regions are laid out across. `None` lays every region out
+    /// stacked; set by whoever builds the row counts (`RowHeightCache`).
+    column_width: Option<f32>,
     /// Natural sizes of the images the note embeds, read off the main thread.
     images: ImageSizes,
     /// The table shown as raw text (Ctrl+/, or the caret on its delimiter
@@ -189,6 +192,7 @@ impl DocumentCache {
             callout_scratch: Vec::new(),
             column_markers: Vec::new(),
             columns: Vec::new(),
+            column_width: None,
             images: ImageSizes::default(),
             raw_table: None,
             editing_cell: None,
@@ -213,10 +217,27 @@ impl DocumentCache {
         &self.callouts
     }
 
-    // Rendering reads it next; for now only the tests do.
-    #[cfg_attr(not(test), allow(dead_code))]
     pub(super) fn columns(&self) -> &[Columns] {
         &self.columns
+    }
+
+    pub(super) fn column_width(&self) -> Option<f32> {
+        self.column_width
+    }
+
+    /// Sets the width regions are laid out across; `true` when it changed.
+    pub(super) fn set_column_width(&mut self, width: Option<f32>) -> bool {
+        std::mem::replace(&mut self.column_width, width) != width
+    }
+
+    /// The region `line` is in and its split, when the region is laid out side
+    /// by side (a width is set and every column fits). `None` otherwise.
+    pub(super) fn side_by_side(&self, line: usize) -> Option<(Columns, columns::Split)> {
+        let width = self.column_width?;
+        let i = self.columns.partition_point(|r| r.end_line <= line);
+        let region = self.columns.get(i).filter(|r| r.start_line <= line)?;
+        let split = columns::split(width, &region.percent[..region.count])?;
+        Some((*region, split))
     }
 
     /// Folds or unfolds callout `index` for this session.
