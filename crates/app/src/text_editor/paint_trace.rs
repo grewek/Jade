@@ -50,6 +50,28 @@ struct Band {
     kind: CalloutType,
 }
 
+/// Where one columns region put its parts, in pixels below the editor's top
+/// (x from its left edge), so overlaps can be told from the numbers.
+pub(super) struct RegionGeom {
+    pub start_line: usize,
+    pub top: f32,
+    pub height: f32,
+    pub columns: Vec<ColumnGeom>,
+}
+
+pub(super) struct ColumnGeom {
+    pub x: f32,
+    pub width: f32,
+    /// Where the last line ends (the column's content bottom).
+    pub bottom: f32,
+    /// `(line, y, rows, height)`, capped at [`MAX_COLUMN_LINES`].
+    pub lines: Vec<(usize, f32, usize, f32)>,
+    /// A table box: `(first line, y, width, height)`.
+    pub tables: Vec<(usize, f32, f32, f32)>,
+}
+
+const MAX_COLUMN_LINES: usize = 40;
+
 struct Line {
     index: usize,
     y: f32,
@@ -65,6 +87,7 @@ pub(super) struct PaintTrace {
     late_corrections_after: usize,
     bands: Vec<Band>,
     lines: Vec<Line>,
+    regions: Vec<RegionGeom>,
     elided_bands: usize,
     elided_lines: usize,
 }
@@ -75,10 +98,20 @@ impl PaintTrace {
             info: info(),
             late_corrections_after: 0,
             bands: Vec::new(),
+            regions: Vec::new(),
             lines: Vec::new(),
             elided_bands: 0,
             elided_lines: 0,
         })
+    }
+
+    pub(super) fn region(&mut self, mut region: RegionGeom) {
+        for column in &mut region.columns {
+            column.lines.truncate(MAX_COLUMN_LINES);
+        }
+        if self.regions.len() < MAX_BANDS {
+            self.regions.push(region);
+        }
     }
 
     pub(super) fn band(
@@ -164,6 +197,9 @@ impl PaintTrace {
                 ));
             }
         }
+        for region in &self.regions {
+            region_problems(region, &mut problems);
+        }
         problems
     }
 
@@ -208,6 +244,26 @@ impl PaintTrace {
                 l.index, l.y, l.rows, l.tag, l.preview
             );
         }
+        for r in &self.regions {
+            let _ = write!(
+                s,
+                " | region L{} y {:.1} h {:.1}",
+                r.start_line, r.top, r.height
+            );
+            for (k, c) in r.columns.iter().enumerate() {
+                let _ = write!(
+                    s,
+                    " | col{k} x {:.1} w {:.1} bottom {:.1} lines",
+                    c.x, c.width, c.bottom
+                );
+                for (line, y, rows, _) in &c.lines {
+                    let _ = write!(s, " {line}@{y:.1}/{rows}");
+                }
+                for (line, y, w, h) in &c.tables {
+                    let _ = write!(s, " table L{line} y {y:.1} w {w:.1} h {h:.1}");
+                }
+            }
+        }
         if self.elided_bands + self.elided_lines > 0 {
             let _ = write!(
                 s,
@@ -216,6 +272,53 @@ impl PaintTrace {
             );
         }
         s
+    }
+}
+
+/// What is wrong with how a region's parts sit: anything that would paint over
+/// a neighbour or past the region's own height.
+fn region_problems(r: &RegionGeom, problems: &mut Vec<String>) {
+    let region_bottom = r.top + r.height;
+    for (k, c) in r.columns.iter().enumerate() {
+        if c.bottom > region_bottom + TOLERANCE {
+            problems.push(format!(
+                "region at line {}: column {k} ends at y={:.1}, below the region's bottom {:.1}",
+                r.start_line, c.bottom, region_bottom
+            ));
+        }
+        for pair in c.lines.windows(2) {
+            let ((a, ay, _, ah), (b, by, _, _)) = (pair[0], pair[1]);
+            if by + TOLERANCE < ay + ah {
+                problems.push(format!(
+                    "region at line {}: column {k} line {b} (y={by:.1}) starts inside line {a} (y={ay:.1}, h={ah:.1})",
+                    r.start_line
+                ));
+            }
+        }
+        for &(line, y, w, h) in &c.tables {
+            if w > c.width + TOLERANCE {
+                problems.push(format!(
+                    "region at line {}: the table at line {line} in column {k} is {w:.1} wide in a {:.1} column",
+                    r.start_line, c.width
+                ));
+            }
+            if y + h > c.bottom + TOLERANCE {
+                problems.push(format!(
+                    "region at line {}: the table at line {line} in column {k} ends at y={:.1}, below its column's {:.1}",
+                    r.start_line,
+                    y + h,
+                    c.bottom
+                ));
+            }
+        }
+    }
+    for pair in r.columns.windows(2) {
+        if pair[0].x + pair[0].width > pair[1].x + TOLERANCE {
+            problems.push(format!(
+                "region at line {}: columns overlap sideways",
+                r.start_line
+            ));
+        }
     }
 }
 
@@ -258,6 +361,7 @@ mod tests {
             },
             late_corrections_after: 0,
             bands: Vec::new(),
+            regions: Vec::new(),
             lines: Vec::new(),
             elided_bands: 0,
             elided_lines: 0,
@@ -335,5 +439,58 @@ mod tests {
         let sig = t.signature(&[]);
         assert!(sig.len() < 20_000, "{} bytes", sig.len());
         assert!(sig.contains("elided 0 bands, 9850 lines"));
+    }
+
+    fn column(x: f32, width: f32, bottom: f32) -> ColumnGeom {
+        ColumnGeom {
+            x,
+            width,
+            bottom,
+            lines: vec![(4, 100., 2, 52.), (6, 152., 1, 26.)],
+            tables: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_region_whose_parts_fit_is_consistent() {
+        let mut t = trace();
+        t.region(RegionGeom {
+            start_line: 2,
+            top: 100.,
+            height: 100.,
+            columns: vec![column(0., 200., 178.), column(224., 300., 178.)],
+        });
+        assert!(t.problems().is_empty(), "{:?}", t.problems());
+        assert!(
+            t.signature(&[])
+                .contains("| region L2 y 100.0 h 100.0 | col0 x 0.0")
+        );
+    }
+
+    #[test]
+    fn overlaps_in_a_region_are_reported() {
+        let mut t = trace();
+        let mut wide = column(224., 300., 178.);
+        wide.tables.push((5, 100., 340., 30.));
+        let mut stacked = column(0., 230., 260.);
+        stacked.lines[1].1 = 120.;
+        t.region(RegionGeom {
+            start_line: 2,
+            top: 100.,
+            height: 100.,
+            columns: vec![stacked, wide],
+        });
+        let problems = t.problems().join("\n");
+        for needle in [
+            "below the region's bottom",
+            "starts inside line",
+            "340.0 wide",
+            "overlap sideways",
+        ] {
+            assert!(
+                problems.contains(needle),
+                "missing {needle:?} in {problems}"
+            );
+        }
     }
 }

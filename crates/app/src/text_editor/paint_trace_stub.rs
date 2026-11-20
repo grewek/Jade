@@ -18,6 +18,24 @@ pub(super) struct FrameInfo {
     pub late_corrections_before: usize,
 }
 
+/// Built only when tracing, which never happens here.
+#[allow(dead_code)]
+pub(super) struct RegionGeom {
+    pub start_line: usize,
+    pub top: f32,
+    pub height: f32,
+    pub columns: Vec<ColumnGeom>,
+}
+
+#[allow(dead_code)]
+pub(super) struct ColumnGeom {
+    pub x: f32,
+    pub width: f32,
+    pub bottom: f32,
+    pub lines: Vec<(usize, f32, usize, f32)>,
+    pub tables: Vec<(usize, f32, f32, f32)>,
+}
+
 pub(super) struct PaintTrace;
 
 impl PaintTrace {
@@ -28,6 +46,8 @@ impl PaintTrace {
     pub(super) fn band(&mut self, _: std::ops::Range<usize>, _: f32, _: f32, _: CalloutType) {}
 
     pub(super) fn line(&mut self, _: usize, _: f32, _: usize, _: f32, _: &'static str, _: &str) {}
+
+    pub(super) fn region(&mut self, _: RegionGeom) {}
 
     pub(super) fn set_late_corrections(&mut self, _total: usize) {}
 }

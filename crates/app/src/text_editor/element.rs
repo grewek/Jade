@@ -2334,8 +2334,13 @@ fn register_mouse_handling(
             }
             let dialog = window.has_active_dialog(cx);
             if let Some(drag) = editor_entity.read(cx).column_drag.clone() {
-                let percent =
-                    column_drag_percent(editor_entity.read(cx), &view, &drag, event.position);
+                let percent = column_drag_percent(
+                    editor_entity.read(cx),
+                    &view,
+                    &drag,
+                    event.position,
+                    window,
+                );
                 if let Some(percent) = percent.filter(|p| !dialog && *p != drag.percent) {
                     editor_entity.update(cx, |editor, cx| {
                         editor.column_drag = Some(ColumnDrag { percent, ..drag });
@@ -3042,6 +3047,7 @@ fn column_drag_percent(
     view: &FrameView,
     drag: &ColumnDrag,
     position: Point<Pixels>,
+    window: &mut Window,
 ) -> Option<Vec<u8>> {
     let doc = editor.document_cache.borrow();
     let region = *doc.columns().get(drag.region)?;
@@ -3051,11 +3057,45 @@ fn column_drag_percent(
     // Column `k`'s right edge is half a gap left of the pointer.
     let width = x - columns::GAP / 2. - split.x(k);
     let usable: f32 = (0..region.count).map(|c| split.width(c)).sum();
+    let char_width = f32::from(mono_char_width(
+        &view.font,
+        view.font_size,
+        view.text_color,
+        window,
+    ));
+    // A table box cannot shrink below its columns' minimum: keep each side at
+    // least that wide so it never paints into its neighbour.
+    let share_for = |column: usize| {
+        let px = min_column_px(&doc, &region, column, char_width);
+        // Shares snap in steps, so round the limit up to one.
+        let step = f32::from(column_ops::SNAP);
+        (px / usable * 100. / step).ceil() * step
+    };
+    let pair = f32::from(region.percent[k] + region.percent[k + 1]);
+    let (lo, hi) = (share_for(k), pair - share_for(k + 1));
+    let share = width / usable * 100.;
+    let share = if lo <= hi { share.clamp(lo, hi) } else { share };
     Some(column_ops::dragged(
         &region.percent[..region.count],
         k,
-        width / usable * 100.,
+        share,
     ))
+}
+
+/// The least width, in pixels, column `column` of `region` can have: that of its
+/// widest table at the minimum column width (0 with no table).
+fn min_column_px(doc: &DocumentCache, region: &Columns, column: usize, char_width: f32) -> f32 {
+    let lines = region.column_lines(column);
+    let tables = doc.tables();
+    let first = tables.partition_point(|t| t.start_line < lines.start);
+    tables[first..]
+        .iter()
+        .take_while(|t| t.start_line < lines.end)
+        .map(|t| {
+            let widths = vec![table_preview::MIN_COLUMN_WIDTH; t.columns.len()];
+            table_box::box_width(&widths) * char_width
+        })
+        .fold(0., f32::max)
 }
 
 /// The rendered table the pointer is over (or in the margin left of or above
@@ -3704,6 +3744,7 @@ fn paint_lines(
             // Exact rows from shaping, as the row cache does for any line.
             layout.correct_row_count(i, shaped.rows);
             if let Some(trace) = trace.as_mut() {
+                trace.region(region::trace_geometry(&env, &shaped, (i, y_offset), window));
                 let height = line_height * shaped.rows as f32;
                 let first = layout.line_range(i);
                 let line = &text[first];
@@ -5562,7 +5603,7 @@ mod tests {
                 percent: vec![50, 50],
             };
             let to = at(split.x(1) + 100., px(10.));
-            let percent = column_drag_percent(editor, &view, &drag, to).unwrap();
+            let percent = column_drag_percent(editor, &view, &drag, to, window).unwrap();
             assert!(percent[0] > 50 && percent[0] % 5 == 0 && percent[0] + percent[1] == 100);
         })
         .unwrap();
@@ -6254,6 +6295,19 @@ mod tests {
             assert_eq!(counts(&rows), counts(&fresh));
         })
         .unwrap();
+    }
+
+    /// A column holding a table cannot be dragged narrower than the table's
+    /// minimum box, so the box never paints into the next column.
+    #[test]
+    fn a_columns_minimum_is_its_widest_tables_minimum_box() {
+        use super::super::document_cache::DocumentCache;
+        let text = "::: columns\n\ntext\n\n---\n\n| a | b | c | d | e |\n| - | - | - | - | - |\n| 1 | 2 | 3 | 4 | 5 |\n\n:::\n";
+        let doc = DocumentCache::new(text);
+        let region = doc.columns()[0];
+        assert_eq!(super::min_column_px(&doc, &region, 0, 10.), 0.);
+        // Five columns of 3 characters plus 3 of padding each.
+        assert_eq!(super::min_column_px(&doc, &region, 1, 10.), 300.);
     }
 
     /// A divider drag previews its shares in the layout (so the columns' content

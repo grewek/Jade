@@ -150,23 +150,35 @@ pub(super) fn paint_region(
     paint_region_controls(env, shaped, region, (bounds, top), (window, cx));
     for column in &shaped.columns {
         let frame = column_bounds(bounds, column);
-        paint_column_blocks(env, column, frame, top, (window, cx));
-        let mut tables = None;
-        for sl in column.lines.iter().filter(|sl| !sl.results.is_empty()) {
-            let state = column_state(doc, sl.line, (env.cursor, env.show_cursor), &sl.broken);
-            let range = doc.line_start_byte(sl.line)..doc.line_end_byte(sl.line);
-            let slot = LineSlot {
-                i: sl.line,
-                line_text: &env.text[range.clone()],
-                line_range: range,
-                state: &state,
-                results: &sl.results,
-                bounds: frame,
-                y_offset: top + sl.y,
-                total_height: sl.height,
-            };
-            paint_line(env, &slot, &mut tables, window, cx);
-        }
+        // Nothing a column paints may reach the next one (a table cannot
+        // shrink below its columns' minimum); half the gap is left for the
+        // table controls, which straddle a table's edge.
+        let reach = px(columns::GAP / 2.);
+        let mask = ContentMask {
+            bounds: Bounds {
+                origin: point(frame.origin.x - reach, frame.origin.y),
+                size: size(frame.size.width + reach * 2., frame.size.height),
+            },
+        };
+        window.with_content_mask(Some(mask), |window| {
+            paint_column_blocks(env, column, frame, top, (window, cx));
+            let mut tables = None;
+            for sl in column.lines.iter().filter(|sl| !sl.results.is_empty()) {
+                let state = column_state(doc, sl.line, (env.cursor, env.show_cursor), &sl.broken);
+                let range = doc.line_start_byte(sl.line)..doc.line_end_byte(sl.line);
+                let slot = LineSlot {
+                    i: sl.line,
+                    line_text: &env.text[range.clone()],
+                    line_range: range,
+                    state: &state,
+                    results: &sl.results,
+                    bounds: frame,
+                    y_offset: top + sl.y,
+                    total_height: sl.height,
+                };
+                paint_line(env, &slot, &mut tables, window, cx);
+            }
+        });
     }
 }
 
@@ -431,4 +443,79 @@ pub(super) fn caret_bounds(
         });
     }
     None
+}
+
+/// Where `shaped` put its parts, for the paint trace (only built when tracing).
+/// `top` is the region's first line's y below the editor's top.
+pub(super) fn trace_geometry(
+    env: &PaintEnv,
+    shaped: &ShapedRegion,
+    (start_line, top): (usize, Pixels),
+    window: &mut Window,
+) -> crate::text_editor::paint_trace::RegionGeom {
+    use crate::text_editor::paint_trace::{ColumnGeom, RegionGeom};
+    let doc = env.doc;
+    let columns = shaped
+        .columns
+        .iter()
+        .map(|column| {
+            let rows = |sl: &ShapedLine| (sl.height / env.line_height).round() as usize;
+            let lines = column
+                .lines
+                .iter()
+                .filter(|sl| !sl.results.is_empty())
+                .map(|sl| {
+                    (
+                        sl.line,
+                        f32::from(top + sl.y),
+                        rows(sl),
+                        f32::from(sl.height),
+                    )
+                })
+                .collect();
+            let bottom = column.lines.last().map_or(top, |sl| top + sl.y + sl.height);
+            let mut tables = Vec::new();
+            let mut last = None;
+            for sl in &column.lines {
+                let Some(index) = table_index_at(doc.tables(), sl.line) else {
+                    continue;
+                };
+                if last == Some(index)
+                    || is_table_active(doc, doc.tables()[index].start_line, env.show_cursor)
+                {
+                    continue;
+                }
+                last = Some(index);
+                let table = &doc.tables()[index];
+                let boxed = TableColumns::of(
+                    table,
+                    column.width,
+                    (env.font, env.font_size, env.text_color),
+                    window,
+                );
+                let first = line_top(column, top, table.start_line);
+                let end = line_top(column, top, table.end_line);
+                let width = boxed.x(table_box::box_width(&boxed.widths));
+                tables.push((
+                    table.start_line,
+                    f32::from(first),
+                    f32::from(width),
+                    f32::from(end - first),
+                ));
+            }
+            ColumnGeom {
+                x: f32::from(column.x),
+                width: f32::from(column.width),
+                bottom: f32::from(bottom),
+                lines,
+                tables,
+            }
+        })
+        .collect();
+    RegionGeom {
+        start_line,
+        top: f32::from(top),
+        height: f32::from(env.line_height * shaped.rows as f32),
+        columns,
+    }
 }

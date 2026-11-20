@@ -412,7 +412,7 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
 /// The minimum a column is ever shrunk to by [`cap_column_widths`] — small
 /// enough to still show a few characters per wrapped line, large enough
 /// that a many-column table doesn't collapse every column to nothing.
-const MIN_COLUMN_WIDTH: usize = 3;
+pub const MIN_COLUMN_WIDTH: usize = 3;
 
 /// Whether `columns` keep their natural widths within `max_total_chars`
 /// (or there is no cap). Then every cell fits its column, so no row wraps.
