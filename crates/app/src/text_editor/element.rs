@@ -11,6 +11,7 @@ use super::block::{self, image_block};
 use super::block_preview::LineRole;
 use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
+use super::columns;
 use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
 use super::image_cache::{self, ImageCache};
@@ -57,6 +58,8 @@ pub(super) struct LineState<'a> {
     pub hidden: bool,
     /// The column of this table row the caret is in: it shows its text as typed.
     pub editing_cell: Option<usize>,
+    /// The open or close marker of a columns region: shows nothing unless active.
+    pub column_frame: bool,
 }
 
 impl<'a> LineState<'a> {
@@ -78,6 +81,7 @@ impl<'a> LineState<'a> {
                 .editing_cell()
                 .filter(|&(line, _)| line == i)
                 .map(|(_, column)| column),
+            column_frame: columns::is_frame_line(doc.columns(), i),
         }
     }
 
@@ -96,6 +100,7 @@ impl<'a> LineState<'a> {
             images: None,
             hidden: false,
             editing_cell: None,
+            column_frame: false,
         }
     }
 }
@@ -1385,6 +1390,7 @@ pub(super) fn build_display_lines(
         LineRole::Plain if table_active && !matches!(table_kind, TableLineKind::None) => {
             vec![build_display_line(line, true)]
         }
+        LineRole::Plain if state.column_frame && !active => vec![hidden_line(line)],
         LineRole::Plain if callout_is_header => vec![build_callout_header_line(line, active)],
         LineRole::Plain => match table_kind {
             TableLineKind::None if !active && is_thematic_break(line) => vec![hidden_line(line)],
@@ -4540,6 +4546,39 @@ mod tests {
                     LineIndent::None,
                     "fenced code content must never indent as a quote/list, even if it looks like one: {line:?}"
                 );
+            }
+        })
+        .unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_columns_marker_line_shows_nothing_unless_active(cx: &mut TestAppContext) {
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            for line in ["::: columns 60/40", ":::"] {
+                for active in [false, true] {
+                    let results = shape_display_line(
+                        line,
+                        &LineState {
+                            column_frame: true,
+                            active,
+                            ..LineState::plain()
+                        },
+                        &font,
+                        font_size,
+                        text_style.color,
+                        Pixels::MAX,
+                        window,
+                    );
+                    assert_eq!(results.len(), 1, "one row either way: {line:?}");
+                    let shown = &results[0].1.display_text;
+                    let expected = if active { line } else { "" };
+                    assert_eq!(shown, expected, "{line:?} active={active}");
+                }
             }
         })
         .unwrap();

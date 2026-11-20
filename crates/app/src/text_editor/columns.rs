@@ -61,6 +61,12 @@ impl Columns {
         self.end_line - 1
     }
 
+    /// Whether `line` is the open or the close marker, the two that render as
+    /// nothing (a separator renders as the usual rule).
+    pub fn is_frame(&self, line: usize) -> bool {
+        line == self.start_line || line == self.close_line()
+    }
+
     /// Whether `line` is one of the region's three kinds of marker line.
     pub fn is_marker(&self, line: usize) -> bool {
         line == self.start_line || line == self.close_line() || self.separators().contains(&line)
@@ -266,6 +272,12 @@ pub fn scan<'a>(lines: impl Iterator<Item = (&'a str, bool)>) -> Vec<Columns> {
     derive(&place_markers(0, lines, true, true))
 }
 
+/// Whether `line` is the open or close marker of one of `regions` (sorted).
+pub fn is_frame_line(regions: &[Columns], line: usize) -> bool {
+    let i = regions.partition_point(|r| r.end_line <= line);
+    regions.get(i).is_some_and(|r| r.is_frame(line))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -404,5 +416,18 @@ mod tests {
     fn a_document_end_counts_as_blank() {
         assert_eq!(scan_text("::: columns\n\na\n\n---\n\nb\n\n:::").len(), 1);
         assert!(scan_text("").is_empty());
+    }
+    #[test]
+    fn frame_lines_are_the_open_and_close_markers_only() {
+        let regions = scan_text(&format!("{TWO}\nx\n\n{TWO}"));
+        assert_eq!(regions.len(), 2);
+        let framed: Vec<usize> = (0..25).filter(|&l| is_frame_line(&regions, l)).collect();
+        // Each region's open (0, 9+...) and close lines; never a separator.
+        let expected: Vec<usize> = regions
+            .iter()
+            .flat_map(|r| [r.start_line, r.close_line()])
+            .collect();
+        assert_eq!(framed, expected);
+        assert!(!is_frame_line(&regions, regions[0].separators()[0]));
     }
 }
