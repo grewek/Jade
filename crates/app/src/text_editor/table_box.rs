@@ -134,6 +134,13 @@ fn raw_cuts(text: &str, width: usize, mut emit: impl FnMut(Range<usize>)) {
             emit(start..text.len());
             return;
         };
+        // Spaces at the very end hang past the column rather than wrap: the
+        // column is as wide as the trimmed text, and a space just typed at the
+        // end must keep the caret on its line.
+        if rest[limit..].bytes().all(|b| b == b' ') {
+            emit(start..text.len());
+            return;
+        }
         let cut = match rest[..limit].rfind(' ') {
             Some(space) => start + space + 1,
             None => start + limit,
@@ -433,6 +440,27 @@ mod tests {
         let edited = layout_row_editing(line, &[40], Some(0));
         assert_eq!(edited[0].lines.len(), 1);
         assert_eq!(row_line_count_editing(line, &[40], Some(0)), 1);
+    }
+
+    /// The column is as wide as the cell's trimmed text, so a space typed at the
+    /// end of a full cell must not wrap the caret onto a new line.
+    #[test]
+    fn trailing_spaces_in_an_edited_cell_stay_on_its_line() {
+        let aligns = [Align::Left];
+        for line in ["| ab  |", "| ab    |", "| a b  |"] {
+            let ranges = cell_ranges(line);
+            let shown = edit_range(line, ranges[0].clone());
+            let (row, _) = caret_at(
+                line,
+                &[line[shown.clone()].trim().len()],
+                &aligns,
+                0,
+                shown.end,
+            );
+            assert_eq!(row, 0, "{line:?}");
+            let lines = layout_row_editing(line, &[line[shown].trim().len()], Some(0));
+            assert_eq!(lines[0].lines.len(), 1, "{line:?}");
+        }
     }
 
     #[test]

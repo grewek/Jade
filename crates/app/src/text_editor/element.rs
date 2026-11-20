@@ -4905,6 +4905,24 @@ mod tests {
         }
 
         #[gpui_kit::test]
+        fn spaces_typed_at_the_end_of_the_last_cell_keep_the_row_height(cx: &mut TestAppContext) {
+            let text = "| a | b |\n|---|---|\n| c | de |";
+            let (window, editor) = open_at(cx, text, text.len() - 2);
+            let rows = |cx: &mut TestAppContext| {
+                editor.read_with(cx, |e, _| {
+                    let r = e.row_height_cache.borrow();
+                    r.prefix_sum(r.line_count())
+                })
+            };
+            let before = rows(cx);
+            for _ in 0..3 {
+                type_text(cx, window, " ");
+                assert_eq!(rows(cx), before);
+            }
+            assert_rows_are_exact(cx, window, &editor);
+        }
+
+        #[gpui_kit::test]
         fn backspace_and_delete_stop_at_the_cells_border(cx: &mut TestAppContext) {
             let at = TABLE.find('c').unwrap();
             let (window, editor) = open_at(cx, TABLE, at);
