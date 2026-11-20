@@ -14,5 +14,5 @@ pub use context::{LinkContext, SourceContexts};
 pub use links::{WikiLink, extract_wikilinks};
 pub use note::Note;
 pub use rename::Renamed;
-pub use resolve::{Destination, percent_decode, split_fragment};
+pub use resolve::{Destination, image_file, percent_decode, split_fragment};
 pub use vault::{SearchTarget, Vault, search_targets};

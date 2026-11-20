@@ -292,6 +292,10 @@ impl JadeApp {
     fn new_tab(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) -> Option<Tab> {
         let text = self.vault.read_note(id).ok()?;
         let editor = cx.new(|cx| Editor::new(text, cx));
+        let root = self.vault.root.clone();
+        editor.update(cx, |editor, cx| {
+            editor.set_image_context(root, id.to_string(), cx)
+        });
         self.resolve_links_in(&editor, id, false, cx);
         let subscription =
             cx.subscribe_in(

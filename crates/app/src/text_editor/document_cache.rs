@@ -42,6 +42,7 @@ use std::ops::Range;
 use super::block_preview::{self, LineRole};
 use super::callout::{self, Callout, CalloutState};
 use super::fenwick::{Fenwick, LINE_GROWTH_SLACK};
+use super::images::ImageSizes;
 use super::live_preview::{self, LineContext, OpenBlock};
 use super::table_preview::{self, Table, is_pipe_row};
 
@@ -153,6 +154,8 @@ pub(super) struct DocumentCache {
     /// `callout_states[i]` is the packed `CalloutState` *entering* line `i`.
     /// Parallel to `callout_for_line`.
     callout_states: Vec<u8>,
+    /// Natural sizes of the images the note embeds, read off the main thread.
+    images: ImageSizes,
 }
 
 impl DocumentCache {
@@ -171,6 +174,7 @@ impl DocumentCache {
             callouts: Vec::new(),
             callout_states: Vec::new(),
             callout_scratch: Vec::new(),
+            images: ImageSizes::default(),
         };
         cache.recompute_all(text);
         cache
@@ -190,6 +194,14 @@ impl DocumentCache {
 
     pub(super) fn callouts(&self) -> &[Callout] {
         &self.callouts
+    }
+
+    pub(super) fn images(&self) -> &ImageSizes {
+        &self.images
+    }
+
+    pub(super) fn images_mut(&mut self) -> &mut ImageSizes {
+        &mut self.images
     }
 
     /// The document's current line count — the row-height cache's own

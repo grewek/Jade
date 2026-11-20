@@ -208,6 +208,36 @@ impl Vault {
     }
 }
 
+/// The file an image embed written as `dest` in note `from_note_id` points at:
+/// tried against the note's folder, then the vault root, and never outside
+/// the root (symlinks included). Needs only the root, so a worker thread can
+/// run it without the [`Vault`].
+pub fn image_file(root: &std::path::Path, from_note_id: &str, dest: &str) -> Option<PathBuf> {
+    if dest.len() > MAX_DEST_BYTES || scheme(dest).is_some() {
+        return None;
+    }
+    let decoded = percent_decode(split_fragment(dest).0)?;
+    if decoded.is_empty() || decoded.contains(['\0', '\\']) {
+        return None;
+    }
+    let note_dir = from_note_id.rsplit_once('/').map_or("", |(dir, _)| dir);
+    let bases: &[&str] = if decoded.starts_with('/') {
+        &[""]
+    } else {
+        &[note_dir, ""]
+    };
+    let root = root.canonicalize().ok()?;
+    bases.iter().find_map(|base| {
+        let parts = normalize(base, &decoded).filter(|p| !p.is_empty())?;
+        let real = parts
+            .iter()
+            .fold(root.clone(), |p, part| p.join(part))
+            .canonicalize()
+            .ok()?;
+        (real.is_file() && real.starts_with(&root)).then_some(real)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -438,5 +468,18 @@ mod tests {
         assert_eq!(percent_decode("100%"), None);
         assert_eq!(normalize("a/b", "../c"), Some(vec!["a".into(), "c".into()]));
         assert_eq!(normalize("", "../c"), None);
+    }
+
+    #[test]
+    fn image_file_finds_files_in_the_vault_and_nothing_outside() {
+        let (dir, _v) = vault();
+        let root = dir.path();
+        let found = image_file(root, "sub/Child", "my%20file.png").unwrap();
+        assert!(found.ends_with("sub/my file.png"));
+        assert_eq!(image_file(root, "Top", "sub/my file.png"), Some(found));
+        assert_eq!(image_file(root, "sub/Child", "../../etc/passwd"), None);
+        assert_eq!(image_file(root, "Top", "https://x/y.png"), None);
+        assert_eq!(image_file(root, "Top", "missing.png"), None);
+        assert_eq!(image_file(root, "Top", "sub"), None);
     }
 }

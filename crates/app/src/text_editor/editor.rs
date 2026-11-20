@@ -1,14 +1,18 @@
 use std::cell::{Cell, RefCell};
 use std::ops::Range;
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use gpui_kit::*;
 
 use super::EditorBuffer;
+use super::block;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
 use super::headings::find_heading_line;
+use super::images::{self, NaturalSize};
 use super::link_table::LinkTable;
 use jade_core::link_scan::{LinkKind, scan_line};
 
@@ -121,6 +125,10 @@ pub struct Editor {
     pub(super) link_table: LinkTable,
     /// The mouse is over a link a click would follow: paint shows a pointer.
     pub(super) hovering_link: bool,
+    /// The vault root and this note's id, for finding image embeds' files.
+    /// `None` (tests, a note not in a vault) leaves image blocks at their
+    /// placeholder height.
+    image_context: Option<Arc<(PathBuf, String)>>,
 }
 
 impl Editor {
@@ -144,7 +152,65 @@ impl Editor {
             doc_stats,
             link_table,
             hovering_link: false,
+            image_context: None,
         }
+    }
+
+    /// Says where this note lives so its image embeds can be found, and reads
+    /// the sizes of the ones already in the text.
+    pub fn set_image_context(&mut self, root: PathBuf, note_id: String, cx: &mut Context<Self>) {
+        self.image_context = Some(Arc::new((root, note_id)));
+        let lines = self.document_cache.borrow().line_count();
+        self.request_image_sizes(0..lines, cx);
+    }
+
+    /// Reads, off the main thread, the headers of image embeds in `lines`
+    /// whose size is not known yet; when they arrive every row count is
+    /// rebuilt, since each changes a block's height.
+    fn request_image_sizes(&self, lines: Range<usize>, cx: &mut Context<Self>) {
+        let Some(context) = self.image_context.clone() else {
+            return;
+        };
+        let targets = {
+            let mut doc = self.document_cache.borrow_mut();
+            let targets = block::unknown_image_targets(self.buffer.text(), &doc, lines);
+            // Marked as asked for, so a second edit of the line does not ask again.
+            for target in &targets {
+                doc.images_mut().insert(target, None);
+            }
+            targets
+        };
+        if targets.is_empty() {
+            return;
+        }
+        cx.spawn(async move |this, cx| {
+            let sizes = cx
+                .background_spawn(async move {
+                    let (root, note_id) = &*context;
+                    let read = |target: &String| images::read_size(root, note_id, target);
+                    targets
+                        .iter()
+                        .map(|t| (t.clone(), read(t)))
+                        .collect::<Vec<_>>()
+                })
+                .await;
+            this.update(cx, |this, cx| this.apply_image_sizes(&sizes, cx))
+                .ok();
+        })
+        .detach();
+    }
+
+    fn apply_image_sizes(
+        &mut self,
+        sizes: &[(String, Option<NaturalSize>)],
+        cx: &mut Context<Self>,
+    ) {
+        let mut doc = self.document_cache.borrow_mut();
+        for (target, size) in sizes {
+            doc.images_mut().insert(target, *size);
+        }
+        self.row_height_cache.borrow_mut().invalidate_width();
+        cx.notify();
     }
 
     /// The link under raw byte `offset`, as the event that follows it. The
@@ -326,6 +392,12 @@ impl Editor {
                 self.link_table.rebuild(text, &self.document_cache.borrow());
             }
         }
+
+        let touched = match &patch {
+            Some(patch) => patch.touched.clone(),
+            None => 0..self.document_cache.borrow().line_count(),
+        };
+        self.request_image_sizes(touched, cx);
 
         let params = render_params(self, window, cx);
         let cursor = self.buffer.cursor();

@@ -15,6 +15,7 @@ mod editor;
 mod element;
 mod fenwick;
 mod headings;
+mod images;
 mod input_handler;
 mod line_chunks;
 mod link_table;

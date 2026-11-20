@@ -12,6 +12,7 @@ use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
 use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
+use super::images::ImageSizes;
 use super::link_table::LinkTable;
 use super::live_preview::{
     DisplayLine, InlineStyle, LineContext, LineIndent, build_callout_header_line, build_cell_line,
@@ -44,6 +45,8 @@ pub(super) struct LineState<'a> {
     pub active: bool,
     /// Raw byte ranges of links on the line whose target is missing.
     pub broken: &'a [Range<usize>],
+    /// Sizes of the note's images, for an image block's height.
+    pub images: Option<&'a ImageSizes>,
 }
 
 impl<'a> LineState<'a> {
@@ -59,6 +62,7 @@ impl<'a> LineState<'a> {
             callout_is_header: callout.is_some_and(|c| c.is_header(i)),
             active: is_active_line(&line_range, cursor, focused),
             broken: &[],
+            images: Some(doc.images()),
         }
     }
 
@@ -74,6 +78,7 @@ impl<'a> LineState<'a> {
             callout_is_header: false,
             active: false,
             broken: &[],
+            images: None,
         }
     }
 }
@@ -319,6 +324,12 @@ impl RowHeightCache {
         self.rows.len()
     }
 
+    /// Makes the next paint rebuild every row count, as a change to what the
+    /// counts depend on besides the text (an image's size) requires.
+    pub(super) fn invalidate_width(&mut self) {
+        self.available_width = px(0.);
+    }
+
     /// The cumulative row count of lines `0..i` — `i == line_count()` (one
     /// past the last line) is valid too, giving the document's total row
     /// count.
@@ -378,12 +389,14 @@ impl RowHeightCache {
             contexts: doc.block_contexts(),
             tables: doc.tables(),
             callouts: doc.callouts(),
+            images: doc.images(),
             starts: &starts,
         };
         let rows = RowParams {
             active_table: active_table(doc, cursor, focused),
             available_width,
             char_width,
+            line_height: window.line_height(),
         };
         let (mut counts, shaped) = pure_row_counts(text, &view, &rows);
         // Lines that need the window (an active or irregular table row) are the
@@ -553,6 +566,7 @@ struct DocView<'a> {
     contexts: &'a [LineContext],
     tables: &'a [Table],
     callouts: &'a [Callout],
+    images: &'a ImageSizes,
     /// Byte offset of each line, plus the text length.
     starts: &'a [usize],
 }
@@ -563,6 +577,8 @@ struct RowParams {
     active_table: Option<usize>,
     available_width: Pixels,
     char_width: Pixels,
+    /// An image block's height is a whole number of these.
+    line_height: Pixels,
 }
 
 /// The index of the table [`is_table_active`] would call active, found once so
@@ -624,6 +640,7 @@ fn pure_row_counts_in(
         active_table,
         available_width,
         char_width,
+        line_height,
     } = *rows;
     let line_count = view.roles.len();
     let mut counts = Vec::with_capacity(range.len());
@@ -647,7 +664,14 @@ fn pure_row_counts_in(
         }
         let table = view.tables.get(next_table).filter(|t| t.start_line <= i);
         let count = match table {
-            None => estimate_row_count(line, view, i, char_width, available_width, one_level_fit),
+            None => estimate_row_count(
+                line,
+                view,
+                i,
+                (char_width, line_height),
+                available_width,
+                one_level_fit,
+            ),
             Some(table) => {
                 let is_header = callout_at_line(view.callouts, i).is_some_and(|c| c.is_header(i));
                 let plain = matches!(view.roles[i], LineRole::Plain) && !is_header;
@@ -709,7 +733,7 @@ fn estimate_row_count(
     line: &str,
     doc: &DocView,
     i: usize,
-    char_width: Pixels,
+    (char_width, line_height): (Pixels, Pixels),
     available_width: Pixels,
     one_level_fit: usize,
 ) -> usize {
@@ -721,7 +745,7 @@ fn estimate_row_count(
         && callout_at_line(doc.callouts, i).is_none()
         && let Some(embed) = block::image_embed_line(line)
     {
-        return block::block_rows(&embed);
+        return block::block_rows(line, &embed, Some(doc.images), available_width, line_height);
     }
     // A line with no context of its own that doesn't start with `>` is
     // indented at most one level (a list marker; blockquotes need a `>`), so
@@ -1306,7 +1330,10 @@ pub(super) fn build_display_lines(
         active,
         ..
     } = *state;
-    let block_rows = image_block(line, state).map(|embed| block::block_rows(&embed));
+    let block_rows = image_block(line, state).map(|embed| {
+        let sizes = state.images;
+        block::block_rows(line, &embed, sizes, available_width, window.line_height())
+    });
     let mut display_lines: Vec<DisplayLine> = match role {
         // A block is `rows` stacked empty rows; `paint_lines` draws the box over them.
         LineRole::Plain if let Some(rows) = block_rows => vec![hidden_line(line); rows],
@@ -4125,5 +4152,40 @@ mod tests {
             assert_eq!(active, 1);
         })
         .unwrap();
+    }
+
+    /// Once an embed's header has been read off-thread, its block is as tall as
+    /// the image is drawn (here 100px wide of a 400x200 file, so 50px), and the
+    /// rows are rebuilt for the whole document without any paint of that line.
+    #[gpui_kit::test]
+    fn an_image_block_takes_its_real_height_once_the_header_is_read(cx: &mut TestAppContext) {
+        use super::super::block::PLACEHOLDER_ROWS;
+        let dir = tempfile::tempdir().unwrap();
+        // PNG signature plus an IHDR chunk: all a header read looks at.
+        let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
+        png.extend_from_slice(&400u32.to_be_bytes());
+        png.extend_from_slice(&200u32.to_be_bytes());
+        png.extend_from_slice(&[8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        std::fs::write(dir.path().join("p.png"), png).unwrap();
+
+        let (window, editor) = open_editor(cx, "top\n![[p.png|100]]\nend");
+        let root = dir.path().to_path_buf();
+        editor.update(cx, |editor, cx| {
+            editor.set_image_context(root, "note".into(), cx)
+        });
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let before = editor.read_with(cx, |e, _| row_counts(&e.row_height_cache.borrow()));
+        assert_eq!(before[1], PLACEHOLDER_ROWS as i64, "no header read yet");
+
+        cx.run_until_parked();
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let line_height = cx
+            .update_window(window, |_, window, _| window.line_height())
+            .unwrap();
+        let expected = ((50. + 4.) / f32::from(line_height)).ceil() as i64;
+        let after = editor.read_with(cx, |e, _| row_counts(&e.row_height_cache.borrow()));
+        assert_eq!(after, [1, expected, 1]);
     }
 }
