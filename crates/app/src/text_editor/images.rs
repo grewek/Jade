@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use gpui_kit::gpui::Pixels;
 
@@ -17,24 +18,36 @@ pub(super) struct NaturalSize {
     pub height: u32,
 }
 
-/// Natural size of each embed target as written in the note. `None` means the
-/// file is missing or its header unreadable (the block keeps its placeholder).
+/// Where an embed's file is and how big it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct ImageInfo {
+    pub size: NaturalSize,
+    /// Absolute and inside the vault, so it also keys the decoded-image cache.
+    pub path: Arc<Path>,
+}
+
+/// What is known about each embed target as written in the note. `None` means
+/// the file is missing or its header unreadable (the block keeps its placeholder).
 #[derive(Default)]
 pub(super) struct ImageSizes {
-    known: HashMap<Box<str>, Option<NaturalSize>>,
+    known: HashMap<Box<str>, Option<ImageInfo>>,
 }
 
 impl ImageSizes {
     pub(super) fn get(&self, target: &str) -> Option<NaturalSize> {
-        self.known.get(target).copied().flatten()
+        self.info(target).map(|info| info.size)
+    }
+
+    pub(super) fn info(&self, target: &str) -> Option<&ImageInfo> {
+        self.known.get(target)?.as_ref()
     }
 
     pub(super) fn is_known(&self, target: &str) -> bool {
         self.known.contains_key(target)
     }
 
-    pub(super) fn insert(&mut self, target: &str, size: Option<NaturalSize>) {
-        self.known.insert(target.into(), size);
+    pub(super) fn insert(&mut self, target: &str, info: Option<ImageInfo>) {
+        self.known.insert(target.into(), info);
     }
 }
 
@@ -77,14 +90,17 @@ pub(super) fn rows_for(
 
 /// Reads the header of the file `target` names in note `note_id`. Blocks on
 /// the filesystem: call it off the main thread.
-pub(super) fn read_size(root: &Path, note_id: &str, target: &str) -> Option<NaturalSize> {
+pub(super) fn read_info(root: &Path, note_id: &str, target: &str) -> Option<ImageInfo> {
     let path = jade_core::image_file(root, note_id, target)?;
-    let size = imagesize::size(path).ok()?;
+    let size = imagesize::size(&path).ok()?;
     let (width, height) = (
         u32::try_from(size.width).ok()?,
         u32::try_from(size.height).ok()?,
     );
-    (width > 0 && height > 0).then_some(NaturalSize { width, height })
+    (width > 0 && height > 0).then(|| ImageInfo {
+        size: NaturalSize { width, height },
+        path: path.into(),
+    })
 }
 
 #[cfg(test)]

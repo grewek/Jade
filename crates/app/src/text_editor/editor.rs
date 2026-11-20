@@ -12,7 +12,7 @@ use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
 use super::headings::find_heading_line;
-use super::images::{self, NaturalSize};
+use super::images::{self, ImageInfo};
 use super::link_table::LinkTable;
 use jade_core::link_scan::{LinkKind, scan_line};
 
@@ -187,7 +187,7 @@ impl Editor {
             let sizes = cx
                 .background_spawn(async move {
                     let (root, note_id) = &*context;
-                    let read = |target: &String| images::read_size(root, note_id, target);
+                    let read = |target: &String| images::read_info(root, note_id, target);
                     targets
                         .iter()
                         .map(|t| (t.clone(), read(t)))
@@ -200,14 +200,10 @@ impl Editor {
         .detach();
     }
 
-    fn apply_image_sizes(
-        &mut self,
-        sizes: &[(String, Option<NaturalSize>)],
-        cx: &mut Context<Self>,
-    ) {
+    fn apply_image_sizes(&mut self, sizes: &[(String, Option<ImageInfo>)], cx: &mut Context<Self>) {
         let mut doc = self.document_cache.borrow_mut();
         for (target, size) in sizes {
-            doc.images_mut().insert(target, *size);
+            doc.images_mut().insert(target, size.clone());
         }
         self.row_height_cache.borrow_mut().invalidate_width();
         cx.notify();

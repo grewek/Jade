@@ -3798,6 +3798,7 @@ dependencies = [
  "criterion",
  "dirs 6.0.0",
  "gpui-kit",
+ "image",
  "imagesize 0.14.0",
  "jade-core",
  "jade-debug-protocol",

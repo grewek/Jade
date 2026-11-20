@@ -12,7 +12,8 @@ use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
 use super::document_cache::{DocumentCache, EditPatch};
 use super::fenwick::Fenwick;
-use super::images::ImageSizes;
+use super::image_cache::{self, ImageCache};
+use super::images::{self, ImageInfo, ImageSizes};
 use super::link_table::LinkTable;
 use super::live_preview::{
     DisplayLine, InlineStyle, LineContext, LineIndent, build_callout_header_line, build_cell_line,
@@ -2011,6 +2012,50 @@ fn offset_for_position(
     }
 }
 
+/// Draws the image of `info` at the top left of `area`, starting its decode if
+/// there is none yet. `false` while there is nothing to draw (or it cannot be
+/// decoded), so the placeholder stands in.
+fn paint_image(
+    info: &ImageInfo,
+    requested: Option<u32>,
+    area: Bounds<Pixels>,
+    window: &mut Window,
+    cx: &mut App,
+) -> bool {
+    let (width, height) = images::display_size(info.size, requested, area.size.width);
+    let device_width = (width * window.scale_factor()).ceil() as u32;
+    let lookup =
+        cx.default_global::<ImageCache>()
+            .lookup(&info.path, device_width, info.size.width);
+    if let Some(decode_at) = lookup.decode_at {
+        let path = info.path.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let job = cx.background_executor().spawn({
+                    let path = path.clone();
+                    async move { image_cache::decode(&path, decode_at) }
+                });
+                let decoded = job.await;
+                cx.update(|window, cx| {
+                    cx.default_global::<ImageCache>().finish(&path, decoded);
+                    window.refresh();
+                })
+                .ok();
+            })
+            .detach();
+    }
+    let Some(image) = lookup.image else {
+        return false;
+    };
+    let frame = Bounds {
+        origin: area.origin + point(px(0.), px(2.)),
+        size: size(px(width), px(height)),
+    };
+    window
+        .paint_image(frame, frame, Corners::default(), image, 0, false)
+        .is_ok()
+}
+
 /// A bordered box with the file name, standing where an image block's rows are
 /// until the image itself is drawn.
 fn paint_image_placeholder(
@@ -2242,6 +2287,9 @@ fn paint_lines(
         font_size,
         text_color,
     } = view;
+    for freed in cx.default_global::<ImageCache>().begin_frame() {
+        window.drop_image(freed).ok();
+    }
     let palette = ThemeEngine::global(cx).palette().clone();
     let inline = InlineColors::from_palette(&palette);
     let rule = palette.color(Role::BorderStrong);
@@ -2429,16 +2477,26 @@ fn paint_lines(
         }
 
         if let Some(embed) = image_block(line_text, &state) {
-            paint_image_placeholder(
-                &line_text[embed.target],
-                Bounds {
-                    origin: point(bounds.origin.x, bounds.origin.y + y_offset),
-                    size: size(bounds.size.width, total_height),
-                },
-                (font, font_size),
-                (rule, inline.subtle),
-                (window, cx),
-            );
+            let area = Bounds {
+                origin: point(bounds.origin.x, bounds.origin.y + y_offset),
+                size: size(bounds.size.width, total_height),
+            };
+            let target = &line_text[embed.target.clone()];
+            let alt = &line_text[embed.alt.clone()];
+            let wiki = line_text.trim_start().starts_with("![[");
+            let drawn = doc.images().info(target).is_some_and(|info| {
+                let requested = images::requested_width(alt, wiki);
+                paint_image(info, requested, area, window, cx)
+            });
+            if !drawn {
+                paint_image_placeholder(
+                    target,
+                    area,
+                    (font, font_size),
+                    (rule, inline.subtle),
+                    (window, cx),
+                );
+            }
         }
 
         let rendered_table_row =
@@ -4187,5 +4245,41 @@ mod tests {
         let expected = ((50. + 4.) / f32::from(line_height)).ceil() as i64;
         let after = editor.read_with(cx, |e, _| row_counts(&e.row_height_cache.borrow()));
         assert_eq!(after, [1, expected, 1]);
+    }
+
+    /// A visible block's decode runs off-thread at the drawn width (not the
+    /// file's), lands in the shared cache, and is drawn without a window
+    /// error; a block that cannot be decoded keeps its placeholder.
+    #[gpui_kit::test]
+    fn a_visible_image_is_decoded_at_its_drawn_width(cx: &mut TestAppContext) {
+        let dir = tempfile::tempdir().unwrap();
+        image::RgbaImage::from_pixel(400, 200, image::Rgba([200, 30, 30, 255]))
+            .save(dir.path().join("p.png"))
+            .unwrap();
+        std::fs::write(dir.path().join("bad.png"), b"not an image").unwrap();
+
+        let (window, editor) = open_editor(cx, "top\n![[p.png|100]]\n![[bad.png]]\nend");
+        let root = dir.path().to_path_buf();
+        editor.update(cx, |editor, cx| {
+            editor.set_image_context(root, "note".into(), cx)
+        });
+        for _ in 0..3 {
+            cx.run_until_parked();
+            cx.update_window(window, |_, window, cx| window.render_frame(cx))
+                .unwrap();
+        }
+        let path: std::sync::Arc<std::path::Path> =
+            dir.path().canonicalize().unwrap().join("p.png").into();
+        let (ready, bytes) = cx.update(|cx| {
+            let cache = cx.default_global::<super::super::image_cache::ImageCache>();
+            (cache.is_ready(&path), cache.bytes())
+        });
+        assert!(ready, "the visible image was decoded");
+        // 100 logical px wide at the test window's scale, 2:1, 4 bytes a pixel.
+        let scale = cx
+            .update_window(window, |_, window, _| window.scale_factor())
+            .unwrap();
+        let width = (100. * scale).ceil() as usize;
+        assert_eq!(bytes, width * (width / 2) * 4);
     }
 }

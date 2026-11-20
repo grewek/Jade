@@ -227,7 +227,7 @@ pub fn image_file(root: &std::path::Path, from_note_id: &str, dest: &str) -> Opt
         &[note_dir, ""]
     };
     let root = root.canonicalize().ok()?;
-    bases.iter().find_map(|base| {
+    let by_path = bases.iter().find_map(|base| {
         let parts = normalize(base, &decoded).filter(|p| !p.is_empty())?;
         let real = parts
             .iter()
@@ -235,7 +235,51 @@ pub fn image_file(root: &std::path::Path, from_note_id: &str, dest: &str) -> Opt
             .canonicalize()
             .ok()?;
         (real.is_file() && real.starts_with(&root)).then_some(real)
+    });
+    // Obsidian finds a bare file name anywhere in the vault.
+    by_path.or_else(|| {
+        (!decoded.contains('/'))
+            .then(|| find_by_name(&root, &decoded))
+            .flatten()
     })
+}
+
+/// Most folders and files [`find_by_name`] looks at before giving up.
+const MAX_SCANNED_ENTRIES: usize = 200_000;
+
+/// The file called `name` nearest the top of the vault under `root` (ties go
+/// to the alphabetically first path), skipping hidden folders and symlinks.
+fn find_by_name(root: &std::path::Path, name: &str) -> Option<PathBuf> {
+    let mut level = vec![root.to_path_buf()];
+    let mut scanned = 0;
+    while !level.is_empty() {
+        let mut found: Vec<PathBuf> = Vec::new();
+        let mut next = Vec::new();
+        for dir in &level {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                scanned += 1;
+                let (file_name, Ok(kind)) = (entry.file_name(), entry.file_type()) else {
+                    continue;
+                };
+                if kind.is_dir() && !file_name.to_string_lossy().starts_with('.') {
+                    next.push(entry.path());
+                } else if kind.is_file() && file_name.to_string_lossy() == name {
+                    found.push(entry.path());
+                }
+            }
+            if scanned > MAX_SCANNED_ENTRIES {
+                return None;
+            }
+        }
+        if let Some(best) = found.into_iter().min() {
+            return Some(best);
+        }
+        level = next;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -481,5 +525,28 @@ mod tests {
         assert_eq!(image_file(root, "Top", "https://x/y.png"), None);
         assert_eq!(image_file(root, "Top", "missing.png"), None);
         assert_eq!(image_file(root, "Top", "sub"), None);
+    }
+
+    #[test]
+    fn image_file_finds_a_bare_name_anywhere_nearest_first() {
+        let (dir, _v) = crate::test_support::vault_with(&[
+            ("Top.md", "t"),
+            ("a/deep/x.png", "1"),
+            ("b/x.png", "2"),
+            ("c/.hidden/y.png", "3"),
+        ]);
+        let root = dir.path();
+        let found = image_file(root, "Top", "x.png").unwrap();
+        assert!(found.ends_with("b/x.png"), "the shallower one: {found:?}");
+        assert_eq!(
+            image_file(root, "Top", "y.png"),
+            None,
+            "hidden folders are skipped"
+        );
+        assert_eq!(
+            image_file(root, "Top", "a/x.png"),
+            None,
+            "a path is not a name"
+        );
     }
 }
