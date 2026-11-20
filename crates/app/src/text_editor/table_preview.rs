@@ -424,8 +424,8 @@ pub fn fits_unshrunk(columns: &[Column], max_total_chars: impl Into<Option<usize
     columns.iter().map(|c| c.width).sum::<usize>() <= content_budget
 }
 
-/// Shrinks `columns`' natural widths — proportionally to each column's own
-/// share of the total, floored at [`MIN_COLUMN_WIDTH`] — so their total
+/// Shrinks `columns`' natural widths — the widest ones to an equal share, the
+/// narrow ones untouched, floored at [`MIN_COLUMN_WIDTH`] — so their total
 /// (plus border/padding overhead) fits within `max_total_chars`, if it
 /// doesn't already. A no-op (returns the natural widths unchanged) when it
 /// already fits. Border overhead is `3 * columns.len() + 1` characters: a
@@ -446,21 +446,28 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
         return vec![MIN_COLUMN_WIDTH; columns.len()];
     }
 
-    let shrinkable_budget = content_budget - floor_total;
-    let shrinkable_natural_total: usize = natural
-        .iter()
-        .map(|&w| w.saturating_sub(MIN_COLUMN_WIDTH))
-        .sum();
-    natural
-        .iter()
-        .map(|&w| {
-            let shrinkable = w.saturating_sub(MIN_COLUMN_WIDTH);
-            let share = (shrinkable * shrinkable_budget)
-                .checked_div(shrinkable_natural_total)
-                .unwrap_or(0);
-            MIN_COLUMN_WIDTH + share
-        })
-        .collect()
+    // Water-filling: a column narrower than an equal share of what is left
+    // keeps its natural width; the wider ones split the rest equally. So a cell
+    // that grows takes space from columns that have some to spare, and only
+    // wraps once every column is down to the shared width.
+    let mut order: Vec<usize> = (0..natural.len()).collect();
+    order.sort_by_key(|&i| natural[i]);
+    let mut widths = natural.clone();
+    let mut left = content_budget;
+    for (k, &i) in order.iter().enumerate() {
+        let remaining = order.len() - k;
+        if natural[i] <= left / remaining {
+            left -= natural[i];
+            continue;
+        }
+        let (each, extra) = (left / remaining, left % remaining);
+        for (j, &wide) in order[k..].iter().enumerate() {
+            // The widest take the odd characters.
+            widths[wide] = each + usize::from(j >= remaining - extra);
+        }
+        break;
+    }
+    widths
 }
 
 /// `columns`' widths as actually used for rendering — [`cap_column_widths`]
@@ -682,15 +689,25 @@ mod tests {
     }
 
     #[test]
-    fn cap_column_widths_shrinks_proportionally_to_fit() {
-        let columns = vec![col(20), col(10)];
-        // border overhead = 7; natural total = 30; budget forces a shrink.
-        let widths = cap_column_widths(&columns, 7 + 15);
-        // Integer-division flooring can leave the sum a character or two
-        // under budget, never over it.
-        assert!(widths.iter().sum::<usize>() <= 15);
-        // The wider column should still end up wider than the narrower one.
-        assert!(widths[0] > widths[1]);
+    fn cap_column_widths_shrinks_only_the_wide_columns() {
+        // Overhead for 3 columns is 10; 40 of content left.
+        let columns = vec![col(3), col(4), col(60)];
+        assert_eq!(cap_column_widths(&columns, 10 + 40), vec![3, 4, 33]);
+        // Two wide columns split what the narrow one leaves, equally.
+        let columns = vec![col(5), col(30), col(50)];
+        assert_eq!(cap_column_widths(&columns, 10 + 40), vec![5, 17, 18]);
+    }
+
+    #[test]
+    fn a_growing_cell_takes_space_from_columns_with_room() {
+        let fits = |widest: usize| cap_column_widths(&[col(8), col(widest), col(6)], 10 + 40);
+        assert_eq!(fits(20), vec![8, 20, 6]);
+        assert_eq!(
+            fits(30),
+            vec![8, 26, 6],
+            "grows until the others are as small as they are"
+        );
+        assert!(fits(40).iter().sum::<usize>() <= 40);
     }
 
     #[test]
