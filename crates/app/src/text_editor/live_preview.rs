@@ -58,7 +58,7 @@
 use std::ops::Range;
 use std::rc::Rc;
 
-use super::callout::{self, callout_header_prefix};
+use super::callout::{CalloutType, callout_header_prefix};
 use jade_core::link_scan::{
     find_closing, parse_autolink, parse_bare_url, parse_inline_link, parse_wikilink,
 };
@@ -95,7 +95,26 @@ pub enum InlineStyle {
     /// [`callout::Callout`](super::callout::Callout), keeping this module
     /// GPUI-free.
     CalloutTitle,
+    /// A control drawn as a 2D element over blank columns, never as a glyph
+    /// from a font: see [`Widget`].
+    Widget(Widget),
 }
+
+/// A control `element.rs` paints with vector shapes or an icon over the
+/// [`WIDGET_COLUMNS`] blank display columns its segment reserves, so wrapping,
+/// hit-testing and the caret treat it like any replaced text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Widget {
+    /// An unordered list marker.
+    Bullet,
+    /// A task-list checkbox standing in for `[ ]`/`[x]`.
+    Checkbox { checked: bool },
+    /// A callout header's icon.
+    CalloutIcon(CalloutType),
+}
+
+/// The blank text a widget's segment displays.
+const WIDGET_BLANK: &str = "  ";
 
 /// One contiguous run of a line: the byte range it occupies in the *raw*
 /// line, the byte range it occupies in [`DisplayLine::display_text`], and
@@ -188,9 +207,8 @@ impl DisplayLine {
     /// glyph covers display offset `display_offset`.
     pub fn checkbox_at(&self, display_offset: usize) -> Option<Range<usize>> {
         let seg = self.segments.iter().find(|s| {
-            s.is_replaced()
-                && s.display.contains(&display_offset)
-                && matches!(&self.display_text[s.display.clone()], "☐ " | "☑ ")
+            s.display.contains(&display_offset)
+                && matches!(s.style, InlineStyle::Widget(Widget::Checkbox { .. }))
         })?;
         Some(seg.raw.end - 4..seg.raw.end)
     }
@@ -204,7 +222,7 @@ impl DisplayLine {
     /// `raw` to interpolate into (replaced). A `raw_offset` sitting exactly
     /// at such a segment's end resolves to its display *end* instead — for
     /// a zero-width hidden segment that's the same point as its start, but
-    /// for a replaced segment (non-empty display range, e.g. a 4-byte "• "
+    /// for a replaced segment (non-empty display range, e.g. a 4-byte "  "
     /// standing in for a 2-byte "- ") it's not: using `display.start` there
     /// would collapse back into the glyph instead of landing right after
     /// it, at the start of whatever visible text follows.
@@ -1277,8 +1295,6 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
     let mut segments = Vec::new();
     let mut display_text = String::new();
 
-    let icon = callout::callout_icon(header.kind);
-
     match header.title {
         Some(title_range) => {
             let title_start = prefix_len + title_range.start;
@@ -1297,8 +1313,8 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
                 &mut segments,
                 &mut display_text,
                 title_start..title_start,
-                &format!("{icon} "),
-                InlineStyle::CalloutTitle,
+                WIDGET_BLANK,
+                InlineStyle::Widget(Widget::CalloutIcon(header.kind)),
             );
             scan_inline(
                 line,
@@ -1313,12 +1329,18 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
             let marker_end = prefix_len + header.marker_end;
             push_hidden(&mut segments, &display_text, 0..marker_end);
             let type_name = &content[header.type_name.clone()];
-            let fallback_title = format!("{icon} {}", capitalize(type_name));
+            push_replaced(
+                &mut segments,
+                &mut display_text,
+                marker_end..marker_end,
+                WIDGET_BLANK,
+                InlineStyle::Widget(Widget::CalloutIcon(header.kind)),
+            );
             push_replaced(
                 &mut segments,
                 &mut display_text,
                 marker_end..line.len(),
-                &fallback_title,
+                &capitalize(type_name),
                 InlineStyle::CalloutTitle,
             );
         }
@@ -1452,7 +1474,7 @@ fn task_checkbox_prefix(line: &str, offset: usize) -> Option<bool> {
 ///
 /// An **unordered** marker with a checkbox collapses to a *single*
 /// replacement covering both (`"☐ "`/`"☑ "` stands in for the whole
-/// `- [ ] `, not `"• " + "☐ "`) — matching Obsidian/GitHub's own task-list
+/// `- [ ] `, not `"  " + "☐ "`) — matching Obsidian/GitHub's own task-list
 /// rendering, where the checkbox *is* the marker, there's no separate
 /// bullet dot alongside it. An **ordered** marker keeps its own number
 /// (`"1. "`) and gets the checkbox glyph appended right after
@@ -1472,38 +1494,41 @@ fn push_list_marker(
     let checkbox = task_checkbox_prefix(line, marker_end);
 
     if let (ListMarker::Unordered, Some(checked)) = (marker, checkbox) {
-        let glyph = if checked { "☑ " } else { "☐ " };
         push_replaced(
             segments,
             display_text,
             marker_start..marker_end + 4,
-            glyph,
-            InlineStyle::ListMarker,
+            WIDGET_BLANK,
+            InlineStyle::Widget(Widget::Checkbox { checked }),
         );
         return marker_end + 4;
     }
 
-    let replacement = match marker {
-        ListMarker::Unordered => "• ".to_string(),
-        ListMarker::Ordered { number } => format!("{number}. "),
-    };
-    push_replaced(
-        segments,
-        display_text,
-        marker_start..marker_end,
-        &replacement,
-        InlineStyle::ListMarker,
-    );
+    match marker {
+        ListMarker::Unordered => push_replaced(
+            segments,
+            display_text,
+            marker_start..marker_end,
+            WIDGET_BLANK,
+            InlineStyle::Widget(Widget::Bullet),
+        ),
+        ListMarker::Ordered { number } => push_replaced(
+            segments,
+            display_text,
+            marker_start..marker_end,
+            &format!("{number}. "),
+            InlineStyle::ListMarker,
+        ),
+    }
 
     match checkbox {
         Some(checked) => {
-            let glyph = if checked { "☑ " } else { "☐ " };
             push_replaced(
                 segments,
                 display_text,
                 marker_end..marker_end + 4,
-                glyph,
-                InlineStyle::ListMarker,
+                WIDGET_BLANK,
+                InlineStyle::Widget(Widget::Checkbox { checked }),
             );
             marker_end + 4
         }
@@ -2035,11 +2060,11 @@ mod tests {
     fn a_list_item_inside_a_blockquote_hides_both_markers() {
         let line = "> - a quoted item";
         let dl = build_display_line(line, false);
-        assert_eq!(dl.display_text, "• a quoted item");
+        assert_eq!(dl.display_text, "  a quoted item");
         assert_eq!(
             visible_styles(&dl),
             vec![
-                ("• ".to_string(), InlineStyle::ListMarker),
+                ("  ".to_string(), InlineStyle::Widget(Widget::Bullet)),
                 ("a quoted item".to_string(), InlineStyle::Plain),
             ]
         );
@@ -2073,11 +2098,11 @@ mod tests {
         for marker in ["-", "*", "+"] {
             let line = format!("{marker} first item");
             let dl = build_display_line(&line, false);
-            assert_eq!(dl.display_text, "• first item", "marker {marker:?}");
+            assert_eq!(dl.display_text, "  first item", "marker {marker:?}");
             assert_eq!(
                 visible_styles(&dl),
                 vec![
-                    ("• ".to_string(), InlineStyle::ListMarker),
+                    ("  ".to_string(), InlineStyle::Widget(Widget::Bullet)),
                     ("first item".to_string(), InlineStyle::Plain)
                 ],
                 "marker {marker:?}"
@@ -2097,11 +2122,11 @@ mod tests {
     fn list_item_content_can_itself_contain_inline_constructs() {
         let line = "- a [[Link]] here";
         let dl = build_display_line(line, false);
-        assert_eq!(dl.display_text, "• a Link here");
+        assert_eq!(dl.display_text, "  a Link here");
         assert_eq!(
             visible_styles(&dl),
             vec![
-                ("• ".to_string(), InlineStyle::ListMarker),
+                ("  ".to_string(), InlineStyle::Widget(Widget::Bullet)),
                 ("a ".to_string(), InlineStyle::Plain),
                 ("Link".to_string(), InlineStyle::WikiLink),
                 (" here".to_string(), InlineStyle::Plain),
@@ -2113,11 +2138,11 @@ mod tests {
     fn a_heading_inside_a_list_item_hides_both_markers() {
         let line = "- # Heading item";
         let dl = build_display_line(line, false);
-        assert_eq!(dl.display_text, "• Heading item");
+        assert_eq!(dl.display_text, "  Heading item");
         assert_eq!(
             visible_styles(&dl),
             vec![
-                ("• ".to_string(), InlineStyle::ListMarker),
+                ("  ".to_string(), InlineStyle::Widget(Widget::Bullet)),
                 ("Heading item".to_string(), InlineStyle::Heading(1))
             ]
         );
@@ -2129,11 +2154,11 @@ mod tests {
     fn a_blockquote_inside_a_list_item_hides_both_markers() {
         let line = "- > quoted item";
         let dl = build_display_line(line, false);
-        assert_eq!(dl.display_text, "• quoted item");
+        assert_eq!(dl.display_text, "  quoted item");
         assert_eq!(
             visible_styles(&dl),
             vec![
-                ("• ".to_string(), InlineStyle::ListMarker),
+                ("  ".to_string(), InlineStyle::Widget(Widget::Bullet)),
                 ("quoted item".to_string(), InlineStyle::Blockquote(1))
             ]
         );
@@ -2154,11 +2179,11 @@ mod tests {
         // another is just plain text starting with "-".
         let line = "- - not nested";
         let dl = build_display_line(line, false);
-        assert_eq!(dl.display_text, "• - not nested");
+        assert_eq!(dl.display_text, "  - not nested");
         assert_eq!(
             visible_styles(&dl),
             vec![
-                ("• ".to_string(), InlineStyle::ListMarker),
+                ("  ".to_string(), InlineStyle::Widget(Widget::Bullet)),
                 ("- not nested".to_string(), InlineStyle::Plain)
             ]
         );
@@ -2186,7 +2211,7 @@ mod tests {
         // version that *does* know).
         let line = "  - indented item";
         let dl = build_display_line(line, false);
-        assert_eq!(dl.display_text, "• indented item");
+        assert_eq!(dl.display_text, "  indented item");
         assert_eq!(dl.indent, LineIndent::List(1));
         assert_contiguous(&dl, line.len());
     }
@@ -2358,7 +2383,7 @@ mod tests {
     fn build_display_line_in_context_overrides_depth_for_a_nested_marker() {
         let line = "  - nested item";
         let dl = build_display_line_in_context(line, false, LineContext::ListMarkerLine(2));
-        assert_eq!(dl.display_text, "• nested item");
+        assert_eq!(dl.display_text, "  nested item");
         assert_eq!(dl.indent, LineIndent::List(2));
     }
 
@@ -2421,25 +2446,20 @@ mod tests {
     fn display_and_raw_offsets_round_trip_around_a_replaced_list_marker() {
         let line = "- item"; // raw: "-"(1) " "(1) "item"(4), marker = raw 0..2
         let dl = build_display_line(line, false);
-        // "•" is 3 UTF-8 bytes, so "• " (the replacement) is 4 bytes, not 2
-        // — the whole point of `is_replaced()` existing separately from
-        // `is_hidden()` is that this length mismatch is expected.
-        assert_eq!(dl.display_text, "• item");
-        assert_eq!(dl.display_text.len(), 8);
+        assert_eq!(dl.display_text, "  item");
 
         // Raw offsets strictly inside the 2-byte marker collapse to display
         // 0, where the replacement bullet begins.
         assert_eq!(dl.display_offset_for_raw(0), 0);
         assert_eq!(dl.display_offset_for_raw(1), 0);
-        // Raw offset 2 (right after the marker, start of "item") lands at
-        // display 4 (right after the 4-byte "• "), not display 2 — it must
-        // skip the glyph's own width, not land inside it.
-        assert_eq!(dl.display_offset_for_raw(2), 4);
+        // Raw offset 2 (right after the marker, start of "item") lands right
+        // after the widget's two blank columns, not inside them.
+        assert_eq!(dl.display_offset_for_raw(2), 2);
 
-        // Clicking anywhere on the bullet glyph's display range (0..4, "• ")
-        // lands right at the start of the actual item text, raw byte 2.
+        // Clicking anywhere on the bullet's display range (0..2) lands right
+        // at the start of the actual item text, raw byte 2.
         assert_eq!(dl.raw_offset_for_display(0), 2);
-        assert_eq!(dl.raw_offset_for_display(3), 2);
+        assert_eq!(dl.raw_offset_for_display(1), 2);
     }
 
     #[test]
@@ -2630,31 +2650,39 @@ mod tests {
     }
 
     #[test]
-    fn task_checkbox_renders_unchecked_and_checked_glyphs() {
-        let unchecked = build_display_line("- [ ] todo", false);
-        assert_eq!(unchecked.display_text, "☐ todo");
-        let checked = build_display_line("- [x] done", false);
-        assert_eq!(checked.display_text, "☑ done");
-        let checked_upper = build_display_line("- [X] done", false);
-        assert_eq!(checked_upper.display_text, "☑ done");
+    fn task_checkbox_renders_unchecked_and_checked_widgets() {
+        let checkbox = |line| {
+            let dl = build_display_line(line, false);
+            let first = visible_styles(&dl).remove(0);
+            (dl.display_text, first)
+        };
+        let blank = |checked| {
+            (
+                "  ".to_string(),
+                InlineStyle::Widget(Widget::Checkbox { checked }),
+            )
+        };
+        assert_eq!(checkbox("- [ ] todo"), ("  todo".to_string(), blank(false)));
+        assert_eq!(checkbox("- [x] done"), ("  done".to_string(), blank(true)));
+        assert_eq!(checkbox("- [X] done"), ("  done".to_string(), blank(true)));
     }
 
     #[test]
     fn task_checkbox_works_on_an_ordered_marker_too() {
         let dl = build_display_line("1. [ ] todo", false);
-        assert_eq!(dl.display_text, "1. ☐ todo");
+        assert_eq!(dl.display_text, "1.   todo");
     }
 
     #[test]
     fn task_checkbox_works_inside_a_compounding_blockquote() {
         let dl = build_display_line("> - [ ] todo", false);
-        assert_eq!(dl.display_text, "☐ todo");
+        assert_eq!(dl.display_text, "  todo");
     }
 
     #[test]
     fn a_list_item_without_a_checkbox_is_unaffected() {
         let dl = build_display_line("- [not a checkbox] text", false);
-        assert_eq!(dl.display_text, "• [not a checkbox] text");
+        assert_eq!(dl.display_text, "  [not a checkbox] text");
     }
 
     #[test]
@@ -2667,59 +2695,41 @@ mod tests {
     #[test]
     fn callout_header_without_a_title_shows_the_capitalized_type_name() {
         let dl = build_callout_header_line("> [!warning]", false);
-        assert_eq!(
-            dl.display_text,
-            format!(
-                "{} Warning",
-                callout::callout_icon(callout::CalloutType::Warning)
-            )
-        );
+        assert_eq!(dl.display_text, "  Warning");
         assert_eq!(
             visible_styles(&dl),
-            vec![(dl.display_text.clone(), InlineStyle::CalloutTitle)]
+            vec![
+                (
+                    "  ".to_string(),
+                    InlineStyle::Widget(Widget::CalloutIcon(CalloutType::Warning))
+                ),
+                ("Warning".to_string(), InlineStyle::CalloutTitle),
+            ]
         );
     }
 
     #[test]
     fn callout_header_with_a_custom_title_shows_it_instead() {
         let dl = build_callout_header_line("> [!info] Custom Title", false);
-        assert_eq!(
-            dl.display_text,
-            format!(
-                "{} Custom Title",
-                callout::callout_icon(callout::CalloutType::Info)
-            )
-        );
+        assert_eq!(dl.display_text, "  Custom Title");
     }
 
     #[test]
     fn callout_header_hides_the_fold_marker() {
         let dl = build_callout_header_line("> [!info]+ Title", false);
-        assert_eq!(
-            dl.display_text,
-            format!(
-                "{} Title",
-                callout::callout_icon(callout::CalloutType::Info)
-            )
-        );
+        assert_eq!(dl.display_text, "  Title");
     }
 
     #[test]
     fn callout_header_title_can_itself_contain_bold() {
         let dl = build_callout_header_line("> [!info] a **bold** title", false);
-        assert_eq!(
-            dl.display_text,
-            format!(
-                "{} a bold title",
-                callout::callout_icon(callout::CalloutType::Info)
-            )
-        );
+        assert_eq!(dl.display_text, "  a bold title");
         assert_eq!(
             visible_styles(&dl),
             vec![
                 (
-                    format!("{} ", callout::callout_icon(callout::CalloutType::Info)),
-                    InlineStyle::CalloutTitle
+                    "  ".to_string(),
+                    InlineStyle::Widget(Widget::CalloutIcon(CalloutType::Info))
                 ),
                 ("a ".to_string(), InlineStyle::CalloutTitle),
                 ("bold".to_string(), InlineStyle::Bold),

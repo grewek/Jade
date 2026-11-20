@@ -1936,7 +1936,7 @@ pub fn run() {
     // every `IconName` renders as empty (the button itself still paints,
     // just with nothing inside it), not just the close button specifically.
     gpui_kit::application()
-        .with_assets(gpui_kit::assets::Assets)
+        .with_assets(crate::assets::JadeAssets)
         .run(move |cx| {
             gpui_kit::init(cx);
             install_fonts(cx);

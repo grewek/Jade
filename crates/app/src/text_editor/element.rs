@@ -16,8 +16,9 @@ use super::image_cache::{self, ImageCache};
 use super::images::{self, ImageInfo, ImageSizes};
 use super::link_table::LinkTable;
 use super::live_preview::{
-    DisplayLine, InlineStyle, LineContext, LineIndent, build_callout_header_line, build_cell_line,
-    build_display_line, build_display_line_in_context, hidden_line, is_thematic_break, line_indent,
+    DisplayLine, InlineStyle, LineContext, LineIndent, Widget, build_callout_header_line,
+    build_cell_line, build_display_line, build_display_line_in_context, hidden_line,
+    is_thematic_break, line_indent,
 };
 use super::paint_trace::{FrameInfo, PaintTrace};
 use super::table_box::{self, layout_row};
@@ -1207,7 +1208,8 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
         | InlineStyle::Strikethrough
         | InlineStyle::WikiLink
         | InlineStyle::Link
-        | InlineStyle::ListMarker => {}
+        | InlineStyle::ListMarker
+        | InlineStyle::Widget(_) => {}
     }
     font
 }
@@ -1240,7 +1242,8 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
         | InlineStyle::Bold
         | InlineStyle::Italic
         | InlineStyle::Heading(_)
-        | InlineStyle::Strikethrough => base,
+        | InlineStyle::Strikethrough
+        | InlineStyle::Widget(_) => base,
     }
 }
 
@@ -2090,27 +2093,138 @@ fn hit_for_position(
     Hit::at(offset)
 }
 
-/// One short `text` at `at`, in `color`.
-fn paint_glyph(
-    text: &str,
-    at: Point<Pixels>,
-    (font, font_size, color): (&Font, Pixels, Hsla),
+/// Colors of the controls drawn over a line's widget columns.
+struct WidgetColors {
+    /// An unchecked box's outline.
+    border: Hsla,
+    /// A checked box's fill, and its tick over it.
+    accent: Hsla,
+    on_accent: Hsla,
+}
+
+/// What painting a line's widgets needs besides the line.
+struct WidgetPaint<'a> {
+    colors: &'a WidgetColors,
+    inline: &'a InlineColors,
+    font_size: Pixels,
+    line_height: Pixels,
+}
+
+/// Paints a bundled Lucide icon (`path`) filling `bounds`.
+fn paint_icon(
+    path: &'static str,
+    bounds: Bounds<Pixels>,
+    color: Hsla,
     (window, cx): (&mut Window, &mut App),
 ) {
-    let run = TextRun {
-        len: text.len(),
-        font: font.clone(),
+    let _ = window.paint_svg(
+        bounds,
+        path.into(),
+        None,
+        TransformationMatrix::unit(),
         color,
-        background_color: None,
-        underline: None,
-        strikethrough: None,
-    };
-    let shaped = window
-        .text_system()
-        .shape_line(text.to_string().into(), font_size, &[run], None);
-    let line_height = window.line_height();
-    let _ = shaped.paint(at, line_height, TextAlign::Left, None, window, cx);
+        cx,
+    );
 }
+
+/// Draws each [`Widget`] segment of `display_line` over the blank columns it
+/// reserved: `origin` is the line's top left, `wrapped` its shaped text, which
+/// says where those columns are.
+fn paint_widgets(
+    display_line: &DisplayLine,
+    wrapped: &WrappedLine,
+    origin: Point<Pixels>,
+    paint: &WidgetPaint,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let WidgetPaint {
+        colors,
+        inline,
+        font_size,
+        line_height,
+    } = *paint;
+    for seg in &display_line.segments {
+        let InlineStyle::Widget(widget) = seg.style else {
+            continue;
+        };
+        let (Some(from), Some(to)) = (
+            wrapped.position_for_index(seg.display.start, line_height),
+            wrapped.position_for_index(seg.display.end, line_height),
+        ) else {
+            continue;
+        };
+        let cell = Bounds {
+            origin: origin + from,
+            size: size(to.x - from.x, line_height),
+        };
+        // Centered vertically on the row, left aligned in the cell.
+        let square = |side: Pixels| Bounds {
+            origin: cell.origin + point(px(1.), (line_height - side) / 2.),
+            size: size(side, side),
+        };
+        match widget {
+            Widget::Bullet => {
+                let side = (font_size * 0.3).max(px(4.));
+                let dot = Bounds {
+                    origin: cell.origin
+                        + point(
+                            (cell.size.width / 2. - side) / 2. + px(1.),
+                            (line_height - side) / 2.,
+                        ),
+                    size: size(side, side),
+                };
+                window.paint_quad(quad(
+                    dot,
+                    side / 2.,
+                    inline.subtle,
+                    px(0.),
+                    Hsla::transparent_black(),
+                    BorderStyle::Solid,
+                ));
+            }
+            Widget::Checkbox { checked } => {
+                let boxed = square((font_size * 0.9).round());
+                let (fill_color, edge) = if checked {
+                    (colors.accent, colors.accent)
+                } else {
+                    (Hsla::transparent_black(), colors.border)
+                };
+                window.paint_quad(quad(
+                    boxed,
+                    CHECKBOX_RADIUS,
+                    fill_color,
+                    CHECKBOX_BORDER,
+                    edge,
+                    BorderStyle::Solid,
+                ));
+                if checked {
+                    let inset = boxed.size.width * 0.12;
+                    let tick = Bounds {
+                        origin: boxed.origin + point(inset, inset),
+                        size: size(
+                            boxed.size.width - inset * 2.,
+                            boxed.size.height - inset * 2.,
+                        ),
+                    };
+                    paint_icon("icons/check.svg", tick, colors.on_accent, (window, cx));
+                }
+            }
+            Widget::CalloutIcon(kind) => {
+                let icon = square(font_size);
+                paint_icon(
+                    super::callout::callout_icon(kind),
+                    icon,
+                    inline.callout(kind),
+                    (window, cx),
+                );
+            }
+        }
+    }
+}
+
+/// Corner radius and outline width of a task checkbox.
+const CHECKBOX_RADIUS: Pixels = px(3.);
+const CHECKBOX_BORDER: Pixels = px(1.5);
 
 /// Draws the image of `info` at the top left of `area`, starting its decode if
 /// there is none yet. `false` while there is nothing to draw (or it cannot be
@@ -2394,6 +2508,11 @@ fn paint_lines(
     let inline = InlineColors::from_palette(&palette);
     let rule = palette.color(Role::BorderStrong);
     let selection_fill = palette.with_alpha(Role::Selection, Alpha::Selection);
+    let widget_colors = WidgetColors {
+        border: rule,
+        accent: palette.color(Role::Accent),
+        on_accent: palette.color(Role::TextOnAccent),
+    };
     let cursor_color = palette.color(Role::Cursor);
     let range = visible_line_range(layout, bounds, viewport);
     let mut trace = PaintTrace::start_if_enabled(|| {
@@ -2581,12 +2700,25 @@ fn paint_lines(
 
         if let Some(c) = callout.filter(|c| c.foldable && c.is_header(i) && !state.active) {
             let color = palette.color(callout_role(c.kind));
-            let glyph = if c.folded { "▸" } else { "▾" };
+            let icon = if c.folded {
+                "icons/chevron-right.svg"
+            } else {
+                "icons/chevron-down.svg"
+            };
+            let side = font_size;
             let at = point(
                 bounds.origin.x + bounds.size.width - px(28.),
-                bounds.origin.y + y_offset,
+                bounds.origin.y + y_offset + (line_height - side) / 2.,
             );
-            paint_glyph(glyph, at, (font, font_size, color), (window, cx));
+            paint_icon(
+                icon,
+                Bounds {
+                    origin: at,
+                    size: size(side, side),
+                },
+                color,
+                (window, cx),
+            );
         }
 
         if let Some(embed) = image_block(line_text, &state) {
@@ -2757,6 +2889,13 @@ fn paint_lines(
             }
 
             let _ = wrapped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
+            let widgets = WidgetPaint {
+                colors: &widget_colors,
+                inline: &inline,
+                font_size,
+                line_height,
+            };
+            paint_widgets(display_line, wrapped, line_origin, &widgets, (window, cx));
 
             if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
                 let pos = wrapped

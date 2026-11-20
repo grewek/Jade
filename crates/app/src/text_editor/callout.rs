@@ -86,32 +86,23 @@ pub fn resolve_callout_type(name: &str) -> CalloutType {
     }
 }
 
-/// A single Unicode glyph standing in for a callout's icon, per type group
-/// — plain data (a `&'static str`, not a GPUI type), unlike color: there's
-/// no actual GPUI dependency in choosing *which character* to show, so
-/// (unlike `Hsla`) this stays here rather than in `element.rs`.
-/// `live_preview::build_callout_header_line` prepends it directly to the
-/// header's own rendered text. Chosen from the same general Unicode range
-/// the already-shipped bullet/checkbox glyphs (`•`/`☐`/`☑`) come from, for
-/// the best chance of actually being in the bundled IBM Plex Mono font —
-/// exact glyph choices are a cosmetic detail to eyeball and adjust once
-/// seen on screen (can't screenshot-verify, same situation the IBM Plex
-/// font rollout itself was in).
+/// The bundled Lucide icon (`gpui_kit::assets`) a callout header shows before
+/// its title.
 pub fn callout_icon(kind: CalloutType) -> &'static str {
     match kind {
-        CalloutType::Note => "☆",
-        CalloutType::Summary => "☰",
-        CalloutType::Info => "ℹ",
-        CalloutType::Todo => "☑",
-        CalloutType::Tip => "☀",
-        CalloutType::Success => "✓",
-        CalloutType::Question => "?",
-        CalloutType::Warning => "⚠",
-        CalloutType::Failure => "✗",
-        CalloutType::Danger => "⚡",
-        CalloutType::Bug => "☠",
-        CalloutType::Example => "☷",
-        CalloutType::Quote => "❝",
+        CalloutType::Note => "icons/pencil.svg",
+        CalloutType::Summary => "icons/clipboard-list.svg",
+        CalloutType::Info => "icons/info.svg",
+        CalloutType::Todo => "icons/circle-check.svg",
+        CalloutType::Tip => "icons/flame.svg",
+        CalloutType::Success => "icons/check.svg",
+        CalloutType::Question => "icons/circle-question-mark.svg",
+        CalloutType::Warning => "icons/triangle-alert.svg",
+        CalloutType::Failure => "icons/x.svg",
+        CalloutType::Danger => "icons/zap.svg",
+        CalloutType::Bug => "icons/bug.svg",
+        CalloutType::Example => "icons/list.svg",
+        CalloutType::Quote => "icons/quote.svg",
     }
 }
 
@@ -570,5 +561,40 @@ mod tests {
         let (_, callouts) = classify_callouts(source);
         assert_eq!(callouts.len(), 1);
         assert_eq!(callouts[0].kind, CalloutType::Note);
+    }
+
+    /// Every icon the editor paints for a control is in the bundled asset set,
+    /// or it would silently draw nothing.
+    #[test]
+    fn every_control_icon_is_bundled() {
+        use gpui_kit::AssetSource as _;
+        let kinds = [
+            CalloutType::Note,
+            CalloutType::Summary,
+            CalloutType::Info,
+            CalloutType::Todo,
+            CalloutType::Tip,
+            CalloutType::Success,
+            CalloutType::Question,
+            CalloutType::Warning,
+            CalloutType::Failure,
+            CalloutType::Danger,
+            CalloutType::Bug,
+            CalloutType::Example,
+            CalloutType::Quote,
+        ];
+        let paths = kinds.map(callout_icon);
+        let others = [
+            "icons/check.svg",
+            "icons/chevron-down.svg",
+            "icons/chevron-right.svg",
+        ];
+        for path in paths.into_iter().chain(others) {
+            let icon = crate::assets::JadeAssets.load(path);
+            assert!(
+                matches!(icon, Ok(Some(_))),
+                "{path} is not bundled: {icon:?}"
+            );
+        }
     }
 }

@@ -2,6 +2,7 @@
 //! editor internals can be benchmarked and tested from outside the binary.
 
 mod app;
+mod assets;
 // Without the `debug-socket` feature (and outside tests) a no-op stub with the
 // same names replaces the socket server, so the shipped binary has none.
 #[cfg(any(test, feature = "debug-socket"))]
