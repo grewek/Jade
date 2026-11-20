@@ -49,7 +49,7 @@ pub(super) fn eligible(state: &LineState, display_line: &DisplayLine, entries: u
 }
 
 /// The display byte where wrapped row `row` starts.
-fn row_start(wrapped: &WrappedLine, row: usize) -> Option<usize> {
+pub(in crate::text_editor) fn row_start(wrapped: &WrappedLine, row: usize) -> Option<usize> {
     let Some(i) = row.checked_sub(1) else {
         return Some(0);
     };

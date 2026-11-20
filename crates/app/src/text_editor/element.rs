@@ -2077,7 +2077,7 @@ fn table_menu(
         let columns = column_menu(&editor, cx);
         let Some(state) = editor.read(cx).table_menu_state() else {
             return match columns {
-                Some((first, second)) => menu.item(first).item(second),
+                Some(items) => items.into_iter().fold(menu, |menu, item| menu.item(item)),
                 None => menu,
             };
         };
@@ -2094,13 +2094,14 @@ fn table_menu(
         let align = |label: &'static str, to: Align| {
             item(label, Op::Align(to), true).checked(state.align == to)
         };
-        let (first, second) = columns.unwrap_or_else(|| {
-            (
+        let column_items = columns.unwrap_or_else(|| {
+            vec![
                 PopupMenuItem::new("Make columns").disabled(true),
                 PopupMenuItem::new("Unwrap columns").disabled(true),
-            )
+            ]
         });
-        menu.item(item("Insert row above", Op::RowAbove, state.can_edit_row))
+        let menu = menu
+            .item(item("Insert row above", Op::RowAbove, state.can_edit_row))
             .item(item("Insert row below", Op::RowBelow, true))
             .item(item("Insert column left", Op::ColumnLeft, true))
             .item(item("Insert column right", Op::ColumnRight, true))
@@ -2115,15 +2116,16 @@ fn table_menu(
             .item(align("Align left", Align::Left))
             .item(align("Align center", Align::Center))
             .item(align("Align right", Align::Right))
-            .separator()
-            .item(first)
-            .item(second)
+            .separator();
+        column_items
+            .into_iter()
+            .fold(menu, |menu, item| menu.item(item))
     }
 }
 
-/// The two column entries for the caret: add a column and unwrap inside a
-/// region, "Make columns" (and a disabled unwrap) on a block, none elsewhere.
-fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<(PopupMenuItem, PopupMenuItem)> {
+/// The column entries for the caret: add a column and unwrap inside a
+/// region, flip and unwrap on a float, float entries on a block, "Make columns" (and a disabled unwrap) on a block, none elsewhere.
+fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<Vec<PopupMenuItem>> {
     let state = editor.read(cx).column_menu_state()?;
     let run = |label: &'static str,
                enabled: bool,
@@ -2138,18 +2140,25 @@ fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<(PopupMenuItem, Popu
             })
     };
     Some(match state {
-        ColumnMenu::Block => (
+        ColumnMenu::Block => vec![
             run("Make columns", true, Editor::make_columns),
-            PopupMenuItem::new("Unwrap columns").disabled(true),
-        ),
-        ColumnMenu::Region { can_add } => (
+            run("Float right", true, |e, w, c| e.make_float(true, w, c)),
+            run("Float left", true, |e, w, c| e.make_float(false, w, c)),
+        ],
+        ColumnMenu::Aside => vec![
+            run("Flip side", true, Editor::flip_aside),
+            run("Unwrap float", true, |e, w, c| {
+                e.run_region_menu(false, w, c)
+            }),
+        ],
+        ColumnMenu::Region { can_add } => vec![
             run("Add column", can_add, |e, w, c| {
                 e.run_region_menu(true, w, c)
             }),
             run("Unwrap columns", true, |e, w, c| {
                 e.run_region_menu(false, w, c)
             }),
-        ),
+        ],
     })
 }
 
@@ -2960,11 +2969,13 @@ fn table_grid(
             window,
         );
         let column = region::column_with_line(&shaped, table.start_line)?;
+        // The table is as wide as the line that opens it.
+        let first = column.lines.iter().find(|sl| sl.line == table.start_line)?;
         let region_top = bounds.origin.y + layout.cumulative_at(region.start_line);
-        let columns = TableColumns::of(table, column.width, cfg, window);
+        let columns = TableColumns::of(table, first.width, cfg, window);
         let at = |line: usize| region::line_top(column, region_top, line);
         let (grid, top) = grid_for(table, &columns, &at);
-        return Some((grid, point(bounds.origin.x + column.x, top)));
+        return Some((grid, point(bounds.origin.x + first.x, top)));
     }
     let columns = TableColumns::of(table, bounds.size.width, cfg, window);
     let at = |line: usize| bounds.origin.y + layout.cumulative_at(line);
@@ -3009,9 +3020,9 @@ fn column_frame_at(
     let last = region.count - 1;
     let frame = column_handles::Frame {
         dividers: (0..last).map(|k| split.divider_x(k)).collect(),
-        width: split.x(last) + split.width(last),
+        width: split.total,
         height: f32::from(height),
-        can_add: region.count < columns::MAX_COLUMNS,
+        can_add: region.count < columns::MAX_COLUMNS && !region.is_aside(),
     };
     let p = (
         f32::from(position.x - view.bounds.origin.x),
@@ -3054,6 +3065,20 @@ fn column_drag_percent(
     let (_, split) = doc.side_by_side(region.start_line)?;
     let k = drag.divider;
     let x = f32::from(position.x - view.bounds.origin.x);
+    if let columns::Kind::Aside { right } = region.kind {
+        // The float's edge is half a gap from the pointer; its share of the
+        // line without the gap, snapped and kept within bounds.
+        let usable = split.total - columns::GAP;
+        let float = if right {
+            split.total - x - columns::GAP / 2.
+        } else {
+            x - columns::GAP / 2.
+        };
+        let step = f32::from(column_ops::SNAP);
+        let share = (float / usable * 100. / step).round() * step;
+        let share = share.clamp(f32::from(columns::ASIDE_MIN), f32::from(columns::ASIDE_MAX)) as u8;
+        return Some(vec![share, 100 - share]);
+    }
     // Column `k`'s right edge is half a gap left of the pointer.
     let width = x - columns::GAP / 2. - split.x(k);
     let usable: f32 = (0..region.count).map(|c| split.width(c)).sum();
@@ -6215,6 +6240,65 @@ mod tests {
             let n = new_text.lines().count();
             let counts = |r: &RowHeightCache| (0..n).map(|i| r.row_count(i)).collect::<Vec<_>>();
             assert_eq!(counts(&rows), counts(&fresh));
+        })
+        .unwrap();
+    }
+
+    /// Text beside a float is as wide as the channel; the paragraph crossing the
+    /// float's bottom is cut into the rows beside it and the rest below, at the
+    /// whole width, and the two pieces tile the raw line.
+    #[gpui_kit::test]
+    fn text_flows_around_a_float_and_widens_below_it(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+
+        let para = "flowing words ".repeat(40);
+        let text = format!(
+            "::: aside right 40%\n\nfloat\n\nfloat two\n\nfloat three\n\n---\n\n{para}\n\n:::\n"
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let line_height = window.line_height();
+            let mut doc = DocumentCache::new(&text);
+            doc.set_column_width(Some(800.));
+            let (region, split) = doc.side_by_side(0).expect("an aside lays out");
+            let shaped = shape_region(
+                &text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, line_height),
+                (style.color.into(), None),
+                window,
+            );
+            let flow = shaped
+                .columns
+                .iter()
+                .find(|c| {
+                    c.lines.iter().any(|sl| {
+                        sl.raw.end > 0
+                            && text[doc.line_start_byte(sl.line)..].starts_with("flowing")
+                    })
+                })
+                .expect("a column holds the paragraph");
+            let pieces: Vec<_> = flow.lines.iter().collect();
+            assert_eq!(pieces.len(), 2, "the paragraph is cut once");
+            let (beside, below) = (pieces[0], pieces[1]);
+            assert!(beside.width < below.width, "narrower beside the float");
+            assert_eq!(beside.x, px(split.x(1)));
+            assert_eq!(below.x, px(0.));
+            assert_eq!(below.width, px(split.total));
+            assert_eq!(beside.raw.end, below.raw.start, "the pieces meet");
+            assert_eq!(below.raw.end, para.len());
+            assert_eq!(beside.line, below.line);
+            assert!(below.y >= beside.y + beside.height);
+            // The float itself is on the right at its width.
+            let float = shaped.columns.iter().find(|c| c.x > flow.x).unwrap();
+            assert_eq!(float.width, px(split.width(0)));
         })
         .unwrap();
     }
