@@ -87,7 +87,7 @@ impl<'a> LineState<'a> {
                 .editing_cell()
                 .filter(|&(line, _)| line == i)
                 .map(|(_, column)| column),
-            column_frame: columns::is_frame_line(doc.columns(), i),
+            column_frame: doc.is_column_frame(i),
         }
     }
 
@@ -428,6 +428,7 @@ impl RowHeightCache {
             callouts: doc.callouts(),
             images: doc.images(),
             columns: doc.columns(),
+            raw_region: doc.raw_region(),
             column_width: doc.column_width(),
             starts: &starts,
         };
@@ -628,6 +629,8 @@ struct DocView<'a> {
     callouts: &'a [Callout],
     images: &'a ImageSizes,
     columns: &'a [Columns],
+    /// The region shown as source, laid out like plain text.
+    raw_region: Option<usize>,
     /// Set when regions are laid out side by side (see `DocumentCache::side_by_side`).
     column_width: Option<f32>,
     /// Byte offset of each line, plus the text length.
@@ -730,8 +733,9 @@ fn pure_row_counts_in(
                 next_region += 1;
             }
             let region = view.columns.get(next_region).filter(|r| r.start_line <= i);
+            let shown = region.filter(|_| Some(next_region) != view.raw_region);
             if let Some(r) =
-                region.filter(|r| columns::split(width, &r.percent[..r.count]).is_some())
+                shown.filter(|r| columns::split(width, &r.percent[..r.count]).is_some())
             {
                 if i == r.start_line {
                     shaped.push(i);
@@ -1244,6 +1248,29 @@ pub(super) fn render_params(
 
 /// The width regions are laid out across for an editor `available_width`
 /// wide: none before the first layout (no real width yet).
+/// See [`region::caret_bounds`].
+pub(super) fn caret_in_column(
+    text: &str,
+    doc: &DocumentCache,
+    layout: &LineLayout,
+    (offset, cursor, focused): (usize, usize, bool),
+    metrics: (&Font, Pixels, Pixels),
+    (colors, bounds): (InlineColors, Bounds<Pixels>),
+    window: &mut Window,
+) -> Option<Bounds<Pixels>> {
+    let (region, _) = doc.side_by_side(doc.line_at(offset))?;
+    let top = layout.cumulative_at(region.start_line);
+    region::caret_bounds(
+        text,
+        doc,
+        offset,
+        (cursor, focused),
+        metrics,
+        (colors, top, bounds),
+        window,
+    )
+}
+
 pub(super) fn column_width_for(available_width: Pixels) -> Option<f32> {
     (available_width > px(0.) && available_width < Pixels::MAX).then(|| f32::from(available_width))
 }
@@ -1361,7 +1388,12 @@ fn measure_document(
 ) -> (Pixels, Pixels, Pixels) {
     let total = layout.cumulative_at(layout.line_count());
 
-    let cursor_line = layout.line_at(cursor);
+    let mut cursor_line = layout.line_at(cursor);
+    // A caret in a side-by-side region scrolls the whole region into view: only
+    // its first line has rows.
+    if let Some((region, _)) = layout.doc_cache.borrow().side_by_side(cursor_line) {
+        cursor_line = region.start_line;
+    }
     let cursor_top = layout.cumulative_at(cursor_line);
     let cursor_height = layout.height(cursor_line).max(line_height);
 
@@ -5109,6 +5141,55 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    /// Up and Down walk a side-by-side region in source order and never leave
+    /// the caret on a marker or padding line; the keys that would join a
+    /// column to one do nothing.
+    #[gpui_kit::test]
+    fn the_caret_steps_over_a_regions_hidden_lines(cx: &mut TestAppContext) {
+        let text = "intro\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nafter";
+        let (_window, editor) = open_editor(cx, text);
+        let line_of = |cx: &mut TestAppContext| {
+            editor.read_with(cx, |e, _| {
+                e.document_cache.borrow().line_at(e.buffer().cursor())
+            })
+        };
+        editor.update(cx, |e, _| {
+            e.document_cache.borrow_mut().set_column_width(Some(800.));
+            let at = text.find("left").unwrap() + 2;
+            e.buffer_mut().set_cursor(at, false);
+        });
+        editor.update(cx, |e, _| e.move_vertical(true, false));
+        assert_eq!(line_of(cx), 8, "down from left enters the right column");
+        editor.update(cx, |e, _| e.move_vertical(false, false));
+        assert_eq!(line_of(cx), 4, "up from right returns to the left");
+        editor.update(cx, |e, _| {
+            e.move_vertical(true, false);
+            e.move_vertical(true, false);
+        });
+        assert_eq!(
+            line_of(cx),
+            11,
+            "down from the last column leaves the region"
+        );
+        editor.update(cx, |e, _| {
+            e.move_vertical(true, false);
+            e.move_vertical(false, false);
+            e.move_vertical(false, false);
+        });
+        assert_eq!(line_of(cx), 8, "up from below enters the last column");
+        // Home of the first column line: Backspace must not eat the padding.
+        editor.update(cx, |e, _| {
+            let start = e.document_cache.borrow().line_start_byte(4);
+            e.buffer_mut().set_cursor(start, false);
+            assert!(e.at_region_edge(true));
+            let end = e.document_cache.borrow().line_end_byte(8);
+            e.buffer_mut().set_cursor(end, false);
+            assert!(e.at_region_edge(false));
+            e.buffer_mut().set_cursor(end - 2, false);
+            assert!(!e.at_region_edge(false));
+        });
     }
 
     #[gpui_kit::test]

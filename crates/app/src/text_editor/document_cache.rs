@@ -164,6 +164,8 @@ pub(super) struct DocumentCache {
     /// The width regions are laid out across. `None` lays every region out
     /// stacked; set by whoever builds the row counts (`RowHeightCache`).
     column_width: Option<f32>,
+    /// The region shown as source (Ctrl+/): stacked, its markers visible.
+    raw_region: Option<usize>,
     /// Natural sizes of the images the note embeds, read off the main thread.
     images: ImageSizes,
     /// The table shown as raw text (Ctrl+/, or the caret on its delimiter
@@ -193,6 +195,7 @@ impl DocumentCache {
             column_markers: Vec::new(),
             columns: Vec::new(),
             column_width: None,
+            raw_region: None,
             images: ImageSizes::default(),
             raw_table: None,
             editing_cell: None,
@@ -230,14 +233,42 @@ impl DocumentCache {
         std::mem::replace(&mut self.column_width, width) != width
     }
 
+    /// The index of the region `line` is in.
+    pub(super) fn region_index_at(&self, line: usize) -> Option<usize> {
+        let i = self.columns.partition_point(|r| r.end_line <= line);
+        self.columns.get(i).filter(|r| r.start_line <= line)?;
+        Some(i)
+    }
+
+    pub(super) fn raw_region(&self) -> Option<usize> {
+        self.raw_region
+    }
+
+    /// Shows region `index` as source; `true` when that changed, which changes
+    /// every row count in it.
+    pub(super) fn set_raw_region(&mut self, index: Option<usize>) -> bool {
+        std::mem::replace(&mut self.raw_region, index) != index
+    }
+
     /// The region `line` is in and its split, when the region is laid out side
-    /// by side (a width is set and every column fits). `None` otherwise.
+    /// by side (a width is set, every column fits and it is not shown as
+    /// source). `None` otherwise.
     pub(super) fn side_by_side(&self, line: usize) -> Option<(Columns, columns::Split)> {
         let width = self.column_width?;
-        let i = self.columns.partition_point(|r| r.end_line <= line);
-        let region = self.columns.get(i).filter(|r| r.start_line <= line)?;
+        let index = self
+            .region_index_at(line)
+            .filter(|&i| Some(i) != self.raw_region)?;
+        let region = &self.columns[index];
         let split = columns::split(width, &region.percent[..region.count])?;
         Some((*region, split))
+    }
+
+    /// Whether `line` is the open or close marker of a region shown as
+    /// columns or stacked; none of a region shown as source.
+    pub(super) fn is_column_frame(&self, line: usize) -> bool {
+        let raw = self.raw_region.and_then(|i| self.columns.get(i));
+        columns::is_frame_line(&self.columns, line)
+            && !raw.is_some_and(|r| (r.start_line..r.end_line).contains(&line))
     }
 
     /// Folds or unfolds callout `index` for this session.

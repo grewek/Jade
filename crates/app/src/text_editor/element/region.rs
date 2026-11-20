@@ -5,8 +5,7 @@
 //! width ([`shape_region`], used by painting and by clicks, so both see the same
 //! rows) and stacked down the column.
 //!
-//! Not here yet: the caret's Up/Down across columns, autoscroll to a caret in
-//! a column, IME bounds in a column, and table controls in a column.
+//! The caret's Up/Down across columns lives in `editor/column_edit.rs`.
 
 use super::*;
 
@@ -303,4 +302,45 @@ pub(super) fn hit(
     // Below the column's text, or an empty column: the end of its last line,
     // else the blank line right after the open marker.
     Hit::at(last.unwrap_or_else(|| doc.line_start_byte(region.start_line + 1)))
+}
+
+/// Where the caret at `offset` is on screen when it is in a column of a region
+/// laid out side by side: the region's top is `region_top`, the editor's
+/// bounds are `bounds`. `None` when `offset`'s line is in no such region.
+pub(super) fn caret_bounds(
+    text: &str,
+    doc: &DocumentCache,
+    offset: usize,
+    (cursor, focused): (usize, bool),
+    (font, font_size, line_height): (&Font, Pixels, Pixels),
+    (colors, region_top, bounds): (InlineColors, Pixels, Bounds<Pixels>),
+    window: &mut Window,
+) -> Option<Bounds<Pixels>> {
+    let line = doc.line_at(offset);
+    let (region, split) = doc.side_by_side(line)?;
+    let shaped = shape_region(
+        text,
+        doc,
+        (&region, &split),
+        (cursor, focused),
+        (font, font_size, line_height),
+        (colors, None),
+        window,
+    );
+    let column = column_with_line(&shaped, line)?;
+    let sl = column.lines.iter().find(|sl| sl.line == line)?;
+    let line_start = doc.line_start_byte(line);
+    for (wrapped, display) in &sl.results {
+        let at = display.display_offset_for_raw(offset - line_start);
+        let Some(pos) = wrapped.position_for_index(at, line_height) else {
+            continue;
+        };
+        let x = pos.x + indent_px(display.indent.level());
+        let origin = bounds.origin + point(column.x + x, region_top + sl.y + pos.y);
+        return Some(Bounds {
+            origin,
+            size: size(px(1.), line_height),
+        });
+    }
+    None
 }

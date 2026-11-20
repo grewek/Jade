@@ -167,13 +167,13 @@ impl Editor {
     }
 
     /// Ctrl+/: shows the source of the table with the caret instead of its box,
-    /// or the box again.
-    pub(super) fn toggle_raw_table(&mut self, cx: &mut Context<Self>) {
+    /// or the box again. `false` when the caret is in no table.
+    pub(super) fn toggle_raw_table(&mut self, cx: &mut Context<Self>) -> bool {
         let (index, raw, leave) = {
             let doc = self.document_cache.borrow();
             let line = doc.line_at(self.buffer.cursor());
             let Some(index) = table_index_at(doc.tables(), line) else {
-                return;
+                return false;
             };
             let table = &doc.tables()[index];
             // The delimiter row is always raw, so the caret leaves it.
@@ -188,6 +188,7 @@ impl Editor {
             self.buffer.set_cursor(cell.lo, false);
         }
         cx.notify();
+        true
     }
 
     /// Replaces `range` with `text`, as one edit.

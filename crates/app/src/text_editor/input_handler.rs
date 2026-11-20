@@ -4,7 +4,8 @@ use gpui_kit::*;
 
 use super::document_cache::TextEdit;
 use super::element::{
-    LineState, analyze_line_layout, indent_px, shape_display_line, visible_line_range,
+    LineState, analyze_line_layout, caret_in_column, indent_px, shape_display_line,
+    visible_line_range,
 };
 use super::{Editor, EditorBuffer};
 
@@ -198,6 +199,18 @@ impl EntityInputHandler for Editor {
         let range = visible_line_range(&layout, element_bounds, viewport);
         if range.is_empty() {
             return None;
+        }
+
+        if let Some(found) = caret_in_column(
+            text,
+            &cache_ref,
+            &layout,
+            (byte_offset, cursor, focused),
+            (&font, font_size, line_height),
+            (text_color.into(), element_bounds),
+            window,
+        ) {
+            return Some(found);
         }
 
         let mut y_offset = layout.cumulative_at(range.start);

@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 
+mod column_edit;
 mod table_edit;
 
 use super::EditorBuffer;
@@ -133,6 +134,8 @@ pub struct Editor {
     pub(super) hovering_link: bool,
     /// The table Ctrl+/ asked to show raw; it stays raw while the caret is in it.
     raw_pinned: Option<usize>,
+    /// The columns region Ctrl+/ asked to show as source, while the caret is in it.
+    raw_region_pinned: Option<usize>,
     /// The controls shown on a table's edge for the pointer: `(table, controls)`.
     pub(super) table_hover: Option<(usize, Vec<Handle>)>,
     /// A column or row grip being dragged.
@@ -165,6 +168,7 @@ impl Editor {
             link_table,
             hovering_link: false,
             raw_pinned: None,
+            raw_region_pinned: None,
             table_hover: None,
             table_drag: None,
             image_context: None,
@@ -573,7 +577,9 @@ impl Editor {
         if command {
             match keystroke.key.as_str() {
                 "/" => {
-                    self.toggle_raw_table(cx);
+                    if !self.toggle_raw_table(cx) {
+                        self.toggle_raw_region(cx);
+                    }
                     return;
                 }
                 "a" => {
@@ -627,11 +633,13 @@ impl Editor {
                 }
                 "left" => {
                     self.buffer.move_word_left(shift);
+                    self.skip_hidden_lines(false, shift);
                     cx.notify();
                     return;
                 }
                 "right" => {
                     self.buffer.move_word_right(shift);
+                    self.skip_hidden_lines(true, shift);
                     cx.notify();
                     return;
                 }
@@ -646,18 +654,20 @@ impl Editor {
         match keystroke.key.as_str() {
             "left" => {
                 self.buffer.move_left(shift);
+                self.skip_hidden_lines(false, shift);
                 cx.notify();
             }
             "right" => {
                 self.buffer.move_right(shift);
+                self.skip_hidden_lines(true, shift);
                 cx.notify();
             }
             "up" => {
-                self.buffer.move_up(shift);
+                self.move_vertical(false, shift);
                 cx.notify();
             }
             "down" => {
-                self.buffer.move_down(shift);
+                self.move_vertical(true, shift);
                 cx.notify();
             }
             "home" => {
@@ -676,6 +686,9 @@ impl Editor {
             // private `EditorBuffer` helper is exposed for it, and none is
             // needed.
             "backspace" => {
+                if self.buffer.selection().is_none() && self.at_region_edge(true) {
+                    return;
+                }
                 if let Some(edit) = edit_for_deletion(self.buffer.selection()) {
                     self.buffer.delete_backward();
                     self.record_edit(edit, window, cx);
@@ -699,6 +712,9 @@ impl Editor {
             // `delete_forward`'s cursor never moves, so the removed range's
             // end has to come from the byte-length delta instead.
             "delete" => {
+                if self.buffer.selection().is_none() && self.at_region_edge(false) {
+                    return;
+                }
                 if let Some(edit) = edit_for_deletion(self.buffer.selection()) {
                     self.buffer.delete_forward();
                     self.record_edit(edit, window, cx);
@@ -825,6 +841,7 @@ impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.unfold_at_cursor();
         self.sync_table_view(window);
+        self.sync_column_view(window);
         render_editor(self, cx.entity(), window, cx)
     }
 }
