@@ -6178,6 +6178,84 @@ mod tests {
         .unwrap();
     }
 
+    /// A table column moved inside a column of a region: the rows after the
+    /// edit's patch must equal a cold rebuild (the list, table and callout
+    /// shape of `Columns Test.md` section 5).
+    #[gpui_kit::test]
+    fn moving_a_table_column_in_a_region_relays_out(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::{RowHeightCache, mono_char_width};
+        use gpui::Window;
+
+        let list = "- a list\n- with three\n  - and a nested\n- items";
+        let table = |a: &str, b: &str| {
+            format!(
+                "| {a} | {b} |Bobs |Foobar | |\n| ---- | ----- |---|---|---|\n| b    | 2     | | | |\n| a    | 1     | | | |"
+            )
+        };
+        let note = "> [!note] A callout\n> inside a column";
+        let mk = |t: String| {
+            format!(
+                "intro\n\n::: columns 30/43/27\n\n{list}\n\n---\n\n{t}\n\n---\n\n{note}\n\n:::\n\nafter"
+            )
+        };
+        let (before, after) = (mk(table("Name", "Value")), mk(table("Value", "Name")));
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let char_width = mono_char_width(&font, size, style.color, window);
+            let width = px(900.);
+            let build = |text: &str, doc: &DocumentCache, window: &mut Window| {
+                let mut rows = RowHeightCache::empty();
+                rows.rebuild(
+                    text,
+                    doc,
+                    0,
+                    false,
+                    width,
+                    char_width,
+                    &font,
+                    size,
+                    style.color,
+                    window,
+                );
+                rows
+            };
+            let mut doc = DocumentCache::new(&before);
+            doc.set_column_width(Some(f32::from(width)));
+            let mut rows = build(&before, &doc, window);
+            let at = before.find("| Name | Value |").unwrap();
+            let (new_text, edit) = apply_edit(
+                &before,
+                at,
+                at + "| Name | Value |".len(),
+                "| Value | Name |",
+            );
+            assert_eq!(new_text, after);
+            let patch = doc.record_edit(&new_text, edit).unwrap();
+            rows.patch_lines(
+                &new_text,
+                &doc,
+                patch.touched,
+                0,
+                false,
+                char_width,
+                &font,
+                size,
+                style.color,
+                window,
+            );
+            let fresh = build(&new_text, &doc, window);
+            let n = new_text.lines().count();
+            let counts = |r: &RowHeightCache| (0..n).map(|i| r.row_count(i)).collect::<Vec<_>>();
+            assert_eq!(counts(&rows), counts(&fresh));
+        })
+        .unwrap();
+    }
+
     /// A divider drag previews its shares in the layout (so the columns' content
     /// follows the pointer) without touching the source, and ends cleanly.
     #[gpui_kit::test]
