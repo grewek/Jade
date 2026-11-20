@@ -1806,7 +1806,15 @@ fn register_mouse_handling(
             {
                 return;
             }
-            let offset = offset_for_position(editor_entity.read(cx), &view, event.position, window);
+            let (offset, checkbox) =
+                hit_for_position(editor_entity.read(cx), &view, event.position, window);
+            // A click on a task's checkbox glyph toggles it; the cursor stays put.
+            if let Some(checkbox) = checkbox {
+                editor_entity.update(cx, |editor, cx| {
+                    editor.toggle_checkbox(checkbox, window, cx)
+                });
+                return;
+            }
             // On a rendered line a plain click follows a link; on the cursor's
             // own (raw) line only Ctrl/Cmd+click does, so the text stays editable.
             let follow = {
@@ -1914,6 +1922,17 @@ fn offset_for_position(
     position: Point<Pixels>,
     window: &mut Window,
 ) -> usize {
+    hit_for_position(editor, view, position, window).0
+}
+
+/// [`offset_for_position`], plus the raw byte range of the task checkbox
+/// (`[ ]`/`[x]`) when the point is on its glyph.
+fn hit_for_position(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+    window: &mut Window,
+) -> (usize, Option<Range<usize>>) {
     let text = editor.buffer().text();
     let doc = editor.document_cache.borrow();
     let &FrameView {
@@ -1930,7 +1949,7 @@ fn offset_for_position(
     let relative_y = (position.y - bounds.origin.y).max(px(0.));
     let range = visible_line_range(layout, bounds, viewport);
     if range.is_empty() {
-        return 0;
+        return (0, None);
     }
 
     let mut y_offset = layout.cumulative_at(range.start);
@@ -1967,7 +1986,7 @@ fn offset_for_position(
                 let x = (position.x - bounds.origin.x) / columns.char_width;
                 let offset =
                     table_box::offset_at(line_text, &columns.widths, &columns.aligns, x, row);
-                return layout.line_range(i).start + offset;
+                return (layout.line_range(i).start + offset, None);
             }
             y_offset += height;
             continue;
@@ -1995,7 +2014,11 @@ fn offset_for_position(
                 } else {
                     display_line.raw_offset_for_display(display_offset)
                 };
-                return layout.line_range(i).start + raw_offset;
+                let start = layout.line_range(i).start;
+                let checkbox = display_line
+                    .checkbox_at(display_offset)
+                    .map(|r| start + r.start..start + r.end);
+                return (start + raw_offset, checkbox);
             }
             y_offset += height;
         }
@@ -2005,11 +2028,12 @@ fn offset_for_position(
     // document's — the window already covers the whole viewport plus
     // overscan, so this is only reachable by clicking well past the
     // rendered content.
-    if range.end >= layout.line_count() {
+    let offset = if range.end >= layout.line_count() {
         text.len()
     } else {
         layout.line_range(range.end - 1).end
-    }
+    };
+    (offset, None)
 }
 
 /// Draws the image of `info` at the top left of `area`, starting its decode if
@@ -4281,5 +4305,68 @@ mod tests {
             .unwrap();
         let width = (100. * scale).ceil() as usize;
         assert_eq!(bytes, width * (width / 2) * 4);
+    }
+
+    /// A real left click on a task's checkbox glyph flips `[ ]`/`[x]` in the
+    /// buffer, leaves the cursor where it was, and undoes in one step; a click
+    /// on the line's text does not toggle.
+    #[gpui_kit::test]
+    fn clicking_a_task_checkbox_toggles_it_and_keeps_the_cursor(cx: &mut TestAppContext) {
+        use gpui_kit::{MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput};
+        let (window, editor) = open_editor(cx, "intro\n- [ ] todo\n1. [x] done\nend");
+        let click = |cx: &mut TestAppContext, dx: f32, line: usize| {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find("editor").bounds();
+                let y = bounds.origin.y + window.line_height() * (line as f32 + 0.5);
+                let position = point(bounds.origin.x + px(dx), y);
+                let (button, modifiers) = (MouseButton::Left, Default::default());
+                let down = MouseDownEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                };
+                window.dispatch_event(PlatformInput::MouseDown(down), cx);
+                let up = MouseUpEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                };
+                window.dispatch_event(PlatformInput::MouseUp(up), cx);
+            })
+            .unwrap();
+        };
+        let text =
+            |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().text().to_string());
+        let cursor = |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().cursor());
+        let before = cursor(cx);
+
+        click(cx, 12., 1); // the glyph of "- [ ] todo"
+        assert_eq!(text(cx), "intro\n- [x] todo\n1. [x] done\nend");
+        assert_eq!(cursor(cx), before, "the cursor does not move");
+        click(cx, 12., 1);
+        assert_eq!(
+            text(cx),
+            "intro\n- [ ] todo\n1. [x] done\nend",
+            "toggles back"
+        );
+        click(cx, 45., 2); // an ordered item keeps its number before the glyph
+        assert_eq!(text(cx), "intro\n- [ ] todo\n1. [ ] done\nend");
+        click(cx, 45., 2);
+        click(cx, 400., 1);
+        assert_eq!(
+            text(cx),
+            "intro\n- [ ] todo\n1. [x] done\nend",
+            "text is not the box"
+        );
+        editor.update(cx, |e, _| e.buffer_mut().undo());
+        assert_eq!(
+            text(cx),
+            "intro\n- [ ] todo\n1. [ ] done\nend",
+            "one undo step each"
+        );
     }
 }

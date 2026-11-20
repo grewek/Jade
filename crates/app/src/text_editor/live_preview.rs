@@ -184,6 +184,17 @@ pub struct DisplayLine {
 }
 
 impl DisplayLine {
+    /// The raw range of the task checkbox (`[ ]`/`[x]` and its space) whose
+    /// glyph covers display offset `display_offset`.
+    pub fn checkbox_at(&self, display_offset: usize) -> Option<Range<usize>> {
+        let seg = self.segments.iter().find(|s| {
+            s.is_replaced()
+                && s.display.contains(&display_offset)
+                && matches!(&self.display_text[s.display.clone()], "☐ " | "☑ ")
+        })?;
+        Some(seg.raw.end - 4..seg.raw.end)
+    }
+
     /// The display byte offset corresponding to raw byte offset `raw_offset`
     /// (which must be within this line's raw range). A `raw_offset` strictly
     /// inside a hidden *or* replaced segment (see [`DisplaySegment`]'s doc
@@ -1448,9 +1459,7 @@ fn task_checkbox_prefix(line: &str, offset: usize) -> Option<bool> {
 /// (`"1. ☐ "`) — the number still carries meaning a checkbox alone
 /// doesn't, so GFM task items on an ordered list keep it.
 ///
-/// Render-only: nothing wires a click on the glyph back to toggling/
-/// persisting checked state (deliberately out of scope for this pass, same
-/// category as deferred WYSIWYG table editing).
+/// A click on the glyph toggles it: see [`DisplayLine::checkbox_at`].
 fn push_list_marker(
     line: &str,
     marker_start: usize,

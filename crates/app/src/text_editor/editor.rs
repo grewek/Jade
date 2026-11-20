@@ -156,6 +156,42 @@ impl Editor {
         }
     }
 
+    /// Flips the task checkbox whose `[ ] `/`[x] ` text is `checkbox`. One
+    /// undoable byte swap; the cursor, which the swap would move, stays where it was.
+    pub(super) fn toggle_checkbox(
+        &mut self,
+        checkbox: Range<usize>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mark = checkbox.start + 1;
+        let flipped = match self.buffer.text().as_bytes().get(mark) {
+            Some(b' ') => "x",
+            Some(b'x' | b'X') => " ",
+            _ => return,
+        };
+        let selection = self.buffer.selection();
+        let cursor = self.buffer.cursor();
+        self.buffer.replace_range_with(mark..mark + 1, flipped);
+        match selection {
+            Some(range) if cursor == range.end => {
+                self.buffer.set_cursor(range.start, false);
+                self.buffer.set_cursor(range.end, true);
+            }
+            Some(range) => {
+                self.buffer.set_cursor(range.end, false);
+                self.buffer.set_cursor(range.start, true);
+            }
+            None => self.buffer.set_cursor(cursor, false),
+        }
+        let edit = TextEdit {
+            start_byte: mark,
+            old_end_byte: mark + 1,
+            new_end_byte: mark + 1,
+        };
+        self.record_edit(edit, window, cx);
+    }
+
     /// Says where this note lives so its image embeds can be found, and reads
     /// the sizes of the ones already in the text.
     pub fn set_image_context(&mut self, root: PathBuf, note_id: String, cx: &mut Context<Self>) {
