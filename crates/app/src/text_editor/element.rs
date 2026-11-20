@@ -23,6 +23,7 @@ use super::live_preview::{
 };
 use super::paint_trace::{FrameInfo, PaintTrace};
 use super::table_box::{self, layout_row_editing};
+use super::table_handles::{self, Grid, Handle, TableDrag};
 use super::table_ops::Op;
 use super::table_preview::Align;
 use super::table_preview::{self, Table, table_index_at};
@@ -1800,6 +1801,8 @@ pub(super) fn render_editor(
                         font: font.clone(),
                         font_size,
                         text_color,
+                        table_hover: editor_entity.read(cx).table_hover.clone(),
+                        table_drag: editor_entity.read(cx).table_drag,
                     });
                     editor_entity.update(cx, |editor, cx| {
                         if editor.hovering_link {
@@ -1905,6 +1908,41 @@ fn register_mouse_handling(
 ) {
     let bounds = view.bounds;
 
+    // A press on a table's `+` adds the row or column there, on a grip starts
+    // dragging it. In the capture phase, and stopping the event, since the
+    // controls straddle the table's edge, partly outside `bounds`.
+    window.on_mouse_event({
+        let editor_entity = editor_entity.clone();
+        let view = view.clone();
+        move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Left
+                || window.has_active_dialog(cx)
+            {
+                return;
+            }
+            let Some((table, handle)) =
+                handle_for_pointer(editor_entity.read(cx), &view, event.position, window)
+            else {
+                return;
+            };
+            cx.stop_propagation();
+            editor_entity.update(cx, |editor, cx| match handle {
+                Handle::AddColumn(_) | Handle::AddRow(_) => {
+                    editor.add_at_handle(table, handle, window, cx);
+                }
+                Handle::ColumnGrip(at) | Handle::RowGrip(at) => {
+                    editor.table_drag = Some(TableDrag {
+                        table,
+                        grip: handle,
+                        over: at,
+                    });
+                    cx.notify();
+                }
+            });
+        }
+    });
+
     // A right-click in a table puts the caret in the clicked cell before the
     // context menu (which reads it) opens: capture runs ahead of the menu's
     // own bubble listener.
@@ -1993,7 +2031,30 @@ fn register_mouse_handling(
                 return;
             }
             let dialog = window.has_active_dialog(cx);
+            if let Some(drag) = editor_entity.read(cx).table_drag {
+                let over =
+                    drop_for_pointer(editor_entity.read(cx), &view, drag, event.position, window);
+                if let Some(over) = over.filter(|&o| !dialog && o != drag.over) {
+                    editor_entity.update(cx, |editor, cx| {
+                        editor.table_drag = Some(TableDrag { over, ..drag });
+                        cx.notify();
+                    });
+                }
+                return;
+            }
             if !editor_entity.read(cx).is_dragging {
+                // The table controls follow the pointer over a table.
+                let hover = if dialog {
+                    None
+                } else {
+                    hover_for_pointer(editor_entity.read(cx), &view, event.position, window)
+                };
+                if editor_entity.read(cx).table_hover != hover {
+                    editor_entity.update(cx, |editor, cx| {
+                        editor.table_hover = hover;
+                        cx.notify();
+                    });
+                }
                 // Not selecting: only the pointer cursor over a followable
                 // link needs working out. Shaping lines to find the offset
                 // is skipped for notes without links and outside the editor.
@@ -2025,11 +2086,14 @@ fn register_mouse_handling(
         }
     });
 
-    window.on_mouse_event(move |event: &MouseUpEvent, phase, _window, cx| {
+    window.on_mouse_event(move |event: &MouseUpEvent, phase, window, cx| {
         if phase != DispatchPhase::Bubble || event.button != MouseButton::Left {
             return;
         }
         editor_entity.update(cx, |editor, cx| {
+            if editor.table_drag.is_some() {
+                editor.finish_table_drag(window, cx);
+            }
             if editor.is_dragging {
                 editor.is_dragging = false;
                 cx.notify();
@@ -2051,6 +2115,9 @@ struct FrameView {
     font: Font,
     font_size: Pixels,
     text_color: Hsla,
+    /// The table controls shown and the grip being dragged, as of this frame.
+    table_hover: Option<(usize, Vec<Handle>)>,
+    table_drag: Option<TableDrag>,
 }
 
 /// The byte offset closest to `position` (window coordinates): the line
@@ -2114,6 +2181,7 @@ fn hit_for_position(
         ref font,
         font_size,
         text_color,
+        ..
     } = view;
     let relative_y = (position.y - bounds.origin.y).max(px(0.));
     let range = visible_line_range(layout, bounds, viewport);
@@ -2470,12 +2538,112 @@ impl TableColumns {
 /// on top. Heights past the verified window are estimates, but that is off
 /// screen.
 #[allow(clippy::too_many_arguments)]
+/// Where a table box is and its row and column boundaries, as painted.
+fn table_grid(
+    view: &FrameView,
+    doc: &DocumentCache,
+    table: &Table,
+    window: &mut Window,
+) -> (Grid, Point<Pixels>) {
+    let columns = TableColumns::of(
+        table,
+        view.bounds.size.width,
+        (&view.font, view.font_size, view.text_color),
+        window,
+    );
+    let top = view.layout.cumulative_at(table.start_line);
+    let boundary = |line: usize| f32::from(view.layout.cumulative_at(line) - top);
+    // The header and its delimiter band are row 0.
+    let row_y = [0.0, boundary(table.start_line + 2)]
+        .into_iter()
+        .chain((table.start_line + 3..=table.end_line).map(boundary))
+        .collect();
+    let col_x = (0..=columns.widths.len())
+        .map(|c| f32::from(columns.x(table_box::column_left(&columns.widths, c))))
+        .collect();
+    let _ = doc;
+    (
+        Grid { col_x, row_y },
+        view.bounds.origin + point(px(0.), top),
+    )
+}
+
+/// The rendered table the pointer is over (or in the margin left of or above
+/// it), its grid, and the pointer relative to the table's top left.
+fn table_at_pointer(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+    window: &mut Window,
+) -> Option<(usize, Grid, (f32, f32))> {
+    let doc = editor.document_cache.borrow();
+    let tables = doc.tables();
+    let y = position.y - view.bounds.origin.y;
+    let margin = px(table_handles::MARGIN);
+    let index = tables
+        .partition_point(|t| view.layout.cumulative_at(t.start_line) - margin <= y)
+        .checked_sub(1)?;
+    let table = &tables[index];
+    if is_table_active(&doc, table.start_line, view.focused) {
+        return None;
+    }
+    let (grid, origin) = table_grid(view, &doc, table, window);
+    let p = (
+        f32::from(position.x - origin.x),
+        f32::from(position.y - origin.y),
+    );
+    Some((index, grid, p))
+}
+
+/// The controls to show for the pointer at `position`.
+fn hover_for_pointer(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+    window: &mut Window,
+) -> Option<(usize, Vec<Handle>)> {
+    let (index, grid, p) = table_at_pointer(editor, view, position, window)?;
+    let shown = table_handles::hover_at(&grid, p);
+    (!shown.is_empty()).then_some((index, shown))
+}
+
+/// The table control under `position`, if one is shown there.
+fn handle_for_pointer(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+    window: &mut Window,
+) -> Option<(usize, Handle)> {
+    let (index, grid, p) = table_at_pointer(editor, view, position, window)?;
+    let shown = table_handles::hover_at(&grid, p);
+    table_handles::handle_at(&grid, &shown, p).map(|handle| (index, handle))
+}
+
+/// The drop boundary for a grip drag with the pointer at `position`.
+fn drop_for_pointer(
+    editor: &Editor,
+    view: &FrameView,
+    drag: TableDrag,
+    position: Point<Pixels>,
+    window: &mut Window,
+) -> Option<usize> {
+    let doc = editor.document_cache.borrow();
+    let table = doc.tables().get(drag.table)?;
+    let (grid, origin) = table_grid(view, &doc, table, window);
+    Some(match drag.grip {
+        Handle::ColumnGrip(_) => {
+            table_handles::column_drop(&grid, f32::from(position.x - origin.x))
+        }
+        _ => table_handles::row_drop(&grid, f32::from(position.y - origin.y)),
+    })
+}
+
 fn paint_table_boxes(
     range: &Range<usize>,
     view: &FrameView,
     doc: &DocumentCache,
     palette: &crate::theme::Palette,
-    window: &mut Window,
+    (window, cx): (&mut Window, &mut App),
 ) {
     let tables = doc.tables();
     let FrameView {
@@ -2492,13 +2660,15 @@ fn paint_table_boxes(
         palette.color(Role::BorderStrong),
         palette.color(Role::Border),
     );
-    for table in tables[first..]
+    for (offset, table) in tables[first..]
         .iter()
         .take_while(|t| t.start_line < range.end)
+        .enumerate()
     {
         if is_table_active(doc, table.start_line, *focused) {
             continue;
         }
+        let index = first + offset;
         let columns = TableColumns::of(
             table,
             bounds.size.width,
@@ -2563,6 +2733,106 @@ fn paint_table_boxes(
             strong,
             BorderStyle::Solid,
         ));
+        let hovered = view.table_hover.as_ref().filter(|(t, _)| *t == index);
+        let dragging = view.table_drag.filter(|d| d.table == index);
+        if hovered.is_some() || dragging.is_some() {
+            let (grid, origin) = table_grid(view, doc, table, window);
+            let shown = hovered.map_or(&[][..], |(_, handles)| handles.as_slice());
+            let colors = HandleColors {
+                accent: palette.color(Role::Accent),
+                on_accent: palette.color(Role::TextOnAccent),
+                fill: palette.color(Role::TableHeader),
+                border: strong,
+                icon: *text_color,
+            };
+            paint_table_handles(&grid, origin, (shown, dragging), &colors, (window, cx));
+        }
+    }
+}
+
+/// Colors of the controls on a table's edge.
+struct HandleColors {
+    accent: Hsla,
+    on_accent: Hsla,
+    fill: Hsla,
+    border: Hsla,
+    icon: Hsla,
+}
+
+/// Draws a table's edge controls: a filled `+` circle, a bordered grip (filled
+/// with the accent while it is dragged), and while dragging the drop line.
+fn paint_table_handles(
+    grid: &Grid,
+    origin: Point<Pixels>,
+    (shown, dragging): (&[Handle], Option<TableDrag>),
+    colors: &HandleColors,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let at = |handle: Handle| {
+        let (x, y, w, h) = table_handles::rect_of(grid, handle);
+        Bounds {
+            origin: origin + point(px(x), px(y)),
+            size: size(px(w), px(h)),
+        }
+    };
+    let mut draw = |handle: Handle, window: &mut Window, cx: &mut App| {
+        let bounds = at(handle);
+        let (is_add, icon) = match handle {
+            Handle::AddColumn(_) | Handle::AddRow(_) => (true, "icons/plus.svg"),
+            Handle::ColumnGrip(_) => (false, "icons/grip-horizontal.svg"),
+            Handle::RowGrip(_) => (false, "icons/grip-vertical.svg"),
+        };
+        let active = dragging.is_some_and(|d| d.grip == handle);
+        let (fill, border, glyph) = if is_add || active {
+            (colors.accent, Hsla::transparent_black(), colors.on_accent)
+        } else {
+            (colors.fill, colors.border, colors.icon)
+        };
+        let radius = if is_add {
+            bounds.size.width / 2.0
+        } else {
+            px(4.)
+        };
+        window.paint_quad(quad(
+            bounds,
+            radius,
+            fill,
+            if is_add || active { px(0.) } else { px(1.) },
+            border,
+            BorderStyle::Solid,
+        ));
+        let inner = if is_add { px(10.) } else { px(8.) };
+        let glyph_bounds = Bounds {
+            origin: bounds.origin
+                + point(
+                    (bounds.size.width - inner) / 2.0,
+                    (bounds.size.height - inner) / 2.0,
+                ),
+            size: size(inner, inner),
+        };
+        paint_icon(icon, glyph_bounds, glyph, (window, cx));
+    };
+    // While dragging, only the dragged grip is drawn (and the drop line).
+    let drawn: Vec<Handle> = match dragging {
+        Some(drag) => vec![drag.grip],
+        None => shown.to_vec(),
+    };
+    for handle in drawn {
+        draw(handle, window, cx);
+    }
+    if let Some(drag) = dragging {
+        let thickness = px(2.);
+        let line = match drag.grip {
+            Handle::ColumnGrip(_) => Bounds {
+                origin: origin + point(px(grid.col_x[drag.over]) - thickness / 2.0, px(0.)),
+                size: size(thickness, px(grid.row_y[grid.row_y.len() - 1])),
+            },
+            _ => Bounds {
+                origin: origin + point(px(0.), px(grid.row_y[drag.over]) - thickness / 2.0),
+                size: size(px(grid.col_x[grid.col_x.len() - 1]), thickness),
+            },
+        };
+        window.paint_quad(fill(line, colors.accent));
     }
 }
 
@@ -2731,6 +3001,7 @@ fn paint_lines(
         ref font,
         font_size,
         text_color,
+        ..
     } = view;
     for freed in cx.default_global::<ImageCache>().begin_frame() {
         window.drop_image(freed).ok();
@@ -2836,7 +3107,7 @@ fn paint_lines(
     }
 
     let mut y_offset = layout.cumulative_at(range.start);
-    paint_table_boxes(&range, view, doc, &palette, window);
+    paint_table_boxes(&range, view, doc, &palette, (window, cx));
     let mut columns: Option<(usize, TableColumns)> = None;
 
     for i in range.clone() {
@@ -3911,7 +4182,8 @@ mod tests {
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
             // Near the left edge of the second rendered row.
-            window.click_at("editor", point(px(1.), line_height + px(1.)), cx);
+            // (Mid-row: the corner itself belongs to the table's `+` control.)
+            window.click_at("editor", point(px(1.), line_height * 1.5), cx);
         })
         .unwrap();
 
@@ -3955,7 +4227,8 @@ mod tests {
             window.render_frame(cx);
             // Near the left edge of the second rendered row, i.e. on the
             // bullet glyph itself.
-            window.click_at("editor", point(px(1.), line_height + px(1.)), cx);
+            // (Mid-row: the corner itself belongs to the table's `+` control.)
+            window.click_at("editor", point(px(1.), line_height * 1.5), cx);
         })
         .unwrap();
 
@@ -4191,7 +4464,8 @@ mod tests {
             // the first cell's own content, same "click near the start of
             // replaced markup lands past it" behavior every other construct
             // in this editor already has.
-            window.click_at("editor", point(px(1.), line_height + px(1.)), cx);
+            // (Mid-row: the corner itself belongs to the table's `+` control.)
+            window.click_at("editor", point(px(1.), line_height * 1.5), cx);
         })
         .unwrap();
 
@@ -4930,6 +5204,7 @@ mod tests {
 
     /// Table cell editing, driven through the real key and text paths.
     mod table_cells {
+        use super::super::{Grid, Handle, TableColumns, render_params, table_box, table_handles};
         use super::*;
         const TABLE: &str = "| a | b |\n|---|---|\n| c | d |\n\nend";
 
@@ -5294,6 +5569,169 @@ mod tests {
                 "caret in the clicked row: {cursor}"
             );
             assert!(editor.read_with(cx, |e, _| e.table_menu_state().is_some()));
+        }
+
+        const BIG: &str = "| a | b |\n|---|---|\n| c | d |\n| e | f |\n| g | h |\n\nend";
+
+        /// Window position of the table starting the note, and its grid, worked
+        /// out the way the editor does (every row here is one line tall).
+        fn grid_of(
+            cx: &mut TestAppContext,
+            window: AnyWindowHandle,
+            editor: &Entity<Editor>,
+        ) -> (Point<Pixels>, Grid) {
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find("editor").bounds();
+                let params = editor.update(cx, |e, cx| render_params(e, window, cx));
+                let table = editor.read(cx).document_cache.borrow().tables()[0].clone();
+                let columns = TableColumns::of(
+                    &table,
+                    params.available_width,
+                    (&params.font, params.font_size, params.text_color),
+                    window,
+                );
+                let line = f32::from(window.line_height());
+                let col_x = (0..=columns.widths.len())
+                    .map(|c| f32::from(columns.x(table_box::column_left(&columns.widths, c))))
+                    .collect();
+                // The header and the delimiter band are 2 lines, then 1 per row.
+                let row_y = [0.0, 2.0, 3.0, 4.0, 5.0].map(|n| n * line).to_vec();
+                (bounds.origin, Grid { col_x, row_y })
+            })
+            .unwrap()
+        }
+
+        fn mouse(cx: &mut TestAppContext, window: AnyWindowHandle, kind: &str, at: Point<Pixels>) {
+            use gpui_kit::{
+                MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, PlatformInput,
+            };
+            cx.update_window(window, |_, window, cx| {
+                let (button, modifiers) = (MouseButton::Left, Default::default());
+                let event = match kind {
+                    "down" => PlatformInput::MouseDown(MouseDownEvent {
+                        button,
+                        position: at,
+                        modifiers,
+                        click_count: 1,
+                        first_mouse: false,
+                    }),
+                    "up" => PlatformInput::MouseUp(MouseUpEvent {
+                        button,
+                        position: at,
+                        modifiers,
+                        click_count: 1,
+                    }),
+                    _ => PlatformInput::MouseMove(MouseMoveEvent {
+                        position: at,
+                        pressed_button: (kind == "drag").then_some(button),
+                        modifiers,
+                    }),
+                };
+                window.dispatch_event(event, cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+        }
+
+        fn centre_of(grid: &Grid, origin: Point<Pixels>, handle: Handle) -> Point<Pixels> {
+            let (x, y, w, h) = table_handles::rect_of(grid, handle);
+            origin + point(px(x + w / 2.0), px(y + h / 2.0))
+        }
+
+        #[gpui_kit::test]
+        fn the_controls_follow_the_pointer_over_a_table_and_leave_with_it(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, BIG, BIG.len());
+            let (origin, grid) = grid_of(cx, window, &editor);
+            let hover =
+                |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.table_hover.clone());
+            mouse(
+                cx,
+                window,
+                "move",
+                origin + point(px(grid.col_x[1] + 4.0), px(grid.row_y[1] + 3.0)),
+            );
+            let (table, shown) = hover(cx).expect("over the table");
+            assert_eq!(table, 0);
+            assert!(
+                shown.contains(&Handle::ColumnGrip(0)) || shown.contains(&Handle::ColumnGrip(1))
+            );
+            assert!(shown.contains(&Handle::RowGrip(1)));
+            mouse(
+                cx,
+                window,
+                "move",
+                origin + point(px(10.0), px(grid.row_y[4] + 120.0)),
+            );
+            assert_eq!(hover(cx), None, "gone below the table");
+        }
+
+        #[gpui_kit::test]
+        fn a_plus_on_the_edge_adds_a_row_or_column_there(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, BIG, BIG.len());
+            let (origin, grid) = grid_of(cx, window, &editor);
+            // The boundary above the third body row ("g").
+            let plus = centre_of(&grid, origin, Handle::AddRow(3));
+            mouse(cx, window, "down", plus);
+            mouse(cx, window, "up", plus);
+            assert_eq!(
+                state(cx, &editor).0,
+                BIG.replacen("| g | h |", "| | |\n| g | h |", 1).replacen(
+                    "| e | f |\n| | |\n| g",
+                    "| e | f |\n| | |\n| g",
+                    1
+                )
+            );
+            assert_rows_are_exact(cx, window, &editor);
+            let (origin, grid) = grid_of(cx, window, &editor);
+            let plus = centre_of(&grid, origin, Handle::AddColumn(0));
+            mouse(cx, window, "down", plus);
+            mouse(cx, window, "up", plus);
+            assert!(
+                state(cx, &editor)
+                    .0
+                    .starts_with("| | a | b |\n|---|---|---|")
+            );
+        }
+
+        #[gpui_kit::test]
+        fn dragging_a_row_grip_moves_the_row_as_one_undo(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, BIG, BIG.len());
+            let (origin, grid) = grid_of(cx, window, &editor);
+            let grip = centre_of(&grid, origin, Handle::RowGrip(1));
+            mouse(cx, window, "down", grip);
+            let target = origin + point(px(20.0), px(grid.row_y[4] - 2.0));
+            mouse(cx, window, "drag", target);
+            assert_eq!(
+                editor.read_with(cx, |e, _| e.table_drag.map(|d| d.over)),
+                Some(4),
+                "over the bottom boundary"
+            );
+            mouse(cx, window, "up", target);
+            assert_eq!(
+                state(cx, &editor).0,
+                "| a | b |\n|---|---|\n| e | f |\n| g | h |\n| c | d |\n\nend"
+            );
+            assert_eq!(editor.read_with(cx, |e, _| e.table_drag), None);
+            assert_rows_are_exact(cx, window, &editor);
+            press(cx, window, "ctrl-z");
+            assert_eq!(state(cx, &editor).0, BIG);
+        }
+
+        #[gpui_kit::test]
+        fn dragging_a_column_grip_moves_the_column_with_its_alignment(cx: &mut TestAppContext) {
+            let text = "| a | b |\n|:--|--:|\n| c | d |\n\nend";
+            let (window, editor) = open_at(cx, text, text.len());
+            let (origin, grid) = grid_of(cx, window, &editor);
+            let grip = centre_of(&grid, origin, Handle::ColumnGrip(0));
+            mouse(cx, window, "down", grip);
+            let target = origin + point(px(grid.col_x[2] - 2.0), px(10.0));
+            mouse(cx, window, "drag", target);
+            mouse(cx, window, "up", target);
+            assert_eq!(
+                state(cx, &editor).0,
+                "| b | a |\n|--:|:--|\n| d | c |\n\nend"
+            );
         }
 
         #[gpui_kit::test]

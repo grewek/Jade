@@ -11,6 +11,7 @@ use gpui_kit::*;
 use super::super::document_cache::TextEdit;
 use super::super::element::{TableColumns, render_params};
 use super::super::table_box::{self, cell_at, cell_ranges, edit_range};
+use super::super::table_handles::{Handle, TableDrag};
 use super::super::table_ops::{self, Op};
 use super::super::table_preview::{Align, Table, table_index_at};
 use super::Editor;
@@ -648,6 +649,60 @@ impl Editor {
         let Some((table, row, column)) = self.table_cell_at_caret() else {
             return false;
         };
+        self.edit_table(table, window, cx, |old| {
+            table_ops::apply(old, row, column, op)
+        })
+    }
+
+    /// A click on a `+` control: adds the row or column at its boundary.
+    pub(in crate::text_editor) fn add_at_handle(
+        &mut self,
+        table: usize,
+        handle: Handle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let columns = self.document_cache.borrow().tables()[table].columns.len();
+        self.edit_table(table, window, cx, |old| match handle {
+            Handle::AddColumn(b) if b < columns => table_ops::apply(old, 0, b, Op::ColumnLeft),
+            Handle::AddColumn(_) => table_ops::apply(old, 0, columns - 1, Op::ColumnRight),
+            // The boundary is the top of row `b`: add below row `b - 1`, whose
+            // line is the header's, or one past the delimiter for a body row.
+            Handle::AddRow(b) => {
+                let row = if b == 1 { 0 } else { b };
+                table_ops::apply(old, row, 0, Op::RowBelow)
+            }
+            _ => None,
+        });
+    }
+
+    /// The end of a grip drag: moves the column or row to the drop boundary.
+    pub(in crate::text_editor) fn finish_table_drag(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(TableDrag { table, grip, over }) = self.table_drag.take() else {
+            return;
+        };
+        self.edit_table(table, window, cx, |old| match grip {
+            Handle::ColumnGrip(from) => table_ops::move_column(old, from, over, 0),
+            // Row `r` is line `r + 1`; boundary `over` is the top of row `over`.
+            Handle::RowGrip(from) => table_ops::move_row(old, from + 1, over + 1, 0),
+            _ => None,
+        });
+        cx.notify();
+    }
+
+    /// Applies what `make` does to table `table`'s lines as one undoable edit,
+    /// replacing only the lines that differ, and puts the caret where it says.
+    fn edit_table(
+        &mut self,
+        table: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+        make: impl FnOnce(&[&str]) -> Option<table_ops::Edited>,
+    ) -> bool {
         let (start_line, change) = {
             let doc = self.document_cache.borrow();
             let t = &doc.tables()[table];
@@ -655,12 +710,11 @@ impl Editor {
             let old: Vec<&str> = (t.start_line..t.end_line)
                 .map(|l| &text[doc.line_start_byte(l)..doc.line_end_byte(l)])
                 .collect();
-            let Some(edited) = table_ops::apply(&old, row, column, op) else {
+            let Some(edited) = make(&old) else {
                 return false;
             };
             let at = |line: usize| doc.line_start_byte(t.start_line + line);
             let end = |line: usize| doc.line_end_byte(t.start_line + line);
-            // Only the lines that differ are replaced.
             let new: Vec<&str> = edited.lines.iter().map(String::as_str).collect();
             let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
             let tail = old[head..]
@@ -697,6 +751,8 @@ impl Editor {
         if let Some(cell) = self.cell_at_line(start_line + caret_row, caret_column) {
             self.buffer.set_cursor(cell.lo, false);
         }
+        // Indices and positions the controls were laid out for are stale.
+        self.table_hover = None;
         cx.notify();
         true
     }

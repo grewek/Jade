@@ -121,6 +121,63 @@ pub(super) fn apply(lines: &[&str], row: usize, column: usize, op: Op) -> Option
     Some(Edited { lines: out, caret })
 }
 
+/// Moves body line `from` to just before line `before` (`before` may be one
+/// past the last line). `None` for the header or delimiter, or a move that
+/// changes nothing. The caret goes to cell `column` of the moved row.
+pub(super) fn move_row(
+    lines: &[&str],
+    from: usize,
+    before: usize,
+    column: usize,
+) -> Option<Edited> {
+    if from <= DELIMITER_ROW || from >= lines.len() || before <= DELIMITER_ROW {
+        return None;
+    }
+    if before == from || before == from + 1 || before > lines.len() {
+        return None;
+    }
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_string()).collect();
+    let moved = out.remove(from);
+    let to = if before > from { before - 1 } else { before };
+    out.insert(to, moved);
+    Some(Edited {
+        lines: out,
+        caret: (to, column),
+    })
+}
+
+/// Moves column `from` to just before column `before` (`before` may be the
+/// column count), in every row including the delimiter, so its alignment
+/// travels with it. `None` for a move that changes nothing.
+pub(super) fn move_column(
+    lines: &[&str],
+    from: usize,
+    before: usize,
+    row: usize,
+) -> Option<Edited> {
+    let columns = column_count(lines);
+    if from >= columns || before > columns || before == from || before == from + 1 {
+        return None;
+    }
+    let to = if before > from { before - 1 } else { before };
+    let out = lines
+        .iter()
+        .map(|line| {
+            let mut parts = cells(line);
+            while parts.len() < columns {
+                parts.push(" ".to_string());
+            }
+            let moved = parts.remove(from);
+            parts.insert(to, moved);
+            join(&parts)
+        })
+        .collect();
+    Some(Edited {
+        lines: out,
+        caret: (row, to),
+    })
+}
+
 /// A delimiter cell with the same dashes and padding as `cell`, marked for `align`.
 fn aligned_delimiter(cell: &str, align: Align) -> String {
     let dashes = "-".repeat(cell.matches('-').count().max(3));
@@ -223,6 +280,41 @@ mod tests {
         assert_eq!(lines(&last), ["| a |", "|---|", "| c |", "| e |"]);
         assert_eq!(last.caret, (2, 0));
         assert!(apply(&["| a |", "|---|"], 0, 0, Op::DeleteColumn).is_none());
+    }
+
+    #[test]
+    fn a_body_row_moves_to_before_another_and_the_header_stays() {
+        let up = move_row(&T, 3, 2, 1).unwrap();
+        assert_eq!(lines(&up), [T[0], T[1], T[3], T[2]]);
+        assert_eq!(up.caret, (2, 1));
+        let down = move_row(&T, 2, 4, 0).unwrap();
+        assert_eq!(lines(&down), [T[0], T[1], T[3], T[2]]);
+        assert_eq!(down.caret, (3, 0));
+        for (from, before) in [(2, 2), (2, 3), (0, 3), (1, 3), (3, 1), (3, 0), (9, 2)] {
+            assert!(
+                move_row(&T, from, before, 0).is_none(),
+                "{from} -> {before}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_column_moves_with_its_alignment() {
+        let aligned = ["| a | b | c |", "|:--|---|--:|", "| 1 | 2 | 3 |"];
+        let first_to_end = move_column(&aligned, 0, 3, 2).unwrap();
+        assert_eq!(
+            lines(&first_to_end),
+            ["| b | c | a |", "|---|--:|:--|", "| 2 | 3 | 1 |"]
+        );
+        assert_eq!(first_to_end.caret, (2, 2));
+        let last_to_start = move_column(&aligned, 2, 0, 0).unwrap();
+        assert_eq!(lines(&last_to_start)[0], "| c | a | b |");
+        for (from, before) in [(1, 1), (1, 2), (3, 0), (0, 4)] {
+            assert!(
+                move_column(&aligned, from, before, 0).is_none(),
+                "{from} -> {before}"
+            );
+        }
     }
 
     #[test]

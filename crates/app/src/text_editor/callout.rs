@@ -588,6 +588,9 @@ mod tests {
             "icons/check.svg",
             "icons/chevron-down.svg",
             "icons/chevron-right.svg",
+            "icons/plus.svg",
+            "icons/grip-horizontal.svg",
+            "icons/grip-vertical.svg",
         ];
         for path in paths.into_iter().chain(others) {
             let icon = crate::assets::JadeAssets.load(path);

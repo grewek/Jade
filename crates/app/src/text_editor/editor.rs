@@ -17,6 +17,7 @@ use super::element::{RowHeightCache, mono_char_width, render_editor, render_para
 use super::headings::find_heading_line;
 use super::images::{self, ImageInfo};
 use super::link_table::LinkTable;
+use super::table_handles::{Handle, TableDrag};
 use jade_core::link_scan::{LinkKind, scan_line};
 
 /// The `TextEdit` for a plain insertion of `inserted_len` bytes replacing
@@ -130,6 +131,10 @@ pub struct Editor {
     pub(super) hovering_link: bool,
     /// The table Ctrl+/ asked to show raw; it stays raw while the caret is in it.
     raw_pinned: Option<usize>,
+    /// The controls shown on a table's edge for the pointer: `(table, controls)`.
+    pub(super) table_hover: Option<(usize, Vec<Handle>)>,
+    /// A column or row grip being dragged.
+    pub(super) table_drag: Option<TableDrag>,
     /// The vault root and this note's id, for finding image embeds' files.
     /// `None` (tests, a note not in a vault) leaves image blocks at their
     /// placeholder height.
@@ -158,6 +163,8 @@ impl Editor {
             link_table,
             hovering_link: false,
             raw_pinned: None,
+            table_hover: None,
+            table_drag: None,
             image_context: None,
         }
     }
