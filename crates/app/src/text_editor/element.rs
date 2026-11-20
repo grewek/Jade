@@ -2325,6 +2325,15 @@ fn register_mouse_handling(
             {
                 return;
             }
+            if let Some((region, percent)) =
+                restore_pill_at(editor_entity.read(cx), &view, event.position)
+            {
+                cx.stop_propagation();
+                editor_entity.update(cx, |editor, cx| {
+                    editor.set_region_ratio(region, percent, window, cx);
+                });
+                return;
+            }
             let Some((region, handle)) =
                 column_handle_for_pointer(editor_entity.read(cx), &view, event.position)
             else {
@@ -3201,15 +3210,17 @@ fn column_drag_percent(
 ) -> Option<Vec<u8>> {
     let doc = editor.document_cache.borrow();
     let region = *doc.columns().get(drag.region)?;
-    let (_, split) = doc.side_by_side(region.start_line)?;
+    // From the shares the file has, not the layout the drag previews: that one
+    // may be stacked, and the pointer must still be able to bring it back.
+    let total = doc.column_width()?;
     let k = drag.divider;
     let x = f32::from(position.x - view.bounds.origin.x);
     if let columns::Kind::Aside { right } = region.kind {
         // The float's edge is half a gap from the pointer; its share of the
         // line without the gap, snapped and kept within bounds.
-        let usable = split.total - columns::GAP;
+        let usable = total - columns::GAP;
         let float = if right {
-            split.total - x - columns::GAP / 2.
+            total - x - columns::GAP / 2.
         } else {
             x - columns::GAP / 2.
         };
@@ -3219,8 +3230,9 @@ fn column_drag_percent(
         return Some(vec![share, 100 - share]);
     }
     // Column `k`'s right edge is half a gap left of the pointer.
-    let width = x - columns::GAP / 2. - split.x(k);
-    let usable: f32 = (0..region.count).map(|c| split.width(c)).sum();
+    let (left, usable) =
+        columns::column_left_unchecked(total, region.kind, &region.percent[..region.count], k);
+    let width = x - columns::GAP / 2. - left;
     let char_width = f32::from(mono_char_width(
         &view.font,
         view.font_size,
@@ -3531,6 +3543,123 @@ struct HandleColors {
 /// with the accent while it is dragged), and while dragging the drop line.
 /// One control: a round accent button (`round`) or a bordered grip, accent
 /// while `active`.
+/// The "back to columns" button of a region shown stacked, with the shares it
+/// would set. It sits in the (empty) row of the region's open marker, at the
+/// right. `None` for a region laid out as columns, shown as source, or too
+/// narrow for its columns even at their default shares.
+fn restore_pill(
+    view: &FrameView,
+    doc: &DocumentCache,
+    index: usize,
+) -> Option<(Bounds<Pixels>, Vec<u8>)> {
+    let region = *doc.columns().get(index)?;
+    if doc.raw_region() == Some(index) || doc.side_by_side(region.start_line).is_some() {
+        return None;
+    }
+    let percent = columns::restored(&region, doc.column_width()?)?;
+    let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
+    let (w, h) = (px(24.), px(18.));
+    let origin = point(
+        view.bounds.origin.x + view.bounds.size.width - w - px(4.),
+        top + (view.line_height - h) / 2.,
+    );
+    Some((
+        Bounds {
+            origin,
+            size: size(w, h),
+        },
+        percent,
+    ))
+}
+
+/// The stacked region whose restore button is under `position`, with its shares.
+fn restore_pill_at(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+) -> Option<(usize, Vec<u8>)> {
+    let doc = editor.document_cache.borrow();
+    if editor.column_drag.is_some() {
+        return None;
+    }
+    (0..doc.columns().len()).find_map(|index| {
+        let (bounds, percent) = restore_pill(view, &doc, index)?;
+        bounds.contains(&position).then_some((index, percent))
+    })
+}
+
+/// What a stacked region shows of its columns: the divider being dragged as a
+/// ghost at the shares it would take (so it can be dragged back), else the
+/// button that brings the columns back.
+fn paint_stacked_controls(
+    view: &FrameView,
+    doc: &DocumentCache,
+    colors: &HandleColors,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let Some(total) = doc.column_width() else {
+        return;
+    };
+    if let Some(drag) = &view.column_drag {
+        let Some(&region) = doc.columns().get(drag.region) else {
+            return;
+        };
+        if doc.side_by_side(region.start_line).is_some() {
+            return;
+        }
+        let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
+        let bottom = view.bounds.origin.y + view.layout.cumulative_at(region.end_line);
+        let x = view.bounds.origin.x
+            + px(columns::divider_x_unchecked(
+                total,
+                region.kind,
+                &drag.percent,
+                drag.divider,
+            ));
+        let line = Bounds {
+            origin: point(x - px(1.), top),
+            size: size(px(2.), bottom - top),
+        };
+        window.paint_quad(fill(line, colors.accent));
+        let grip = Bounds {
+            origin: point(
+                x - px(column_handles::GRIP_SHORT) / 2.,
+                top + (px(column_handles::GRIP_LONG)).min((bottom - top) / 2.)
+                    - px(column_handles::GRIP_LONG) / 2.,
+            ),
+            size: size(
+                px(column_handles::GRIP_SHORT),
+                px(column_handles::GRIP_LONG),
+            ),
+        };
+        paint_control(
+            grip,
+            "icons/grip-vertical.svg",
+            (false, true),
+            colors,
+            (window, cx),
+        );
+        return;
+    }
+    for index in 0..doc.columns().len() {
+        let Some((bounds, _)) = restore_pill(view, doc, index) else {
+            continue;
+        };
+        if bounds.origin.y + bounds.size.height < view.viewport.origin.y
+            || bounds.origin.y > view.viewport.origin.y + view.viewport.size.height
+        {
+            continue;
+        }
+        paint_control(
+            bounds,
+            "icons/columns-2.svg",
+            (false, false),
+            colors,
+            (window, cx),
+        );
+    }
+}
+
 fn paint_control(
     bounds: Bounds<Pixels>,
     icon: &'static str,
@@ -3991,6 +4120,8 @@ fn paint_lines(
 
         y_offset += total_height;
     }
+    let handle_palette = handle_colors(&palette, text_color);
+    paint_stacked_controls(view, doc, &handle_palette, (window, cx));
 }
 
 /// A callout's background tint and accent bar, from `top` to `bottom`
@@ -5835,6 +5966,34 @@ mod tests {
             let to = at(split.x(1) + 100., px(10.));
             let percent = column_drag_percent(editor, &view, &drag, to, window).unwrap();
             assert!(percent[0] > 50 && percent[0] % 5 == 0 && percent[0] + percent[1] == 100);
+
+            // Dragged far enough to stack the region (a column under 160px), the
+            // drag is not lost: moving the pointer back brings the columns back,
+            // and the stacked region offers a button to restore them.
+            let stacked = vec![90, 10];
+            drop(doc);
+            doc_cache
+                .borrow_mut()
+                .set_column_preview(Some((0, stacked.clone())));
+            let doc = doc_cache.borrow();
+            assert!(doc.side_by_side(2).is_none(), "the preview stacks");
+            let drag = ColumnDrag {
+                region: 0,
+                divider: 0,
+                percent: stacked,
+            };
+            let back = column_drag_percent(editor, &view, &drag, at(split.x(1), px(10.)), window)
+                .expect("a stacked preview can still be dragged");
+            assert!((40..=60).contains(&back[0]), "{back:?}");
+            let (pill, shares) = super::restore_pill(&view, &doc, 0).expect("a restore button");
+            assert_eq!(shares, vec![50, 50]);
+            drop(doc);
+            let center = pill.origin + point(pill.size.width / 2., pill.size.height / 2.);
+            assert_eq!(
+                super::restore_pill_at(editor, &view, center),
+                Some((0, vec![50, 50]))
+            );
+            assert!(super::restore_pill_at(editor, &view, at(0., px(500.))).is_none());
         })
         .unwrap();
     }

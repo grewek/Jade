@@ -479,6 +479,57 @@ pub fn aside_split(total: f32, right: bool, share: u8) -> Option<Split> {
     Some(out)
 }
 
+/// Where the divider after column `k` would be for shares `percent`, ignoring
+/// every minimum width: a divider dragged so far that the region stacks still
+/// has a place to be drawn and to be dragged back from.
+pub fn divider_x_unchecked(total: f32, kind: Kind, percent: &[u8], k: usize) -> f32 {
+    match kind {
+        Kind::Aside { right } => {
+            let usable = total - GAP;
+            let float = usable * f32::from(percent[0]) / 100.;
+            (if right { usable - float } else { float }) + GAP / 2.
+        }
+        Kind::Columns => {
+            let usable = total - GAP * (percent.len() - 1) as f32;
+            let before: f32 = percent[..=k]
+                .iter()
+                .map(|&p| usable * f32::from(p) / 100.)
+                .sum();
+            before + GAP * k as f32 + GAP / 2.
+        }
+    }
+}
+
+/// The left edge of column `k` and the width the shares divide, for shares
+/// `percent`, ignoring every minimum width (see [`divider_x_unchecked`]).
+pub fn column_left_unchecked(total: f32, kind: Kind, percent: &[u8], k: usize) -> (f32, f32) {
+    match kind {
+        Kind::Aside { .. } => (0., total - GAP),
+        Kind::Columns => {
+            let usable = total - GAP * (percent.len() - 1) as f32;
+            let before: f32 = percent[..k]
+                .iter()
+                .map(|&p| usable * f32::from(p) / 100.)
+                .sum();
+            (before + GAP * k as f32, usable)
+        }
+    }
+}
+
+/// The shares that put a stacked `region` back to columns: equal ones (the
+/// default share for an aside), when they fit `total` pixels; `None` when they
+/// would still stack, as in a window too narrow for the columns.
+pub fn restored(region: &Columns, total: f32) -> Option<Vec<u8>> {
+    match region.kind {
+        Kind::Aside { right } => aside_split(total, right, ASIDE_DEFAULT)
+            .map(|_| vec![ASIDE_DEFAULT, 100 - ASIDE_DEFAULT]),
+        Kind::Columns => {
+            let equal = equal_shares(region.count)[..region.count].to_vec();
+            split(total, &equal).map(|_| equal)
+        }
+    }
+}
+
 /// Whether `line` is the open or close marker of one of `regions` (sorted).
 pub fn is_frame_line(regions: &[Columns], line: usize) -> bool {
     let i = regions.partition_point(|r| r.end_line <= line);
@@ -733,6 +784,51 @@ mod tests {
         assert!(
             aside_split(1000., true, 10).is_none(),
             "a 98px float is too small"
+        );
+    }
+
+    #[test]
+    fn unchecked_geometry_matches_the_checked_one_where_both_exist() {
+        let total = 1000.;
+        let percent = [20, 50, 30];
+        let split = split(total, &percent).unwrap();
+        for k in 0..2 {
+            assert!(
+                (divider_x_unchecked(total, Kind::Columns, &percent, k) - split.divider_x(k)).abs()
+                    < 0.01
+            );
+        }
+        for k in 0..3 {
+            let (left, usable) = column_left_unchecked(total, Kind::Columns, &percent, k);
+            assert!((left - split.x(k)).abs() < 0.01);
+            assert!((usable - (total - 2. * GAP)).abs() < 0.01);
+        }
+        for right in [true, false] {
+            let aside = aside_split(total, right, 40).unwrap();
+            let kind = Kind::Aside { right };
+            assert!(
+                (divider_x_unchecked(total, kind, &[40, 60], 0) - aside.divider_x(0)).abs() < 0.01
+            );
+        }
+        // Where the checked one gives up, the unchecked one still has a place.
+        assert!(split_is_none(total, &[95, 5]));
+        assert!(divider_x_unchecked(total, Kind::Columns, &[95, 5], 0) > 900.);
+    }
+
+    fn split_is_none(total: f32, percent: &[u8]) -> bool {
+        split(total, percent).is_none()
+    }
+
+    #[test]
+    fn a_stacked_region_is_restored_to_equal_shares_only_when_they_fit() {
+        let text = "::: columns 90/10\n\na\n\n---\n\nb\n\n:::\n";
+        let region = scan_text(text)[0];
+        assert_eq!(restored(&region, 1000.), Some(vec![50, 50]));
+        assert_eq!(restored(&region, 300.), None, "too narrow even when equal");
+        let aside = scan_text("::: aside left 90%\n\na\n\n---\n\nb\n\n:::\n")[0];
+        assert_eq!(
+            restored(&aside, 1000.),
+            Some(vec![ASIDE_DEFAULT, 100 - ASIDE_DEFAULT])
         );
     }
 }
