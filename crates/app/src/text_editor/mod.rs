@@ -9,6 +9,7 @@ mod block_preview;
 mod buffer;
 mod callout;
 mod colors;
+mod columns;
 mod doc_stats;
 mod document_cache;
 mod editor;
