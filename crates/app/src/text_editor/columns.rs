@@ -89,16 +89,16 @@ impl Columns {
     }
 }
 
-#[derive(Clone, Copy)]
-enum Marker {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Marker {
     /// `::: columns`, with its explicit ratio if one was written.
     Open(Option<Ratio>),
     Separator,
     Close,
 }
 
-#[derive(Clone, Copy)]
-struct Ratio {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Ratio {
     percent: [u8; MAX_COLUMNS],
     count: usize,
 }
@@ -180,32 +180,60 @@ fn parse_ratio(text: &str) -> Option<Ratio> {
     (count >= 2 && sum == 100).then_some(Ratio { percent, count })
 }
 
-/// Every region of a document of `line_count` lines, in order. `line` gives
-/// a line's text without its newline; `in_code` is true for the lines of a
-/// fenced code block, fences included.
-pub fn scan<'a>(
-    line_count: usize,
-    line: impl Fn(usize) -> &'a str,
-    in_code: impl Fn(usize) -> bool,
-) -> Vec<Columns> {
-    let is_blank = |i: usize| line(i).trim().is_empty();
-    let isolated =
-        |i: usize| (i == 0 || is_blank(i - 1)) && (i + 1 == line_count || is_blank(i + 1));
+/// A marker and the line it is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Placed {
+    pub line: usize,
+    pub marker: Marker,
+}
+
+fn is_blank(line: &str) -> bool {
+    line.trim().is_empty()
+}
+
+/// The markers among `lines`, the first of which is line `first_line`; each
+/// item is the line's text and whether it is in fenced code (fences
+/// included). `before_blank` and `after_blank` say whether the line before the
+/// window and the line after it are blank (true at a document's edge), which a
+/// marker at the window's own edge needs to know it is isolated.
+pub fn place_markers<'a>(
+    first_line: usize,
+    lines: impl Iterator<Item = (&'a str, bool)>,
+    before_blank: bool,
+    after_blank: bool,
+) -> Vec<Placed> {
+    let mut placed = Vec::new();
+    let mut lines = lines.peekable();
+    let mut prev_blank = before_blank;
+    let mut line = first_line;
+    while let Some((text, in_code)) = lines.next() {
+        // Most lines are not markers; this skips the rest of the work for them.
+        if matches!(text.as_bytes().first(), Some(b':' | b'-'))
+            && !in_code
+            && let Some(marker) = marker_of(text)
+            && prev_blank
+            && lines
+                .peek()
+                .map_or(after_blank, |&(next, _)| is_blank(next))
+        {
+            placed.push(Placed { line, marker });
+        }
+        prev_blank = is_blank(text);
+        line += 1;
+    }
+    placed
+}
+
+/// The regions the markers form, in order (see the module comment for the
+/// rules). `markers` must be sorted by line.
+pub fn derive(markers: &[Placed]) -> Vec<Columns> {
     let mut regions = Vec::new();
     let mut pending: Option<Pending> = None;
-    for i in 0..line_count {
-        let text = line(i);
-        // Most lines are neither; this skips the rest of the work for them.
-        if !matches!(text.as_bytes().first(), Some(b':' | b'-')) || in_code(i) {
-            continue;
-        }
-        let Some(marker) = marker_of(text).filter(|_| isolated(i)) else {
-            continue;
-        };
+    for &Placed { line, marker } in markers {
         match marker {
             Marker::Open(ratio) => {
                 pending = Some(Pending {
-                    start: i,
+                    start: line,
                     ratio,
                     separators: [0; MAX_COLUMNS - 1],
                     seen: 0,
@@ -216,7 +244,7 @@ pub fn scan<'a>(
                     if p.seen == MAX_COLUMNS - 1 {
                         pending = None;
                     } else {
-                        p.separators[p.seen] = i;
+                        p.separators[p.seen] = line;
                         p.seen += 1;
                     }
                 }
@@ -224,7 +252,7 @@ pub fn scan<'a>(
             Marker::Close => {
                 // A region needs a separator: one column is not columns.
                 if let Some(p) = pending.take().filter(|p| p.seen >= 1) {
-                    regions.extend(p.close(i));
+                    regions.extend(p.close(line));
                 }
             }
         }
@@ -232,13 +260,18 @@ pub fn scan<'a>(
     regions
 }
 
+/// Every region of a document, `lines` being as for [`place_markers`]. The
+/// oracle the cache's incremental markers are tested against.
+pub fn scan<'a>(lines: impl Iterator<Item = (&'a str, bool)>) -> Vec<Columns> {
+    derive(&place_markers(0, lines, true, true))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn scan_text(text: &str) -> Vec<Columns> {
-        let lines: Vec<&str> = text.lines().collect();
-        scan(lines.len(), |i| lines[i], |_| false)
+        scan(text.lines().map(|l| (l, false)))
     }
 
     const TWO: &str = "::: columns\n\nleft\n\n---\n\nright\n\n:::\n";
@@ -362,9 +395,9 @@ mod tests {
     #[test]
     fn code_fences_hide_markers() {
         let text = "::: columns\n\na\n\n---\n\nb\n\n:::";
-        let lines: Vec<&str> = text.lines().collect();
         // The separator is inside a fence: no second column.
-        assert!(scan(lines.len(), |i| lines[i], |i| i == 4).is_empty());
+        let lines = text.lines().enumerate().map(|(i, l)| (l, i == 4));
+        assert!(scan(lines).is_empty());
     }
 
     #[test]

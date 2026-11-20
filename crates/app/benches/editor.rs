@@ -142,6 +142,9 @@ fn bench_passes(c: &mut Criterion) {
         group.bench_function(format!("block_contexts/{label}"), |b| {
             b.iter(|| cache.recompute_block_contexts(black_box(text), &strides))
         });
+        group.bench_function(format!("columns/{label}"), |b| {
+            b.iter(|| cache.recompute_columns(black_box(text), &strides))
+        });
         group.bench_function(format!("tables/{label}"), |b| {
             b.iter(|| cache.recompute_tables(black_box(text), &strides))
         });

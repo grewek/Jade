@@ -330,7 +330,7 @@ mod tests {
         let edit = TextEdit {
             start_byte: 15,
             old_end_byte: 15,
-            new_end_byte: 18,
+            new_end_byte: 17,
         };
         let patch = cache.record_edit(new_text, edit).unwrap();
         table.patch(new_text, &cache, &patch);

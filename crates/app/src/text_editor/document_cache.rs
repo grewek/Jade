@@ -41,6 +41,7 @@ use std::ops::Range;
 
 use super::block_preview::{self, LineRole};
 use super::callout::{self, Callout, CalloutState};
+use super::columns::{self, Columns, Placed};
 use super::fenwick::{Fenwick, LINE_GROWTH_SLACK};
 use super::images::ImageSizes;
 use super::live_preview::{self, LineContext, OpenBlock};
@@ -154,6 +155,12 @@ pub(super) struct DocumentCache {
     /// `callout_states[i]` is the packed `CalloutState` *entering* line `i`.
     /// Parallel to `callout_for_line`.
     callout_states: Vec<u8>,
+    /// Every `::: columns` marker line that is isolated and outside code, in
+    /// line order: all the cross-line state the regions below need, so an edit
+    /// rescans a few lines and re-pairs the markers (few) instead of the text.
+    column_markers: Vec<Placed>,
+    /// The regions `column_markers` form.
+    columns: Vec<Columns>,
     /// Natural sizes of the images the note embeds, read off the main thread.
     images: ImageSizes,
     /// The table shown as raw text (Ctrl+/, or the caret on its delimiter
@@ -180,6 +187,8 @@ impl DocumentCache {
             callouts: Vec::new(),
             callout_states: Vec::new(),
             callout_scratch: Vec::new(),
+            column_markers: Vec::new(),
+            columns: Vec::new(),
             images: ImageSizes::default(),
             raw_table: None,
             editing_cell: None,
@@ -202,6 +211,12 @@ impl DocumentCache {
 
     pub(super) fn callouts(&self) -> &[Callout] {
         &self.callouts
+    }
+
+    // Rendering reads it next; for now only the tests do.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(super) fn columns(&self) -> &[Columns] {
+        &self.columns
     }
 
     /// Folds or unfolds callout `index` for this session.
@@ -265,6 +280,7 @@ impl DocumentCache {
         self.recompute_callouts(text, &strides);
         self.recompute_block_context(text, &strides);
         self.recompute_tables(text, &strides);
+        self.recompute_columns(text, &strides);
         self.line_index = Fenwick::from_vec(strides);
         // Spare room for Enter to grow into without reallocating.
         reserve_line_slack(self);
@@ -300,8 +316,10 @@ impl DocumentCache {
         // guaranteed.
         let r3 = self.patch_block_context(text, &span);
         let r4 = self.patch_tables(text, &span, &table_pre);
+        // Needs `r1`: a code fence opened or closed changes what is code below.
+        let r5 = self.patch_columns(text, &span, &r1);
 
-        let touched = [minimal, r1, r2, r3, r4]
+        let touched = [minimal, r1, r2, r3, r4, r5]
             .into_iter()
             .reduce(union_ranges)
             .unwrap();
@@ -388,6 +406,15 @@ impl DocumentCache {
         }
         self.block_contexts = contexts;
         self.open_block_states = states;
+    }
+
+    /// Needs the line roles (code fences), so runs after `recompute_block_preview`.
+    pub(super) fn recompute_columns(&mut self, text: &str, strides: &[i64]) {
+        let lines = lines_of(text, strides)
+            .zip(&self.line_roles)
+            .map(|(line, role)| (line, !matches!(role, LineRole::Plain)));
+        self.column_markers = columns::place_markers(0, lines, true, true);
+        self.columns = columns::derive(&self.column_markers);
     }
 
     pub(super) fn recompute_tables(&mut self, text: &str, strides: &[i64]) {
@@ -570,6 +597,75 @@ impl DocumentCache {
             }),
         );
         window_start..window_end
+    }
+
+    /// The incremental path for `columns`: rescans the markers in the window
+    /// of lines whose text or code-ness changed (`roles` is what
+    /// `patch_block_preview` re-classified) plus one neighbour each side, since
+    /// a marker needs blank lines around it; the markers outside it are kept
+    /// (the ones after it move by the line delta) and the regions re-paired from
+    /// all of them, which is cheap because markers are few. A region's height
+    /// follows its content, so the returned range covers every region (before
+    /// or after the edit) that touches the window, not just the window.
+    fn patch_columns(&mut self, text: &str, span: &EditSpan, roles: &Range<usize>) -> Range<usize> {
+        let line_count = self.line_roles.len();
+        let delta = span.line_delta();
+        let lo = span.start_line.min(roles.start).saturating_sub(1);
+        let hi = (span.last_new_line() + 1)
+            .max(roles.end)
+            .saturating_add(1)
+            .min(line_count);
+        let old_hi = (hi as isize - delta) as usize;
+        assert!(
+            lo <= hi && lo <= old_hi,
+            "window {lo}..{hi}, old end {old_hi}"
+        );
+
+        let old_extent = extent_touching(&self.columns, lo, old_hi).map(|(start, end)| {
+            let to_new = |x: usize| match x {
+                x if x < lo => x,
+                x if x >= old_hi => shift_line(x, delta),
+                _ => lo,
+            };
+            (to_new(start), to_new(end))
+        });
+
+        let before_blank = lo == 0 || columns_blank(self.line_text_at(text, lo - 1));
+        let after_blank = hi == line_count || columns_blank(self.line_text_at(text, hi));
+        let lines = (lo..hi).map(|i| {
+            (
+                self.line_text_at(text, i),
+                !matches!(self.line_roles[i], LineRole::Plain),
+            )
+        });
+        let fresh = columns::place_markers(lo, lines, before_blank, after_blank);
+
+        let first = self.column_markers.partition_point(|m| m.line < lo);
+        let end = self.column_markers.partition_point(|m| m.line < old_hi);
+        // Typing on a line that is no marker and was none: the markers and so
+        // the regions are as they were, which is nearly every keystroke.
+        let no_markers = first == end && fresh.is_empty();
+        if !(no_markers && delta == 0) {
+            let fresh_len = fresh.len();
+            self.column_markers.splice(first..end, fresh);
+            for m in &mut self.column_markers[first + fresh_len..] {
+                m.line = shift_line(m.line, delta);
+            }
+            self.columns = columns::derive(&self.column_markers);
+        }
+
+        let new_extent = extent_touching(&self.columns, lo, hi);
+        // The neighbours are only dirty when a marker came or went (their
+        // isolation changed); otherwise just the lines the edit rewrote.
+        let mut touched = if no_markers {
+            span.start_line..span.last_new_line() + 1
+        } else {
+            lo..hi
+        };
+        for (start, end) in old_extent.into_iter().chain(new_extent) {
+            touched = union_ranges(touched, start..end);
+        }
+        touched.start..touched.end.min(line_count)
     }
 
     /// The bytes `table` spans, from its first line's start to its last
@@ -775,6 +871,19 @@ impl DocumentCache {
         }
         start_line..old_line_count
     }
+}
+
+/// The union of the line extents of the regions that overlap lines `a..b`.
+fn extent_touching(regions: &[Columns], a: usize, b: usize) -> Option<(usize, usize)> {
+    // Regions are disjoint and sorted, so both ends are sorted too.
+    let first = regions.partition_point(|r| r.end_line <= a);
+    let end = regions.partition_point(|r| r.start_line < b).max(first);
+    let touching = &regions[first..end];
+    Some((touching.first()?.start_line, touching.last()?.end_line))
+}
+
+fn columns_blank(line: &str) -> bool {
+    line.trim().is_empty()
 }
 
 /// The smallest range containing both `a` and `b` — used by
@@ -1119,6 +1228,11 @@ mod tests {
         assert_eq!(cache.tables, fresh.tables, "tables {context}");
         assert_eq!(cache.callouts, fresh.callouts, "callouts {context}");
         assert_eq!(
+            cache.column_markers, fresh.column_markers,
+            "column_markers {context}"
+        );
+        assert_eq!(cache.columns, fresh.columns, "columns {context}");
+        assert_eq!(
             cache.callout_states, fresh.callout_states,
             "callout_states {context}"
         );
@@ -1239,7 +1353,8 @@ mod tests {
         let mut text = String::from(
             "intro\n```\ncode\n```\nplain\n> q\n- item\n  - nested\n    - deeper\nmore plain text here\n~~~\ntilde\n~~~\nend\n\
              > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter\n\
-             | a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\nafter table",
+             | a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\nafter table\n\n\
+             ::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n",
         );
         let mut cache = DocumentCache::new(&text);
 
@@ -1270,6 +1385,13 @@ mod tests {
             "> [!note]\n> a\n> b\n\n",
             "\n\n\n\n",
             "line one\nline two\n",
+            "::: columns\n",
+            "\n::: columns 20/30/50\n\n",
+            "---\n",
+            "\n---\n\n",
+            ":::\n",
+            "\n:::\n\n",
+            "::: columns\n\na\n\n---\n\nb\n\n:::\n",
         ];
 
         for step in 0..400 {
@@ -1392,6 +1514,49 @@ mod tests {
                 .saturating_sub(after_full_retained.current - before_full.current),
             after_full_retained.current - after_full_dropped.current,
         );
+    }
+
+    const REGION: &str = "top\n\n::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n\nbottom";
+
+    #[test]
+    fn the_cache_finds_a_region_and_follows_edits_around_it() {
+        let mut cache = DocumentCache::new(REGION);
+        assert_eq!(cache.columns().len(), 1);
+        let r = cache.columns()[0];
+        assert_eq!((r.start_line, r.end_line, r.count), (2, 11, 2));
+
+        // Lines added above move it.
+        let (text, edit) = apply_edit(REGION, 0, 0, "a\nb\n");
+        cache.record_edit(&text, edit);
+        assert_eq!(cache.columns()[0].start_line, 4);
+        assert_matches_fresh_cache(&cache, &text, "lines above");
+
+        // Breaking the blank line before the separator removes the region.
+        let at = text.find("\n---").unwrap();
+        let (text, edit) = apply_edit(&text, at, at + 1, "");
+        cache.record_edit(&text, edit);
+        assert!(cache.columns().is_empty());
+        assert_matches_fresh_cache(&cache, &text, "separator joined to text");
+    }
+
+    #[test]
+    fn an_edit_in_a_column_reports_the_whole_region_as_touched() {
+        let mut cache = DocumentCache::new(REGION);
+        let at = REGION.find("left").unwrap();
+        let (text, edit) = apply_edit(REGION, at, at, "x\ny\n");
+        let patch = cache.record_edit(&text, edit).unwrap();
+        let r = cache.columns()[0];
+        assert!(patch.touched.start <= r.start_line && r.end_line <= patch.touched.end);
+        assert_matches_fresh_cache(&cache, &text, "typing in a column");
+    }
+
+    #[test]
+    fn a_fence_opened_above_hides_the_markers_below() {
+        let mut cache = DocumentCache::new(REGION);
+        let (text, edit) = apply_edit(REGION, 0, 0, "```\n");
+        cache.record_edit(&text, edit);
+        assert!(cache.columns().is_empty());
+        assert_matches_fresh_cache(&cache, &text, "fence opened");
     }
 }
 

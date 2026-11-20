@@ -78,6 +78,10 @@ impl Cache {
         self.0.recompute_block_context(text, strides);
     }
 
+    pub fn recompute_columns(&mut self, text: &str, strides: &[i64]) {
+        self.0.recompute_columns(text, strides);
+    }
+
     pub fn recompute_tables(&mut self, text: &str, strides: &[i64]) {
         self.0.recompute_tables(text, strides);
     }
