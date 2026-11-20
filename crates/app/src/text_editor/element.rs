@@ -56,15 +56,13 @@ pub(super) struct LineState<'a> {
     pub broken: &'a [Range<usize>],
     /// Sizes of the note's images, for an image block's height.
     pub images: Option<&'a ImageSizes>,
-    /// A body line of a folded callout: no rows at all.
+    /// A body line of a folded callout, or a line inside a region laid out side
+    /// by side other than its first (its column draws it): no rows at all.
     pub hidden: bool,
     /// The column of this table row the caret is in: it shows its text as typed.
     pub editing_cell: Option<usize>,
     /// The open or close marker of a columns region: shows nothing unless active.
     pub column_frame: bool,
-    /// Inside a region laid out side by side, but not its first line: the
-    /// region's painter draws it in its column, so it has no rows here.
-    pub column_hidden: bool,
 }
 
 impl<'a> LineState<'a> {
@@ -90,7 +88,6 @@ impl<'a> LineState<'a> {
                 .filter(|&(line, _)| line == i)
                 .map(|(_, column)| column),
             column_frame: columns::is_frame_line(doc.columns(), i),
-            column_hidden,
         }
     }
 
@@ -105,7 +102,6 @@ impl<'a> LineState<'a> {
         let state = Self::of(doc, i, cursor, focused);
         LineState {
             hidden: state.callout.is_some_and(|c| c.hides(i)),
-            column_hidden: false,
             ..state
         }
     }
@@ -126,7 +122,6 @@ impl<'a> LineState<'a> {
             hidden: false,
             editing_cell: None,
             column_frame: false,
-            column_hidden: false,
         }
     }
 }
