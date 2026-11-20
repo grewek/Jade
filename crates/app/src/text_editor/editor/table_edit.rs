@@ -11,7 +11,8 @@ use gpui_kit::*;
 use super::super::document_cache::TextEdit;
 use super::super::element::{TableColumns, render_params};
 use super::super::table_box::{self, cell_at, cell_ranges, edit_range};
-use super::super::table_preview::{Table, table_index_at};
+use super::super::table_ops::{self, Op};
+use super::super::table_preview::{Align, Table, table_index_at};
 use super::Editor;
 
 /// A cell of the table being edited, in absolute buffer bytes.
@@ -579,4 +580,133 @@ impl Editor {
             }
         }
     }
+
+    /// The table cell the caret is in, from the caret itself (so it also holds
+    /// in raw mode and right after a click, before the next render's sync):
+    /// `(table, row within the table, column)`.
+    fn table_cell_at_caret(&self) -> Option<(usize, usize, usize)> {
+        let doc = self.document_cache.borrow();
+        let cursor = self.buffer.cursor();
+        let line = doc.line_at(cursor);
+        let table = table_index_at(doc.tables(), line)?;
+        let start = doc.line_start_byte(line);
+        let content = &self.buffer.text()[start..doc.line_end_byte(line)];
+        let row = line - doc.tables()[table].start_line;
+        Some((table, row, cell_at(content, cursor - start)))
+    }
+
+    /// What the table menu needs to know about the caret's cell, or `None`
+    /// outside a table (then there is no menu).
+    pub(in crate::text_editor) fn table_menu_state(&self) -> Option<TableMenuState> {
+        let (table, row, column) = self.table_cell_at_caret()?;
+        let doc = self.document_cache.borrow();
+        let columns = &doc.tables()[table].columns;
+        let column = column.min(columns.len().checked_sub(1)?);
+        let text = self.buffer.text();
+        let lines: Vec<&str> = (0..doc.tables()[table].end_line - doc.tables()[table].start_line)
+            .map(|i| {
+                let line = doc.tables()[table].start_line + i;
+                &text[doc.line_start_byte(line)..doc.line_end_byte(line)]
+            })
+            .collect();
+        Some(TableMenuState {
+            align: columns[column].align,
+            can_edit_row: table_ops::enabled(&lines, row, Op::DeleteRow),
+            can_delete_column: table_ops::enabled(&lines, row, Op::DeleteColumn),
+        })
+    }
+
+    /// Whether byte `offset` is on a line of a table.
+    pub(in crate::text_editor) fn is_table_line_at(&self, offset: usize) -> bool {
+        let doc = self.document_cache.borrow();
+        table_index_at(doc.tables(), doc.line_at(offset)).is_some()
+    }
+
+    /// A table shortcut: runs `op` in a table (even when it does not apply
+    /// there), and outside one gives the key back to the editor.
+    pub(in crate::text_editor) fn table_action(
+        &mut self,
+        op: Op,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.table_cell_at_caret().is_some() {
+            self.run_table_op(op, window, cx);
+        } else {
+            cx.propagate();
+        }
+    }
+
+    /// Runs `op` on the table around the caret as one undoable edit. `false`
+    /// outside a table or when `op` does not apply there.
+    pub(in crate::text_editor) fn run_table_op(
+        &mut self,
+        op: Op,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((table, row, column)) = self.table_cell_at_caret() else {
+            return false;
+        };
+        let (start_line, change) = {
+            let doc = self.document_cache.borrow();
+            let t = &doc.tables()[table];
+            let text = self.buffer.text();
+            let old: Vec<&str> = (t.start_line..t.end_line)
+                .map(|l| &text[doc.line_start_byte(l)..doc.line_end_byte(l)])
+                .collect();
+            let Some(edited) = table_ops::apply(&old, row, column, op) else {
+                return false;
+            };
+            let at = |line: usize| doc.line_start_byte(t.start_line + line);
+            let end = |line: usize| doc.line_end_byte(t.start_line + line);
+            // Only the lines that differ are replaced.
+            let new: Vec<&str> = edited.lines.iter().map(String::as_str).collect();
+            let head = old.iter().zip(&new).take_while(|(a, b)| a == b).count();
+            let tail = old[head..]
+                .iter()
+                .rev()
+                .zip(new[head..].iter().rev())
+                .take_while(|(a, b)| a == b)
+                .count();
+            let (old_end, new_end) = (old.len() - tail, new.len() - tail);
+            let joined = new[head..new_end].join("\n");
+            let (range, text) = if head == old_end {
+                // Lines only added.
+                if head < old.len() {
+                    (at(head)..at(head), format!("{joined}\n"))
+                } else {
+                    (end(head - 1)..end(head - 1), format!("\n{joined}"))
+                }
+            } else if head == new_end {
+                // Lines only removed.
+                if old_end < old.len() {
+                    (at(head)..at(old_end), String::new())
+                } else {
+                    (end(head - 1)..end(old_end - 1), String::new())
+                }
+            } else {
+                (at(head)..end(old_end - 1), joined)
+            };
+            (t.start_line, (range, text, edited.caret))
+        };
+        let (range, text, (caret_row, caret_column)) = change;
+        // A move first, so this edit never merges into the typing before it.
+        self.buffer.set_cursor(range.start, false);
+        self.replace_in_buffer(range, &text, window, cx);
+        if let Some(cell) = self.cell_at_line(start_line + caret_row, caret_column) {
+            self.buffer.set_cursor(cell.lo, false);
+        }
+        cx.notify();
+        true
+    }
+}
+
+/// What the table context menu shows about the caret's cell.
+pub(in crate::text_editor) struct TableMenuState {
+    pub align: Align,
+    /// Not the header or delimiter row: a row can be added above or deleted.
+    pub can_edit_row: bool,
+    /// The table has more than one column.
+    pub can_delete_column: bool,
 }

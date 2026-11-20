@@ -49,10 +49,7 @@ impl HeadlessApp {
         });
         let vault = dir.clone();
         let opened = cx.update(|cx| {
-            cx.bind_keys([
-                KeyBinding::new("tab", InsertTab, Some("TextEditor")),
-                KeyBinding::new("shift-tab", BackTab, Some("TextEditor")),
-            ]);
+            cx.bind_keys(crate::text_editor::key_bindings());
             gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
                 cx.new(|cx| JadeApp::new(vault.clone(), window, cx))
             })

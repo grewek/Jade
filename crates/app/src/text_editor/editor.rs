@@ -754,7 +754,43 @@ impl Editor {
     }
 }
 
-actions!(text_editor, [InsertTab, BackTab]);
+actions!(
+    text_editor,
+    [
+        InsertTab,
+        BackTab,
+        TableRowAbove,
+        TableRowBelow,
+        TableColumnLeft,
+        TableColumnRight,
+        TableDeleteRow,
+        TableDeleteColumn,
+        TableAlignLeft,
+        TableAlignCenter,
+        TableAlignRight
+    ]
+);
+
+/// The editor's key bindings, all in the `TextEditor` context. Tab and
+/// Shift+Tab must out-rank the global focus-next binding (see
+/// [`Editor::handle_insert_tab`]); the table chords are Alt+Shift so that
+/// nothing else uses them, and are given back (propagated) outside a table.
+pub fn key_bindings() -> Vec<KeyBinding> {
+    let context = Some("TextEditor");
+    vec![
+        KeyBinding::new("tab", InsertTab, context),
+        KeyBinding::new("shift-tab", BackTab, context),
+        KeyBinding::new("alt-shift-up", TableRowAbove, context),
+        KeyBinding::new("alt-shift-down", TableRowBelow, context),
+        KeyBinding::new("alt-shift-left", TableColumnLeft, context),
+        KeyBinding::new("alt-shift-right", TableColumnRight, context),
+        KeyBinding::new("alt-shift-backspace", TableDeleteRow, context),
+        KeyBinding::new("alt-shift-delete", TableDeleteColumn, context),
+        KeyBinding::new("alt-shift-l", TableAlignLeft, context),
+        KeyBinding::new("alt-shift-c", TableAlignCenter, context),
+        KeyBinding::new("alt-shift-r", TableAlignRight, context),
+    ]
+}
 
 impl EventEmitter<EditorEvent> for Editor {}
 

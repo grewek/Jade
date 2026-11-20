@@ -3,6 +3,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use gpui_kit::component::WindowExt;
+use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
 use super::Editor;
@@ -22,6 +23,8 @@ use super::live_preview::{
 };
 use super::paint_trace::{FrameInfo, PaintTrace};
 use super::table_box::{self, layout_row_editing};
+use super::table_ops::Op;
+use super::table_preview::Align;
 use super::table_preview::{self, Table, table_index_at};
 use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
@@ -1646,6 +1649,15 @@ fn char_budget(available_width: Pixels, char_width: Pixels) -> Option<usize> {
 /// only needs to own the actual text/cursor painting and (since it has
 /// `bounds` in scope precisely when painting, unlike an event registered
 /// outside of paint) the mouse hit-testing math.
+/// A listener running a table shortcut's [`Op`] when its action fires.
+macro_rules! table_action {
+    ($cx:expr, $action:ident, $op:expr) => {
+        $cx.listener(|editor, _: &super::editor::$action, window, cx| {
+            editor.table_action($op, window, cx)
+        })
+    };
+}
+
 pub(super) fn render_editor(
     editor: &Editor,
     editor_entity: Entity<Editor>,
@@ -1653,6 +1665,7 @@ pub(super) fn render_editor(
     cx: &mut Context<Editor>,
 ) -> impl IntoElement {
     let render_start = crate::debug_server::frames::now();
+    let menu_editor = editor_entity.clone();
     // Read straight from `editor` (the `&mut self` `Editor::render` already
     // has), not `editor_entity.read(cx)` — this function runs *as* that
     // entity's own render, so reading through the entity handle here panics
@@ -1708,7 +1721,7 @@ pub(super) fn render_editor(
     let (total_height, cursor_top, cursor_height) = measure_document(&layout, cursor, line_height);
     let render_us = crate::debug_server::frames::micros_since(render_start);
 
-    div()
+    let editor_div = div()
         .id("editor")
         .test_support()
         .w_full()
@@ -1724,6 +1737,19 @@ pub(super) fn render_editor(
         .key_context("TextEditor")
         .on_action(cx.listener(Editor::handle_insert_tab))
         .on_action(cx.listener(Editor::handle_back_tab))
+        .on_action(table_action!(cx, TableRowAbove, Op::RowAbove))
+        .on_action(table_action!(cx, TableRowBelow, Op::RowBelow))
+        .on_action(table_action!(cx, TableColumnLeft, Op::ColumnLeft))
+        .on_action(table_action!(cx, TableColumnRight, Op::ColumnRight))
+        .on_action(table_action!(cx, TableDeleteRow, Op::DeleteRow))
+        .on_action(table_action!(cx, TableDeleteColumn, Op::DeleteColumn))
+        .on_action(table_action!(cx, TableAlignLeft, Op::Align(Align::Left)))
+        .on_action(table_action!(
+            cx,
+            TableAlignCenter,
+            Op::Align(Align::Center)
+        ))
+        .on_action(table_action!(cx, TableAlignRight, Op::Align(Align::Right)))
         .on_key_down(cx.listener(Editor::handle_key_down))
         .child(
             canvas(
@@ -1813,7 +1839,57 @@ pub(super) fn render_editor(
             )
             .size_full(),
         )
-        .debug_name("editor")
+        .debug_name("editor");
+    // The menu's wrapper is its own element: the named editor element is not a
+    // parent element, so it sits inside; both fill the pane.
+    div()
+        .id("editor-menu")
+        .w_full()
+        .h(total_height)
+        .min_h_full()
+        .context_menu(table_menu(menu_editor))
+        .child(editor_div)
+}
+
+/// The right-click menu: table structure for the caret's cell, nothing (so no
+/// menu) outside a table. The caret was moved to the clicked cell just before
+/// (`register_mouse_handling`), so the entries are built for that cell.
+fn table_menu(
+    editor: Entity<Editor>,
+) -> impl Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu + 'static {
+    move |menu, _window, cx| {
+        let Some(state) = editor.read(cx).table_menu_state() else {
+            return menu;
+        };
+        let item = |label: &'static str, op: Op, enabled: bool| {
+            let editor = editor.clone();
+            PopupMenuItem::new(label)
+                .disabled(!enabled)
+                .on_click(move |_, window, cx| {
+                    editor.update(cx, |editor, cx| {
+                        editor.run_table_op(op, window, cx);
+                    });
+                })
+        };
+        let align = |label: &'static str, to: Align| {
+            item(label, Op::Align(to), true).checked(state.align == to)
+        };
+        menu.item(item("Insert row above", Op::RowAbove, state.can_edit_row))
+            .item(item("Insert row below", Op::RowBelow, true))
+            .item(item("Insert column left", Op::ColumnLeft, true))
+            .item(item("Insert column right", Op::ColumnRight, true))
+            .separator()
+            .item(item("Delete row", Op::DeleteRow, state.can_edit_row))
+            .item(item(
+                "Delete column",
+                Op::DeleteColumn,
+                state.can_delete_column,
+            ))
+            .separator()
+            .item(align("Align left", Align::Left))
+            .item(align("Align center", Align::Center))
+            .item(align("Align right", Align::Right))
+    }
 }
 
 /// Registers this frame's mouse listeners: press to focus and place the
@@ -1828,6 +1904,31 @@ fn register_mouse_handling(
     window: &mut Window,
 ) {
     let bounds = view.bounds;
+
+    // A right-click in a table puts the caret in the clicked cell before the
+    // context menu (which reads it) opens: capture runs ahead of the menu's
+    // own bubble listener.
+    window.on_mouse_event({
+        let editor_entity = editor_entity.clone();
+        let view = view.clone();
+        move |event: &MouseDownEvent, phase, window, cx| {
+            if phase != DispatchPhase::Capture
+                || event.button != MouseButton::Right
+                || !bounds.contains(&event.position)
+                || window.has_active_dialog(cx)
+            {
+                return;
+            }
+            let offset =
+                hit_for_position(editor_entity.read(cx), &view, event.position, window).offset;
+            editor_entity.update(cx, |editor, cx| {
+                if editor.is_table_line_at(offset) {
+                    editor.buffer_mut().set_cursor(offset, false);
+                    cx.notify();
+                }
+            });
+        }
+    });
     window.on_mouse_event({
         let editor_entity = editor_entity.clone();
         let view = view.clone();
@@ -3076,17 +3177,17 @@ fn paint_lines(
 // recurse infinitely (see the project-wide note on this in `app.rs`).
 #[cfg(test)]
 mod tests {
+    use super::super::Editor;
     use super::super::block_preview::LineRole;
     use super::super::live_preview::LineIndent;
     use super::super::table_preview::classify_tables;
     use super::super::test_support::apply_edit;
-    use super::super::{BackTab, Editor, InsertTab};
     use super::LineState;
     use super::{TableLineKind, is_active_line, row_count_for_line, shape_display_line};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
-        AnyWindowHandle, AppContext, Entity, EntityInputHandler, KeyBinding, Pixels, Point,
-        TestAppContext, WindowOptions, point, px,
+        AnyWindowHandle, AppContext, Entity, EntityInputHandler, Pixels, Point, TestAppContext,
+        WindowOptions, point, px,
     };
 
     fn open_editor(
@@ -3100,10 +3201,7 @@ mod tests {
         cx.update(|cx| {
             // Must out-rank `gpui_kit::init`'s own global "tab" binding —
             // see `Editor::handle_insert_tab`'s doc comment.
-            cx.bind_keys([
-                KeyBinding::new("tab", InsertTab, Some("TextEditor")),
-                KeyBinding::new("shift-tab", BackTab, Some("TextEditor")),
-            ]);
+            cx.bind_keys(crate::text_editor::key_bindings());
             gpui_kit::open_window(WindowOptions::default(), cx, move |_window, cx| {
                 cx.new(|cx| Editor::new(text, cx))
             })
@@ -5106,6 +5204,96 @@ mod tests {
             assert_eq!(raw(cx), None);
             type_text(cx, window, "|");
             assert_eq!(state(cx, &editor).0, TABLE.replacen("| c |", "| \\|c |", 1));
+        }
+
+        #[gpui_kit::test]
+        fn shortcuts_edit_rows_and_columns_and_each_is_one_undo(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('c').unwrap());
+            press(cx, window, "alt-shift-down");
+            let with_row = TABLE.replacen("| c | d |", "| c | d |\n| | |", 1);
+            assert_eq!(state(cx, &editor).0, with_row);
+            assert_eq!(
+                state(cx, &editor).1,
+                with_row.find("| |").unwrap() + 1,
+                "in the new row"
+            );
+            assert_rows_are_exact(cx, window, &editor);
+            press(cx, window, "alt-shift-right");
+            const WITH_COLUMN: &str = "| a | | b |\n|---|---|---|\n| c | | d |\n| | | |\n\nend";
+            assert_eq!(state(cx, &editor).0, WITH_COLUMN);
+            assert_rows_are_exact(cx, window, &editor);
+            press(cx, window, "alt-shift-delete");
+            assert_eq!(state(cx, &editor).0, with_row);
+            press(cx, window, "alt-shift-backspace");
+            assert_eq!(state(cx, &editor).0, TABLE);
+            press(cx, window, "ctrl-z");
+            assert_eq!(state(cx, &editor).0, with_row, "a delete is one undo");
+            press(cx, window, "ctrl-z");
+            assert_eq!(state(cx, &editor).0, WITH_COLUMN, "one undo for the column");
+        }
+
+        #[gpui_kit::test]
+        fn alignment_shortcut_rewrites_the_delimiter_and_row_above_is_off_in_the_header(
+            cx: &mut TestAppContext,
+        ) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.find('b').unwrap());
+            press(cx, window, "alt-shift-up");
+            assert_eq!(state(cx, &editor).0, TABLE, "no row above the header");
+            press(cx, window, "alt-shift-c");
+            assert_eq!(
+                state(cx, &editor).0,
+                TABLE.replacen("|---|---|", "|---|:---:|", 1)
+            );
+            assert_rows_are_exact(cx, window, &editor);
+        }
+
+        #[gpui_kit::test]
+        fn table_chords_outside_a_table_are_left_to_the_editor(cx: &mut TestAppContext) {
+            let (window, editor) = open_at(cx, TABLE, TABLE.len() - 2);
+            press(cx, window, "alt-shift-left");
+            let selection = editor.read_with(cx, |e, _| e.buffer().selection());
+            assert_eq!(selection, Some(TABLE.len() - 3..TABLE.len() - 2));
+            assert_eq!(state(cx, &editor).0, TABLE);
+        }
+
+        #[gpui_kit::test]
+        fn right_click_in_a_table_moves_the_caret_and_has_a_menu(cx: &mut TestAppContext) {
+            use gpui_kit::{MouseButton, MouseDownEvent, MouseUpEvent, PlatformInput};
+            let (window, editor) = open_at(cx, TABLE, TABLE.len());
+            cx.update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find("editor").bounds();
+                // The body row is the third line, below the (one-row) header.
+                let position = point(
+                    bounds.origin.x + px(20.),
+                    bounds.origin.y + window.line_height() * 2.5,
+                );
+                let (button, modifiers) = (MouseButton::Right, Default::default());
+                let down = MouseDownEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                    first_mouse: false,
+                };
+                window.dispatch_event(PlatformInput::MouseDown(down), cx);
+                let up = MouseUpEvent {
+                    button,
+                    position,
+                    modifiers,
+                    click_count: 1,
+                };
+                window.dispatch_event(PlatformInput::MouseUp(up), cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+            let line_start = TABLE.find("| c").unwrap();
+            let cursor = state(cx, &editor).1;
+            assert!(
+                (line_start..line_start + 9).contains(&cursor),
+                "caret in the clicked row: {cursor}"
+            );
+            assert!(editor.read_with(cx, |e, _| e.table_menu_state().is_some()));
         }
 
         #[gpui_kit::test]

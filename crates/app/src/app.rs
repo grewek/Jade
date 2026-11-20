@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
 use crate::debug_server::{self, targets::DebugName};
-use crate::text_editor::{BackTab, Editor, EditorEvent, InsertTab};
+use crate::text_editor::{Editor, EditorEvent};
 use crate::theme::{Alpha, ConfigDirs, Role, ThemeEngine};
 use gpui_kit::component::button::{Button, ButtonVariant, ButtonVariants as _};
 use gpui_kit::component::command::{Command, CommandItem, CommandState};
@@ -1951,10 +1951,9 @@ pub fn run() {
             cx.bind_keys([
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
-                KeyBinding::new("tab", InsertTab, Some("TextEditor")),
-                KeyBinding::new("shift-tab", BackTab, Some("TextEditor")),
                 KeyBinding::new("ctrl-p", OpenCommandPalette, None),
             ]);
+            cx.bind_keys(crate::text_editor::key_bindings());
             bind_open_command_palette(cx);
             // Wayland picks the window icon from the desktop entry whose name
             // is this id (`packaging/jade.desktop`); the compositor ignores
@@ -2005,8 +2004,8 @@ fn bind_open_command_palette(cx: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::{
-        BackTab, DeleteNote, Editor, InsertTab, JadeApp, OpenCommandPalette, RenameNote,
-        SIDEBAR_WIDTH_DEFAULT, SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN,
+        DeleteNote, Editor, JadeApp, OpenCommandPalette, RenameNote, SIDEBAR_WIDTH_DEFAULT,
+        SIDEBAR_WIDTH_MAX, SIDEBAR_WIDTH_MIN,
     };
     use crate::theme::{Role, ThemeEngine};
     use gpui_kit::component::WindowExt;
@@ -2037,10 +2036,9 @@ mod tests {
             cx.bind_keys([
                 KeyBinding::new("f2", RenameNote, Some("NoteList")),
                 KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
-                KeyBinding::new("tab", InsertTab, Some("TextEditor")),
-                KeyBinding::new("shift-tab", BackTab, Some("TextEditor")),
                 KeyBinding::new("ctrl-p", OpenCommandPalette, None),
             ]);
+            cx.bind_keys(crate::text_editor::key_bindings());
             super::bind_open_command_palette(cx);
             gpui_kit::open_window(WindowOptions::default(), cx, move |window, cx| {
                 cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
