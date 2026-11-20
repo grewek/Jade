@@ -5049,6 +5049,13 @@ mod tests {
                 TABLE.replacen("| c |", "| c<br> |", 1)
             );
             assert_rows_are_exact(cx, window, &editor);
+            // The caret is on the new line, and arrows step over the hidden tag.
+            let at = TABLE.find('c').unwrap() + 5;
+            assert_eq!(state(cx, &editor).1, at);
+            press(cx, window, "left");
+            assert_eq!(state(cx, &editor).1, at - 4);
+            press(cx, window, "right");
+            assert_eq!(state(cx, &editor).1, at);
             press(cx, window, "backspace");
             assert_eq!(state(cx, &editor).0, TABLE);
         }

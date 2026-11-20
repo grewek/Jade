@@ -157,19 +157,41 @@ fn raw_cuts(text: &str, width: usize, mut emit: impl FnMut(Range<usize>)) {
 
 /// How many lines [`wrap_raw`] gives `text`.
 pub(super) fn raw_line_count(text: &str, width: usize) -> usize {
-    let mut count = 0;
-    raw_cuts(text, width, |_| count += 1);
-    count
+    text.split(LINE_BREAK)
+        .map(|part| {
+            let mut count = 0;
+            raw_cuts(part, width, |_| count += 1);
+            count
+        })
+        .sum()
 }
 
 /// The lines the edited text at `range` of `line` wraps onto in `width`
 /// characters, as byte ranges of `line`; never empty.
 fn wrap_raw(line: &str, range: Range<usize>, width: usize) -> Vec<Range<usize>> {
     let mut lines = Vec::new();
-    raw_cuts(&line[range.clone()], width, |r| {
-        lines.push(range.start + r.start..range.start + r.end);
-    });
+    let mut start = range.start;
+    // A `<br>` is a line break here too, as in the rendered cell: its bytes
+    // belong to no line, so the caret has a place before it and after it.
+    for part in line[range.clone()].split(LINE_BREAK) {
+        raw_cuts(part, width, |r| {
+            lines.push(start + r.start..start + r.end);
+        });
+        start += part.len() + LINE_BREAK.len();
+    }
     lines
+}
+
+/// The line of an edited cell holding the caret at byte `offset`: the first
+/// whose end is past it, or at it when the next line does not continue
+/// straight on (the caret sits before a `<br>`, or the text ends).
+fn line_at_offset(lines: &[Range<usize>], offset: usize) -> usize {
+    (0..lines.len())
+        .find(|&i| {
+            offset < lines[i].end
+                || (offset == lines[i].end && lines.get(i + 1).is_none_or(|n| n.start != offset))
+        })
+        .unwrap_or(lines.len() - 1)
 }
 
 /// One column's cell of one row.
@@ -314,11 +336,7 @@ fn shown_len(word: &str) -> usize {
 /// cell it is on, and its x in characters from the table's left edge.
 pub(super) fn caret_at(line: &str, widths: &[usize], column: usize, offset: usize) -> (usize, f32) {
     let cell = &layout_row_editing(line, widths, Some(column))[column];
-    let row = cell
-        .lines
-        .iter()
-        .position(|r| offset < r.end)
-        .unwrap_or(cell.lines.len() - 1);
+    let row = line_at_offset(&cell.lines, offset);
     (
         row,
         x_in_line(line, widths, column, &cell.lines[row], offset),
@@ -430,10 +448,17 @@ mod tests {
                 .max()
                 .unwrap()
         );
-        // Edited, the tag is plain text on one line.
+        // Edited, the break still ends the line and the tag is still not shown;
+        // the caret is before it at the end of a line, after it at the next start.
         let edited = layout_row_editing(line, &[40], Some(0));
-        assert_eq!(edited[0].lines.len(), 1);
-        assert_eq!(row_line_count_editing(line, &[40], Some(0)), 1);
+        assert_eq!(
+            edited[0].lines,
+            cells[0].lines.iter().map(|r| r.clone()).collect::<Vec<_>>()
+        );
+        assert_eq!(row_line_count_editing(line, &[40], Some(0)), 4);
+        let tag = line.find("<br>").unwrap();
+        assert_eq!(caret_at(line, &[40], 0, tag).0, 0);
+        assert_eq!(caret_at(line, &[40], 0, tag + 4).0, 1);
     }
 
     /// The column is as wide as the cell's trimmed text, so a space typed at the

@@ -136,9 +136,20 @@ impl Editor {
                 Some(selection) if !(inside(selection.start) && inside(selection.end)) => None,
                 Some(_) => Some(cell),
                 None => {
-                    if !inside(cursor) {
-                        self.buffer
-                            .set_cursor(cursor.clamp(cell.lo, cell.hi), false);
+                    let text = self.buffer.text();
+                    // Not inside a `<br>` either: it is one step, shown as a break.
+                    let inside_tag = (1..4).find(|&k| {
+                        cursor >= k
+                            && text
+                                .get(cursor - k..)
+                                .is_some_and(|t| t.starts_with("<br>"))
+                    });
+                    let wanted = match inside_tag {
+                        Some(k) => cursor - k + 4,
+                        None => cursor.clamp(cell.lo, cell.hi),
+                    };
+                    if wanted != cursor {
+                        self.buffer.set_cursor(wanted, false);
                     }
                     Some(cell)
                 }
@@ -237,6 +248,15 @@ impl Editor {
         let cursor = self.buffer.cursor();
         let selected = self.buffer.has_selection();
         let handled = match key {
+            // A `<br>` shows as a line break, so the caret steps over it whole.
+            "left" if self.buffer.text()[..cursor].ends_with("<br>") => {
+                self.buffer.set_cursor(cursor - 4, shift);
+                true
+            }
+            "right" if self.buffer.text()[cursor..].starts_with("<br>") => {
+                self.buffer.set_cursor(cursor + 4, shift);
+                true
+            }
             "left" if cursor <= cell.lo && !selected => {
                 if !shift {
                     self.move_to_neighbour(&cell, false, false);
