@@ -110,6 +110,11 @@ pub struct Editor {
     /// directly — no need to read/update the entity itself from inside
     /// paint, where that isn't guaranteed safe.
     pub(super) last_autoscrolled_cursor: Rc<Cell<Option<usize>>>,
+    /// What the last paint laid out, for keys that need where things are on
+    /// screen (Up and Down by painted row).
+    pub(super) last_view: Option<Rc<super::element::FrameView>>,
+    /// The x a run of Up/Down presses aims for, with the caret it was kept for.
+    pub(super) visual_goal: Option<(usize, gpui::Pixels)>,
     /// Persisted classification results for the buffer's current text —
     /// see `document_cache`'s own module doc. `Rc<RefCell<_>>` for the same
     /// reason `scroll_handle`/`last_autoscrolled_cursor` are: `render_editor`
@@ -168,6 +173,8 @@ impl Editor {
             marked_range: None,
             scroll_handle: ScrollHandle::new(),
             last_autoscrolled_cursor: Rc::new(Cell::new(None)),
+            last_view: None,
+            visual_goal: None,
             document_cache,
             row_height_cache: Rc::new(RefCell::new(RowHeightCache::empty())),
             doc_stats,
@@ -671,11 +678,15 @@ impl Editor {
                 cx.notify();
             }
             "up" => {
-                self.move_vertical(false, shift);
+                if !super::element::move_by_row(self, false, shift, window) {
+                    self.move_vertical(false, shift);
+                }
                 cx.notify();
             }
             "down" => {
-                self.move_vertical(true, shift);
+                if !super::element::move_by_row(self, true, shift, window) {
+                    self.move_vertical(true, shift);
+                }
                 cx.notify();
             }
             "home" => {

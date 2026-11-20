@@ -1254,6 +1254,143 @@ pub(super) fn render_params(
     }
 }
 
+/// Where the caret at `offset` is on screen (window coordinates): in a region's
+/// column, else in its plain line. `None` when its line is outside the viewport.
+pub(super) fn caret_rect(
+    text: &str,
+    doc: &DocumentCache,
+    layout: &LineLayout,
+    (offset, cursor, focused): (usize, usize, bool),
+    (font, font_size, text_color, line_height): (&Font, Pixels, Hsla, Pixels),
+    (bounds, viewport): (Bounds<Pixels>, Bounds<Pixels>),
+    window: &mut Window,
+) -> Option<Bounds<Pixels>> {
+    let range = visible_line_range(layout, bounds, viewport);
+    if range.is_empty() {
+        return None;
+    }
+    if let Some(found) = caret_in_column(
+        text,
+        doc,
+        layout,
+        (offset, cursor, focused),
+        (font, font_size, line_height),
+        (text_color.into(), bounds),
+        window,
+    ) {
+        return Some(found);
+    }
+    let mut y_offset = layout.cumulative_at(range.start);
+    for i in range {
+        let line_range = layout.line_range(i);
+        let line_text = &text[line_range.clone()];
+        let state = LineState::of(doc, i, cursor, focused);
+        let results = shape_display_line(
+            line_text,
+            &state,
+            font,
+            font_size,
+            text_color,
+            bounds.size.width,
+            window,
+        );
+        // More than one entry only for a table row whose cells wrapped.
+        for (wrapped, display_line) in &results {
+            let height = wrapped.size(line_height).height;
+            if offset <= line_range.end {
+                let display_offset = display_line.display_offset_for_raw(offset - line_range.start);
+                let pos = justify::position_for_index(
+                    (&state, wrapped, display_line),
+                    results.len(),
+                    display_offset,
+                    line_height,
+                )
+                .unwrap_or(point(px(0.), px(0.)));
+                let x = pos.x + indent_px(display_line.indent.level());
+                return Some(Bounds {
+                    origin: bounds.origin + point(x, y_offset + pos.y),
+                    size: size(px(1.), line_height),
+                });
+            }
+            y_offset += height;
+        }
+    }
+    None
+}
+
+/// Up or Down by one painted row, keeping the caret's x: a wrapped paragraph's
+/// rows, and the rows of a float's text, are stepped one by one instead of the
+/// whole source line. `false` (nothing moved) when the last frame is stale, the
+/// target is off the editor, or the move would not change the caret, so the
+/// caller moves by source line as before.
+pub(super) fn move_by_row(
+    editor: &mut Editor,
+    down: bool,
+    extend: bool,
+    window: &mut Window,
+) -> bool {
+    let Some(view) = editor.last_view.clone() else {
+        return false;
+    };
+    let cursor = editor.buffer().cursor();
+    let caret = {
+        let doc = editor.document_cache.borrow();
+        if view.cursor != cursor || !view.focused || view.layout.line_count() != doc.line_count() {
+            return false;
+        }
+        caret_rect(
+            editor.buffer().text(),
+            &doc,
+            &view.layout,
+            (cursor, cursor, true),
+            (
+                &view.font,
+                view.font_size,
+                view.text_color,
+                view.line_height,
+            ),
+            (view.bounds, view.viewport),
+            window,
+        )
+    };
+    let Some(caret) = caret else {
+        return false;
+    };
+    let goal = match editor.visual_goal {
+        Some((at, x)) if at == cursor => x,
+        _ => caret.origin.x,
+    };
+    let lh = view.line_height;
+    let y = caret.origin.y + lh * 0.5 + if down { lh } else { -lh };
+    let (top, bottom) = (
+        view.bounds.origin.y,
+        view.bounds.origin.y + view.bounds.size.height,
+    );
+    if y < top || y >= bottom {
+        return false;
+    }
+    // The row may be just outside the viewport: look a few rows further.
+    let pad = lh * 3.;
+    let wide = FrameView {
+        viewport: Bounds {
+            origin: view.viewport.origin - point(px(0.), pad),
+            size: size(
+                view.viewport.size.width,
+                view.viewport.size.height + pad * 2.,
+            ),
+        },
+        ..(*view).clone()
+    };
+    let target = hit_for_position(editor, &wide, point(goal, y), window).offset;
+    if (down && target <= cursor) || (!down && target >= cursor) {
+        return false;
+    }
+    editor.buffer.set_cursor(target, extend);
+    editor.visual_goal = Some((target, goal));
+    editor.skip_hidden_lines(down, extend);
+    true
+}
+
 /// The width regions are laid out across for an editor `available_width`
 /// wide: none before the first layout (no real width yet).
 /// See [`region::caret_bounds`].
@@ -2018,6 +2155,7 @@ pub(super) fn render_editor(
                         column_drag: editor_entity.read(cx).column_drag.clone(),
                     });
                     editor_entity.update(cx, |editor, cx| {
+                        editor.last_view = Some(view.clone());
                         if editor.hovering_link {
                             window.set_window_cursor_style(CursorStyle::PointingHand);
                         }
@@ -2077,7 +2215,7 @@ fn table_menu(
         let columns = column_menu(&editor, cx);
         let Some(state) = editor.read(cx).table_menu_state() else {
             return match columns {
-                Some((first, second)) => menu.item(first).item(second),
+                Some(items) => items.into_iter().fold(menu, |menu, item| menu.item(item)),
                 None => menu,
             };
         };
@@ -2094,13 +2232,14 @@ fn table_menu(
         let align = |label: &'static str, to: Align| {
             item(label, Op::Align(to), true).checked(state.align == to)
         };
-        let (first, second) = columns.unwrap_or_else(|| {
-            (
+        let column_items = columns.unwrap_or_else(|| {
+            vec![
                 PopupMenuItem::new("Make columns").disabled(true),
                 PopupMenuItem::new("Unwrap columns").disabled(true),
-            )
+            ]
         });
-        menu.item(item("Insert row above", Op::RowAbove, state.can_edit_row))
+        let menu = menu
+            .item(item("Insert row above", Op::RowAbove, state.can_edit_row))
             .item(item("Insert row below", Op::RowBelow, true))
             .item(item("Insert column left", Op::ColumnLeft, true))
             .item(item("Insert column right", Op::ColumnRight, true))
@@ -2115,15 +2254,16 @@ fn table_menu(
             .item(align("Align left", Align::Left))
             .item(align("Align center", Align::Center))
             .item(align("Align right", Align::Right))
-            .separator()
-            .item(first)
-            .item(second)
+            .separator();
+        column_items
+            .into_iter()
+            .fold(menu, |menu, item| menu.item(item))
     }
 }
 
-/// The two column entries for the caret: add a column and unwrap inside a
-/// region, "Make columns" (and a disabled unwrap) on a block, none elsewhere.
-fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<(PopupMenuItem, PopupMenuItem)> {
+/// The column entries for the caret: add a column and unwrap inside a
+/// region, flip and unwrap on a float, float entries on a block, "Make columns" (and a disabled unwrap) on a block, none elsewhere.
+fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<Vec<PopupMenuItem>> {
     let state = editor.read(cx).column_menu_state()?;
     let run = |label: &'static str,
                enabled: bool,
@@ -2138,18 +2278,25 @@ fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<(PopupMenuItem, Popu
             })
     };
     Some(match state {
-        ColumnMenu::Block => (
+        ColumnMenu::Block => vec![
             run("Make columns", true, Editor::make_columns),
-            PopupMenuItem::new("Unwrap columns").disabled(true),
-        ),
-        ColumnMenu::Region { can_add } => (
+            run("Float right", true, |e, w, c| e.make_float(true, w, c)),
+            run("Float left", true, |e, w, c| e.make_float(false, w, c)),
+        ],
+        ColumnMenu::Aside => vec![
+            run("Flip side", true, Editor::flip_aside),
+            run("Unwrap float", true, |e, w, c| {
+                e.run_region_menu(false, w, c)
+            }),
+        ],
+        ColumnMenu::Region { can_add } => vec![
             run("Add column", can_add, |e, w, c| {
                 e.run_region_menu(true, w, c)
             }),
             run("Unwrap columns", true, |e, w, c| {
                 e.run_region_menu(false, w, c)
             }),
-        ),
+        ],
     })
 }
 
@@ -2176,6 +2323,15 @@ fn register_mouse_handling(
                 || event.button != MouseButton::Left
                 || window.has_active_dialog(cx)
             {
+                return;
+            }
+            if let Some((region, percent)) =
+                restore_pill_at(editor_entity.read(cx), &view, event.position)
+            {
+                cx.stop_propagation();
+                editor_entity.update(cx, |editor, cx| {
+                    editor.set_region_ratio(region, percent, window, cx);
+                });
                 return;
             }
             let Some((region, handle)) =
@@ -2437,7 +2593,8 @@ fn register_mouse_handling(
 /// Everything a frame's painting and mouse hit-testing share, captured once
 /// at paint time: the line layout and where the editor, its viewport and the
 /// cursor are, with the font the lines are shaped in.
-struct FrameView {
+#[derive(Clone)]
+pub(super) struct FrameView {
     layout: LineLayout,
     cursor: usize,
     focused: bool,
@@ -2960,11 +3117,13 @@ fn table_grid(
             window,
         );
         let column = region::column_with_line(&shaped, table.start_line)?;
+        // The table is as wide as the line that opens it.
+        let first = column.lines.iter().find(|sl| sl.line == table.start_line)?;
         let region_top = bounds.origin.y + layout.cumulative_at(region.start_line);
-        let columns = TableColumns::of(table, column.width, cfg, window);
+        let columns = TableColumns::of(table, first.width, cfg, window);
         let at = |line: usize| region::line_top(column, region_top, line);
         let (grid, top) = grid_for(table, &columns, &at);
-        return Some((grid, point(bounds.origin.x + column.x, top)));
+        return Some((grid, point(bounds.origin.x + first.x, top)));
     }
     let columns = TableColumns::of(table, bounds.size.width, cfg, window);
     let at = |line: usize| bounds.origin.y + layout.cumulative_at(line);
@@ -3009,9 +3168,9 @@ fn column_frame_at(
     let last = region.count - 1;
     let frame = column_handles::Frame {
         dividers: (0..last).map(|k| split.divider_x(k)).collect(),
-        width: split.x(last) + split.width(last),
+        width: split.total,
         height: f32::from(height),
-        can_add: region.count < columns::MAX_COLUMNS,
+        can_add: region.count < columns::MAX_COLUMNS && !region.is_aside(),
     };
     let p = (
         f32::from(position.x - view.bounds.origin.x),
@@ -3051,12 +3210,29 @@ fn column_drag_percent(
 ) -> Option<Vec<u8>> {
     let doc = editor.document_cache.borrow();
     let region = *doc.columns().get(drag.region)?;
-    let (_, split) = doc.side_by_side(region.start_line)?;
+    // From the shares the file has, not the layout the drag previews: that one
+    // may be stacked, and the pointer must still be able to bring it back.
+    let total = doc.column_width()?;
     let k = drag.divider;
     let x = f32::from(position.x - view.bounds.origin.x);
+    if let columns::Kind::Aside { right } = region.kind {
+        // The float's edge is half a gap from the pointer; its share of the
+        // line without the gap, snapped and kept within bounds.
+        let usable = total - columns::GAP;
+        let float = if right {
+            total - x - columns::GAP / 2.
+        } else {
+            x - columns::GAP / 2.
+        };
+        let step = f32::from(column_ops::SNAP);
+        let share = (float / usable * 100. / step).round() * step;
+        let share = share.clamp(f32::from(columns::ASIDE_MIN), f32::from(columns::ASIDE_MAX)) as u8;
+        return Some(vec![share, 100 - share]);
+    }
     // Column `k`'s right edge is half a gap left of the pointer.
-    let width = x - columns::GAP / 2. - split.x(k);
-    let usable: f32 = (0..region.count).map(|c| split.width(c)).sum();
+    let (left, usable) =
+        columns::column_left_unchecked(total, region.kind, &region.percent[..region.count], k);
+    let width = x - columns::GAP / 2. - left;
     let char_width = f32::from(mono_char_width(
         &view.font,
         view.font_size,
@@ -3367,6 +3543,123 @@ struct HandleColors {
 /// with the accent while it is dragged), and while dragging the drop line.
 /// One control: a round accent button (`round`) or a bordered grip, accent
 /// while `active`.
+/// The "back to columns" button of a region shown stacked, with the shares it
+/// would set. It sits in the (empty) row of the region's open marker, at the
+/// right. `None` for a region laid out as columns, shown as source, or too
+/// narrow for its columns even at their default shares.
+fn restore_pill(
+    view: &FrameView,
+    doc: &DocumentCache,
+    index: usize,
+) -> Option<(Bounds<Pixels>, Vec<u8>)> {
+    let region = *doc.columns().get(index)?;
+    if doc.raw_region() == Some(index) || doc.side_by_side(region.start_line).is_some() {
+        return None;
+    }
+    let percent = columns::restored(&region, doc.column_width()?)?;
+    let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
+    let (w, h) = (px(24.), px(18.));
+    let origin = point(
+        view.bounds.origin.x + view.bounds.size.width - w - px(4.),
+        top + (view.line_height - h) / 2.,
+    );
+    Some((
+        Bounds {
+            origin,
+            size: size(w, h),
+        },
+        percent,
+    ))
+}
+
+/// The stacked region whose restore button is under `position`, with its shares.
+fn restore_pill_at(
+    editor: &Editor,
+    view: &FrameView,
+    position: Point<Pixels>,
+) -> Option<(usize, Vec<u8>)> {
+    let doc = editor.document_cache.borrow();
+    if editor.column_drag.is_some() {
+        return None;
+    }
+    (0..doc.columns().len()).find_map(|index| {
+        let (bounds, percent) = restore_pill(view, &doc, index)?;
+        bounds.contains(&position).then_some((index, percent))
+    })
+}
+
+/// What a stacked region shows of its columns: the divider being dragged as a
+/// ghost at the shares it would take (so it can be dragged back), else the
+/// button that brings the columns back.
+fn paint_stacked_controls(
+    view: &FrameView,
+    doc: &DocumentCache,
+    colors: &HandleColors,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let Some(total) = doc.column_width() else {
+        return;
+    };
+    if let Some(drag) = &view.column_drag {
+        let Some(&region) = doc.columns().get(drag.region) else {
+            return;
+        };
+        if doc.side_by_side(region.start_line).is_some() {
+            return;
+        }
+        let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
+        let bottom = view.bounds.origin.y + view.layout.cumulative_at(region.end_line);
+        let x = view.bounds.origin.x
+            + px(columns::divider_x_unchecked(
+                total,
+                region.kind,
+                &drag.percent,
+                drag.divider,
+            ));
+        let line = Bounds {
+            origin: point(x - px(1.), top),
+            size: size(px(2.), bottom - top),
+        };
+        window.paint_quad(fill(line, colors.accent));
+        let grip = Bounds {
+            origin: point(
+                x - px(column_handles::GRIP_SHORT) / 2.,
+                top + (px(column_handles::GRIP_LONG)).min((bottom - top) / 2.)
+                    - px(column_handles::GRIP_LONG) / 2.,
+            ),
+            size: size(
+                px(column_handles::GRIP_SHORT),
+                px(column_handles::GRIP_LONG),
+            ),
+        };
+        paint_control(
+            grip,
+            "icons/grip-vertical.svg",
+            (false, true),
+            colors,
+            (window, cx),
+        );
+        return;
+    }
+    for index in 0..doc.columns().len() {
+        let Some((bounds, _)) = restore_pill(view, doc, index) else {
+            continue;
+        };
+        if bounds.origin.y + bounds.size.height < view.viewport.origin.y
+            || bounds.origin.y > view.viewport.origin.y + view.viewport.size.height
+        {
+            continue;
+        }
+        paint_control(
+            bounds,
+            "icons/columns-2.svg",
+            (false, false),
+            colors,
+            (window, cx),
+        );
+    }
+}
+
 fn paint_control(
     bounds: Bounds<Pixels>,
     icon: &'static str,
@@ -3827,6 +4120,8 @@ fn paint_lines(
 
         y_offset += total_height;
     }
+    let handle_palette = handle_colors(&palette, text_color);
+    paint_stacked_controls(view, doc, &handle_palette, (window, cx));
 }
 
 /// A callout's background tint and accent bar, from `top` to `bottom`
@@ -5499,6 +5794,72 @@ mod tests {
         .unwrap();
     }
 
+    /// Up and Down step one painted row, so a wrapped paragraph beside a float
+    /// is walked row by row (not left for the float's last line), keeping the
+    /// caret's x, and the row below the cut is reached from the one above it.
+    #[gpui_kit::test]
+    fn up_and_down_step_painted_rows(cx: &mut TestAppContext) {
+        let para = "flowing words ".repeat(40);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: aside right 40%\n\nfloat one\n\nfloat two\n\nfloat three\n\n---\n\n{para}\n\n:::\n\nafter"
+            )
+            .into_boxed_str(),
+        );
+        let (window, editor) = open_editor(cx, text);
+        let key = |cx: &mut TestAppContext, k: &str| {
+            cx.update_window(window, |_, window, cx| {
+                window.dispatch_keystroke(gpui_kit::Keystroke::parse(k).unwrap(), cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+        };
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                e.document_cache.borrow_mut().set_column_width(Some(800.));
+                let at = text.find("flowing").unwrap() + 3;
+                e.buffer_mut().set_cursor(at, false);
+                e.focus_handle.focus(window, cx);
+            });
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let start = text.find("flowing").unwrap();
+        let end = start + para.len();
+        let cursor = |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().cursor());
+        let mut seen = vec![cursor(cx)];
+        for _ in 0..12 {
+            key(cx, "down");
+            seen.push(cursor(cx));
+        }
+        // Each press moves on, inside the paragraph while it has rows, and by
+        // roughly one row of text (about 30 to 60 bytes in the narrow channel).
+        let inside: Vec<_> = seen
+            .iter()
+            .filter(|&&c| (start..=end).contains(&c))
+            .collect();
+        assert!(
+            inside.len() >= 4,
+            "walks several rows of the paragraph: {seen:?}"
+        );
+        for pair in inside.windows(2) {
+            assert!(pair[1] > pair[0], "moves forward: {seen:?}");
+            assert!(pair[1] - pair[0] < 120, "one row, not the line: {seen:?}");
+        }
+        // And back up, row by row, never into the float.
+        let top = *inside.last().unwrap();
+        editor.update(cx, |e, _| e.buffer_mut().set_cursor(*top, false));
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        key(cx, "up");
+        let up = cursor(cx);
+        assert!(
+            up < *top && *top - up < 120 && up >= start,
+            "up one row: {up}"
+        );
+    }
+
     /// Up and Down walk a side-by-side region in source order and never leave
     /// the caret on a marker or padding line; the keys that would join a
     /// column to one do nothing.
@@ -5605,6 +5966,34 @@ mod tests {
             let to = at(split.x(1) + 100., px(10.));
             let percent = column_drag_percent(editor, &view, &drag, to, window).unwrap();
             assert!(percent[0] > 50 && percent[0] % 5 == 0 && percent[0] + percent[1] == 100);
+
+            // Dragged far enough to stack the region (a column under 160px), the
+            // drag is not lost: moving the pointer back brings the columns back,
+            // and the stacked region offers a button to restore them.
+            let stacked = vec![90, 10];
+            drop(doc);
+            doc_cache
+                .borrow_mut()
+                .set_column_preview(Some((0, stacked.clone())));
+            let doc = doc_cache.borrow();
+            assert!(doc.side_by_side(2).is_none(), "the preview stacks");
+            let drag = ColumnDrag {
+                region: 0,
+                divider: 0,
+                percent: stacked,
+            };
+            let back = column_drag_percent(editor, &view, &drag, at(split.x(1), px(10.)), window)
+                .expect("a stacked preview can still be dragged");
+            assert!((40..=60).contains(&back[0]), "{back:?}");
+            let (pill, shares) = super::restore_pill(&view, &doc, 0).expect("a restore button");
+            assert_eq!(shares, vec![50, 50]);
+            drop(doc);
+            let center = pill.origin + point(pill.size.width / 2., pill.size.height / 2.);
+            assert_eq!(
+                super::restore_pill_at(editor, &view, center),
+                Some((0, vec![50, 50]))
+            );
+            assert!(super::restore_pill_at(editor, &view, at(0., px(500.))).is_none());
         })
         .unwrap();
     }
@@ -6215,6 +6604,65 @@ mod tests {
             let n = new_text.lines().count();
             let counts = |r: &RowHeightCache| (0..n).map(|i| r.row_count(i)).collect::<Vec<_>>();
             assert_eq!(counts(&rows), counts(&fresh));
+        })
+        .unwrap();
+    }
+
+    /// Text beside a float is as wide as the channel; the paragraph crossing the
+    /// float's bottom is cut into the rows beside it and the rest below, at the
+    /// whole width, and the two pieces tile the raw line.
+    #[gpui_kit::test]
+    fn text_flows_around_a_float_and_widens_below_it(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+
+        let para = "flowing words ".repeat(40);
+        let text = format!(
+            "::: aside right 40%\n\nfloat\n\nfloat two\n\nfloat three\n\n---\n\n{para}\n\n:::\n"
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let line_height = window.line_height();
+            let mut doc = DocumentCache::new(&text);
+            doc.set_column_width(Some(800.));
+            let (region, split) = doc.side_by_side(0).expect("an aside lays out");
+            let shaped = shape_region(
+                &text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, line_height),
+                (style.color.into(), None),
+                window,
+            );
+            let flow = shaped
+                .columns
+                .iter()
+                .find(|c| {
+                    c.lines.iter().any(|sl| {
+                        sl.raw.end > 0
+                            && text[doc.line_start_byte(sl.line)..].starts_with("flowing")
+                    })
+                })
+                .expect("a column holds the paragraph");
+            let pieces: Vec<_> = flow.lines.iter().collect();
+            assert_eq!(pieces.len(), 2, "the paragraph is cut once");
+            let (beside, below) = (pieces[0], pieces[1]);
+            assert!(beside.width < below.width, "narrower beside the float");
+            assert_eq!(beside.x, px(split.x(1)));
+            assert_eq!(below.x, px(0.));
+            assert_eq!(below.width, px(split.total));
+            assert_eq!(beside.raw.end, below.raw.start, "the pieces meet");
+            assert_eq!(below.raw.end, para.len());
+            assert_eq!(beside.line, below.line);
+            assert!(below.y >= beside.y + beside.height);
+            // The float itself is on the right at its width.
+            let float = shaped.columns.iter().find(|c| c.x > flow.x).unwrap();
+            assert_eq!(float.width, px(split.width(0)));
         })
         .unwrap();
     }

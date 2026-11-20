@@ -3,7 +3,7 @@
 //! them come out, so the editor can diff them into one undo step. The pixel
 //! side (which divider is dragged, where) is `column_handles.rs`.
 
-use super::columns::{Columns, MAX_COLUMNS, equal_shares};
+use super::columns::{self, Columns, Kind, MAX_COLUMNS, equal_shares};
 
 /// The smallest share a column keeps when a divider is dragged.
 pub const MIN_SHARE: u8 = 10;
@@ -21,11 +21,50 @@ pub fn open_marker(percent: &[u8]) -> String {
     format!("::: columns {}", ratio.join("/"))
 }
 
+/// The open marker of an aside: always explicit, side and share.
+pub fn aside_marker(right: bool, share: u8) -> String {
+    format!(
+        "::: aside {} {share}%",
+        if right { "right" } else { "left" }
+    )
+}
+
+/// `block` as a float on one side, `text` (already without markers) flowing
+/// around it.
+pub fn floated(block: &[&str], text: &[&str], right: bool) -> Vec<String> {
+    assert!(!block.is_empty());
+    let mut out = Vec::with_capacity(block.len() + text.len() + 7);
+    out.extend([aside_marker(right, columns::ASIDE_DEFAULT), String::new()]);
+    out.extend(block.iter().map(|l| (*l).to_owned()));
+    out.extend(["", "---", ""].map(str::to_owned));
+    out.extend(text.iter().map(|l| (*l).to_owned()));
+    out.extend(["", ":::"].map(str::to_owned));
+    out
+}
+
+/// The aside with its float on the other side, the share kept.
+pub fn flipped(lines: &[&str], region: &Columns) -> Vec<String> {
+    let Kind::Aside { right } = region.kind else {
+        unreachable!("flipped is for an aside");
+    };
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    out[0] = aside_marker(!right, region.percent[0]);
+    out
+}
+
 /// The region with its shares set to `percent`.
 pub fn with_ratio(lines: &[&str], percent: &[u8]) -> Vec<String> {
     assert!(lines.len() >= 3);
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
     out[0] = open_marker(percent);
+    out
+}
+
+/// The aside with its float's share set to `share`.
+pub fn with_aside_share(lines: &[&str], right: bool, share: u8) -> Vec<String> {
+    assert!(lines.len() >= 3);
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    out[0] = aside_marker(right, share);
     out
 }
 

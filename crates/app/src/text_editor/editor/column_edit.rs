@@ -9,6 +9,7 @@ use gpui_kit::*;
 use super::super::block_preview::LineRole;
 use super::super::column_ops;
 use super::super::columns::Columns;
+use super::super::columns::Kind;
 use super::super::document_cache::DocumentCache;
 use super::Editor;
 
@@ -17,7 +18,9 @@ use super::Editor;
 pub(in crate::text_editor) enum ColumnMenu {
     /// The caret is in a region: add a column (unless at the limit) or unwrap.
     Region { can_add: bool },
-    /// The caret is in a plain block that can become the first column.
+    /// The caret is in an aside: flip it to the other side, or unwrap.
+    Aside,
+    /// The caret is in a plain block that can become the first column, or a float.
     Block,
 }
 
@@ -142,6 +145,9 @@ impl Editor {
         let line = doc.line_at(self.buffer.cursor());
         if let Some(i) = doc.region_index_at(line) {
             let region = doc.columns()[i];
+            if region.is_aside() {
+                return Some(ColumnMenu::Aside);
+            }
             return Some(ColumnMenu::Region {
                 can_add: region.count < crate::text_editor::columns::MAX_COLUMNS,
             });
@@ -223,8 +229,13 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.edit_region(index, window, cx, |lines, region| {
-            (percent.len() == region.count && percent != region.percent[..region.count])
-                .then(|| column_ops::with_ratio(lines, &percent))
+            if percent.len() != region.count || percent == region.percent[..region.count] {
+                return None;
+            }
+            Some(match region.kind {
+                Kind::Aside { right } => column_ops::with_aside_share(lines, right, percent[0]),
+                Kind::Columns => column_ops::with_ratio(lines, &percent),
+            })
         })
     }
 
@@ -250,6 +261,70 @@ impl Editor {
         self.edit_region(index, window, cx, |lines, region| {
             Some(column_ops::unwrapped(lines, region))
         })
+    }
+
+    /// Flips the aside holding the caret to its other side.
+    pub(in crate::text_editor) fn flip_aside(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let index = {
+            let doc = self.document_cache.borrow();
+            doc.region_index_at(doc.line_at(self.buffer.cursor()))
+        };
+        let Some(index) = index else {
+            return false;
+        };
+        self.edit_region(index, window, cx, |lines, region| {
+            region
+                .is_aside()
+                .then(|| column_ops::flipped(lines, region))
+        })
+    }
+
+    /// Floats the block around the caret to one side, the paragraphs right
+    /// after it (up to three) flowing around it.
+    pub(in crate::text_editor) fn make_float(
+        &mut self,
+        right: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (range, text) = {
+            let doc = self.document_cache.borrow();
+            let line = doc.line_at(self.buffer.cursor());
+            let Some(block) = self.block_lines(&doc, line) else {
+                return false;
+            };
+            let source = self.buffer.text();
+            let line_text = |l: usize| &source[doc.line_start_byte(l)..doc.line_end_byte(l)];
+            let mut end = block.end;
+            let mut text: Vec<&str> = Vec::new();
+            for _ in 0..3 {
+                let Some(next) = (end..doc.line_count()).find(|&l| !line_text(l).trim().is_empty())
+                else {
+                    break;
+                };
+                let Some(following) = self.block_lines(&doc, next) else {
+                    break;
+                };
+                if !text.is_empty() {
+                    text.push("");
+                }
+                text.extend(following.clone().map(line_text));
+                end = following.end;
+            }
+            let lines: Vec<&str> = block.clone().map(line_text).collect();
+            let range = doc.line_start_byte(block.start)..doc.line_end_byte(end - 1);
+            (range, column_ops::floated(&lines, &text, right).join("\n"))
+        };
+        self.buffer.set_cursor(range.start, false);
+        self.replace_in_buffer(range.clone(), &text, window, cx);
+        self.buffer
+            .set_cursor(range.start + "::: aside right 40%\n\n".len(), false);
+        cx.notify();
+        true
     }
 
     /// The menu action for the caret's region (`add`) or unwrap.

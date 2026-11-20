@@ -203,6 +203,65 @@ pub struct DisplayLine {
 }
 
 impl DisplayLine {
+    /// Cuts the line at display byte `at` into the part before and the part
+    /// from there on, and the raw byte where the second begins. Each part's
+    /// raw and display ranges start at 0, so each reads as a line of its own.
+    /// A replaced segment (a bullet glyph) cannot be cut, so the cut moves back
+    /// to its start; a hidden one goes with the part after it. `at` is on a char
+    /// boundary of `display_text`.
+    pub fn split_at(&self, at: usize) -> (DisplayLine, DisplayLine, usize) {
+        assert!(at <= self.display_text.len());
+        let cut = self
+            .segments
+            .iter()
+            .find(|s| s.is_replaced() && s.display.start < at && at < s.display.end)
+            .map_or(at, |s| s.display.start);
+        let mut first = Vec::new();
+        let mut second = Vec::new();
+        let mut raw_cut = None;
+        for seg in &self.segments {
+            if seg.display.end <= cut && !(seg.is_hidden() && seg.display.start == cut) {
+                first.push(seg.clone());
+            } else if seg.display.start >= cut {
+                raw_cut.get_or_insert(seg.raw.start);
+                second.push(seg.clone());
+            } else {
+                // A verbatim run the cut passes through: split both ranges.
+                let into = cut - seg.display.start;
+                let mut head = seg.clone();
+                head.raw.end = seg.raw.start + into;
+                head.display.end = cut;
+                let mut tail = seg.clone();
+                tail.raw.start = seg.raw.start + into;
+                tail.display.start = cut;
+                raw_cut = Some(tail.raw.start);
+                first.push(head);
+                second.push(tail);
+            }
+        }
+        let raw_cut = raw_cut.unwrap_or_else(|| first.last().map_or(0, |s| s.raw.end));
+        let rebase = |seg: &mut DisplaySegment| {
+            seg.raw = seg.raw.start - raw_cut..seg.raw.end - raw_cut;
+            seg.display = seg.display.start - cut..seg.display.end - cut;
+        };
+        second.iter_mut().for_each(rebase);
+        let tail_text = self.display_text[cut..].to_owned();
+        let head_text = self.display_text[..cut].to_owned();
+        (
+            DisplayLine {
+                display_text: head_text,
+                segments: first,
+                indent: self.indent,
+            },
+            DisplayLine {
+                display_text: tail_text,
+                segments: second,
+                indent: LineIndent::None,
+            },
+            raw_cut,
+        )
+    }
+
     /// The raw range of the task checkbox (`[ ]`/`[x]` and its space) whose
     /// glyph covers display offset `display_offset`.
     pub fn checkbox_at(&self, display_offset: usize) -> Option<Range<usize>> {
@@ -2764,6 +2823,53 @@ mod tests {
                 InlineStyle::Blockquote(1)
             )]
         );
+    }
+
+    #[test]
+    fn a_display_line_splits_into_two_that_read_as_lines_of_their_own() {
+        let line = "plain **bold** and a [[Note]] link";
+        let dl = build_display_line(line, false);
+        for at in 0..=dl.display_text.len() {
+            if !dl.display_text.is_char_boundary(at) {
+                continue;
+            }
+            let (a, b, raw_cut) = dl.split_at(at);
+            assert_eq!(
+                format!("{}{}", a.display_text, b.display_text),
+                dl.display_text
+            );
+            // Every raw offset on one side maps to the same display byte as in
+            // the whole line (shifted for the second part).
+            let cut = a.display_text.len();
+            for raw in 0..=line.len() {
+                let whole = dl.display_offset_for_raw(raw);
+                if raw < raw_cut {
+                    assert!(a.display_offset_for_raw(raw) <= cut, "{at}/{raw}");
+                } else if whole >= cut {
+                    assert_eq!(
+                        b.display_offset_for_raw(raw - raw_cut) + cut,
+                        whole,
+                        "{at}/{raw}"
+                    );
+                }
+            }
+            // The parts tile the raw line.
+            let raw_end = |d: &DisplayLine| d.segments.last().map_or(0, |s| s.raw.end);
+            assert_eq!(raw_end(&b) + raw_cut, line.len(), "at {at}");
+        }
+    }
+
+    #[test]
+    fn a_replaced_segment_is_never_cut() {
+        let dl = build_display_line_in_context("- item text", false, LineContext::Plain);
+        let glyph_end = dl
+            .segments
+            .iter()
+            .find(|s| s.is_replaced())
+            .map(|s| s.display.end)
+            .unwrap();
+        let (a, _, _) = dl.split_at(glyph_end - 1);
+        assert!(a.display_text.is_empty(), "the cut moved before the glyph");
     }
 }
 

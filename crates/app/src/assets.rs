@@ -20,6 +20,7 @@ const EXTRA_ICONS: &[(&str, &[u8])] = lucide![
     "bug",
     "circle-question-mark",
     "clipboard-list",
+    "columns-2",
     "flame",
     "grip-horizontal",
     "grip-vertical",
