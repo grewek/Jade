@@ -701,25 +701,12 @@ impl DocumentCache {
             self.callouts.len()
         };
         let fresh_len = fresh.len();
-        // A callout the user folded or unfolded keeps that state when an edit
-        // re-derives it, matched by its header line (the walk restarts every
-        // callout it touches from the marker's own state).
-        let old_last = shift_line(last_touched_line, -delta);
-        let moved = |line: usize| {
-            if line <= old_last {
-                line
-            } else {
-                shift_line(line, delta)
-            }
-        };
-        for c in &mut fresh {
-            let kept = self.callouts[replace_from..replace_to]
-                .iter()
-                .find(|old| old.foldable && c.foldable && moved(old.start_line) == c.start_line);
-            if let Some(old) = kept {
-                c.folded = old.folded;
-            }
-        }
+        carry_fold_state(
+            &mut fresh,
+            &self.callouts[replace_from..replace_to],
+            shift_line(last_touched_line, -delta),
+            delta,
+        );
         self.callouts
             .splice(replace_from..replace_to, fresh.drain(..));
         if reconverged && delta != 0 {
@@ -879,6 +866,28 @@ fn lines_of<'a>(text: &'a str, strides: &'a [i64]) -> impl Iterator<Item = &'a s
 }
 
 /// `line` moved by `delta` lines.
+/// A callout the user folded or unfolded keeps that state when an edit
+/// re-derives it, matched by its header line (the walk restarts every callout
+/// it touches from the marker's own state). `old_last` is the last touched
+/// line in the old numbering; lines after it moved by `delta`.
+fn carry_fold_state(fresh: &mut [Callout], old: &[Callout], old_last: usize, delta: isize) {
+    let moved = |line: usize| {
+        if line <= old_last {
+            line
+        } else {
+            shift_line(line, delta)
+        }
+    };
+    for c in fresh {
+        let kept = old
+            .iter()
+            .find(|old| old.foldable && c.foldable && moved(old.start_line) == c.start_line);
+        if let Some(old) = kept {
+            c.folded = old.folded;
+        }
+    }
+}
+
 fn shift_line(line: usize, delta: isize) -> usize {
     let shifted = line as isize + delta;
     debug_assert!(shifted >= 0, "line {line} shifted by {delta}");
