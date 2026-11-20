@@ -96,6 +96,24 @@ fn column_state<'a>(
     }
 }
 
+/// The column holding `line`.
+pub(super) fn column_with_line(shaped: &ShapedRegion, line: usize) -> Option<&ShapedColumn> {
+    shaped
+        .columns
+        .iter()
+        .find(|c| c.lines.iter().any(|l| l.line == line))
+}
+
+/// The window y of `line`'s top in `column`, whose region starts at
+/// `region_top`; a line past the column's last is its bottom.
+pub(super) fn line_top(column: &ShapedColumn, region_top: Pixels, line: usize) -> Pixels {
+    let y = column.lines.iter().find(|sl| sl.line >= line).map_or_else(
+        || column.lines.last().map_or(px(0.), |sl| sl.y + sl.height),
+        |sl| sl.y,
+    );
+    region_top + y
+}
+
 /// The frame a column paints in: the editor's top, the column's left and width.
 fn column_bounds(bounds: Bounds<Pixels>, column: &ShapedColumn) -> Bounds<Pixels> {
     Bounds {
@@ -160,15 +178,8 @@ fn paint_column_blocks(
     top: Pixels,
     (window, cx): (&mut Window, &mut App),
 ) {
-    let _ = cx;
     let doc = env.doc;
-    let at = |line: usize| {
-        let y = column.lines.iter().find(|sl| sl.line >= line).map_or_else(
-            || column.lines.last().map_or(px(0.), |sl| sl.y + sl.height),
-            |sl| sl.y,
-        );
-        frame.origin.y + top + y
-    };
+    let at = |line: usize| line_top(column, frame.origin.y + top, line);
     let span = (frame.origin.x, frame.size.width);
     let mut last_callout = None;
     let mut last_table = None;
@@ -217,6 +228,15 @@ fn paint_column_blocks(
                 env.palette,
                 window,
             );
+            let hovered = env.table_hover.filter(|(t, _)| *t == index);
+            let dragging = env.table_drag.filter(|d| d.table == index);
+            if hovered.is_some() || dragging.is_some() {
+                let (grid, top) = grid_for(table, &columns, &table_at);
+                let shown = hovered.map_or(&[][..], |(_, handles)| handles.as_slice());
+                let colors = handle_colors(env.palette, env.text_color);
+                let origin = point(frame.origin.x, top);
+                paint_table_handles(&grid, origin, (shown, dragging), &colors, (window, cx));
+            }
         }
     }
 }

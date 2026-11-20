@@ -2753,17 +2753,48 @@ impl TableColumns {
 fn table_grid(
     view: &FrameView,
     doc: &DocumentCache,
+    text: &str,
     table: &Table,
     window: &mut Window,
-) -> (Grid, Point<Pixels>) {
-    let columns = TableColumns::of(
-        table,
-        view.bounds.size.width,
-        (&view.font, view.font_size, view.text_color),
-        window,
-    );
-    let top = view.layout.cumulative_at(table.start_line);
-    let boundary = |line: usize| f32::from(view.layout.cumulative_at(line) - top);
+) -> Option<(Grid, Point<Pixels>)> {
+    let FrameView {
+        layout,
+        bounds,
+        font,
+        font_size,
+        text_color,
+        line_height,
+        ..
+    } = view;
+    let cfg = (font, *font_size, *text_color);
+    if let Some((region, split)) = doc.side_by_side(table.start_line) {
+        let shaped = region::shape_region(
+            text,
+            doc,
+            (&region, &split),
+            (view.cursor, view.focused),
+            (font, *font_size, *line_height),
+            ((*text_color).into(), None),
+            window,
+        );
+        let column = region::column_with_line(&shaped, table.start_line)?;
+        let region_top = bounds.origin.y + layout.cumulative_at(region.start_line);
+        let columns = TableColumns::of(table, column.width, cfg, window);
+        let at = |line: usize| region::line_top(column, region_top, line);
+        let (grid, top) = grid_for(table, &columns, &at);
+        return Some((grid, point(bounds.origin.x + column.x, top)));
+    }
+    let columns = TableColumns::of(table, bounds.size.width, cfg, window);
+    let at = |line: usize| bounds.origin.y + layout.cumulative_at(line);
+    let (grid, top) = grid_for(table, &columns, &at);
+    Some((grid, point(bounds.origin.x, top)))
+}
+
+/// A table's grid for `at`, the window y of a line's top, and the window y of
+/// the table's top.
+fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels) -> (Grid, Pixels) {
+    let top = at(table.start_line);
+    let boundary = |line: usize| f32::from(at(line) - top);
     // The header and its delimiter band are row 0.
     let row_y = [0.0, boundary(table.start_line + 2)]
         .into_iter()
@@ -2772,11 +2803,7 @@ fn table_grid(
     let col_x = (0..=columns.widths.len())
         .map(|c| f32::from(columns.x(table_box::column_left(&columns.widths, c))))
         .collect();
-    let _ = doc;
-    (
-        Grid { col_x, row_y },
-        view.bounds.origin + point(px(0.), top),
-    )
+    (Grid { col_x, row_y }, top)
 }
 
 /// The rendered table the pointer is over (or in the margin left of or above
@@ -2788,21 +2815,64 @@ fn table_at_pointer(
     window: &mut Window,
 ) -> Option<(usize, Grid, (f32, f32))> {
     let doc = editor.document_cache.borrow();
+    let text = editor.buffer().text();
     let tables = doc.tables();
     let y = position.y - view.bounds.origin.y;
     let margin = px(table_handles::MARGIN);
+    let relative = |origin: Point<Pixels>| {
+        (
+            f32::from(position.x - origin.x),
+            f32::from(position.y - origin.y),
+        )
+    };
+    // A side-by-side region lays its tables out inside its columns, where the
+    // row cache's line tops do not apply: look at its own tables.
+    let regions = doc.columns();
+    let at_region = regions
+        .partition_point(|r| view.layout.cumulative_at(r.start_line) - margin <= y)
+        .checked_sub(1)
+        .map(|i| &regions[i])
+        .filter(|r| {
+            let top = view.layout.cumulative_at(r.start_line);
+            doc.side_by_side(r.start_line).is_some() && y <= top + view.layout.height(r.start_line)
+        });
+    if let Some(region) = at_region {
+        let first = tables.partition_point(|t| t.start_line < region.start_line);
+        for (k, table) in tables[first..]
+            .iter()
+            .take_while(|t| t.start_line < region.end_line)
+            .enumerate()
+        {
+            if is_table_active(&doc, table.start_line, view.focused) {
+                continue;
+            }
+            let Some((grid, origin)) = table_grid(view, &doc, text, table, window) else {
+                continue;
+            };
+            let p = relative(origin);
+            let (width, height) = (grid.col_x.last().copied(), grid.row_y.last().copied());
+            let reach = table_handles::MARGIN;
+            let inside = p.0 >= -reach
+                && p.1 >= -reach
+                && width.is_some_and(|w| p.0 <= w + reach)
+                && height.is_some_and(|h| p.1 <= h + reach);
+            if inside {
+                return Some((first + k, grid, p));
+            }
+        }
+        return None;
+    }
     let index = tables
         .partition_point(|t| view.layout.cumulative_at(t.start_line) - margin <= y)
         .checked_sub(1)?;
     let table = &tables[index];
-    if is_table_active(&doc, table.start_line, view.focused) {
+    if is_table_active(&doc, table.start_line, view.focused)
+        || doc.side_by_side(table.start_line).is_some()
+    {
         return None;
     }
-    let (grid, origin) = table_grid(view, &doc, table, window);
-    let p = (
-        f32::from(position.x - origin.x),
-        f32::from(position.y - origin.y),
-    );
+    let (grid, origin) = table_grid(view, &doc, text, table, window)?;
+    let p = relative(origin);
     Some((index, grid, p))
 }
 
@@ -2840,7 +2910,7 @@ fn drop_for_pointer(
 ) -> Option<usize> {
     let doc = editor.document_cache.borrow();
     let table = doc.tables().get(drag.table)?;
-    let (grid, origin) = table_grid(view, &doc, table, window);
+    let (grid, origin) = table_grid(view, &doc, editor.buffer().text(), table, window)?;
     Some(match drag.grip {
         Handle::ColumnGrip(_) => {
             table_handles::column_drop(&grid, f32::from(position.x - origin.x))
@@ -2867,13 +2937,15 @@ fn paint_table_boxes(
         ..
     } = view;
     let first = tables.partition_point(|t| t.end_line <= range.start);
-    let strong = palette.color(Role::BorderStrong);
     for (offset, table) in tables[first..]
         .iter()
         .take_while(|t| t.start_line < range.end)
         .enumerate()
     {
-        if is_table_active(doc, table.start_line, *focused) {
+        // A table in a side-by-side region is drawn with its column.
+        if is_table_active(doc, table.start_line, *focused)
+            || doc.side_by_side(table.start_line).is_some()
+        {
             continue;
         }
         let index = first + offset;
@@ -2897,17 +2969,22 @@ fn paint_table_boxes(
         let hovered = view.table_hover.as_ref().filter(|(t, _)| *t == index);
         let dragging = view.table_drag.filter(|d| d.table == index);
         if hovered.is_some() || dragging.is_some() {
-            let (grid, origin) = table_grid(view, doc, table, window);
+            let (grid, top) = grid_for(table, &columns, &at);
+            let origin = point(bounds.origin.x, top);
             let shown = hovered.map_or(&[][..], |(_, handles)| handles.as_slice());
-            let colors = HandleColors {
-                accent: palette.color(Role::Accent),
-                on_accent: palette.color(Role::TextOnAccent),
-                fill: palette.color(Role::TableHeader),
-                border: strong,
-                icon: *text_color,
-            };
+            let colors = handle_colors(palette, *text_color);
             paint_table_handles(&grid, origin, (shown, dragging), &colors, (window, cx));
         }
+    }
+}
+
+fn handle_colors(palette: &crate::theme::Palette, icon: Hsla) -> HandleColors {
+    HandleColors {
+        accent: palette.color(Role::Accent),
+        on_accent: palette.color(Role::TextOnAccent),
+        fill: palette.color(Role::TableHeader),
+        border: palette.color(Role::BorderStrong),
+        icon,
     }
 }
 
@@ -3334,6 +3411,8 @@ fn paint_lines(
         text,
         doc,
         selection,
+        table_hover: view.table_hover.as_ref(),
+        table_drag: view.table_drag,
         show_cursor,
         cursor,
         line_height,
@@ -3481,6 +3560,9 @@ struct PaintEnv<'a> {
     text: &'a str,
     doc: &'a DocumentCache,
     selection: Option<Range<usize>>,
+    /// The table controls shown and the grip being dragged.
+    table_hover: Option<&'a (usize, Vec<Handle>)>,
+    table_drag: Option<TableDrag>,
     show_cursor: bool,
     cursor: usize,
     line_height: Pixels,
@@ -4931,6 +5013,104 @@ mod tests {
     /// A click in a laid-out region lands in the column nearest it, and in
     /// that column's line under it. (The headless editor never learns a real
     /// width, so this drives the region's shaping and hit-test directly.)
+    /// The table controls work on a table inside a column: they show when the
+    /// pointer is over that table, a press on one is found, and nothing shows
+    /// over the other column.
+    #[gpui_kit::test]
+    fn table_controls_work_on_a_table_in_a_column(cx: &mut TestAppContext) {
+        use super::super::table_handles::Handle;
+        use super::{FrameView, LineLayout, RowHeightCache, handle_for_pointer, hover_for_pointer};
+        use super::{mono_char_width, px};
+        use gpui::{Bounds, size};
+        use std::{cell::RefCell, rc::Rc};
+
+        let text = "intro\n\n::: columns\n\nleft\n\n---\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n:::\n\nafter";
+        let (window, editor) = open_editor(cx, text);
+        editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let (text_color, line_height) = (text_style.color, window.line_height());
+            let width = px(800.);
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+            let doc_cache = editor.read(cx).document_cache.clone();
+            doc_cache.borrow_mut().set_column_width(Some(800.));
+            let mut rows = RowHeightCache::empty();
+            rows.rebuild(
+                text,
+                &doc_cache.borrow(),
+                0,
+                true,
+                width,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                window,
+            );
+            let layout = LineLayout {
+                doc_cache: doc_cache.clone(),
+                row_cache: Rc::new(RefCell::new(rows)),
+                line_height,
+            };
+            let bounds = Bounds {
+                origin: point(px(100.), px(50.)),
+                size: size(width, px(500.)),
+            };
+            let view = FrameView {
+                layout,
+                cursor: 0,
+                focused: true,
+                bounds,
+                viewport: bounds,
+                line_height,
+                font: font.clone(),
+                font_size,
+                text_color,
+                table_hover: None,
+                table_drag: None,
+            };
+            let split = doc_cache.borrow().side_by_side(2).unwrap().1;
+            // The table is the right column's first block, at the region's top
+            // (the region starts on row 2).
+            let top = bounds.origin.y + line_height * 2.;
+            let at = |x: f32, y: Pixels| point(bounds.origin.x + px(x), top + y);
+            let over_table = at(split.x(1) + 20., line_height * 1.5);
+            let over_left = at(split.x(0) + 20., line_height * 1.5);
+            let editor = editor.read(cx);
+
+            let hover = hover_for_pointer(editor, &view, over_table, window)
+                .expect("controls show over the table in the right column");
+            assert_eq!(hover.0, 0, "the region's table is the document's first");
+            assert!(!hover.1.is_empty());
+            assert!(hover_for_pointer(editor, &view, over_left, window).is_none());
+            // Far above the region: nothing.
+            assert!(
+                hover_for_pointer(editor, &view, at(split.x(1) + 20., px(-60.)), window).is_none()
+            );
+
+            // A press on a shown grip finds it, at the grip's own place.
+            let grip = hover
+                .1
+                .iter()
+                .find(|h| matches!(h, Handle::ColumnGrip(_)))
+                .copied()
+                .expect("a column grip is shown");
+            let doc = doc_cache.borrow();
+            let (grid, origin) =
+                super::table_grid(&view, &doc, text, &doc.tables()[0], window).unwrap();
+            let (x, y, w, h) = super::table_handles::rect_of(&grid, grip);
+            let centre = origin + point(px(x + w / 2.), px(y + h / 2.));
+            assert_eq!(
+                handle_for_pointer(editor, &view, centre, window),
+                Some((0, grip))
+            );
+        })
+        .unwrap();
+    }
+
     #[gpui_kit::test]
     fn a_click_in_a_region_lands_in_the_nearest_columns_line(cx: &mut TestAppContext) {
         use super::super::{columns, document_cache::DocumentCache};
