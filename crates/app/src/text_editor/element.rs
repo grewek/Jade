@@ -3237,6 +3237,22 @@ fn paint_lines(
     let mut y_offset = layout.cumulative_at(range.start);
     paint_table_boxes(&range, view, doc, &palette, (window, cx));
     let mut columns: Option<(usize, TableColumns)> = None;
+    let env = PaintEnv {
+        doc,
+        selection,
+        show_cursor,
+        cursor,
+        line_height,
+        font,
+        font_size,
+        text_color,
+        palette: &palette,
+        inline,
+        rule,
+        selection_fill,
+        widget_colors,
+        cursor_color,
+    };
 
     for i in range.clone() {
         let line_range = layout.line_range(i);
@@ -3292,281 +3308,367 @@ fn paint_lines(
             );
             trace.set_late_corrections(layout.trace_state().2);
         }
-        // Every entry of one raw line shares the same indent (a table's is
-        // always `None` across all of them, same as the common one-entry
-        // case) — fine to read it off the first.
-        let indent_level = results[0].1.indent.level();
-        let line_origin = bounds.origin + point(indent_px(indent_level), y_offset);
-        // The width a wrapped row should be highlighted to when a
-        // selection continues past it onto the next row — the same budget
-        // `wrap_width_for` gave this line to wrap within.
-        let full_row_width = bounds.size.width - indent_px(indent_level);
+        let slot = LineSlot {
+            i,
+            line_text,
+            line_range: line_range.clone(),
+            state: &state,
+            results: &results,
+            bounds,
+            y_offset,
+            total_height,
+        };
+        paint_line(&env, &slot, &mut columns, window, cx);
 
-        // A thematic break (`---`/`***`/`___`) renders as a real vector
-        // line, same "quad over a blank `hidden_line` gap" technique a
-        // table's own grid lines use — a monospace rule glyph repeated
-        // across the line wouldn't reliably abut pixel-for-pixel either.
-        // Only for a `LineRole::Plain` line outside any table (matching
-        // `shape_display_line`'s own gating) and not the active line (which
-        // renders the raw `---` text instead, same as every other construct).
-        // `table_kind` was already moved into `shape_display_line` above —
-        // cheap to resolve again rather than restructuring this loop just
-        // to keep the first value alive (same reasoning as
-        // `table_kind_for_geometry` below).
-        if !state.active
-            && matches!(line_roles[i], LineRole::Plain)
-            && matches!(table_line_kind(tables, i), TableLineKind::None)
-            && is_thematic_break(line_text)
-        {
-            let mid_y = bounds.origin.y + y_offset + total_height / 2.;
+        y_offset += total_height;
+    }
+}
+
+/// What painting any line of a frame needs, whichever column it is in.
+struct PaintEnv<'a> {
+    doc: &'a DocumentCache,
+    selection: Option<Range<usize>>,
+    show_cursor: bool,
+    cursor: usize,
+    line_height: Pixels,
+    font: &'a Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    palette: &'a crate::theme::Palette,
+    inline: InlineColors,
+    rule: Hsla,
+    selection_fill: Hsla,
+    widget_colors: WidgetColors,
+    cursor_color: Hsla,
+}
+
+/// One shaped line and where it goes: `bounds` is the frame it is painted
+/// in (the editor's, or a column's: same top, the column's left and width),
+/// `y_offset` its top below `bounds.origin.y`.
+struct LineSlot<'a> {
+    i: usize,
+    line_text: &'a str,
+    line_range: Range<usize>,
+    state: &'a LineState<'a>,
+    results: &'a [(WrappedLine, DisplayLine)],
+    bounds: Bounds<Pixels>,
+    y_offset: Pixels,
+    total_height: Pixels,
+}
+
+/// Paints one shaped line (selection, text, widgets, caret, rules, images,
+/// table cells). `columns` is the table whose widths were last worked out,
+/// kept across the lines of one frame (or one column).
+fn paint_line(
+    env: &PaintEnv,
+    slot: &LineSlot,
+    columns: &mut Option<(usize, TableColumns)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let PaintEnv {
+        doc,
+        show_cursor,
+        cursor,
+        line_height,
+        font,
+        font_size,
+        text_color,
+        palette,
+        inline,
+        rule,
+        selection_fill,
+        ref widget_colors,
+        cursor_color,
+        ..
+    } = *env;
+    let selection = env.selection.clone();
+    let (line_roles, tables) = (doc.line_roles(), doc.tables());
+    let LineSlot {
+        i,
+        line_text,
+        ref line_range,
+        state,
+        results,
+        bounds,
+        y_offset,
+        total_height,
+    } = *slot;
+    let line_range = line_range.clone();
+    let callout = state.callout;
+
+    // Every entry of one raw line shares the same indent (a table's is
+    // always `None` across all of them, same as the common one-entry
+    // case) — fine to read it off the first.
+    let indent_level = results[0].1.indent.level();
+    let line_origin = bounds.origin + point(indent_px(indent_level), y_offset);
+    // The width a wrapped row should be highlighted to when a
+    // selection continues past it onto the next row — the same budget
+    // `wrap_width_for` gave this line to wrap within.
+    let full_row_width = bounds.size.width - indent_px(indent_level);
+
+    // A thematic break (`---`/`***`/`___`) renders as a real vector
+    // line, same "quad over a blank `hidden_line` gap" technique a
+    // table's own grid lines use — a monospace rule glyph repeated
+    // across the line wouldn't reliably abut pixel-for-pixel either.
+    // Only for a `LineRole::Plain` line outside any table (matching
+    // `shape_display_line`'s own gating) and not the active line (which
+    // renders the raw `---` text instead, same as every other construct).
+    // `table_kind` was already moved into `shape_display_line` above —
+    // cheap to resolve again rather than restructuring this loop just
+    // to keep the first value alive (same reasoning as
+    // `table_kind_for_geometry` below).
+    if !state.active
+        && matches!(line_roles[i], LineRole::Plain)
+        && matches!(table_line_kind(tables, i), TableLineKind::None)
+        && is_thematic_break(line_text)
+    {
+        let mid_y = bounds.origin.y + y_offset + total_height / 2.;
+        window.paint_quad(fill(
+            Bounds {
+                origin: point(bounds.origin.x, mid_y),
+                size: size(bounds.size.width, TABLE_LINE_WIDTH),
+            },
+            rule,
+        ));
+    }
+
+    if let Some(c) = callout.filter(|c| c.foldable && c.is_header(i) && !state.active) {
+        let color = palette.color(callout_role(c.kind));
+        let icon = if c.folded {
+            "icons/chevron-right.svg"
+        } else {
+            "icons/chevron-down.svg"
+        };
+        let side = font_size;
+        let at = point(
+            bounds.origin.x + bounds.size.width - px(28.),
+            bounds.origin.y + y_offset + (line_height - side) / 2.,
+        );
+        paint_icon(
+            icon,
+            Bounds {
+                origin: at,
+                size: size(side, side),
+            },
+            color,
+            (window, cx),
+        );
+    }
+
+    if let Some(embed) = image_block(line_text, &state) {
+        let area = Bounds {
+            origin: point(bounds.origin.x, bounds.origin.y + y_offset),
+            size: size(bounds.size.width, total_height),
+        };
+        let target = &line_text[embed.target.clone()];
+        let alt = &line_text[embed.alt.clone()];
+        let wiki = line_text.trim_start().starts_with("![[");
+        let drawn = doc.images().info(target).is_some_and(|info| {
+            let requested = images::requested_width(alt, wiki);
+            paint_image(info, requested, area, window, cx)
+        });
+        if !drawn {
+            paint_image_placeholder(
+                target,
+                area,
+                (font, font_size),
+                (rule, inline.subtle),
+                (window, cx),
+            );
+        }
+    }
+
+    let rendered_table_row =
+        !state.table_active && matches!(state.table_kind, TableLineKind::Row(_));
+    if let (true, TableLineKind::Row(table)) = (rendered_table_row, &state.table_kind) {
+        let index = table_index_at(tables, i).unwrap_or_default();
+        if columns.as_ref().is_none_or(|(n, _)| *n != index) {
+            let boxed = TableColumns::of(
+                table,
+                bounds.size.width,
+                (font, font_size, text_color),
+                window,
+            );
+            *columns = Some((index, boxed));
+        }
+        if let Some((_, columns)) = &columns {
+            paint_table_row(
+                line_text,
+                columns,
+                bounds.origin + point(px(0.), y_offset),
+                (table.is_first_row(i), state.editing_cell),
+                (font, font_size, line_height),
+                &inline,
+                window,
+                cx,
+            );
+            if let Some(column) = state.editing_cell {
+                let cell = EditingCell {
+                    line: line_text,
+                    line_start: line_range.start,
+                    column,
+                    origin: bounds.origin + point(px(0.), y_offset),
+                    line_height,
+                };
+                let (selection, caret) = (selection.as_ref(), show_cursor.then_some(cursor));
+                paint_editing_cell(
+                    &cell,
+                    columns,
+                    (selection, caret),
+                    (palette.color(Role::Accent), selection_fill, cursor_color),
+                    window,
+                );
+            }
+        }
+    }
+
+    // A callout's own accent bar (painted in the pre-pass above, at
+    // this same gutter position since a callout is always depth-1)
+    // already covers this line — painting the plain muted bar too
+    // would paint right over it, hiding the color.
+    if callout.is_none()
+        && let LineIndent::Blockquote(depth) = results[0].1.indent
+    {
+        for level in 0..depth {
+            let bar_x = bounds.origin.x + indent_px(level) + QUOTE_BAR_INSET;
             window.paint_quad(fill(
                 Bounds {
-                    origin: point(bounds.origin.x, mid_y),
-                    size: size(bounds.size.width, TABLE_LINE_WIDTH),
+                    origin: point(bar_x, bounds.origin.y + y_offset),
+                    size: size(QUOTE_BAR_WIDTH, total_height),
                 },
                 rule,
             ));
         }
+    }
 
-        if let Some(c) = callout.filter(|c| c.foldable && c.is_header(i) && !state.active) {
-            let color = palette.color(callout_role(c.kind));
-            let icon = if c.folded {
-                "icons/chevron-right.svg"
-            } else {
-                "icons/chevron-down.svg"
-            };
-            let side = font_size;
-            let at = point(
-                bounds.origin.x + bounds.size.width - px(28.),
-                bounds.origin.y + y_offset + (line_height - side) / 2.,
-            );
-            paint_icon(
-                icon,
-                Bounds {
-                    origin: at,
-                    size: size(side, side),
-                },
-                color,
-                (window, cx),
-            );
-        }
-
-        if let Some(embed) = image_block(line_text, &state) {
-            let area = Bounds {
-                origin: point(bounds.origin.x, bounds.origin.y + y_offset),
-                size: size(bounds.size.width, total_height),
-            };
-            let target = &line_text[embed.target.clone()];
-            let alt = &line_text[embed.alt.clone()];
-            let wiki = line_text.trim_start().starts_with("![[");
-            let drawn = doc.images().info(target).is_some_and(|info| {
-                let requested = images::requested_width(alt, wiki);
-                paint_image(info, requested, area, window, cx)
-            });
-            if !drawn {
-                paint_image_placeholder(
-                    target,
-                    area,
-                    (font, font_size),
-                    (rule, inline.subtle),
-                    (window, cx),
-                );
-            }
-        }
-
-        let rendered_table_row =
-            !state.table_active && matches!(state.table_kind, TableLineKind::Row(_));
-        if let (true, TableLineKind::Row(table)) = (rendered_table_row, &state.table_kind) {
-            let index = table_index_at(tables, i).unwrap_or_default();
-            if columns.as_ref().is_none_or(|(n, _)| *n != index) {
-                let boxed = TableColumns::of(
-                    table,
-                    bounds.size.width,
-                    (font, font_size, text_color),
-                    window,
-                );
-                columns = Some((index, boxed));
-            }
-            if let Some((_, columns)) = &columns {
-                paint_table_row(
-                    line_text,
-                    columns,
-                    bounds.origin + point(px(0.), y_offset),
-                    (table.is_first_row(i), state.editing_cell),
-                    (font, font_size, line_height),
-                    &inline,
-                    window,
-                    cx,
-                );
-                if let Some(column) = state.editing_cell {
-                    let cell = EditingCell {
-                        line: line_text,
-                        line_start: line_range.start,
-                        column,
-                        origin: bounds.origin + point(px(0.), y_offset),
-                        line_height,
-                    };
-                    let (selection, caret) = (selection.as_ref(), show_cursor.then_some(cursor));
-                    paint_editing_cell(
-                        &cell,
-                        columns,
-                        (selection, caret),
-                        (palette.color(Role::Accent), selection_fill, cursor_color),
-                        window,
-                    );
-                }
-            }
-        }
-
-        // A callout's own accent bar (painted in the pre-pass above, at
-        // this same gutter position since a callout is always depth-1)
-        // already covers this line — painting the plain muted bar too
-        // would paint right over it, hiding the color.
-        if callout.is_none()
-            && let LineIndent::Blockquote(depth) = results[0].1.indent
+    if results.len() > 1 || rendered_table_row {
+        // A wrapped table row — see `shape_display_line`'s own doc
+        // comment on why this sub-row split can't carry a byte-exact
+        // raw↔display mapping the way a regular wrapped paragraph
+        // does, which rules out the per-character selection/cursor
+        // placement below. Pragmatic fallback: highlight the row's
+        // *whole* combined block if the selection touches it at all,
+        // and always place the caret on its first sub-row.
+        if let Some(selection) = &selection
+            && state.editing_cell.is_none()
+            && selection.start.max(line_range.start) < selection.end.min(line_range.end)
         {
-            for level in 0..depth {
-                let bar_x = bounds.origin.x + indent_px(level) + QUOTE_BAR_INSET;
-                window.paint_quad(fill(
-                    Bounds {
-                        origin: point(bar_x, bounds.origin.y + y_offset),
-                        size: size(QUOTE_BAR_WIDTH, total_height),
-                    },
-                    rule,
-                ));
-            }
+            window.paint_quad(fill(
+                Bounds {
+                    origin: line_origin,
+                    size: size(full_row_width, total_height),
+                },
+                selection_fill,
+            ));
         }
+        let mut row_y = y_offset;
+        for (wrapped, _) in results {
+            let _ = wrapped.paint(
+                bounds.origin + point(indent_px(indent_level), row_y),
+                line_height,
+                TextAlign::Left,
+                None,
+                window,
+                cx,
+            );
+            row_y += wrapped.size(line_height).height;
+        }
+        if show_cursor
+            && state.editing_cell.is_none()
+            && cursor >= line_range.start
+            && cursor <= line_range.end
+        {
+            window.paint_quad(fill(
+                Bounds {
+                    origin: line_origin,
+                    size: size(px(1.), line_height),
+                },
+                cursor_color,
+            ));
+        }
+    } else {
+        let (wrapped, display_line) = &results[0];
 
-        if results.len() > 1 || rendered_table_row {
-            // A wrapped table row — see `shape_display_line`'s own doc
-            // comment on why this sub-row split can't carry a byte-exact
-            // raw↔display mapping the way a regular wrapped paragraph
-            // does, which rules out the per-character selection/cursor
-            // placement below. Pragmatic fallback: highlight the row's
-            // *whole* combined block if the selection touches it at all,
-            // and always place the caret on its first sub-row.
-            if let Some(selection) = &selection
-                && state.editing_cell.is_none()
-                && selection.start.max(line_range.start) < selection.end.min(line_range.end)
-            {
-                window.paint_quad(fill(
-                    Bounds {
-                        origin: line_origin,
-                        size: size(full_row_width, total_height),
-                    },
-                    selection_fill,
-                ));
-            }
-            let mut row_y = y_offset;
-            for (wrapped, _) in &results {
-                let _ = wrapped.paint(
-                    bounds.origin + point(indent_px(indent_level), row_y),
-                    line_height,
-                    TextAlign::Left,
-                    None,
-                    window,
-                    cx,
-                );
-                row_y += wrapped.size(line_height).height;
-            }
-            if show_cursor
-                && state.editing_cell.is_none()
-                && cursor >= line_range.start
-                && cursor <= line_range.end
-            {
-                window.paint_quad(fill(
-                    Bounds {
-                        origin: line_origin,
-                        size: size(px(1.), line_height),
-                    },
-                    cursor_color,
-                ));
-            }
-        } else {
-            let (wrapped, display_line) = &results[0];
-
-            if let Some(selection) = &selection {
-                let start = selection.start.max(line_range.start);
-                let end = selection.end.min(line_range.end);
-                if start < end {
-                    let start_pos = wrapped
-                        .position_for_index(
-                            display_line.display_offset_for_raw(start - line_range.start),
-                            line_height,
-                        )
-                        .unwrap_or(point(px(0.), px(0.)));
-                    let end_pos = wrapped
-                        .position_for_index(
-                            display_line.display_offset_for_raw(end - line_range.start),
-                            line_height,
-                        )
-                        .unwrap_or(point(full_row_width, total_height - line_height));
-                    let start_row = (start_pos.y / line_height) as i32;
-                    let end_row = (end_pos.y / line_height) as i32;
-                    if start_row == end_row {
-                        window.paint_quad(fill(
-                            Bounds {
-                                origin: line_origin + start_pos,
-                                size: size(end_pos.x - start_pos.x, line_height),
-                            },
-                            selection_fill,
-                        ));
-                    } else {
-                        // Spans more than one wrapped row of this same
-                        // line: the first row highlights from the
-                        // selection's start to the row's own right edge,
-                        // the last row from the row's left edge to the
-                        // selection's end, and any rows in between are
-                        // highlighted in full.
-                        for row in start_row..=end_row {
-                            let (x0, x1) = if row == start_row {
-                                (start_pos.x, full_row_width)
-                            } else if row == end_row {
-                                (px(0.), end_pos.x)
-                            } else {
-                                (px(0.), full_row_width)
-                            };
-                            if x1 > x0 {
-                                window.paint_quad(fill(
-                                    Bounds {
-                                        origin: line_origin + point(x0, line_height * row as f32),
-                                        size: size(x1 - x0, line_height),
-                                    },
-                                    selection_fill,
-                                ));
-                            }
+        if let Some(selection) = &selection {
+            let start = selection.start.max(line_range.start);
+            let end = selection.end.min(line_range.end);
+            if start < end {
+                let start_pos = wrapped
+                    .position_for_index(
+                        display_line.display_offset_for_raw(start - line_range.start),
+                        line_height,
+                    )
+                    .unwrap_or(point(px(0.), px(0.)));
+                let end_pos = wrapped
+                    .position_for_index(
+                        display_line.display_offset_for_raw(end - line_range.start),
+                        line_height,
+                    )
+                    .unwrap_or(point(full_row_width, total_height - line_height));
+                let start_row = (start_pos.y / line_height) as i32;
+                let end_row = (end_pos.y / line_height) as i32;
+                if start_row == end_row {
+                    window.paint_quad(fill(
+                        Bounds {
+                            origin: line_origin + start_pos,
+                            size: size(end_pos.x - start_pos.x, line_height),
+                        },
+                        selection_fill,
+                    ));
+                } else {
+                    // Spans more than one wrapped row of this same
+                    // line: the first row highlights from the
+                    // selection's start to the row's own right edge,
+                    // the last row from the row's left edge to the
+                    // selection's end, and any rows in between are
+                    // highlighted in full.
+                    for row in start_row..=end_row {
+                        let (x0, x1) = if row == start_row {
+                            (start_pos.x, full_row_width)
+                        } else if row == end_row {
+                            (px(0.), end_pos.x)
+                        } else {
+                            (px(0.), full_row_width)
+                        };
+                        if x1 > x0 {
+                            window.paint_quad(fill(
+                                Bounds {
+                                    origin: line_origin + point(x0, line_height * row as f32),
+                                    size: size(x1 - x0, line_height),
+                                },
+                                selection_fill,
+                            ));
                         }
                     }
                 }
             }
-
-            let _ = wrapped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
-            let widgets = WidgetPaint {
-                colors: &widget_colors,
-                inline: &inline,
-                font_size,
-                line_height,
-            };
-            paint_widgets(display_line, wrapped, line_origin, &widgets, (window, cx));
-
-            if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
-                let pos = wrapped
-                    .position_for_index(
-                        display_line.display_offset_for_raw(cursor - line_range.start),
-                        line_height,
-                    )
-                    .unwrap_or(point(px(0.), px(0.)));
-                window.paint_quad(fill(
-                    Bounds {
-                        origin: line_origin + pos,
-                        size: size(px(1.), line_height),
-                    },
-                    cursor_color,
-                ));
-            }
         }
 
-        y_offset += total_height;
+        let _ = wrapped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
+        let widgets = WidgetPaint {
+            colors: &widget_colors,
+            inline: &inline,
+            font_size,
+            line_height,
+        };
+        paint_widgets(display_line, wrapped, line_origin, &widgets, (window, cx));
+
+        if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
+            let pos = wrapped
+                .position_for_index(
+                    display_line.display_offset_for_raw(cursor - line_range.start),
+                    line_height,
+                )
+                .unwrap_or(point(px(0.), px(0.)));
+            window.paint_quad(fill(
+                Bounds {
+                    origin: line_origin + pos,
+                    size: size(px(1.), line_height),
+                },
+                cursor_color,
+            ));
+        }
     }
 }
 
