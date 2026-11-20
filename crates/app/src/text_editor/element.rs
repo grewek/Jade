@@ -6,6 +6,8 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
+mod region;
+
 use super::Editor;
 use super::block::{self, image_block};
 use super::block_preview::LineRole;
@@ -1087,9 +1089,21 @@ impl LineLayout {
         let doc = self.doc_cache.borrow();
         let mut corrections = Vec::new();
         for i in range.clone().filter(|i| !verified.contains(i)) {
-            // A side-by-side region's rows come from its columns, not from
-            // shaping its first line.
-            if doc.side_by_side(i).is_some() {
+            // A side-by-side region's rows come from shaping its columns, not
+            // its first line.
+            if let Some((region, split)) = doc.side_by_side(i) {
+                if i == region.start_line {
+                    let shaped = region::shape_region(
+                        text,
+                        &doc,
+                        (&region, &split),
+                        (cursor, focused),
+                        (font, font_size, self.line_height),
+                        (text_color.into(), None),
+                        window,
+                    );
+                    corrections.push((i, shaped.rows));
+                }
                 continue;
             }
             if width_unknown || self.row_cache.borrow().row_count(i) > 1 {
@@ -1136,6 +1150,9 @@ impl LineLayout {
         (font, font_size, text_color): (&Font, Pixels, Hsla),
         window: &mut Window,
     ) {
+        self.doc_cache
+            .borrow_mut()
+            .set_column_width(column_width_for(width));
         let doc = self.doc_cache.borrow();
         self.row_cache.borrow_mut().rebuild(
             text, &doc, cursor, focused, width, char_width, font, font_size, text_color, window,
@@ -1230,6 +1247,12 @@ pub(super) fn render_params(
     }
 }
 
+/// The width regions are laid out across for an editor `available_width`
+/// wide: none before the first layout (no real width yet).
+pub(super) fn column_width_for(available_width: Pixels) -> Option<f32> {
+    (available_width > px(0.) && available_width < Pixels::MAX).then(|| f32::from(available_width))
+}
+
 /// Makes sure `row_cache` is up to date (a cheap active-line sync in the
 /// common case, a full rebuild only on the first call or an actual
 /// render-context change — see [`RowHeightCache`]'s own doc comment) and
@@ -1250,10 +1273,23 @@ pub(super) fn analyze_line_layout(
     window: &mut Window,
 ) -> LineLayout {
     let char_width = mono_char_width(font, font_size, text_color, window);
+    let rebuild = {
+        let doc = doc_cache.borrow();
+        row_cache
+            .borrow()
+            .needs_full_rebuild(&doc, available_width, char_width)
+    };
+    if rebuild {
+        // The width regions are laid out across is set only here and where
+        // else the rows are rebuilt, so it is always the width they were built for.
+        doc_cache
+            .borrow_mut()
+            .set_column_width(column_width_for(available_width));
+    }
     {
         let doc = doc_cache.borrow();
         let mut rows = row_cache.borrow_mut();
-        if rows.needs_full_rebuild(&doc, available_width, char_width) {
+        if rebuild {
             rows.rebuild(
                 text,
                 &doc,
@@ -2317,89 +2353,53 @@ fn hit_for_position(
         return Hit::at(0);
     }
 
+    let frame = region::HitFrame {
+        bounds,
+        relative_y,
+        position,
+        line_height,
+        font,
+        font_size,
+        text_color,
+    };
     let mut y_offset = layout.cumulative_at(range.start);
     for i in range.clone() {
-        let line_text = &text[layout.line_range(i)];
+        if let Some((region, split)) = doc.side_by_side(i)
+            && i == region.start_line
+        {
+            let shaped = region::shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (cursor, focused),
+                (font, font_size, line_height),
+                (text_color.into(), None),
+                window,
+            );
+            let height = line_height * shaped.rows as f32;
+            if relative_y < y_offset + height {
+                let place = (y_offset, (cursor, focused));
+                return region::hit(&doc, text, &shaped, &region, place, &frame, window);
+            }
+            y_offset += height;
+            continue;
+        }
+        let line_range = layout.line_range(i);
+        let line_text = &text[line_range.clone()];
+        let state = LineState::of(&doc, i, cursor, focused);
         let results = shape_display_line(
             line_text,
-            &LineState::of(&doc, i, cursor, focused),
+            &state,
             font,
             font_size,
             text_color,
             bounds.size.width,
             window,
         );
-        // Usually one entry; more than one only for a table row whose
-        // cells had to wrap, each entry then its own (unwrapped, since
-        // already sized to fit) sub-row of that row — same click-then-find
-        // the right sub-row logic, just one level deeper.
-        let multi_entry = results.len() > 1;
-        let state = LineState::of(&doc, i, cursor, focused);
-        if let (false, TableLineKind::Row(table)) = (state.table_active, &state.table_kind) {
-            let height: Pixels = results
-                .iter()
-                .map(|(wrapped, _)| wrapped.size(line_height).height)
-                .sum();
-            if relative_y < y_offset + height {
-                let columns = TableColumns::of(
-                    table,
-                    bounds.size.width,
-                    (font, font_size, text_color),
-                    window,
-                );
-                let row = ((relative_y - y_offset) / line_height) as usize;
-                let x = (position.x - bounds.origin.x) / columns.char_width;
-                let offset = table_box::offset_at_editing(
-                    line_text,
-                    &columns.widths,
-                    &columns.aligns,
-                    x,
-                    row,
-                    state.editing_cell,
-                );
-                return Hit::at(layout.line_range(i).start + offset);
-            }
-            y_offset += height;
-            continue;
-        }
-        for (wrapped, display_line) in &results {
-            let height = wrapped.size(line_height).height;
-            if relative_y < y_offset + height {
-                let relative_x =
-                    (position.x - bounds.origin.x - indent_px(display_line.indent.level()))
-                        .max(px(0.));
-                let local_y = (relative_y - y_offset).max(px(0.));
-                let display_offset = match wrapped
-                    .closest_index_for_position(point(relative_x, local_y), line_height)
-                {
-                    Ok(ix) | Err(ix) => ix,
-                };
-                // A wrapped table sub-row has no genuinely visible segment
-                // to land on (every cell's text is `is_replaced()` there,
-                // see `build_table_row`'s own doc comment) — only
-                // `nearest_segment_raw_start` handles that case correctly,
-                // `raw_offset_for_display` would always fall through to
-                // this line's very end regardless of where it was clicked.
-                let raw_offset = if multi_entry {
-                    display_line.nearest_segment_raw_start(display_offset)
-                } else {
-                    display_line.raw_offset_for_display(display_offset)
-                };
-                let start = layout.line_range(i).start;
-                let checkbox = display_line
-                    .checkbox_at(display_offset)
-                    .map(|r| start + r.start..start + r.end);
-                let fold = (state.callout_is_header && !state.active)
-                    .then(|| callout_index_at(doc.callouts(), i))
-                    .flatten()
-                    .filter(|&c| doc.callouts()[c].foldable);
-                return Hit {
-                    offset: start + raw_offset,
-                    checkbox,
-                    fold,
-                };
-            }
-            y_offset += height;
+        let line = (i, line_text, line_range.start);
+        match hit_in_line(&doc, line, (&state, &results), y_offset, &frame, window) {
+            Ok(hit) => return hit,
+            Err(height) => y_offset += height,
         }
     }
     // Past the visible window's last line (clicked below all rendered
@@ -2413,6 +2413,94 @@ fn hit_for_position(
         layout.line_range(range.end - 1).end
     };
     Hit::at(offset)
+}
+
+/// Where a click at `frame.position` lands in one shaped line, whose top is
+/// `y_offset` below the editor's top; `Err` is the line's height when the click
+/// is below it (the caller moves on to the next line).
+fn hit_in_line(
+    doc: &DocumentCache,
+    (i, line_text, line_start): (usize, &str, usize),
+    (state, results): (&LineState, &[(WrappedLine, DisplayLine)]),
+    y_offset: Pixels,
+    frame: &region::HitFrame,
+    window: &mut Window,
+) -> Result<Hit, Pixels> {
+    let &region::HitFrame {
+        bounds,
+        relative_y,
+        position,
+        line_height,
+        font,
+        font_size,
+        text_color,
+    } = frame;
+    // Usually one entry; more than one only for a table row whose cells had to
+    // wrap, each entry then its own (unwrapped, since already sized to fit)
+    // sub-row of that row.
+    let multi_entry = results.len() > 1;
+    if let (false, TableLineKind::Row(table)) = (state.table_active, &state.table_kind) {
+        let height: Pixels = results
+            .iter()
+            .map(|(wrapped, _)| wrapped.size(line_height).height)
+            .sum();
+        if relative_y >= y_offset + height {
+            return Err(height);
+        }
+        let columns = TableColumns::of(
+            table,
+            bounds.size.width,
+            (font, font_size, text_color),
+            window,
+        );
+        let row = ((relative_y - y_offset) / line_height) as usize;
+        let x = (position.x - bounds.origin.x) / columns.char_width;
+        let offset = table_box::offset_at_editing(
+            line_text,
+            &columns.widths,
+            &columns.aligns,
+            x,
+            row,
+            state.editing_cell,
+        );
+        return Ok(Hit::at(line_start + offset));
+    }
+    let mut y = y_offset;
+    for (wrapped, display_line) in results {
+        let height = wrapped.size(line_height).height;
+        if relative_y < y + height {
+            let relative_x =
+                (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
+            let local_y = (relative_y - y).max(px(0.));
+            let display_offset =
+                match wrapped.closest_index_for_position(point(relative_x, local_y), line_height) {
+                    Ok(ix) | Err(ix) => ix,
+                };
+            // A wrapped table sub-row has no genuinely visible segment to land
+            // on (every cell's text is `is_replaced()` there, see
+            // `build_table_row`'s own doc comment): only
+            // `nearest_segment_raw_start` handles that case correctly.
+            let raw_offset = if multi_entry {
+                display_line.nearest_segment_raw_start(display_offset)
+            } else {
+                display_line.raw_offset_for_display(display_offset)
+            };
+            let checkbox = display_line
+                .checkbox_at(display_offset)
+                .map(|r| line_start + r.start..line_start + r.end);
+            let fold = (state.callout_is_header && !state.active)
+                .then(|| callout_index_at(doc.callouts(), i))
+                .flatten()
+                .filter(|&c| doc.callouts()[c].foldable);
+            return Ok(Hit {
+                offset: line_start + raw_offset,
+                checkbox,
+                fold,
+            });
+        }
+        y += height;
+    }
+    Err(y - y_offset)
 }
 
 /// Colors of the controls drawn over a line's widget columns.
@@ -3248,6 +3336,7 @@ fn paint_lines(
     paint_table_boxes(&range, view, doc, &palette, (window, cx));
     let mut columns: Option<(usize, TableColumns)> = None;
     let env = PaintEnv {
+        text,
         doc,
         selection,
         show_cursor,
@@ -3265,6 +3354,37 @@ fn paint_lines(
     };
 
     for i in range.clone() {
+        if let Some((region, split)) = doc.side_by_side(i)
+            && i == region.start_line
+        {
+            let shaped = region::shape_region(
+                text,
+                doc,
+                (&region, &split),
+                (cursor, show_cursor),
+                (font, font_size, line_height),
+                (inline, Some(links)),
+                window,
+            );
+            region::paint_region(&env, &shaped, bounds, y_offset, (window, cx));
+            // Exact rows from shaping, as the row cache does for any line.
+            layout.correct_row_count(i, shaped.rows);
+            if let Some(trace) = trace.as_mut() {
+                let height = line_height * shaped.rows as f32;
+                let first = layout.line_range(i);
+                let line = &text[first];
+                trace.line(
+                    i,
+                    f32::from(y_offset),
+                    shaped.rows,
+                    f32::from(height),
+                    "columns",
+                    line,
+                );
+            }
+            y_offset += line_height * shaped.rows as f32;
+            continue;
+        }
         let line_range = layout.line_range(i);
         let line_text = &text[line_range.clone()];
         let broken: Vec<Range<usize>> = links.broken_on_line(i).collect();
@@ -3363,6 +3483,7 @@ fn paint_callout_band(
 
 /// What painting any line of a frame needs, whichever column it is in.
 struct PaintEnv<'a> {
+    text: &'a str,
     doc: &'a DocumentCache,
     selection: Option<Range<usize>>,
     show_cursor: bool,
@@ -4808,6 +4929,87 @@ mod tests {
                     "fenced code content must never indent as a quote/list, even if it looks like one: {line:?}"
                 );
             }
+        })
+        .unwrap();
+    }
+
+    /// A click in a laid-out region lands in the column nearest it, and in
+    /// that column's line under it. (The headless editor never learns a real
+    /// width, so this drives the region's shaping and hit-test directly.)
+    #[gpui_kit::test]
+    fn a_click_in_a_region_lands_in_the_nearest_columns_line(cx: &mut TestAppContext) {
+        use super::super::{columns, document_cache::DocumentCache};
+        use super::region::{HitFrame, hit, shape_region};
+        use gpui::{Bounds, Window, size};
+
+        let text = "intro\n\n::: columns\n\nleft text\n\n---\n\nright text\n\n:::\n\nafter";
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let line_height = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(800.));
+            let (region, split) = doc.side_by_side(2).expect("side by side at 800px");
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, font_size, line_height),
+                (text_style.color.into(), None),
+                window,
+            );
+            assert_eq!(shaped.rows, 1, "each column holds one short line");
+            assert_eq!(shaped.columns.len(), 2);
+
+            let bounds = Bounds {
+                origin: point(px(100.), px(50.)),
+                size: size(px(800.), px(500.)),
+            };
+            let top = line_height * 2.;
+            let click = |x: f32, window: &mut Window| {
+                let position = point(
+                    bounds.origin.x + px(x),
+                    bounds.origin.y + top + line_height / 2.,
+                );
+                let frame = HitFrame {
+                    bounds,
+                    relative_y: position.y - bounds.origin.y,
+                    position,
+                    line_height,
+                    font: &font,
+                    font_size,
+                    text_color: text_style.color,
+                };
+                let hit = hit(
+                    &doc,
+                    text,
+                    &shaped,
+                    &region,
+                    (top, (0, false)),
+                    &frame,
+                    window,
+                );
+                doc.line_at(hit.offset)
+            };
+            assert_eq!(click(split.x(0) + 4., window), 4, "left column");
+            assert_eq!(click(split.x(1) + 4., window), 8, "right column");
+            // The gap is 24px: 4px short of the right column is nearer it, and 4px
+            // past the left column's end is nearer the left one.
+            assert_eq!(
+                click(split.x(1) - 4., window),
+                8,
+                "the gap, nearer the right"
+            );
+            assert_eq!(
+                click(split.x(1) - columns::GAP + 4., window),
+                4,
+                "the gap, nearer the left"
+            );
+            assert_eq!(click(799., window), 8, "the far right edge");
         })
         .unwrap();
     }

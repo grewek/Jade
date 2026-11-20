@@ -13,7 +13,9 @@ use super::block;
 use super::callout::callout_index_at;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
-use super::element::{RowHeightCache, mono_char_width, render_editor, render_params};
+use super::element::{
+    RowHeightCache, column_width_for, mono_char_width, render_editor, render_params,
+};
 use super::headings::find_heading_line;
 use super::images::{self, ImageInfo};
 use super::link_table::LinkTable;
@@ -489,13 +491,25 @@ impl Editor {
         let cursor = self.buffer.cursor();
         let focused = self.focus_handle.is_focused(window);
         let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
+        let touched = patch.as_ref().map(|p| p.touched.clone());
+        let rebuild = {
+            let doc = self.document_cache.borrow();
+            let mut rows = self.row_height_cache.borrow_mut();
+            if let Some(patch) = &patch {
+                rows.resize_for(patch, &doc);
+            }
+            touched.is_none() || rows.needs_full_rebuild(&doc, params.available_width, char_width)
+        };
+        if rebuild {
+            // Set only where the rows are rebuilt: see `analyze_line_layout`.
+            self.document_cache
+                .borrow_mut()
+                .set_column_width(column_width_for(params.available_width));
+        }
         let doc = self.document_cache.borrow();
         let mut rows = self.row_height_cache.borrow_mut();
-        if let Some(patch) = &patch {
-            rows.resize_for(patch, &doc);
-        }
-        match patch.map(|p| p.touched) {
-            Some(range) if !rows.needs_full_rebuild(&doc, params.available_width, char_width) => {
+        match touched {
+            Some(range) if !rebuild => {
                 rows.patch_lines(
                     text,
                     &doc,
