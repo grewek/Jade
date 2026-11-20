@@ -1254,6 +1254,143 @@ pub(super) fn render_params(
     }
 }
 
+/// Where the caret at `offset` is on screen (window coordinates): in a region's
+/// column, else in its plain line. `None` when its line is outside the viewport.
+pub(super) fn caret_rect(
+    text: &str,
+    doc: &DocumentCache,
+    layout: &LineLayout,
+    (offset, cursor, focused): (usize, usize, bool),
+    (font, font_size, text_color, line_height): (&Font, Pixels, Hsla, Pixels),
+    (bounds, viewport): (Bounds<Pixels>, Bounds<Pixels>),
+    window: &mut Window,
+) -> Option<Bounds<Pixels>> {
+    let range = visible_line_range(layout, bounds, viewport);
+    if range.is_empty() {
+        return None;
+    }
+    if let Some(found) = caret_in_column(
+        text,
+        doc,
+        layout,
+        (offset, cursor, focused),
+        (font, font_size, line_height),
+        (text_color.into(), bounds),
+        window,
+    ) {
+        return Some(found);
+    }
+    let mut y_offset = layout.cumulative_at(range.start);
+    for i in range {
+        let line_range = layout.line_range(i);
+        let line_text = &text[line_range.clone()];
+        let state = LineState::of(doc, i, cursor, focused);
+        let results = shape_display_line(
+            line_text,
+            &state,
+            font,
+            font_size,
+            text_color,
+            bounds.size.width,
+            window,
+        );
+        // More than one entry only for a table row whose cells wrapped.
+        for (wrapped, display_line) in &results {
+            let height = wrapped.size(line_height).height;
+            if offset <= line_range.end {
+                let display_offset = display_line.display_offset_for_raw(offset - line_range.start);
+                let pos = justify::position_for_index(
+                    (&state, wrapped, display_line),
+                    results.len(),
+                    display_offset,
+                    line_height,
+                )
+                .unwrap_or(point(px(0.), px(0.)));
+                let x = pos.x + indent_px(display_line.indent.level());
+                return Some(Bounds {
+                    origin: bounds.origin + point(x, y_offset + pos.y),
+                    size: size(px(1.), line_height),
+                });
+            }
+            y_offset += height;
+        }
+    }
+    None
+}
+
+/// Up or Down by one painted row, keeping the caret's x: a wrapped paragraph's
+/// rows, and the rows of a float's text, are stepped one by one instead of the
+/// whole source line. `false` (nothing moved) when the last frame is stale, the
+/// target is off the editor, or the move would not change the caret, so the
+/// caller moves by source line as before.
+pub(super) fn move_by_row(
+    editor: &mut Editor,
+    down: bool,
+    extend: bool,
+    window: &mut Window,
+) -> bool {
+    let Some(view) = editor.last_view.clone() else {
+        return false;
+    };
+    let cursor = editor.buffer().cursor();
+    let caret = {
+        let doc = editor.document_cache.borrow();
+        if view.cursor != cursor || !view.focused || view.layout.line_count() != doc.line_count() {
+            return false;
+        }
+        caret_rect(
+            editor.buffer().text(),
+            &doc,
+            &view.layout,
+            (cursor, cursor, true),
+            (
+                &view.font,
+                view.font_size,
+                view.text_color,
+                view.line_height,
+            ),
+            (view.bounds, view.viewport),
+            window,
+        )
+    };
+    let Some(caret) = caret else {
+        return false;
+    };
+    let goal = match editor.visual_goal {
+        Some((at, x)) if at == cursor => x,
+        _ => caret.origin.x,
+    };
+    let lh = view.line_height;
+    let y = caret.origin.y + lh * 0.5 + if down { lh } else { -lh };
+    let (top, bottom) = (
+        view.bounds.origin.y,
+        view.bounds.origin.y + view.bounds.size.height,
+    );
+    if y < top || y >= bottom {
+        return false;
+    }
+    // The row may be just outside the viewport: look a few rows further.
+    let pad = lh * 3.;
+    let wide = FrameView {
+        viewport: Bounds {
+            origin: view.viewport.origin - point(px(0.), pad),
+            size: size(
+                view.viewport.size.width,
+                view.viewport.size.height + pad * 2.,
+            ),
+        },
+        ..(*view).clone()
+    };
+    let target = hit_for_position(editor, &wide, point(goal, y), window).offset;
+    if (down && target <= cursor) || (!down && target >= cursor) {
+        return false;
+    }
+    editor.buffer.set_cursor(target, extend);
+    editor.visual_goal = Some((target, goal));
+    editor.skip_hidden_lines(down, extend);
+    true
+}
+
 /// The width regions are laid out across for an editor `available_width`
 /// wide: none before the first layout (no real width yet).
 /// See [`region::caret_bounds`].
@@ -2018,6 +2155,7 @@ pub(super) fn render_editor(
                         column_drag: editor_entity.read(cx).column_drag.clone(),
                     });
                     editor_entity.update(cx, |editor, cx| {
+                        editor.last_view = Some(view.clone());
                         if editor.hovering_link {
                             window.set_window_cursor_style(CursorStyle::PointingHand);
                         }
@@ -2446,7 +2584,8 @@ fn register_mouse_handling(
 /// Everything a frame's painting and mouse hit-testing share, captured once
 /// at paint time: the line layout and where the editor, its viewport and the
 /// cursor are, with the font the lines are shaped in.
-struct FrameView {
+#[derive(Clone)]
+pub(super) struct FrameView {
     layout: LineLayout,
     cursor: usize,
     focused: bool,
@@ -5522,6 +5661,72 @@ mod tests {
             );
         })
         .unwrap();
+    }
+
+    /// Up and Down step one painted row, so a wrapped paragraph beside a float
+    /// is walked row by row (not left for the float's last line), keeping the
+    /// caret's x, and the row below the cut is reached from the one above it.
+    #[gpui_kit::test]
+    fn up_and_down_step_painted_rows(cx: &mut TestAppContext) {
+        let para = "flowing words ".repeat(40);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: aside right 40%\n\nfloat one\n\nfloat two\n\nfloat three\n\n---\n\n{para}\n\n:::\n\nafter"
+            )
+            .into_boxed_str(),
+        );
+        let (window, editor) = open_editor(cx, text);
+        let key = |cx: &mut TestAppContext, k: &str| {
+            cx.update_window(window, |_, window, cx| {
+                window.dispatch_keystroke(gpui_kit::Keystroke::parse(k).unwrap(), cx);
+                window.render_frame(cx);
+            })
+            .unwrap();
+        };
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                e.document_cache.borrow_mut().set_column_width(Some(800.));
+                let at = text.find("flowing").unwrap() + 3;
+                e.buffer_mut().set_cursor(at, false);
+                e.focus_handle.focus(window, cx);
+            });
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        let start = text.find("flowing").unwrap();
+        let end = start + para.len();
+        let cursor = |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().cursor());
+        let mut seen = vec![cursor(cx)];
+        for _ in 0..12 {
+            key(cx, "down");
+            seen.push(cursor(cx));
+        }
+        // Each press moves on, inside the paragraph while it has rows, and by
+        // roughly one row of text (about 30 to 60 bytes in the narrow channel).
+        let inside: Vec<_> = seen
+            .iter()
+            .filter(|&&c| (start..=end).contains(&c))
+            .collect();
+        assert!(
+            inside.len() >= 4,
+            "walks several rows of the paragraph: {seen:?}"
+        );
+        for pair in inside.windows(2) {
+            assert!(pair[1] > pair[0], "moves forward: {seen:?}");
+            assert!(pair[1] - pair[0] < 120, "one row, not the line: {seen:?}");
+        }
+        // And back up, row by row, never into the float.
+        let top = *inside.last().unwrap();
+        editor.update(cx, |e, _| e.buffer_mut().set_cursor(*top, false));
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        key(cx, "up");
+        let up = cursor(cx);
+        assert!(
+            up < *top && *top - up < 120 && up >= start,
+            "up one row: {up}"
+        );
     }
 
     /// Up and Down walk a side-by-side region in source order and never leave
