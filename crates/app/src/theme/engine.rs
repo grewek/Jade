@@ -99,6 +99,11 @@ impl ThemeEngine {
         true
     }
 
+    /// Where `config.toml` lives, when the app has one.
+    pub fn config_dirs(cx: &App) -> Option<&ConfigDirs> {
+        Self::global(cx).dirs.as_ref()
+    }
+
     pub fn global(cx: &App) -> &ThemeEngine {
         cx.global::<ThemeEngine>()
     }

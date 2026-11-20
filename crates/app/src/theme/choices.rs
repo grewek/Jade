@@ -67,6 +67,15 @@ fn user_ids(theme_dir: Option<&Path>) -> Vec<String> {
 /// its comments). A file that does not parse is left alone: overwriting it
 /// would destroy what the user typed.
 pub fn remember(dirs: &ConfigDirs, id: &str) -> Result<(), String> {
+    remember_value(dirs, "theme", Value::String(id.to_owned()))
+}
+
+/// Writes `justify = <on>` into `config.toml`, as [`remember`] does.
+pub fn remember_justify(dirs: &ConfigDirs, on: bool) -> Result<(), String> {
+    remember_value(dirs, "justify", Value::Boolean(on))
+}
+
+fn remember_value(dirs: &ConfigDirs, key: &str, value: Value) -> Result<(), String> {
     let path = dirs.config_file();
     let mut table = if path.is_file() {
         let src = loader::read_bounded(&path)?;
@@ -75,7 +84,7 @@ pub fn remember(dirs: &ConfigDirs, id: &str) -> Result<(), String> {
     } else {
         Table::new()
     };
-    table.insert("theme".to_owned(), Value::String(id.to_owned()));
+    table.insert(key.to_owned(), value);
     let out = toml::to_string(&table).map_err(|e| e.to_string())?;
     fs::create_dir_all(dirs.base()).map_err(|e| format!("{}: {e}", dirs.base().display()))?;
     // Rename is atomic, so the watcher never reads a half-written file.

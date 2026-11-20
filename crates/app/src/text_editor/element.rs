@@ -6,6 +6,7 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
+pub(super) mod justify;
 mod region;
 
 use super::Editor;
@@ -66,6 +67,8 @@ pub(super) struct LineState<'a> {
     pub editing_cell: Option<usize>,
     /// The open or close marker of a columns region: shows nothing unless active.
     pub column_frame: bool,
+    /// Prose rows are stretched to the wrap width (see `justify.rs`).
+    pub justify: bool,
 }
 
 impl<'a> LineState<'a> {
@@ -91,6 +94,7 @@ impl<'a> LineState<'a> {
                 .filter(|&(line, _)| line == i)
                 .map(|(_, column)| column),
             column_frame: doc.is_column_frame(i),
+            justify: doc.justify(),
         }
     }
 
@@ -125,6 +129,7 @@ impl<'a> LineState<'a> {
             hidden: false,
             editing_cell: None,
             column_frame: false,
+            justify: false,
         }
     }
 }
@@ -1697,16 +1702,14 @@ pub(super) fn shape_display_line(
         .collect()
 }
 
-/// Shapes one display line. `bold` makes every run bold (a table header).
-fn shape_entry(
+/// The styled runs of `display_line`'s text, one per visible segment (they tile
+/// `display_text` in order); `bold` makes every run bold (a table header).
+pub(super) fn line_runs(
     display_line: &DisplayLine,
-    wrap_width: Option<Pixels>,
-    (font, font_size): (&Font, Pixels),
-    colors: &InlineColors,
+    (font, colors): (&Font, &InlineColors),
     (broken, callout): (&[Range<usize>], Option<&Callout>),
     bold: bool,
-    window: &mut Window,
-) -> WrappedLine {
+) -> Vec<TextRun> {
     let text_color = colors.text;
     let mut runs: Vec<TextRun> = display_line
         .segments
@@ -1746,6 +1749,20 @@ fn shape_entry(
             strikethrough: None,
         });
     }
+    runs
+}
+
+/// Shapes one display line. `bold` makes every run bold (a table header).
+fn shape_entry(
+    display_line: &DisplayLine,
+    wrap_width: Option<Pixels>,
+    (font, font_size): (&Font, Pixels),
+    colors: &InlineColors,
+    (broken, callout): (&[Range<usize>], Option<&Callout>),
+    bold: bool,
+    window: &mut Window,
+) -> WrappedLine {
+    let runs = line_runs(display_line, (font, colors), (broken, callout), bold);
     window
         .text_system()
         .shape_text(
@@ -2621,6 +2638,12 @@ fn hit_in_line(
             let relative_x =
                 (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
             let local_y = (relative_y - y).max(px(0.));
+            let row = (local_y / line_height) as usize;
+            let relative_x = justify::unshift_x(
+                (state, wrapped, display_line),
+                results.len(),
+                (row, relative_x),
+            );
             let display_offset =
                 match wrapped.closest_index_for_position(point(relative_x, local_y), line_height) {
                     Ok(ix) | Err(ix) => ix,
@@ -4068,18 +4091,20 @@ fn paint_line(
             let start = selection.start.max(line_range.start);
             let end = selection.end.min(line_range.end);
             if start < end {
-                let start_pos = wrapped
-                    .position_for_index(
-                        display_line.display_offset_for_raw(start - line_range.start),
-                        line_height,
-                    )
-                    .unwrap_or(point(px(0.), px(0.)));
-                let end_pos = wrapped
-                    .position_for_index(
-                        display_line.display_offset_for_raw(end - line_range.start),
-                        line_height,
-                    )
-                    .unwrap_or(point(full_row_width, total_height - line_height));
+                let start_pos = justify::position_for_index(
+                    (state, wrapped, display_line),
+                    results.len(),
+                    display_line.display_offset_for_raw(start - line_range.start),
+                    line_height,
+                )
+                .unwrap_or(point(px(0.), px(0.)));
+                let end_pos = justify::position_for_index(
+                    (state, wrapped, display_line),
+                    results.len(),
+                    display_line.display_offset_for_raw(end - line_range.start),
+                    line_height,
+                )
+                .unwrap_or(point(full_row_width, total_height - line_height));
                 let start_row = (start_pos.y / line_height) as i32;
                 let end_row = (end_pos.y / line_height) as i32;
                 if start_row == end_row {
@@ -4119,7 +4144,30 @@ fn paint_line(
             }
         }
 
-        let _ = wrapped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
+        if justify::eligible(state, display_line, results.len())
+            && !wrapped.wrap_boundaries().is_empty()
+        {
+            let runs = line_runs(
+                display_line,
+                (font, &inline),
+                (state.broken, callout),
+                false,
+            );
+            let row_paint = justify::RowPaint {
+                origin: line_origin,
+                line_height,
+                font_size,
+                runs: &runs,
+            };
+            justify::paint(
+                wrapped,
+                &display_line.display_text,
+                &row_paint,
+                (window, cx),
+            );
+        } else {
+            let _ = wrapped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
+        }
         let widgets = WidgetPaint {
             colors: &widget_colors,
             inline: &inline,
@@ -4129,12 +4177,13 @@ fn paint_line(
         paint_widgets(display_line, wrapped, line_origin, &widgets, (window, cx));
 
         if show_cursor && cursor >= line_range.start && cursor <= line_range.end {
-            let pos = wrapped
-                .position_for_index(
-                    display_line.display_offset_for_raw(cursor - line_range.start),
-                    line_height,
-                )
-                .unwrap_or(point(px(0.), px(0.)));
+            let pos = justify::position_for_index(
+                (state, wrapped, display_line),
+                results.len(),
+                display_line.display_offset_for_raw(cursor - line_range.start),
+                line_height,
+            )
+            .unwrap_or(point(px(0.), px(0.)));
             window.paint_quad(fill(
                 Bounds {
                     origin: line_origin + pos,
@@ -4456,6 +4505,63 @@ mod tests {
             cursor <= 2,
             "clicking near the start should place the cursor near byte 0, got {cursor}"
         );
+    }
+
+    /// A click on a word of a justified row (drawn shifted right of where the
+    /// unstretched text would put it) lands on that word, through real dispatch.
+    #[gpui_kit::test]
+    fn clicking_a_justified_word_lands_on_it(cx: &mut TestAppContext) {
+        let text = "The quick brown fox jumps over the lazy dog and then keeps running \
+            through the quiet meadow until the evening settles over the hills again. "
+            .repeat(8);
+        let text: &'static str = Box::leak(text.trim_end().to_owned().into_boxed_str());
+        let (window, editor) = open_editor(cx, text);
+        cx.update(|cx| cx.set_global(crate::text_editor::TextSettings { justify: true }));
+        let (bounds, target, x) = cx
+            .update_window(window, |_, window, cx| {
+                window.render_frame(cx);
+                let bounds = window.find("editor").bounds();
+                let style = window.text_style();
+                let (font, size) = (style.font(), style.font_size.to_pixels(window.rem_size()));
+                let state = LineState {
+                    justify: true,
+                    ..LineState::plain()
+                };
+                let mut shaped = shape_display_line(
+                    text,
+                    &state,
+                    &font,
+                    size,
+                    style.color,
+                    bounds.size.width,
+                    window,
+                );
+                let (wrapped, display) = shaped.remove(0);
+                let rows = wrapped.wrap_boundaries().len();
+                assert!(rows >= 1, "the paragraph must wrap in the test window");
+                // A word in the middle of row 0.
+                let target = text[..text.len() / (rows + 1) / 2].rfind(' ').unwrap() + 1;
+                let at = super::justify::position_for_index(
+                    (&state, &wrapped, &display),
+                    1,
+                    target,
+                    window.line_height(),
+                )
+                .unwrap();
+                let natural = wrapped
+                    .position_for_index(target, window.line_height())
+                    .unwrap();
+                assert!(at.x > natural.x + px(1.), "the row should be stretched");
+                (bounds, target, at.x)
+            })
+            .unwrap();
+        cx.update_window(window, |_, window, cx| {
+            window.click_at("editor", point(x + px(1.), px(1.)), cx);
+        })
+        .unwrap();
+        let _ = bounds;
+        let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+        assert_eq!(cursor, target, "the click should land on the word it hit");
     }
 
     #[gpui_kit::test]

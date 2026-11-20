@@ -26,6 +26,7 @@ pub struct Loaded {
 #[derive(Deserialize)]
 struct ConfigFile {
     theme: Option<String>,
+    justify: Option<bool>,
 }
 
 /// Ids become file names, so anything that could leave the theme folder is out.
@@ -84,14 +85,30 @@ pub fn resolve(
     ResolvedTheme::parse(defaults, &src).map_err(|errors| messages(id, errors))
 }
 
-fn wanted_id(dirs: Option<&ConfigDirs>, notices: &mut Vec<String>) -> Option<String> {
+fn read_config(dirs: Option<&ConfigDirs>) -> Option<Result<ConfigFile, String>> {
     let path = dirs?.config_file();
     if !path.is_file() {
         return None;
     }
-    let parsed = read_bounded(&path).and_then(|src| {
+    Some(read_bounded(&path).and_then(|src| {
         toml::from_str::<ConfigFile>(&src).map_err(|e| format!("config.toml: {e}"))
-    });
+    }))
+}
+
+/// `justify` from `config.toml`; off when absent or the file does not parse
+/// (the theme load already reports that).
+pub fn configured_justify(dirs: Option<&ConfigDirs>) -> bool {
+    matches!(
+        read_config(dirs),
+        Some(Ok(ConfigFile {
+            justify: Some(true),
+            ..
+        }))
+    )
+}
+
+fn wanted_id(dirs: Option<&ConfigDirs>, notices: &mut Vec<String>) -> Option<String> {
+    let parsed = read_config(dirs)?;
     match parsed {
         Ok(config) => config.theme,
         Err(message) => {

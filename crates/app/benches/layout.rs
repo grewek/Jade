@@ -117,6 +117,36 @@ fn bench_steady_state(c: &mut Criterion, name: &str, text: &str) {
     group.finish();
 }
 
+/// Justified text: the paint path that shapes each word of a wrapped row
+/// itself. Compare with `frame/{name}` (the same note, ragged).
+fn bench_justified(c: &mut Criterion, name: &str, text: &str) {
+    let mut app = HeadlessApp::new(text);
+    app.open_note();
+    app.focus_editor();
+    app.set_justify_and_frame(true);
+    let mut group = c.benchmark_group(format!("frame_justified/{name}"));
+    group.bench_function("idle", |b| b.iter(|| app.frame()));
+    let mut step = 0u32;
+    group.bench_function("scroll_and_frame", |b| {
+        b.iter(|| {
+            step = (step + 1) % 100;
+            app.scroll_and_frame(step as f32 / 100.0);
+        });
+    });
+    let mut typed = false;
+    group.bench_function("keystroke_and_frame", |b| {
+        b.iter(|| {
+            if typed {
+                app.key_and_frame("backspace", None);
+            } else {
+                app.key_and_frame("x", Some("x"));
+            }
+            typed = !typed;
+        });
+    });
+    group.finish();
+}
+
 /// `text` followed by a 20-row table that is the note's last lines, so the
 /// editor's initial click puts the caret in the table's last cell.
 fn with_trailing_table(text: &str) -> String {
@@ -158,6 +188,8 @@ fn bench_layout(c: &mut Criterion) {
     bench_steady_state(c, "typical", typical);
     bench_steady_state(c, "stress", &stress);
     bench_steady_state(c, "stress_blocks", &with_image_blocks(&stress));
+    bench_justified(c, "typical", typical);
+    bench_justified(c, "stress", &stress);
     bench_table_typing(c, &with_trailing_table(typical));
 }
 

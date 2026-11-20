@@ -174,6 +174,8 @@ pub(super) struct DocumentCache {
     /// The table cell the caret is in, as `(line, column)`: it shows its text
     /// as typed and is what row counts and painting treat as being edited.
     editing_cell: Option<(usize, usize)>,
+    /// Prose is justified: set from the settings each frame.
+    justify: bool,
 }
 
 impl DocumentCache {
@@ -199,6 +201,7 @@ impl DocumentCache {
             images: ImageSizes::default(),
             raw_table: None,
             editing_cell: None,
+            justify: false,
         };
         cache.recompute_all(text);
         cache
@@ -295,6 +298,15 @@ impl DocumentCache {
     ) -> bool {
         self.editing_cell = editing_cell;
         std::mem::replace(&mut self.raw_table, raw_table) != raw_table
+    }
+
+    /// Whether prose is justified (a paint-only setting: no row count changes).
+    pub(super) fn justify(&self) -> bool {
+        self.justify
+    }
+
+    pub(super) fn set_justify(&mut self, on: bool) {
+        self.justify = on;
     }
 
     pub(super) fn images(&self) -> &ImageSizes {

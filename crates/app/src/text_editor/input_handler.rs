@@ -4,7 +4,7 @@ use gpui_kit::*;
 
 use super::document_cache::TextEdit;
 use super::element::{
-    LineState, analyze_line_layout, caret_in_column, indent_px, shape_display_line,
+    LineState, analyze_line_layout, caret_in_column, indent_px, justify, shape_display_line,
     visible_line_range,
 };
 use super::{Editor, EditorBuffer};
@@ -217,9 +217,10 @@ impl EntityInputHandler for Editor {
         for i in range {
             let line_range = layout.line_range(i);
             let line_text = &text[line_range.clone()];
+            let state = LineState::of(&cache_ref, i, cursor, focused);
             let results = shape_display_line(
                 line_text,
-                &LineState::of(&cache_ref, i, cursor, focused),
+                &state,
                 &font,
                 font_size,
                 text_color,
@@ -232,9 +233,13 @@ impl EntityInputHandler for Editor {
                 if byte_offset <= line_range.end {
                     let display_offset =
                         display_line.display_offset_for_raw(byte_offset - line_range.start);
-                    let pos = wrapped
-                        .position_for_index(display_offset, line_height)
-                        .unwrap_or(point(px(0.), px(0.)));
+                    let pos = justify::position_for_index(
+                        (&state, wrapped, display_line),
+                        results.len(),
+                        display_offset,
+                        line_height,
+                    )
+                    .unwrap_or(point(px(0.), px(0.)));
                     let x = pos.x + indent_px(display_line.indent.level());
                     let origin = element_bounds.origin + point(x, y_offset + pos.y);
                     return Some(Bounds {

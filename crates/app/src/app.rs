@@ -10,11 +10,14 @@ use gpui_kit::component::input::{Input, InputEvent, InputState};
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenuItem};
 use gpui_kit::component::scroll::Scrollbar;
 use gpui_kit::component::select::{SearchableVec, Select, SelectEvent, SelectState};
+use gpui_kit::component::switch::Switch;
 use gpui_kit::component::{IconName, IndexPath, Sizable as _, Theme, WindowExt};
 use gpui_kit::prelude::FluentBuilder as _;
 use gpui_kit::*;
 use jade_core::link_scan::LinkKind;
 use jade_core::{Destination, Vault, search_targets};
+
+use crate::text_editor::TextSettings;
 
 /// One entry of the Settings theme dropdown; the value is the theme id.
 #[derive(Clone)]
@@ -797,6 +800,22 @@ impl JadeApp {
                         div()
                             .child(Select::new(&select).id("theme-select"))
                             .debug_name("theme-select"),
+                    )
+                    .child(div().text_color(muted).child("Text"))
+                    .child(
+                        div()
+                            .child(
+                                Switch::new("justify-switch")
+                                    .label("Justify text")
+                                    .checked(TextSettings::justify(cx))
+                                    .on_click(|on, _window, cx| {
+                                        if let Err(message) = TextSettings::choose_justify(*on, cx)
+                                        {
+                                            eprintln!("jade: {message}");
+                                        }
+                                    }),
+                            )
+                            .debug_name("justify-switch"),
                     )
                     .debug_name("settings-panel"),
             )
@@ -1942,6 +1961,7 @@ pub fn run() {
             install_fonts(cx);
             let config_dirs = ConfigDirs::from_environment();
             let mut notices = ThemeEngine::install(config_dirs.clone(), cx);
+            crate::text_editor::TextSettings::install(config_dirs.as_ref(), cx);
             if let Some(dirs) = config_dirs {
                 notices.extend(crate::theme::watch(dirs, cx));
             }

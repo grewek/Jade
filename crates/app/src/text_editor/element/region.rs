@@ -414,7 +414,13 @@ pub(super) fn caret_bounds(
     let line_start = doc.line_start_byte(line);
     for (wrapped, display) in &sl.results {
         let at = display.display_offset_for_raw(offset - line_start);
-        let Some(pos) = wrapped.position_for_index(at, line_height) else {
+        let state = LineState::in_column(doc, line, cursor, focused);
+        let Some(pos) = justify::position_for_index(
+            (&state, wrapped, display),
+            sl.results.len(),
+            at,
+            line_height,
+        ) else {
             continue;
         };
         let x = pos.x + indent_px(display.indent.level());

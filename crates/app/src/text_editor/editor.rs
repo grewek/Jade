@@ -850,6 +850,9 @@ impl Render for Editor {
         self.unfold_at_cursor();
         self.sync_table_view(window);
         self.sync_column_view(window);
+        self.document_cache
+            .borrow_mut()
+            .set_justify(super::TextSettings::justify(cx));
         render_editor(self, cx.entity(), window, cx)
     }
 }

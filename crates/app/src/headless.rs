@@ -163,6 +163,14 @@ impl HeadlessApp {
         })
     }
 
+    /// Turns justified text on or off (not saved), then renders the frame.
+    pub fn set_justify_and_frame(&mut self, on: bool) -> AllocSnapshot {
+        self.measured(|window, cx| {
+            cx.set_global(crate::text_editor::TextSettings { justify: on });
+            window.render_frame(cx);
+        })
+    }
+
     /// Scrolls the editor pane to `fraction` (0..=1) of its range, then
     /// renders the frame.
     pub fn scroll_and_frame(&mut self, fraction: f32) -> AllocSnapshot {

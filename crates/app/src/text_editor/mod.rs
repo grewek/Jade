@@ -36,5 +36,10 @@ mod table_preview;
 #[cfg(test)]
 mod test_support;
 
+pub mod settings;
+
 pub use buffer::EditorBuffer;
+#[cfg(feature = "bench-support")]
+pub use editor::{BackTab, InsertTab};
 pub use editor::{Editor, EditorEvent, key_bindings};
+pub use settings::TextSettings;

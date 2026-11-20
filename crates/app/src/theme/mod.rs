@@ -16,10 +16,10 @@ mod roles;
 mod tests;
 mod watch;
 
-pub use choices::Choice;
+pub use choices::{Choice, remember_justify};
 pub use contrast::ContrastWarning;
 pub use engine::ThemeEngine;
-pub use loader::{Loaded, load_startup};
+pub use loader::{Loaded, configured_justify, load_startup};
 pub use palette::Palette;
 pub use parse::{
     Defaults, FORMAT_VERSION, Kind, MAX_PALETTE_ENTRIES, MAX_THEME_BYTES, ResolvedTheme, Rgb,
