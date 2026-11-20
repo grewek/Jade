@@ -444,6 +444,10 @@ pub fn split(total: f32, percent: &[u8]) -> Option<Split> {
 
 /// A float narrower than this is not worth wrapping text around.
 pub const MIN_FLOAT: f32 = 120.;
+/// The text beside a float keeps at least this width (about 55 characters):
+/// narrower, greedy wrapping leaves rows 70-90% full and justifying them opens
+/// wide gaps. A float asking for more than that leaves is made narrower.
+pub const MIN_CHANNEL: f32 = 560.;
 
 /// The places of an aside's float (`x(0)`, `width(0)`) and of the text channel
 /// beside it (`x(1)`, `width(1)`) across a line `total` pixels wide, or `None`
@@ -453,7 +457,7 @@ pub fn aside_split(total: f32, right: bool, share: u8) -> Option<Split> {
         return None;
     }
     let usable = total - GAP;
-    let float = usable * f32::from(share) / 100.;
+    let float = (usable * f32::from(share) / 100.).min(usable - MIN_CHANNEL);
     let channel = usable - float;
     if float < MIN_FLOAT || channel < MIN_COLUMN {
         return None;
@@ -720,6 +724,12 @@ mod tests {
         assert_eq!(left.divider_x(0), left.width(0) + GAP / 2.);
         // A channel under the minimum stacks the region.
         assert!(aside_split(300., true, 40).is_none());
+        // A float asking for more than leaves the text its width gets narrower.
+        let narrow = aside_split(800., true, 50).unwrap();
+        assert_eq!(narrow.width(1), MIN_CHANNEL);
+        assert_eq!(narrow.width(0), 800. - GAP - MIN_CHANNEL);
+        // And when that leaves under the float's minimum, the region stacks.
+        assert!(aside_split(700., true, 40).is_none());
         assert!(
             aside_split(1000., true, 10).is_none(),
             "a 98px float is too small"
