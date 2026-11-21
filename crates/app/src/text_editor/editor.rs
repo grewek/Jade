@@ -12,7 +12,7 @@ mod table_edit;
 
 use super::EditorBuffer;
 use super::callout::callout_index_at;
-use super::column_handles::ColumnDrag;
+use super::columns::handles::ColumnDrag;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{render_editor, render_params};

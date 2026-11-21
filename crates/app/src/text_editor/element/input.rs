@@ -48,13 +48,13 @@ pub(super) fn register_mouse_handling(
             editor_entity.update(cx, |editor, cx| {
                 editor.column_hover = None;
                 match handle {
-                    column_handles::Handle::Add => {
+                    columns::handles::Handle::Add => {
                         editor.add_region_column(region, window, cx);
                     }
-                    column_handles::Handle::Unwrap => {
+                    columns::handles::Handle::Unwrap => {
                         editor.unwrap_region(region, window, cx);
                     }
-                    column_handles::Handle::Divider(divider) => {
+                    columns::handles::Handle::Divider(divider) => {
                         let percent = {
                             let doc = editor.document_cache.borrow();
                             let r = doc.columns()[region];
@@ -526,11 +526,11 @@ pub(super) fn column_frame_at(
     editor: &Editor,
     view: &FrameView,
     position: Point<Pixels>,
-) -> Option<(usize, column_handles::Frame, (f32, f32))> {
+) -> Option<(usize, columns::handles::Frame, (f32, f32))> {
     let doc = editor.document_cache.borrow();
     let regions = doc.columns();
     let y = position.y - view.bounds.origin.y;
-    let margin = px(column_handles::MARGIN);
+    let margin = px(columns::handles::MARGIN);
     let index = regions
         .partition_point(|r| view.layout.cumulative_at(r.start_line) - margin <= y)
         .checked_sub(1)?;
@@ -538,7 +538,7 @@ pub(super) fn column_frame_at(
     let (_, split) = doc.side_by_side(region.start_line)?;
     let top = view.layout.cumulative_at(region.start_line);
     let height = view.layout.height(region.start_line);
-    let frame = column_handles::Frame {
+    let frame = columns::handles::Frame {
         dividers: (0..split.divider_count())
             .map(|k| split.divider_x(k))
             .collect(),
@@ -567,7 +567,7 @@ pub(super) fn column_hover_for_pointer(
     position: Point<Pixels>,
 ) -> Option<usize> {
     let (index, frame, p) = column_frame_at(editor, view, position)?;
-    column_handles::hover_at(&frame, p).then_some(index)
+    columns::handles::hover_at(&frame, p).then_some(index)
 }
 
 /// The control under the pointer, when its region's controls are shown.
@@ -575,9 +575,9 @@ pub(super) fn column_handle_for_pointer(
     editor: &Editor,
     view: &FrameView,
     position: Point<Pixels>,
-) -> Option<(usize, column_handles::Handle)> {
+) -> Option<(usize, columns::handles::Handle)> {
     let (index, frame, p) = column_frame_at(editor, view, position)?;
-    let handle = column_handles::handle_at(&frame, p)?;
+    let handle = columns::handles::handle_at(&frame, p)?;
     Some((index, handle))
 }
 
@@ -631,7 +631,7 @@ pub(super) fn column_drag_percent(
         } else {
             float
         };
-        let step = f32::from(column_ops::SNAP);
+        let step = f32::from(columns::ops::SNAP);
         let share = (float / usable * 100. / step).round() * step;
         let share = share.clamp(f32::from(columns::ASIDE_MIN), f32::from(columns::ASIDE_MAX)) as u8;
         let mut shares = region.percent[..region.count].to_vec();
@@ -656,14 +656,14 @@ pub(super) fn column_drag_percent(
     let share_for = |column: usize| {
         let px = min_column_px(&doc, &region, column, char_width);
         // Shares snap in steps, so round the limit up to one.
-        let step = f32::from(column_ops::SNAP);
+        let step = f32::from(columns::ops::SNAP);
         (px / usable * 100. / step).ceil() * step
     };
     let pair = f32::from(region.percent[k] + region.percent[k + 1]);
     let (lo, hi) = (share_for(k), pair - share_for(k + 1));
     let share = width / usable * 100.;
     let share = if lo <= hi { share.clamp(lo, hi) } else { share };
-    Some(column_ops::dragged(
+    Some(columns::ops::dragged(
         &region.percent[..region.count],
         k,
         share,

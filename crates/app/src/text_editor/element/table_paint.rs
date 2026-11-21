@@ -231,13 +231,13 @@ pub(super) fn paint_stacked_controls(
         window.paint_quad(fill(line, colors.accent));
         let grip = Bounds {
             origin: point(
-                x - px(column_handles::GRIP_SHORT) / 2.,
-                top + (px(column_handles::GRIP_LONG)).min((bottom - top) / 2.)
-                    - px(column_handles::GRIP_LONG) / 2.,
+                x - px(columns::handles::GRIP_SHORT) / 2.,
+                top + (px(columns::handles::GRIP_LONG)).min((bottom - top) / 2.)
+                    - px(columns::handles::GRIP_LONG) / 2.,
             ),
             size: size(
-                px(column_handles::GRIP_SHORT),
-                px(column_handles::GRIP_LONG),
+                px(columns::handles::GRIP_SHORT),
+                px(columns::handles::GRIP_LONG),
             ),
         };
         paint_control(

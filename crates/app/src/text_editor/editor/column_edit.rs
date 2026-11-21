@@ -7,7 +7,7 @@
 use gpui_kit::*;
 
 use super::super::block_preview::LineRole;
-use super::super::column_ops;
+use super::super::columns;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
 use super::super::document_cache::DocumentCache;
@@ -299,9 +299,9 @@ impl Editor {
                 return None;
             }
             Some(match region.kind {
-                Kind::Aside if region.tail => column_ops::float_markers(lines, region, &percent),
-                Kind::Aside => column_ops::aside_markers(lines, region, &percent, false),
-                Kind::Columns => column_ops::with_ratio(lines, &percent),
+                Kind::Aside if region.tail => columns::ops::float_markers(lines, region, &percent),
+                Kind::Aside => columns::ops::aside_markers(lines, region, &percent, false),
+                Kind::Columns => columns::ops::with_ratio(lines, &percent),
             })
         })
     }
@@ -315,9 +315,9 @@ impl Editor {
     ) -> bool {
         self.edit_region(index, window, cx, |lines, region| {
             if region.is_aside() {
-                column_ops::with_added_float(lines, region)
+                columns::ops::with_added_float(lines, region)
             } else {
-                column_ops::with_added_column(lines, region)
+                columns::ops::with_added_column(lines, region)
             }
         })
     }
@@ -330,7 +330,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.edit_region(index, window, cx, |lines, region| {
-            Some(column_ops::unwrapped(lines, region))
+            Some(columns::ops::unwrapped(lines, region))
         })
     }
 
@@ -350,7 +350,7 @@ impl Editor {
         self.edit_region(index, window, cx, |lines, region| {
             region
                 .is_aside()
-                .then(|| column_ops::flipped(lines, region))
+                .then(|| columns::ops::flipped(lines, region))
         })
     }
 
@@ -382,7 +382,7 @@ impl Editor {
             return false;
         };
         self.edit_region(index, window, cx, |lines, region| {
-            Some(column_ops::float_flipped(lines, region, k))
+            Some(columns::ops::float_flipped(lines, region, k))
         })
     }
 
@@ -511,7 +511,10 @@ impl Editor {
             }
             let lines: Vec<&str> = block.clone().map(line_text).collect();
             let range = doc.line_start_byte(block.start)..doc.line_end_byte(end - 1);
-            (range, column_ops::floated(&lines, &text, right).join("\n"))
+            (
+                range,
+                columns::ops::floated(&lines, &text, right).join("\n"),
+            )
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
@@ -560,7 +563,7 @@ impl Editor {
                 .map(|l| &source[doc.line_start_byte(l)..doc.line_end_byte(l)])
                 .collect();
             let range = doc.line_start_byte(block.start)..doc.line_end_byte(block.end - 1);
-            (range, column_ops::wrapped(&lines).join("\n"))
+            (range, columns::ops::wrapped(&lines).join("\n"))
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);

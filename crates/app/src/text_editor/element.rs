@@ -19,8 +19,7 @@ use super::Editor;
 use super::block_preview::LineRole;
 use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
-use super::column_handles::{self, ColumnDrag};
-use super::column_ops;
+use super::columns::handles::ColumnDrag;
 use super::columns::{self, Columns};
 use super::document_cache::DocumentCache;
 use super::editor::ColumnMenu;
@@ -2243,7 +2242,8 @@ mod tests {
     /// grip, and dragging it gives the snapped shares.
     #[gpui_kit::test]
     fn region_controls_hover_press_and_drag(cx: &mut TestAppContext) {
-        use super::super::column_handles::{self, ColumnDrag};
+        use super::super::columns;
+        use super::super::columns::handles::ColumnDrag;
         use super::super::table::handles::Handle;
         use super::px;
         use super::{FrameView, LineLayout, RowCache};
@@ -2317,7 +2317,7 @@ mod tests {
             // A press on the divider's grip finds it.
             let doc = doc_cache.borrow();
             let region = doc.columns()[0];
-            let frame = column_handles::Frame {
+            let frame = columns::handles::Frame {
                 dividers: vec![split.divider_x(0)],
                 width: split.x(1) + split.width(1),
                 height: f32::from(view.layout.height(region.start_line)),
@@ -2325,11 +2325,12 @@ mod tests {
                 buttons: true,
                 grips: Vec::new(),
             };
-            let (x, y, w, h) = column_handles::rect_of(&frame, column_handles::Handle::Divider(0));
+            let (x, y, w, h) =
+                columns::handles::rect_of(&frame, columns::handles::Handle::Divider(0));
             let grip = at(x + w / 2., px(y + h / 2.));
             assert_eq!(
                 column_handle_for_pointer(editor, &view, grip),
-                Some((0, column_handles::Handle::Divider(0)))
+                Some((0, columns::handles::Handle::Divider(0)))
             );
 
             // Dragging it to the right of the middle gives a wider left column.
@@ -3201,7 +3202,7 @@ mod tests {
     /// follows the pointer) without touching the source, and ends cleanly.
     #[gpui_kit::test]
     fn a_dragged_divider_previews_the_shares_until_it_ends(cx: &mut TestAppContext) {
-        use super::super::column_handles::ColumnDrag;
+        use super::super::columns::handles::ColumnDrag;
         let text = "intro\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nafter";
         let (window, editor) = open_editor(cx, text);
         let shares = |cx: &mut TestAppContext| {
@@ -3239,7 +3240,7 @@ mod tests {
     /// document under an unchanged scroll offset (the view jumped).
     #[gpui_kit::test]
     fn a_divider_drag_leaves_the_rows_outside_its_region_alone(cx: &mut TestAppContext) {
-        use super::super::column_handles::ColumnDrag;
+        use super::super::columns::handles::ColumnDrag;
         let text = "a **bold** line\n\nb [[link]] line\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nc **bold** after\n\nd";
         let (window, editor) = open_editor(cx, text);
         cx.update_window(window, |_, window, cx| window.render_frame(cx))

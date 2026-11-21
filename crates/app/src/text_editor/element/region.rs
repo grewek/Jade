@@ -1,5 +1,5 @@
 //! Painting and hit-testing a columns region laid out side by side (see
-//! `columns.rs`). The region is one block in the row cache: its first line has
+//! `columns/mod.rs`). The region is one block in the row cache: its first line has
 //! the height of its tallest column and the rest have none, so everything here
 //! is placed from that line's top. A column's lines are shaped at the column's
 //! width ([`shape_region`], used by painting and by clicks, so both see the same
@@ -654,8 +654,8 @@ pub(super) fn float_grips(spots: &[FloatSpot], split: &columns::Split) -> Vec<(u
         .filter_map(|spot| {
             let divider =
                 (0..split.divider_count()).find(|&d| split.divider_is_right(d) == spot.right)?;
-            let y =
-                f32::from(spot.top) + (f32::from(spot.height) / 2.).min(column_handles::GRIP_LONG);
+            let y = f32::from(spot.top)
+                + (f32::from(spot.height) / 2.).min(columns::handles::GRIP_LONG);
             Some((divider, y))
         })
         .collect()
@@ -685,7 +685,7 @@ fn paint_region_controls(
     };
     let width = f32::from(shaped.total);
     let height = f32::from(env.line_height * shaped.rows as f32);
-    let frame = column_handles::Frame {
+    let frame = columns::handles::Frame {
         dividers: (0..split.divider_count())
             .map(|k| split.divider_x(k))
             .collect(),
@@ -697,7 +697,7 @@ fn paint_region_controls(
     };
     let origin = point(bounds.origin.x + first.x, bounds.origin.y + top);
     let at = |handle| {
-        let (x, y, w, h) = column_handles::rect_of(&frame, handle);
+        let (x, y, w, h) = columns::handles::rect_of(&frame, handle);
         Bounds {
             origin: origin + point(px(x), px(y)),
             size: size(px(w), px(h)),
@@ -715,14 +715,14 @@ fn paint_region_controls(
         let Some(split) = moved_split else {
             return;
         };
-        let moved = column_handles::Frame {
+        let moved = columns::handles::Frame {
             dividers: (0..split.divider_count())
                 .map(|k| split.divider_x(k))
                 .collect(),
             ..frame
         };
-        let handle = column_handles::Handle::Divider(drag.divider);
-        let (x, y, w, h) = column_handles::rect_of(&moved, handle);
+        let handle = columns::handles::Handle::Divider(drag.divider);
+        let (x, y, w, h) = columns::handles::rect_of(&moved, handle);
         let grip = Bounds {
             origin: origin + point(px(x), px(y)),
             size: size(px(w), px(h)),
@@ -741,13 +741,13 @@ fn paint_region_controls(
         );
         return;
     }
-    for handle in column_handles::shown(&frame) {
+    for handle in columns::handles::shown(&frame) {
         let (round, icon) = match handle {
-            column_handles::Handle::Divider(_) => (false, "icons/grip-vertical.svg"),
-            column_handles::Handle::Add => (true, "icons/plus.svg"),
-            column_handles::Handle::Unwrap => (true, "icons/x.svg"),
+            columns::handles::Handle::Divider(_) => (false, "icons/grip-vertical.svg"),
+            columns::handles::Handle::Add => (true, "icons/plus.svg"),
+            columns::handles::Handle::Unwrap => (true, "icons/x.svg"),
         };
-        for (x, y, w, h) in column_handles::rects_of(&frame, handle) {
+        for (x, y, w, h) in columns::handles::rects_of(&frame, handle) {
             let bounds = Bounds {
                 origin: origin + point(px(x), px(y)),
                 size: size(px(w), px(h)),

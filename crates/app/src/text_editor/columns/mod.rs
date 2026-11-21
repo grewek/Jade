@@ -29,6 +29,9 @@
 
 use std::ops::Range;
 
+pub(in crate::text_editor) mod handles;
+pub(in crate::text_editor) mod ops;
+
 pub const MAX_COLUMNS: usize = 4;
 
 const OPEN: &str = "::: columns";

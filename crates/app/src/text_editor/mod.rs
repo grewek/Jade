@@ -8,8 +8,6 @@ mod block_preview;
 mod buffer;
 mod callout;
 mod colors;
-mod column_handles;
-mod column_ops;
 mod columns;
 mod doc_stats;
 mod document_cache;
