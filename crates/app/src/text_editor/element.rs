@@ -45,6 +45,7 @@ use crate::theme::{Alpha, Role, ThemeEngine};
 pub(super) use input::*;
 #[allow(unused_imports)]
 pub(super) use paint::*;
+use region::{paint_control, paint_stacked_controls, restore_pill};
 #[allow(unused_imports)]
 pub(super) use render::*;
 #[allow(unused_imports)]
