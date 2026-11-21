@@ -593,7 +593,7 @@ pub(super) fn column_drag_percent(
     let region = *doc.columns().get(drag.region)?;
     // From the shares the file has, not the layout the drag previews: that one
     // may be stacked, and the pointer must still be able to bring it back.
-    let total = doc.column_width()?;
+    let total = doc.view.column_width()?;
     let k = drag.divider;
     let x = f32::from(position.x - view.bounds.origin.x);
     if region.kind == columns::Kind::Aside {

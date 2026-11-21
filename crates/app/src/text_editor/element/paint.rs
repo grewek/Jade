@@ -424,7 +424,7 @@ pub(super) fn paint_line(
         let target = &line_text[embed.target.clone()];
         let alt = &line_text[embed.alt.clone()];
         let wiki = line_text.trim_start().starts_with("![[");
-        let drawn = doc.images().info(target).is_some_and(|info| {
+        let drawn = doc.view.images().info(target).is_some_and(|info| {
             let requested = image::requested_width(alt, wiki);
             paint_image(info, requested, area, window, cx)
         });

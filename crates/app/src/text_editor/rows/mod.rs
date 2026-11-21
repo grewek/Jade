@@ -199,6 +199,7 @@ impl RowCache {
                 return false;
             }
             doc.borrow_mut()
+                .view
                 .set_column_width(column_width_for(inp.width));
             self.rebuild(&doc.borrow(), inp, char_width, window);
             return true;
@@ -311,10 +312,10 @@ impl RowCache {
             contexts: doc.block_contexts(),
             tables: doc.tables(),
             callouts: doc.callouts(),
-            images: doc.images(),
+            images: doc.view.images(),
             columns: doc.columns(),
-            raw_region: doc.raw_region(),
-            column_width: doc.column_width(),
+            raw_region: doc.view.raw_region(),
+            column_width: doc.view.column_width(),
             starts: &starts,
         };
         let params = RowParams {
@@ -332,7 +333,7 @@ impl RowCache {
         }
         assert_eq!(counts.len(), doc.line_count());
         self.rows = Fenwick::from_vec(counts);
-        self.editing = doc.editing_cell();
+        self.editing = doc.view.editing_cell();
         self.active_line = inp.focused.then(|| doc.line_at(inp.cursor));
         self.available_width = inp.width;
         self.char_width = char_width;
@@ -365,7 +366,7 @@ impl RowCache {
             let new = patched_row_count(env, i, window);
             self.rows.add_at(i, new as i64 - old);
         }
-        self.editing = env.doc.editing_cell();
+        self.editing = env.doc.view.editing_cell();
         self.active_line = env.focused.then(|| env.doc.line_at(env.cursor));
     }
 
@@ -375,7 +376,7 @@ impl RowCache {
     fn sync_active_line(&mut self, env: &Env, window: &mut Window) {
         let doc = env.doc;
         let new_active = env.focused.then(|| doc.line_at(env.cursor));
-        let new_editing = doc.editing_cell();
+        let new_editing = doc.view.editing_cell();
         if new_active == self.active_line && new_editing == self.editing {
             return;
         }

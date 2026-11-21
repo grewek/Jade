@@ -1059,12 +1059,12 @@ pub(super) fn restore_pill(
 ) -> Option<(Bounds<Pixels>, Vec<u8>)> {
     let region = *doc.columns().get(index)?;
     if region.tail
-        || doc.raw_region() == Some(index)
+        || doc.view.raw_region() == Some(index)
         || doc.side_by_side(region.start_line).is_some()
     {
         return None;
     }
-    let percent = columns::restored(&region, doc.column_width()?)?;
+    let percent = columns::restored(&region, doc.view.column_width()?)?;
     let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
     let (w, h) = (px(24.), px(18.));
     let origin = point(
@@ -1089,7 +1089,7 @@ pub(super) fn paint_stacked_controls(
     colors: &HandleColors,
     (window, cx): (&mut Window, &mut App),
 ) {
-    let Some(total) = doc.column_width() else {
+    let Some(total) = doc.view.column_width() else {
         return;
     };
     if let Some(drag) = &view.column_drag {

@@ -305,7 +305,7 @@ impl Editor {
             let targets = image::unknown_targets(self.buffer.text(), &doc, lines);
             // Marked as asked for, so a second edit of the line does not ask again.
             for target in &targets {
-                doc.images_mut().insert(target, None);
+                doc.view.images_mut().insert(target, None);
             }
             targets
         };
@@ -336,7 +336,7 @@ impl Editor {
     ) {
         let mut doc = self.document_cache.borrow_mut();
         for (target, size) in sizes {
-            doc.images_mut().insert(target, size.clone());
+            doc.view.images_mut().insert(target, size.clone());
         }
         self.row_height_cache
             .borrow_mut()
@@ -856,6 +856,7 @@ impl Render for Editor {
         self.sync_column_view(window, cx);
         self.document_cache
             .borrow_mut()
+            .view
             .set_justify(super::TextSettings::justify(cx));
         render_editor(self, cx.entity(), window, cx)
     }

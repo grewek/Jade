@@ -1714,7 +1714,7 @@ mod tests {
             let (text_color, line_height) = (text_style.color, window.line_height());
             let width = px(800.);
             let doc_cache = editor.read(cx).document_cache.clone();
-            doc_cache.borrow_mut().set_column_width(Some(800.));
+            doc_cache.borrow_mut().view.set_column_width(Some(800.));
             let mut rows = RowCache::empty();
             rowcache::rebuild_for_test(
                 &mut rows,
@@ -1812,7 +1812,7 @@ mod tests {
             let size = style.font_size.to_pixels(window.rem_size());
             let lh = window.line_height();
             let mut doc = DocumentCache::new(text);
-            doc.set_column_width(Some(1400.));
+            doc.view.set_column_width(Some(1400.));
             let (region, split) = doc.side_by_side(0).expect("an aside lays out");
             assert_eq!(region.floats().len(), 3);
             let shaped = shape_region(
@@ -1885,7 +1885,7 @@ mod tests {
             let size = style.font_size.to_pixels(window.rem_size());
             let lh = window.line_height();
             let mut doc = DocumentCache::new(text);
-            doc.set_column_width(Some(1000.));
+            doc.view.set_column_width(Some(1000.));
             let mut rows = RowCache::empty();
             rowcache::rebuild_for_test(
                 &mut rows,
@@ -1956,7 +1956,7 @@ mod tests {
             let size = style.font_size.to_pixels(window.rem_size());
             let lh = window.line_height();
             let mut doc = DocumentCache::new(text);
-            doc.set_column_width(Some(1400.));
+            doc.view.set_column_width(Some(1400.));
             let (region, split) = doc.side_by_side(0).expect("a float block lays out");
             let shaped = shape_region(
                 text,
@@ -1999,7 +1999,7 @@ mod tests {
             let size = style.font_size.to_pixels(window.rem_size());
             let lh = window.line_height();
             let mut doc = DocumentCache::new(text);
-            doc.set_column_width(Some(1400.));
+            doc.view.set_column_width(Some(1400.));
             let (region, split) = doc.side_by_side(0).expect("a float block lays out");
             assert!(region.tail);
             assert_eq!(
@@ -2065,7 +2065,7 @@ mod tests {
             let size = style.font_size.to_pixels(window.rem_size());
             let lh = window.line_height();
             let mut doc = DocumentCache::new(text);
-            doc.set_column_width(Some(1400.));
+            doc.view.set_column_width(Some(1400.));
             let (region, split) = doc.side_by_side(0).expect("the floats lay out");
             assert_eq!(region.count, 4, "three floats share one region");
             let shaped = shape_region(
@@ -2130,7 +2130,7 @@ mod tests {
             let size = style.font_size.to_pixels(window.rem_size());
             let lh = window.line_height();
             let mut doc = DocumentCache::new(text);
-            doc.set_column_width(Some(1400.));
+            doc.view.set_column_width(Some(1400.));
             let (region, split) = doc.side_by_side(0).expect("a float block lays out");
             assert_eq!(region.clears().len(), 1);
             let shaped = shape_region(
@@ -2192,7 +2192,10 @@ mod tests {
         };
         cx.update_window(window, |_, window, cx| {
             editor.update(cx, |e, cx| {
-                e.document_cache.borrow_mut().set_column_width(Some(800.));
+                e.document_cache
+                    .borrow_mut()
+                    .view
+                    .set_column_width(Some(800.));
                 let at = text.find("flowing").unwrap() + 3;
                 e.buffer_mut().set_cursor(at, false);
                 e.focus_handle.focus(window, cx);
@@ -2263,7 +2266,7 @@ mod tests {
             let (text_color, line_height) = (text_style.color, window.line_height());
             let width = px(800.);
             let doc_cache = editor.read(cx).document_cache.clone();
-            doc_cache.borrow_mut().set_column_width(Some(800.));
+            doc_cache.borrow_mut().view.set_column_width(Some(800.));
             let mut rows = RowCache::empty();
             rowcache::rebuild_for_test(
                 &mut rows,
@@ -2351,6 +2354,7 @@ mod tests {
             drop(doc);
             doc_cache
                 .borrow_mut()
+                .view
                 .set_column_preview(Some((0, stacked.clone())));
             let doc = doc_cache.borrow();
             assert!(doc.side_by_side(2).is_none(), "the preview stacks");
@@ -2388,7 +2392,10 @@ mod tests {
             })
         };
         editor.update(cx, |e, _| {
-            e.document_cache.borrow_mut().set_column_width(Some(800.));
+            e.document_cache
+                .borrow_mut()
+                .view
+                .set_column_width(Some(800.));
             let at = text.find("left").unwrap() + 2;
             e.buffer_mut().set_cursor(at, false);
         });
@@ -2579,7 +2586,7 @@ mod tests {
             let font_size = text_style.font_size.to_pixels(window.rem_size());
             let line_height = window.line_height();
             let mut doc = DocumentCache::new(text);
-            doc.set_column_width(Some(800.));
+            doc.view.set_column_width(Some(800.));
             let (region, split) = doc.side_by_side(2).expect("side by side at 800px");
             let shaped = shape_region(
                 text,
@@ -2921,7 +2928,7 @@ mod tests {
             };
 
             let mut doc = DocumentCache::new(&text);
-            doc.set_column_width(Some(f32::from(width)));
+            doc.view.set_column_width(Some(f32::from(width)));
             let rows = build(&doc, width, window);
             let column = px(columns::split(f32::from(width), &[50, 50])
                 .unwrap()
@@ -2938,12 +2945,12 @@ mod tests {
 
             // Too narrow for 160px columns: stacked, nothing is hidden.
             let narrow = px(300.);
-            doc.set_column_width(Some(f32::from(narrow)));
+            doc.view.set_column_width(Some(f32::from(narrow)));
             let stacked = build(&doc, narrow, window);
             assert!((0..13).all(|i| rowcache::count_at(&stacked, i) >= 1));
 
             // An edit in the short column makes it the taller one.
-            doc.set_column_width(Some(f32::from(width)));
+            doc.view.set_column_width(Some(f32::from(width)));
             let mut rows = build(&doc, width, window);
             let at = text.find("short").unwrap();
             let longer = "longer ".repeat(60);
@@ -3020,7 +3027,7 @@ mod tests {
                 rows
             };
             let mut doc = DocumentCache::new(&before);
-            doc.set_column_width(Some(f32::from(width)));
+            doc.view.set_column_width(Some(f32::from(width)));
             let mut rows = build(&before, &doc, window);
             let at = before.find("::: columns").unwrap();
             let (new_text, edit) = apply_edit(
@@ -3072,7 +3079,7 @@ mod tests {
             let size = style.font_size.to_pixels(window.rem_size());
             let line_height = window.line_height();
             let mut doc = DocumentCache::new(&text);
-            doc.set_column_width(Some(800.));
+            doc.view.set_column_width(Some(800.));
             let (region, split) = doc.side_by_side(0).expect("an aside lays out");
             let shaped = shape_region(
                 &text,
@@ -3154,7 +3161,7 @@ mod tests {
                 rows
             };
             let mut doc = DocumentCache::new(&before);
-            doc.set_column_width(Some(f32::from(width)));
+            doc.view.set_column_width(Some(f32::from(width)));
             let mut rows = build(&before, &doc, window);
             let at = before.find("| Name | Value |").unwrap();
             let (new_text, edit) = apply_edit(
@@ -3209,7 +3216,7 @@ mod tests {
         let shares = |cx: &mut TestAppContext| {
             editor.read_with(cx, |e, _| {
                 let mut doc = e.document_cache.borrow_mut();
-                doc.set_column_width(Some(800.));
+                doc.view.set_column_width(Some(800.));
                 doc.side_by_side(2)
                     .map(|(r, _)| r.percent[..r.count].to_vec())
             })
@@ -3383,7 +3390,7 @@ mod tests {
             let available_width = px(1100.);
 
             let mut doc = DocumentCache::new(&text);
-            doc.set_column_width(Some(1100.));
+            doc.view.set_column_width(Some(1100.));
             let mut rows = RowCache::empty();
             rowcache::rebuild_for_test(
                 &mut rows,
@@ -4017,13 +4024,13 @@ mod tests {
             let (window, editor) = open_at(cx, TABLE, TABLE.find('c').unwrap());
             press(cx, window, "ctrl-/");
             assert_eq!(
-                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table()),
+                editor.read_with(cx, |e, _| e.document_cache.borrow().view.raw_table()),
                 Some(0)
             );
             assert_rows_are_exact(cx, window, &editor);
             press(cx, window, "ctrl-/");
             assert_eq!(
-                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table()),
+                editor.read_with(cx, |e, _| e.document_cache.borrow().view.raw_table()),
                 None
             );
         }
@@ -4032,12 +4039,12 @@ mod tests {
         fn the_delimiter_row_is_raw_and_leaving_it_by_arrow_edits_cells(cx: &mut TestAppContext) {
             let (window, editor) = open_at(cx, TABLE, TABLE.find("---").unwrap());
             assert_eq!(
-                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table()),
+                editor.read_with(cx, |e, _| e.document_cache.borrow().view.raw_table()),
                 Some(0)
             );
             press(cx, window, "ctrl-/");
             assert_eq!(
-                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table()),
+                editor.read_with(cx, |e, _| e.document_cache.borrow().view.raw_table()),
                 None
             );
             assert_eq!(
@@ -4051,7 +4058,7 @@ mod tests {
         fn moving_off_the_delimiter_row_goes_back_to_cell_editing(cx: &mut TestAppContext) {
             let (window, editor) = open_at(cx, TABLE, TABLE.find("---").unwrap());
             let raw = |cx: &mut TestAppContext| {
-                editor.read_with(cx, |e, _| e.document_cache.borrow().raw_table())
+                editor.read_with(cx, |e, _| e.document_cache.borrow().view.raw_table())
             };
             assert_eq!(raw(cx), Some(0));
             press(cx, window, "down");

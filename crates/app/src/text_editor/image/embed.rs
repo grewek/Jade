@@ -61,7 +61,7 @@ pub(in crate::text_editor) fn unknown_targets(
             continue;
         };
         let target = &line[embed.target];
-        if !doc.images().is_known(target) && !targets.iter().any(|t| t == target) {
+        if !doc.view.images().is_known(target) && !targets.iter().any(|t| t == target) {
             targets.push(target.to_string());
         }
     }

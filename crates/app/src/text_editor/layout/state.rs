@@ -67,14 +67,15 @@ impl<'a> LineState<'a> {
             callout_is_header: callout.is_some_and(|c| c.is_header(i)),
             active: is_active_line(&line_range, cursor, focused),
             broken: &[],
-            images: Some(doc.images()),
+            images: Some(doc.view.images()),
             hidden: column_hidden || callout.is_some_and(|c| c.hides(i)),
             editing_cell: doc
+                .view
                 .editing_cell()
                 .filter(|&(line, _)| line == i)
                 .map(|(_, column)| column),
             column_frame: doc.is_column_frame(i),
-            justify: doc.justify(),
+            justify: doc.view.justify(),
         }
     }
 
@@ -153,6 +154,7 @@ pub(in crate::text_editor) fn is_table_active(
 ) -> bool {
     focused
         && doc
+            .view
             .raw_table()
             .is_some_and(|raw| table_index_at(doc.tables(), line_index) == Some(raw))
 }

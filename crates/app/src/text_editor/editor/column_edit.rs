@@ -123,9 +123,9 @@ impl Editor {
             .as_ref()
             .map(|d| (d.region, d.percent.clone()));
         let mut doc = self.document_cache.borrow_mut();
-        let before = (doc.raw_region(), doc.column_preview_region());
-        let changed = doc.set_raw_region(raw) | doc.set_column_preview(preview);
-        let after = (doc.raw_region(), doc.column_preview_region());
+        let before = (doc.view.raw_region(), doc.view.column_preview_region());
+        let changed = doc.view.set_raw_region(raw) | doc.view.set_column_preview(preview);
+        let after = (doc.view.raw_region(), doc.view.column_preview_region());
         let regions: Vec<usize> = [before.0, before.1, after.0, after.1]
             .into_iter()
             .flatten()
@@ -175,7 +175,7 @@ impl Editor {
             let Some(index) = doc.region_index_at(line) else {
                 return false;
             };
-            (index, doc.raw_region() == Some(index))
+            (index, doc.view.raw_region() == Some(index))
         };
         self.raw_region_pinned = (!raw).then_some(index);
         cx.notify();

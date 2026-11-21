@@ -81,7 +81,7 @@ fn empty_row(columns: usize) -> String {
 impl Editor {
     /// The cell under the caret while it is being edited.
     pub(super) fn editing_cell(&self) -> Option<Cell> {
-        let column = self.document_cache.borrow().editing_cell()?;
+        let column = self.document_cache.borrow().view.editing_cell()?;
         self.cell_at_line(column.0, column.1)
     }
 
@@ -162,6 +162,7 @@ impl Editor {
         let changed = self
             .document_cache
             .borrow_mut()
+            .view
             .set_table_view(raw, editing.map(|c| (c.line, c.column)));
         if changed {
             self.row_height_cache
@@ -185,7 +186,7 @@ impl Editor {
                 .is_delimiter(line)
                 .then(|| row_after(table, table.start_line))
                 .flatten();
-            (index, doc.raw_table() == Some(index), leave)
+            (index, doc.view.raw_table() == Some(index), leave)
         };
         self.raw_pinned = (!raw).then_some(index);
         if let Some(cell) = leave.and_then(|line| self.cell_at_line(line, 0)) {

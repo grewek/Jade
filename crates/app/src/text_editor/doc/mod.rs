@@ -42,13 +42,14 @@ use std::ops::Range;
 
 mod edit;
 mod patch;
+mod view;
 
 use edit::EditSpan;
 pub(in crate::text_editor) use edit::{EditPatch, TextEdit};
 use patch::*;
+pub(in crate::text_editor) use view::ViewState;
 
 use super::columns::{self, Columns, Placed};
-use super::image::Sizes as ImageSizes;
 #[cfg(test)]
 use super::lines::count_lines;
 use super::lines::{
@@ -90,27 +91,11 @@ pub(super) struct DocumentCache {
     /// Every `::: columns` marker line that is isolated and outside code, in
     /// line order: all the cross-line state the regions below need, so an edit
     /// rescans a few lines and re-pairs the markers (few) instead of the text.
+    /// What the editor sets about how the text is shown; not derived from it.
+    pub(in crate::text_editor) view: ViewState,
     column_markers: Vec<Placed>,
     /// The regions `column_markers` form.
     columns: Vec<Columns>,
-    /// The width regions are laid out across. `None` lays every region out
-    /// stacked; set by whoever builds the row counts (`RowHeightCache`).
-    column_width: Option<f32>,
-    /// The region shown as source (Ctrl+/): stacked, its markers visible.
-    raw_region: Option<usize>,
-    /// Natural sizes of the images the note embeds, read off the main thread.
-    images: ImageSizes,
-    /// The table shown as raw text (Ctrl+/, or the caret on its delimiter
-    /// row) instead of rendered; see `Editor::sync_table_view`.
-    raw_table: Option<usize>,
-    /// The table cell the caret is in, as `(line, column)`: it shows its text
-    /// as typed and is what row counts and painting treat as being edited.
-    editing_cell: Option<(usize, usize)>,
-    /// Prose is justified: set from the settings each frame.
-    justify: bool,
-    /// The shares a divider drag is previewing for one region (its index and
-    /// the shares), laid out in place of the source's until the drag ends.
-    column_preview: Option<(usize, Vec<u8>)>,
 }
 
 impl DocumentCache {
@@ -129,15 +114,9 @@ impl DocumentCache {
             callouts: Vec::new(),
             callout_states: Vec::new(),
             callout_scratch: Vec::new(),
+            view: ViewState::default(),
             column_markers: Vec::new(),
             columns: Vec::new(),
-            column_width: None,
-            raw_region: None,
-            images: ImageSizes::default(),
-            raw_table: None,
-            editing_cell: None,
-            justify: false,
-            column_preview: None,
         };
         cache.recompute_all(text);
         cache
@@ -163,15 +142,6 @@ impl DocumentCache {
         &self.columns
     }
 
-    pub(super) fn column_width(&self) -> Option<f32> {
-        self.column_width
-    }
-
-    /// Sets the width regions are laid out across; `true` when it changed.
-    pub(super) fn set_column_width(&mut self, width: Option<f32>) -> bool {
-        std::mem::replace(&mut self.column_width, width) != width
-    }
-
     /// The index of the region `line` is in.
     pub(super) fn region_index_at(&self, line: usize) -> Option<usize> {
         let i = self.columns.partition_point(|r| r.end_line <= line);
@@ -179,30 +149,16 @@ impl DocumentCache {
         Some(i)
     }
 
-    pub(super) fn raw_region(&self) -> Option<usize> {
-        self.raw_region
-    }
-
-    /// Shows region `index` as source; `true` when that changed, which changes
-    /// every row count in it.
-    pub(super) fn set_raw_region(&mut self, index: Option<usize>) -> bool {
-        std::mem::replace(&mut self.raw_region, index) != index
-    }
-
     /// The region `line` is in and its split, when the region is laid out side
     /// by side (a width is set, every column fits and it is not shown as
     /// source). `None` otherwise.
     pub(super) fn side_by_side(&self, line: usize) -> Option<(Columns, columns::Split)> {
-        let width = self.column_width?;
+        let width = self.view.column_width()?;
         let index = self
             .region_index_at(line)
-            .filter(|&i| Some(i) != self.raw_region)?;
+            .filter(|&i| Some(i) != self.view.raw_region())?;
         let mut region = self.columns[index];
-        if let Some((_, shares)) = self
-            .column_preview
-            .as_ref()
-            .filter(|(i, s)| *i == index && s.len() == region.count)
-        {
+        if let Some(shares) = self.view.preview_for(index, region.count) {
             region = region.with_shares(shares);
         }
         let split = match region.kind {
@@ -212,21 +168,10 @@ impl DocumentCache {
         Some((region, split))
     }
 
-    /// The region whose shares a divider drag is previewing.
-    pub(super) fn column_preview_region(&self) -> Option<usize> {
-        self.column_preview.as_ref().map(|(index, _)| *index)
-    }
-
-    /// Sets the shares a divider drag previews; `true` when that changed what
-    /// is laid out, which changes the region's height.
-    pub(super) fn set_column_preview(&mut self, preview: Option<(usize, Vec<u8>)>) -> bool {
-        std::mem::replace(&mut self.column_preview, preview.clone()) != preview
-    }
-
     /// Whether `line` is the open or close marker of a region shown as
     /// columns or stacked; none of a region shown as source.
     pub(super) fn is_column_frame(&self, line: usize) -> bool {
-        let raw = self.raw_region.and_then(|i| self.columns.get(i));
+        let raw = self.view.raw_region().and_then(|i| self.columns.get(i));
         columns::is_frame_line(&self.columns, line)
             && !raw.is_some_and(|r| (r.start_line..r.end_line).contains(&line))
     }
@@ -236,42 +181,6 @@ impl DocumentCache {
         if let Some(c) = self.callouts.get_mut(index).filter(|c| c.foldable) {
             c.folded = folded;
         }
-    }
-
-    pub(super) fn raw_table(&self) -> Option<usize> {
-        self.raw_table
-    }
-
-    pub(super) fn editing_cell(&self) -> Option<(usize, usize)> {
-        self.editing_cell
-    }
-
-    /// Sets the view state of the tables; `true` when the raw one changed, which
-    /// changes every row count in two tables.
-    pub(super) fn set_table_view(
-        &mut self,
-        raw_table: Option<usize>,
-        editing_cell: Option<(usize, usize)>,
-    ) -> bool {
-        self.editing_cell = editing_cell;
-        std::mem::replace(&mut self.raw_table, raw_table) != raw_table
-    }
-
-    /// Whether prose is justified (a paint-only setting: no row count changes).
-    pub(super) fn justify(&self) -> bool {
-        self.justify
-    }
-
-    pub(super) fn set_justify(&mut self, on: bool) {
-        self.justify = on;
-    }
-
-    pub(super) fn images(&self) -> &ImageSizes {
-        &self.images
-    }
-
-    pub(super) fn images_mut(&mut self) -> &mut ImageSizes {
-        &mut self.images
     }
 
     /// The document's current line count — the row-height cache's own
