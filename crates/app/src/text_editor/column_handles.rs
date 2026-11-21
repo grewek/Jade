@@ -21,6 +21,9 @@ pub(super) struct Frame {
     pub height: f32,
     /// Another column can be added.
     pub can_add: bool,
+    /// The `+` and unwrap buttons show: not for a float block, which has only
+    /// its grips.
+    pub buttons: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -48,6 +51,9 @@ pub(super) fn hover_at(frame: &Frame, p: (f32, f32)) -> bool {
 /// The controls to draw: every divider's grip, `+` unless at the limit, unwrap.
 pub(super) fn shown(frame: &Frame) -> Vec<Handle> {
     let mut out: Vec<Handle> = (0..frame.dividers.len()).map(Handle::Divider).collect();
+    if !frame.buttons {
+        return out;
+    }
     if frame.can_add {
         out.push(Handle::Add);
     }
@@ -88,6 +94,7 @@ mod tests {
             width: 600.0,
             height: 100.0,
             can_add,
+            buttons: true,
         }
     }
 

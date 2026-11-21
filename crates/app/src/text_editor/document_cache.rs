@@ -1504,6 +1504,8 @@ mod tests {
             "\n::: float right 20%\n\nf\n\n:::\n\n",
             "::: columns\n",
             "> [!note]\n> a\n\n",
+            "::: clear\n",
+            "\n::: clear\n\n",
         ];
         for step in 0..600 {
             let start = (next() as usize) % (text.len() + 1);

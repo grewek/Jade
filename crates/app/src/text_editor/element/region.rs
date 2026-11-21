@@ -259,6 +259,11 @@ impl Floats {
         }
     }
 
+    /// Where every float so far has ended, air below it included.
+    fn clear_y(&self) -> Pixels {
+        self.side_y[LEFT].max(self.side_y[RIGHT])
+    }
+
     fn place_next(&mut self, y: Pixels, line_height: Pixels) {
         let float = &mut self.shaped[self.next];
         self.next += 1;
@@ -364,7 +369,13 @@ fn shape_aside(
     let mut flow_lines: Vec<ShapedLine> = Vec::new();
     let mut y = px(0.);
     let mut block_band: Option<((bool, usize), Pixels, Pixels)> = None;
+    let mut clears = region.clears().iter().copied().peekable();
     for i in region.text_lines() {
+        // A `::: clear` above this line: it starts below every float so far.
+        while let Some(clear) = clears.next_if(|&c| c < i) {
+            floats.place_before(region, clear, y, line_height);
+            y = y.max(floats.clear_y());
+        }
         floats.place_before(region, i, y, line_height);
         let row = rows_of(y);
         let block = table_index_at(doc.tables(), i)
@@ -470,6 +481,9 @@ fn shape_aside(
     }
     // A float written after the last line of text goes below it.
     floats.place_before(region, usize::MAX, y, line_height);
+    if clears.next().is_some() {
+        y = y.max(floats.clear_y());
+    }
     let flow_rows = rows_of(y);
     let mut columns = std::mem::take(&mut floats.columns);
     columns.push(ShapedColumn {
@@ -634,6 +648,7 @@ fn paint_region_controls(
         width,
         height,
         can_add: region.count < columns::MAX_COLUMNS,
+        buttons: !region.tail,
     };
     let origin = point(bounds.origin.x + first.x, bounds.origin.y + top);
     let at = |handle| {

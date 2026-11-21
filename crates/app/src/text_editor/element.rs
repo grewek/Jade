@@ -3162,10 +3162,6 @@ fn column_frame_at(
         .partition_point(|r| view.layout.cumulative_at(r.start_line) - margin <= y)
         .checked_sub(1)?;
     let region = regions[index];
-    // A float block has no controls yet (render only).
-    if region.tail {
-        return None;
-    }
     let (_, split) = doc.side_by_side(region.start_line)?;
     let top = view.layout.cumulative_at(region.start_line);
     let height = view.layout.height(region.start_line);
@@ -3176,6 +3172,7 @@ fn column_frame_at(
         width: split.total,
         height: f32::from(height),
         can_add: region.count < columns::MAX_COLUMNS,
+        buttons: !region.tail,
     };
     let p = (
         f32::from(position.x - view.bounds.origin.x),
@@ -6017,6 +6014,66 @@ mod tests {
         .unwrap();
     }
 
+    /// `::: clear` starts the text below it under every float above it.
+    #[gpui_kit::test]
+    fn a_clear_marker_moves_the_text_below_the_floats(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        let tall = "float line\n\n".repeat(6);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: float right 30%\n\n{tall}:::\n\nbefore the clear\n\n::: clear\n\nafter the clear\n\nlast"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("a float block lays out");
+            assert_eq!(region.clears().len(), 1);
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let at = |prefix: &str| {
+                shaped
+                    .columns
+                    .iter()
+                    .flat_map(|c| &c.lines)
+                    .find(|sl| text[doc.line_start_byte(sl.line)..].starts_with(prefix))
+                    .map(|sl| (sl.y, sl.width))
+                    .unwrap_or_else(|| panic!("{prefix} is laid out"))
+            };
+            let (before_y, before_w) = at("before the clear");
+            let (after_y, after_w) = at("after the clear");
+            let float_bottom = shaped
+                .columns
+                .iter()
+                .find(|c| c.x > px(700.))
+                .map(|c| c.lines.last().map(|l| l.y + l.height).unwrap());
+            assert!(before_w < px(1400.), "beside the float");
+            assert!(before_y < float_bottom.unwrap());
+            assert!(
+                after_y >= float_bottom.unwrap(),
+                "below the float: {after_y:?}"
+            );
+            assert_eq!(after_w, px(1400.));
+            assert_eq!(doc.region_index_at(region.clears()[0]), Some(0));
+        })
+        .unwrap();
+    }
+
     /// Up and Down step one painted row, so a wrapped paragraph beside a float
     /// is walked row by row (not left for the float's last line), keeping the
     /// caret's x, and the row below the cut is reached from the one above it.
@@ -6172,6 +6229,7 @@ mod tests {
                 width: split.x(1) + split.width(1),
                 height: f32::from(view.layout.height(region.start_line)),
                 can_add: true,
+                buttons: true,
             };
             let (x, y, w, h) = column_handles::rect_of(&frame, column_handles::Handle::Divider(0));
             let grip = at(x + w / 2., px(y + h / 2.));
@@ -6325,6 +6383,48 @@ mod tests {
             .unwrap();
         }
         assert_eq!(text_of(cx), text);
+    }
+
+    /// Resizing a float block rewrites only its open markers (not the text that
+    /// flows around it) and is one undo step; it keeps each float's side.
+    #[gpui_kit::test]
+    fn resizing_a_float_block_rewrites_just_its_markers(cx: &mut TestAppContext) {
+        let text = "::: float right 30%\n\nA\n\n:::\n\none\n\n::: float left 20%\n\nB\n\n:::\n\ntwo\n\n::: float right 30%\n\nC\n\n:::\n\nthree";
+        let (window, editor) = open_editor(cx, text);
+        let text_of =
+            |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().text().to_owned());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            editor.update(cx, |e, cx| {
+                let region = e.document_cache.borrow().columns()[0];
+                assert_eq!(region.floats().len(), 3, "one region");
+                // The right floats take 25%, the left one is kept.
+                assert!(e.set_region_ratio(0, vec![25, 20, 25, 0], window, cx));
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            text_of(cx),
+            text.replace("right 30%", "right 25%"),
+            "only the markers change"
+        );
+        // Nothing to do when the shares are as they are.
+        let same = cx
+            .update_window(window, |_, window, cx| {
+                editor.update(cx, |e, cx| {
+                    e.set_region_ratio(0, vec![25, 20, 25, 0], window, cx)
+                })
+            })
+            .unwrap();
+        assert!(!same);
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                let edit = e.buffer_mut().undo().expect("an edit to undo");
+                e.record_edit(edit, window, cx);
+            })
+        })
+        .unwrap();
+        assert_eq!(text_of(cx), text, "one undo step");
     }
 
     #[gpui_kit::test]

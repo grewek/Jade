@@ -263,9 +263,27 @@ impl Editor {
             let Some(new) = make(&old, &region) else {
                 return false;
             };
-            let range =
-                doc.line_start_byte(region.start_line)..doc.line_end_byte(region.end_line - 1);
-            (range, new.join("\n"))
+            // The same lines but a few (a share changed): replace just those,
+            // not a float block's whole text.
+            let same = |i: usize| new.get(i).is_some_and(|n| *n == old[i]);
+            let (first, last) = if new.len() == old.len() {
+                let first = (0..old.len()).find(|&i| !same(i));
+                let last = (0..old.len()).rev().find(|&i| !same(i));
+                match first.zip(last) {
+                    Some(span) => span,
+                    None => return false,
+                }
+            } else {
+                (0, old.len() - 1)
+            };
+            let range = doc.line_start_byte(region.start_line + first)
+                ..doc.line_end_byte(region.start_line + last);
+            let new_span = if new.len() == old.len() {
+                first..=last
+            } else {
+                0..=new.len() - 1
+            };
+            (range, new[new_span].join("\n"))
         };
         // A move first, so this edit never merges into the typing before it.
         self.buffer.set_cursor(range.start, false);
@@ -289,6 +307,7 @@ impl Editor {
                 return None;
             }
             Some(match region.kind {
+                Kind::Aside if region.tail => column_ops::float_markers(lines, region, &percent),
                 Kind::Aside => column_ops::aside_markers(lines, region, &percent, false),
                 Kind::Columns => column_ops::with_ratio(lines, &percent),
             })

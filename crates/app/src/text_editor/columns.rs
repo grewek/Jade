@@ -34,6 +34,11 @@ pub const MAX_COLUMNS: usize = 4;
 const OPEN: &str = "::: columns";
 const OPEN_ASIDE: &str = "::: aside";
 const OPEN_FLOAT: &str = "::: float";
+/// A line of its own in a float region's text: the text below it starts under
+/// every float above it.
+const CLEAR: &str = "::: clear";
+/// The clear markers one region keeps.
+pub const MAX_CLEARS: usize = 3;
 /// An aside's float share, in percent of the line (without the gap).
 pub const ASIDE_MIN: u8 = 10;
 pub const ASIDE_MAX: u8 = 90;
@@ -96,6 +101,9 @@ pub struct Columns {
     /// after the one before joins its region); `opens[k]` is float `k`'s, the
     /// first float's being `start_line`. Their `:::` is `separators[k]`.
     opens: [usize; MAX_FLOATS],
+    /// A tail's `::: clear` lines; the first `clear_count` are used.
+    clears: [usize; MAX_CLEARS],
+    clear_count: usize,
 }
 
 /// A float's text reaches this many lines past it, plus [`TAIL_PER_LINE`] for
@@ -149,7 +157,7 @@ impl Columns {
     }
 
     /// The line of float `k`'s open marker (a tail's).
-    fn open_of(&self, k: usize) -> usize {
+    pub fn open_of(&self, k: usize) -> usize {
         if k == 0 {
             self.start_line
         } else {
@@ -170,11 +178,22 @@ impl Columns {
         TAIL_BASE + TAIL_PER_LINE * self.float_lines()
     }
 
+    /// A tail's `::: clear` lines, in order: those inside its text, the cap
+    /// possibly leaving later ones out.
+    pub fn clears(&self) -> &[usize] {
+        let all = &self.clears[..self.clear_count];
+        let inside = all.iter().take_while(|&&c| c + 1 < self.end_line).count();
+        &all[..inside]
+    }
+
     /// Whether `line` is in a tail's further float block (open marker to the
-    /// padding line after its `:::`): lines the text flows past.
+    /// padding line after its `:::`) or a clear marker or its padding line:
+    /// lines the text flows past.
     fn in_float_block(&self, line: usize) -> bool {
         self.tail
-            && (1..self.count - 1).any(|k| (self.opens[k]..=self.separators[k] + 1).contains(&line))
+            && ((1..self.count - 1)
+                .any(|k| (self.opens[k]..=self.separators[k] + 1).contains(&line))
+                || self.clears().iter().any(|&c| line == c || line == c + 1))
     }
 
     /// Sets a tail region's `end_line`: its text takes the lines after the float
@@ -227,7 +246,8 @@ impl Columns {
         line == self.start_line
             || line == self.close_line()
             || self.separators().contains(&line)
-            || (self.tail && self.opens[1..self.count - 1].contains(&line))
+            || (self.tail
+                && (self.opens[1..self.count - 1].contains(&line) || self.clears().contains(&line)))
     }
 
     /// The lines of column `k`, without the blank line that pads each marker
@@ -272,6 +292,8 @@ pub enum Marker {
     /// `::: float [left|right] [N%]`: a float whose text is what follows its
     /// closing `:::`.
     OpenFloat(FloatSpec),
+    /// `::: clear`.
+    Clear,
     Separator,
     /// `--- [left|right] [N%]`: starts a further float of an aside.
     FloatSeparator(FloatSpec),
@@ -325,6 +347,8 @@ impl Pending {
                 tail: false,
                 tail_bound: 0,
                 opens: [0; MAX_FLOATS],
+                clears: [0; MAX_CLEARS],
+                clear_count: 0,
             });
         }
         let percent = match self.ratio {
@@ -343,6 +367,8 @@ impl Pending {
             tail: false,
             tail_bound: 0,
             opens: [0; MAX_FLOATS],
+            clears: [0; MAX_CLEARS],
+            clear_count: 0,
         })
     }
 
@@ -364,6 +390,8 @@ impl Pending {
             tail: true,
             tail_bound: 0,
             opens: [0; MAX_FLOATS],
+            clears: [0; MAX_CLEARS],
+            clear_count: 0,
         }
     }
 }
@@ -390,6 +418,9 @@ fn marker_of(line: &str) -> Option<Marker> {
     }
     if line == CLOSE {
         return Some(Marker::Close);
+    }
+    if line == CLEAR {
+        return Some(Marker::Clear);
     }
     if let Some(rest) = line.strip_prefix(OPEN_ASIDE) {
         return parse_aside(rest).map(Marker::OpenAside);
@@ -586,6 +617,8 @@ pub fn derive(markers: &[Placed], line_count: usize) -> Vec<Columns> {
                     }
                 }
             }
+            // Handled once the regions are known.
+            Marker::Clear => {}
             Marker::Close => {
                 if pending.as_ref().is_some_and(|p| p.float)
                     && let Some(p) = pending.take()
@@ -626,6 +659,20 @@ pub fn derive(markers: &[Placed], line_count: usize) -> Vec<Columns> {
             .find(|m| opens(m.marker))
             .map_or(line_count, |m| m.line);
         region.end_line = region.tail_bound;
+    }
+    // A clear marker belongs to the float region whose text it is in.
+    for &Placed { line, marker } in markers {
+        if marker != Marker::Clear {
+            continue;
+        }
+        let i = regions.partition_point(|r| r.end_line <= line);
+        if let Some(r) = regions
+            .get_mut(i)
+            .filter(|r| r.tail && line > r.close_line() && r.clear_count < MAX_CLEARS)
+        {
+            r.clears[r.clear_count] = line;
+            r.clear_count += 1;
+        }
     }
     regions
 }
@@ -1416,5 +1463,22 @@ mod tests {
         // A column region between them keeps them apart.
         let apart = "::: float\n\nA\n\n:::\n\n::: columns\n\na\n\n---\n\nb\n\n:::\n\n::: float\n\nB\n\n:::\n\nt\n";
         assert_eq!(scan_text(apart).len(), 3);
+    }
+
+    /// `::: clear` in a float region's text is a hidden marker: the text below
+    /// it comes after the floats above.
+    #[test]
+    fn a_clear_marker_belongs_to_the_float_text_it_is_in() {
+        let text = "::: float left\n\nA\n\n:::\n\none\n\n::: clear\n\ntwo\n";
+        let r = scan_text(text)[0];
+        assert_eq!(r.clears(), &[8]);
+        assert!(r.is_marker(8) && r.is_frame(8));
+        assert_eq!(r.text_lines().collect::<Vec<_>>(), [6, 7, 10]);
+        assert_eq!(r.column_of(8), None);
+        assert_eq!(r.column_of(9), None, "its padding line");
+        // Outside any float's text it is plain text.
+        assert!(scan_text("one\n\n::: clear\n\ntwo\n").is_empty());
+        let before = scan_text("::: clear\n\n::: float\n\nA\n\n:::\n\nt\n");
+        assert!(before[0].clears().is_empty());
     }
 }

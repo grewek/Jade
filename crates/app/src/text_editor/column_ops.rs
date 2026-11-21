@@ -29,6 +29,25 @@ pub fn aside_marker(right: bool, share: u8) -> String {
     )
 }
 
+/// The open marker of a float block: always explicit, side and share.
+pub fn float_marker(right: bool, share: u8) -> String {
+    format!(
+        "::: float {} {share}%",
+        if right { "right" } else { "left" }
+    )
+}
+
+/// The float block region with every float's open marker rewritten, shares from
+/// `shares` (one per float, then the text's unused one).
+pub fn float_markers(lines: &[&str], region: &Columns, shares: &[u8]) -> Vec<String> {
+    assert!(region.tail && shares.len() > region.floats().len());
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    for (k, f) in region.floats().iter().enumerate() {
+        out[region.open_of(k) - region.start_line] = float_marker(f.right, shares[k]);
+    }
+    out
+}
+
 /// `block` as a float on one side, `text` (already without markers) flowing
 /// around it.
 pub fn floated(block: &[&str], text: &[&str], right: bool) -> Vec<String> {
