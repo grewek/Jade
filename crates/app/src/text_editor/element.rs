@@ -520,7 +520,7 @@ impl RowHeightCache {
             }
             last = i;
             let old = self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i);
-            let new = row_count_for_line(
+            let new = patched_row_count(
                 text,
                 doc,
                 i,
@@ -585,7 +585,7 @@ impl RowHeightCache {
             seen.push(line);
             if line < self.line_count() {
                 let old = self.rows.prefix_sum(line + 1) - self.rows.prefix_sum(line);
-                let new = row_count_for_line(
+                let new = patched_row_count(
                     text,
                     doc,
                     line,
@@ -934,6 +934,54 @@ fn row_count_for_line(
         doc,
         i,
         &state,
+        char_width,
+        font,
+        font_size,
+        text_color,
+        available_width,
+        window,
+    )
+}
+
+/// [`row_count_for_line`] for a patch of one or two lines: a side-by-side
+/// region's height is its shaped one, not the monospace estimate. A patch
+/// leaves the line in the verified window, so an estimate put there would stay
+/// until paint corrects it, after anything positioned from the rows (scrolling
+/// to the caret) has used it; a region as tall as a float's text is far off.
+#[allow(clippy::too_many_arguments)]
+fn patched_row_count(
+    text: &str,
+    doc: &DocumentCache,
+    i: usize,
+    cursor: usize,
+    focused: bool,
+    char_width: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    available_width: Pixels,
+    window: &mut Window,
+) -> usize {
+    if let Some((region, split)) = doc.side_by_side(i)
+        && i == region.start_line
+    {
+        return region::shape_region(
+            text,
+            doc,
+            (&region, &split),
+            (cursor, focused),
+            (font, font_size, window.line_height()),
+            (text_color.into(), None),
+            window,
+        )
+        .rows;
+    }
+    row_count_for_line(
+        text,
+        doc,
+        i,
+        cursor,
+        focused,
         char_width,
         font,
         font_size,
@@ -2114,7 +2162,26 @@ pub(super) fn render_editor(
                     // cursor's line the moment that line scrolled out of
                     // view. See `last_autoscrolled_cursor`'s own doc comment.
                     if focused && last_autoscrolled_cursor.get() != Some(cursor) {
-                        autoscroll_to_cursor(&scroll_handle, bounds, cursor_top, cursor_height);
+                        // A caret in a region is scrolled to by where it is
+                        // drawn: the region's own top may be screens away (a
+                        // float's text makes a region as tall as the text).
+                        let in_region = {
+                            let editor = editor_entity.read(cx);
+                            let doc = editor.document_cache.borrow();
+                            caret_in_column(
+                                editor.buffer().text(),
+                                &doc,
+                                &layout,
+                                (cursor, cursor, focused),
+                                (&font, font_size, line_height),
+                                (text_color.into(), bounds),
+                                window,
+                            )
+                        };
+                        let (top, height) = in_region.map_or((cursor_top, cursor_height), |r| {
+                            (r.origin.y - bounds.origin.y, r.size.height)
+                        });
+                        autoscroll_to_cursor(&scroll_handle, bounds, top, height);
                         last_autoscrolled_cursor.set(Some(cursor));
                     }
                     let viewport = scroll_handle.bounds();
@@ -7238,6 +7305,75 @@ mod tests {
                 );
 
                 assert_eq!(row_counts(&row_cache), expected, "cursor at {cursor}");
+            }
+        })
+        .unwrap();
+    }
+
+    /// Moving the caret within a region re-counts the region's rows from its
+    /// shaped layout, not the monospace estimate: the estimate sat in the
+    /// verified window until paint, so scrolling to the caret used a region
+    /// height far off a float's tall text and the view jumped.
+    #[gpui_kit::test]
+    fn moving_the_caret_in_a_region_keeps_its_exact_height(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        use super::{RowHeightCache, Window, mono_char_width};
+
+        let para = "flowing words ".repeat(50);
+        let text = format!(
+            "intro\n\n::: float right 30%\n\nfloat\n\n:::\n\n{para}\n\n{para}\n\n{para}\n\nafter"
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let text_color = text_style.color;
+            let lh = window.line_height();
+            let available_width = px(1100.);
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+
+            let mut doc = DocumentCache::new(&text);
+            doc.set_column_width(Some(1100.));
+            let mut rows = RowHeightCache::empty();
+            rows.rebuild(
+                &text,
+                &doc,
+                0,
+                false,
+                available_width,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                window,
+            );
+            let region = doc.columns()[0];
+            let exact = |cursor: usize, window: &mut Window| {
+                let (region, split) = doc.side_by_side(region.start_line).unwrap();
+                shape_region(
+                    &text,
+                    &doc,
+                    (&region, &split),
+                    (cursor, true),
+                    (&font, font_size, lh),
+                    (text_color.into(), None),
+                    window,
+                )
+                .rows
+            };
+            for cursor in [
+                text.find("flowing").unwrap() + 5,
+                text.rfind("flowing").unwrap(),
+            ] {
+                rows.sync_active_line(
+                    &text, &doc, cursor, true, char_width, &font, font_size, text_color, window,
+                );
+                let cached = (rows.prefix_sum(region.start_line + 1)
+                    - rows.prefix_sum(region.start_line)) as usize;
+                assert_eq!(cached, exact(cursor, window), "caret at {cursor}");
             }
         })
         .unwrap();
