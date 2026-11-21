@@ -43,7 +43,7 @@ use super::block_preview::{self, LineRole};
 use super::callout::{self, Callout, CalloutState};
 use super::columns::{self, Columns, Placed};
 use super::fenwick::{Fenwick, LINE_GROWTH_SLACK};
-use super::images::ImageSizes;
+use super::image::Sizes as ImageSizes;
 use super::live_preview::{self, LineContext, OpenBlock};
 use super::table_preview::{self, Table, is_pipe_row};
 

@@ -12,7 +12,7 @@ use image::imageops::FilterType;
 use image::{Frame, ImageReader, Limits};
 
 /// Decoded bytes kept at most (an image drawn this frame is never dropped).
-pub(super) const BUDGET_BYTES: usize = 64 << 20;
+const BUDGET_BYTES: usize = 64 << 20;
 
 /// Files larger than this are not decoded.
 const MAX_FILE_BYTES: u64 = 64 << 20;
@@ -37,7 +37,7 @@ enum Slot {
 }
 
 #[derive(Default)]
-pub(super) struct ImageCache {
+pub(in crate::text_editor) struct Cache {
     slots: HashMap<Arc<Path>, Slot>,
     frame: u64,
     bytes: usize,
@@ -45,10 +45,10 @@ pub(super) struct ImageCache {
     evicted: Vec<Arc<RenderImage>>,
 }
 
-impl Global for ImageCache {}
+impl Global for Cache {}
 
-/// What [`ImageCache::lookup`] found.
-pub(super) struct Lookup {
+/// What [`Cache::lookup`] found.
+pub(in crate::text_editor) struct Lookup {
     /// Something to draw: the decode, or an earlier smaller one while a
     /// larger is made.
     pub image: Option<Arc<RenderImage>>,
@@ -56,17 +56,22 @@ pub(super) struct Lookup {
     pub decode_at: Option<u32>,
 }
 
-impl ImageCache {
+impl Cache {
     /// Starts a frame. The returned images left the cache since the last one;
     /// the caller frees them from the window.
-    pub(super) fn begin_frame(&mut self) -> Vec<Arc<RenderImage>> {
+    pub(in crate::text_editor) fn begin_frame(&mut self) -> Vec<Arc<RenderImage>> {
         self.frame += 1;
         std::mem::take(&mut self.evicted)
     }
 
     /// The image at `path` for drawing `want` pixels wide, `natural` being the
     /// file's own width (more than that is never decoded).
-    pub(super) fn lookup(&mut self, path: &Arc<Path>, want: u32, natural: u32) -> Lookup {
+    pub(in crate::text_editor) fn lookup(
+        &mut self,
+        path: &Arc<Path>,
+        want: u32,
+        natural: u32,
+    ) -> Lookup {
         let want = want.min(natural).max(1);
         match self.slots.get_mut(path) {
             None => {
@@ -101,7 +106,11 @@ impl ImageCache {
     }
 
     /// Stores a finished decode (`None`: it failed) and drops what no longer fits.
-    pub(super) fn finish(&mut self, path: &Arc<Path>, decoded: Option<(Arc<RenderImage>, u32)>) {
+    pub(in crate::text_editor) fn finish(
+        &mut self,
+        path: &Arc<Path>,
+        decoded: Option<(Arc<RenderImage>, u32)>,
+    ) {
         if let Some(Slot::Ready { image, bytes, .. }) = self.slots.remove(path) {
             self.bytes -= bytes;
             self.evicted.push(image);
@@ -145,19 +154,22 @@ impl ImageCache {
 
     /// Decoded bytes held.
     #[cfg(test)]
-    pub(super) fn bytes(&self) -> usize {
+    pub(in crate::text_editor) fn bytes(&self) -> usize {
         self.bytes
     }
 
     #[cfg(test)]
-    pub(super) fn is_ready(&self, path: &Arc<Path>) -> bool {
+    pub(in crate::text_editor) fn is_ready(&self, path: &Arc<Path>) -> bool {
         matches!(self.slots.get(path), Some(Slot::Ready { .. }))
     }
 }
 
 /// Decodes the file at `path`, scaled down to `max_width` pixels wide if it is
 /// wider. Blocks: call it off the main thread. `None` when it cannot be read.
-pub(super) fn decode(path: &Path, max_width: u32) -> Option<(Arc<RenderImage>, u32)> {
+pub(in crate::text_editor) fn decode(
+    path: &Path,
+    max_width: u32,
+) -> Option<(Arc<RenderImage>, u32)> {
     if std::fs::metadata(path).ok()?.len() > MAX_FILE_BYTES {
         return None;
     }
@@ -197,7 +209,7 @@ mod tests {
 
     #[test]
     fn the_first_lookup_asks_for_a_decode_and_the_next_waits() {
-        let mut cache = ImageCache::default();
+        let mut cache = Cache::default();
         let p = path("a.png");
         let first = cache.lookup(&p, 300, 1000);
         assert_eq!((first.image.is_none(), first.decode_at), (true, Some(300)));
@@ -207,13 +219,13 @@ mod tests {
 
     #[test]
     fn never_asks_for_more_than_the_files_own_width() {
-        let mut cache = ImageCache::default();
+        let mut cache = Cache::default();
         assert_eq!(cache.lookup(&path("a.png"), 900, 400).decode_at, Some(400));
     }
 
     #[test]
     fn a_wider_draw_upgrades_once_and_keeps_showing_the_old() {
-        let mut cache = ImageCache::default();
+        let mut cache = Cache::default();
         let p = path("a.png");
         cache.lookup(&p, 100, 1000);
         cache.finish(&p, Some((render_image(100, 50), 100)));
@@ -234,7 +246,7 @@ mod tests {
 
     #[test]
     fn a_failed_decode_is_not_retried() {
-        let mut cache = ImageCache::default();
+        let mut cache = Cache::default();
         let p = path("a.avif");
         cache.lookup(&p, 100, 100);
         cache.finish(&p, None);
@@ -244,7 +256,7 @@ mod tests {
 
     #[test]
     fn over_budget_drops_the_least_recently_drawn_but_never_this_frames() {
-        let mut cache = ImageCache::default();
+        let mut cache = Cache::default();
         // Each is 4 bytes a pixel: three of these exceed the budget.
         let side = (BUDGET_BYTES / 4 / 2) as f64;
         let side = side.sqrt() as u32;

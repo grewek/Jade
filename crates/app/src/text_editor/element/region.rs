@@ -167,7 +167,7 @@ fn flowable(state: &LineState, display_line: &DisplayLine, line_text: &str) -> b
         && !state.callout_is_header
         && !state.column_frame
         && display_line.indent == LineIndent::None
-        && image_block(line_text, state).is_none()
+        && image::embed(line_text, state).is_none()
         && !display_line.segments.iter().any(|s| {
             s.is_replaced() || matches!(s.style, InlineStyle::Heading(_) | InlineStyle::Widget(_))
         })

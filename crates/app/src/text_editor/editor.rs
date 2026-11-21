@@ -11,7 +11,6 @@ pub(super) use column_edit::ColumnMenu;
 mod table_edit;
 
 use super::EditorBuffer;
-use super::block;
 use super::callout::callout_index_at;
 use super::column_handles::ColumnDrag;
 use super::doc_stats::DocStats;
@@ -20,7 +19,7 @@ use super::element::{
     RowHeightCache, column_width_for, mono_char_width, render_editor, render_params,
 };
 use super::headings::find_heading_line;
-use super::images::{self, ImageInfo};
+use super::image;
 use super::link_table::LinkTable;
 use super::table_handles::{Handle, TableDrag};
 use jade_core::link_scan::{LinkKind, scan_line};
@@ -300,7 +299,7 @@ impl Editor {
         };
         let targets = {
             let mut doc = self.document_cache.borrow_mut();
-            let targets = block::unknown_image_targets(self.buffer.text(), &doc, lines);
+            let targets = image::unknown_targets(self.buffer.text(), &doc, lines);
             // Marked as asked for, so a second edit of the line does not ask again.
             for target in &targets {
                 doc.images_mut().insert(target, None);
@@ -314,7 +313,7 @@ impl Editor {
             let sizes = cx
                 .background_spawn(async move {
                     let (root, note_id) = &*context;
-                    let read = |target: &String| images::read_info(root, note_id, target);
+                    let read = |target: &String| image::read_info(root, note_id, target);
                     targets
                         .iter()
                         .map(|t| (t.clone(), read(t)))
@@ -327,7 +326,11 @@ impl Editor {
         .detach();
     }
 
-    fn apply_image_sizes(&mut self, sizes: &[(String, Option<ImageInfo>)], cx: &mut Context<Self>) {
+    fn apply_image_sizes(
+        &mut self,
+        sizes: &[(String, Option<image::Info>)],
+        cx: &mut Context<Self>,
+    ) {
         let mut doc = self.document_cache.borrow_mut();
         for (target, size) in sizes {
             doc.images_mut().insert(target, size.clone());

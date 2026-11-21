@@ -4,7 +4,6 @@
 //! "Custom editor" section for the phased plan this is built in.
 
 pub mod bench_api;
-mod block;
 mod block_preview;
 mod buffer;
 mod callout;
@@ -18,8 +17,7 @@ mod editor;
 mod element;
 mod fenwick;
 mod headings;
-mod image_cache;
-mod images;
+mod image;
 mod input_handler;
 mod line_chunks;
 mod link_table;

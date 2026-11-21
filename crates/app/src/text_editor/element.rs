@@ -10,7 +10,6 @@ pub(super) mod justify;
 pub(in crate::text_editor) mod region;
 
 use super::Editor;
-use super::block::{self, image_block};
 use super::block_preview::LineRole;
 use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
@@ -20,8 +19,7 @@ use super::columns::{self, Columns};
 use super::document_cache::{DocumentCache, EditPatch};
 use super::editor::ColumnMenu;
 use super::fenwick::Fenwick;
-use super::image_cache::{self, ImageCache};
-use super::images::{self, ImageInfo, ImageSizes};
+use super::image::{self, Cache as ImageCache, Info as ImageInfo, Sizes as ImageSizes};
 use super::link_table::LinkTable;
 use super::live_preview::{
     DisplayLine, InlineStyle, LineContext, LineIndent, Widget, build_callout_header_line,
@@ -864,13 +862,13 @@ fn estimate_row_count(
 ) -> usize {
     // A block's height does not depend on the width or the line's length, and is
     // more than the one row the fast path below would give it.
-    if block::may_be_image(line)
+    if image::may_be_image(line)
         && matches!(doc.roles[i], LineRole::Plain)
         && matches!(doc.contexts[i], LineContext::Plain)
         && callout_at_line(doc.callouts, i).is_none()
-        && let Some(embed) = block::image_embed_line(line)
+        && let Some(embed) = image::embed_line(line)
     {
-        return block::block_rows(line, &embed, Some(doc.images), available_width, line_height);
+        return image::rows(line, &embed, Some(doc.images), available_width, line_height);
     }
     // A line with no context of its own that doesn't start with `>` is
     // indented at most one level (a list marker; blockquotes need a `>`), so
@@ -1834,9 +1832,9 @@ pub(super) fn build_display_lines(
     if state.hidden {
         return (Vec::new(), None);
     }
-    let block_rows = image_block(line, state).map(|embed| {
+    let block_rows = image::embed(line, state).map(|embed| {
         let sizes = state.images;
-        block::block_rows(line, &embed, sizes, available_width, window.line_height())
+        image::rows(line, &embed, sizes, available_width, window.line_height())
     });
     let mut display_lines: Vec<DisplayLine> = match role {
         // A block is `rows` stacked empty rows; `paint_lines` draws the box over them.
@@ -3135,7 +3133,7 @@ fn paint_image(
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
-    let (width, height) = images::display_size(info.size, requested, area.size.width);
+    let (width, height) = image::display_size(info.size, requested, area.size.width);
     let device_width = (width * window.scale_factor()).ceil() as u32;
     let lookup =
         cx.default_global::<ImageCache>()
@@ -3146,7 +3144,7 @@ fn paint_image(
             .spawn(cx, async move |cx| {
                 let job = cx.background_executor().spawn({
                     let path = path.clone();
-                    async move { image_cache::decode(&path, decode_at) }
+                    async move { image::decode(&path, decode_at) }
                 });
                 let decoded = job.await;
                 cx.update(|window, cx| {
@@ -4307,7 +4305,7 @@ fn paint_lines(
         }
         if let Some(trace) = trace.as_mut() {
             let tag = match (callout, table_line_kind(tables, i), line_roles[i]) {
-                _ if image_block(line_text, &state).is_some() => "image",
+                _ if image::embed(line_text, &state).is_some() => "image",
                 (Some(c), ..) if c.is_header(i) => "callout-header",
                 (Some(_), ..) => "callout",
                 (None, TableLineKind::Row(_) | TableLineKind::Delimiter, _) => "table",
@@ -4507,7 +4505,7 @@ fn paint_line(
         );
     }
 
-    if let Some(embed) = image_block(line_text, &state) {
+    if let Some(embed) = image::embed(line_text, &state) {
         let area = Bounds {
             origin: point(bounds.origin.x, bounds.origin.y + y_offset),
             size: size(bounds.size.width, total_height),
@@ -4516,7 +4514,7 @@ fn paint_line(
         let alt = &line_text[embed.alt.clone()];
         let wiki = line_text.trim_start().starts_with("![[");
         let drawn = doc.images().info(target).is_some_and(|info| {
-            let requested = images::requested_width(alt, wiki);
+            let requested = image::requested_width(alt, wiki);
             paint_image(info, requested, area, window, cx)
         });
         if !drawn {
@@ -7779,8 +7777,8 @@ mod tests {
     /// agree with the exact count, or callout bands would sit at stale heights.
     #[gpui_kit::test]
     fn an_image_embed_line_is_a_block_with_the_placeholder_height(cx: &mut TestAppContext) {
-        use super::super::block::PLACEHOLDER_ROWS;
         use super::super::document_cache::DocumentCache;
+        use super::super::image::PLACEHOLDER_ROWS;
         use super::{RowHeightCache, mono_char_width};
 
         let text = "intro\n![a](a.png)\n![[b.png|200]]\n![x](https://e.com/x.png)\n```\n![c](c.png)\n```\n\
@@ -7821,7 +7819,7 @@ mod tests {
     /// rows are rebuilt for the whole document without any paint of that line.
     #[gpui_kit::test]
     fn an_image_block_takes_its_real_height_once_the_header_is_read(cx: &mut TestAppContext) {
-        use super::super::block::PLACEHOLDER_ROWS;
+        use super::super::image::PLACEHOLDER_ROWS;
         let dir = tempfile::tempdir().unwrap();
         // PNG signature plus an IHDR chunk: all a header read looks at.
         let mut png = b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR".to_vec();
@@ -7875,7 +7873,7 @@ mod tests {
         let path: std::sync::Arc<std::path::Path> =
             dir.path().canonicalize().unwrap().join("p.png").into();
         let (ready, bytes) = cx.update(|cx| {
-            let cache = cx.default_global::<super::super::image_cache::ImageCache>();
+            let cache = cx.default_global::<super::super::image::Cache>();
             (cache.is_ready(&path), cache.bytes())
         });
         assert!(ready, "the visible image was decoded");
