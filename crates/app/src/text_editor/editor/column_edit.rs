@@ -11,6 +11,7 @@ use super::super::column_ops;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
 use super::super::document_cache::DocumentCache;
+use super::super::element::{mono_char_width, render_params};
 use super::Editor;
 
 /// What the right-click menu offers about the structure around the caret.
@@ -100,7 +101,11 @@ impl Editor {
 
     /// Works out which region is shown as source from where the caret is. Called
     /// before every render.
-    pub(in crate::text_editor) fn sync_column_view(&mut self, window: &Window) {
+    pub(in crate::text_editor) fn sync_column_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let focused = self.focus_handle.is_focused(window);
         let raw = {
             let doc = self.document_cache.borrow();
@@ -114,10 +119,57 @@ impl Editor {
             .as_ref()
             .map(|d| (d.region, d.percent.clone()));
         let mut doc = self.document_cache.borrow_mut();
+        let before = (doc.raw_region(), doc.column_preview_region());
         let changed = doc.set_raw_region(raw) | doc.set_column_preview(preview);
+        let after = (doc.raw_region(), doc.column_preview_region());
+        let regions: Vec<usize> = [before.0, before.1, after.0, after.1]
+            .into_iter()
+            .flatten()
+            .collect();
         drop(doc);
         if changed {
-            self.row_height_cache.borrow_mut().invalidate_width();
+            self.remeasure_regions(&regions, window, cx);
+        }
+    }
+
+    /// Re-measures the rows of `regions` alone. Only those regions' heights
+    /// changed, so a full rebuild would re-seed every line outside the
+    /// viewport with estimates and move the document under the scroll
+    /// position (a divider drag then jumped elsewhere).
+    fn remeasure_regions(
+        &mut self,
+        regions: &[usize],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let params = render_params(self, window, cx);
+        let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
+        let cursor = self.buffer.cursor();
+        let focused = self.focus_handle.is_focused(window);
+        let doc = self.document_cache.borrow();
+        let mut rows = self.row_height_cache.borrow_mut();
+        if rows.needs_full_rebuild(&doc, params.available_width, char_width) {
+            // Not built for this width yet: the next paint rebuilds anyway.
+            rows.invalidate_width();
+            return;
+        }
+        let text = self.buffer.text();
+        for &index in regions {
+            let Some(region) = doc.columns().get(index) else {
+                continue;
+            };
+            rows.patch_lines(
+                text,
+                &doc,
+                region.start_line..region.end_line,
+                cursor,
+                focused,
+                char_width,
+                &params.font,
+                params.font_size,
+                params.text_color,
+                window,
+            );
         }
     }
 

@@ -280,6 +280,11 @@ impl DocumentCache {
         Some((region, split))
     }
 
+    /// The region whose shares a divider drag is previewing.
+    pub(super) fn column_preview_region(&self) -> Option<usize> {
+        self.column_preview.as_ref().map(|(index, _)| *index)
+    }
+
     /// Sets the shares a divider drag previews; `true` when that changed what
     /// is laid out, which changes the region's height.
     pub(super) fn set_column_preview(&mut self, preview: Option<(usize, Vec<u8>)>) -> bool {

@@ -860,7 +860,7 @@ impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.unfold_at_cursor();
         self.sync_table_view(window);
-        self.sync_column_view(window);
+        self.sync_column_view(window, cx);
         self.document_cache
             .borrow_mut()
             .set_justify(super::TextSettings::justify(cx));
