@@ -21,6 +21,9 @@ pub(in crate::text_editor) enum ColumnMenu {
     Region { can_add: bool },
     /// The caret is in an aside: flip it to the other side, or unwrap.
     Aside,
+    /// The caret is in a float block's region: flip the float, move it a
+    /// paragraph up or down, or unwrap it.
+    Float,
     /// The caret is in a plain block that can become the first column, or a float.
     Block,
 }
@@ -197,9 +200,8 @@ impl Editor {
         let line = doc.line_at(self.buffer.cursor());
         if let Some(i) = doc.region_index_at(line) {
             let region = doc.columns()[i];
-            // A float block has no menu yet (render only).
             if region.tail {
-                return None;
+                return Some(ColumnMenu::Float);
             }
             if region.is_aside() {
                 return Some(ColumnMenu::Aside);
@@ -360,6 +362,129 @@ impl Editor {
                 .is_aside()
                 .then(|| column_ops::flipped(lines, region))
         })
+    }
+
+    /// The float of the caret's float-block region the menu acts on: the last
+    /// one opened at or before the caret's line (the float its text flows
+    /// around), as `(region index, float index)`.
+    fn float_at_caret(&self) -> Option<(usize, usize)> {
+        let doc = self.document_cache.borrow();
+        let line = doc.line_at(self.buffer.cursor());
+        let index = doc.region_index_at(line)?;
+        let region = doc.columns()[index];
+        if !region.tail {
+            return None;
+        }
+        let k = (0..region.count - 1)
+            .rev()
+            .find(|&k| region.open_of(k) <= line)
+            .unwrap_or(0);
+        Some((index, k))
+    }
+
+    /// Flips the float the caret belongs to (a float block) to its other side.
+    pub(in crate::text_editor) fn flip_float(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((index, k)) = self.float_at_caret() else {
+            return false;
+        };
+        self.edit_region(index, window, cx, |lines, region| {
+            Some(column_ops::float_flipped(lines, region, k))
+        })
+    }
+
+    /// Dissolves the float block the caret belongs to into plain paragraphs.
+    pub(in crate::text_editor) fn unwrap_float(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((index, k)) = self.float_at_caret() else {
+            return false;
+        };
+        let (range, text) = {
+            let doc = self.document_cache.borrow();
+            let region = doc.columns()[index];
+            let source = self.buffer.text();
+            let content: Vec<&str> = region
+                .column_lines(k)
+                .map(|l| &source[doc.line_start_byte(l)..doc.line_end_byte(l)])
+                .collect();
+            let range =
+                doc.line_start_byte(region.open_of(k))..doc.line_end_byte(region.separators()[k]);
+            (range, content.join("\n"))
+        };
+        self.buffer.set_cursor(range.start, false);
+        self.replace_in_buffer(range.clone(), &text, window, cx);
+        self.buffer.set_cursor(range.start, false);
+        cx.notify();
+        true
+    }
+
+    /// Moves the float block the caret belongs to past the paragraph after it
+    /// (`down`) or before it, so the text it flows around changes. `false`
+    /// when there is no plain paragraph that way.
+    pub(in crate::text_editor) fn move_float(
+        &mut self,
+        down: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some((index, k)) = self.float_at_caret() else {
+            return false;
+        };
+        let (range, text, caret) = {
+            let doc = self.document_cache.borrow();
+            let region = doc.columns()[index];
+            let source = self.buffer.text();
+            let line_text = |l: usize| &source[doc.line_start_byte(l)..doc.line_end_byte(l)];
+            let blank = |l: usize| line_text(l).trim().is_empty();
+            let (open, close) = (region.open_of(k), region.separators()[k]);
+            // The paragraph on the move's side, and no marker of any region.
+            let target = if down {
+                (close + 1..doc.line_count()).find(|&l| !blank(l))
+            } else {
+                (0..open).rev().find(|&l| !blank(l))
+            };
+            let Some(target) = target else {
+                return false;
+            };
+            let Some(para) = self.block_lines(&doc, target) else {
+                return false;
+            };
+            if para
+                .clone()
+                .any(|l| doc.columns().iter().any(|r| r.is_marker(l)))
+            {
+                return false;
+            }
+            let block: Vec<&str> = (open..=close).map(line_text).collect();
+            let para_text: Vec<&str> = para.clone().map(line_text).collect();
+            let (span, first, second) = if down {
+                (open..para.end, &para_text, &block)
+            } else {
+                (para.start..close + 1, &block, &para_text)
+            };
+            let mut lines: Vec<&str> = first.clone();
+            lines.push("");
+            lines.extend(second.iter().copied());
+            let range = doc.line_start_byte(span.start)..doc.line_end_byte(span.end - 1);
+            let caret = range.start
+                + if down {
+                    para_text.iter().map(|l| l.len() + 1).sum::<usize>() + 1
+                } else {
+                    0
+                };
+            (range, lines.join("\n"), caret)
+        };
+        self.buffer.set_cursor(range.start, false);
+        self.replace_in_buffer(range.clone(), &text, window, cx);
+        self.buffer.set_cursor(caret, false);
+        cx.notify();
+        true
     }
 
     /// Floats the block around the caret to one side, the paragraphs right

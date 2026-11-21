@@ -2436,6 +2436,12 @@ fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<Vec<PopupMenuItem>> 
                 e.run_region_menu(false, w, c)
             }),
         ],
+        ColumnMenu::Float => vec![
+            run("Flip side", true, Editor::flip_float),
+            run("Move float up", true, |e, w, c| e.move_float(false, w, c)),
+            run("Move float down", true, |e, w, c| e.move_float(true, w, c)),
+            run("Unwrap float", true, Editor::unwrap_float),
+        ],
         ColumnMenu::Region { can_add } => vec![
             run("Add column", can_add, |e, w, c| {
                 e.run_region_menu(true, w, c)
@@ -3403,6 +3409,26 @@ fn column_drag_percent(
             total - x - columns::GAP / 2.
         } else {
             x - columns::GAP / 2.
+        };
+        // In a narrow window the layout scales both sides down to leave the text
+        // its channel, so the pointer is on a *drawn* width. Undo that scaling
+        // (drawn = room * a / (a + b), b the other side's width) to get the
+        // share that draws where the pointer is.
+        let shares_on = |right: bool| {
+            floats
+                .iter()
+                .zip(&region.percent)
+                .filter(|(f, _)| f.right == right)
+                .map(|(_, &share)| share)
+                .max()
+        };
+        let other = shares_on(!right_side).map_or(0., |sh| usable * f32::from(sh) / 100.);
+        let room = usable - columns::MIN_CHANNEL;
+        let float = if room > 0. && float + other > room && other > 0. {
+            let drawn = float.min(room * 0.99);
+            drawn * other / (room - drawn)
+        } else {
+            float
         };
         let step = f32::from(column_ops::SNAP);
         let share = (float / usable * 100. / step).round() * step;
@@ -6693,6 +6719,47 @@ mod tests {
             .unwrap();
         }
         assert_eq!(text_of(cx), text);
+    }
+
+    /// A float block's menu actions: flip rewrites one marker, move swaps the
+    /// block with the neighbouring paragraph, unwrap leaves its content as a
+    /// paragraph; each is one undo step.
+    #[gpui_kit::test]
+    fn a_float_block_flips_moves_and_unwraps(cx: &mut TestAppContext) {
+        use super::{ColumnMenu, Context, Window};
+        let text = "::: float right 30%\n\nF\n\n:::\n\none\n\ntwo\n\nthree";
+        let (window, editor) = open_editor(cx, text);
+        let text_of =
+            |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().text().to_owned());
+        let run =
+            |cx: &mut TestAppContext,
+             f: &dyn Fn(&mut Editor, &mut Window, &mut Context<Editor>) -> bool| {
+                cx.update_window(window, |_, window, cx| {
+                    editor.update(cx, |e, cx| f(e, window, cx))
+                })
+                .unwrap()
+            };
+        let at = text_of(cx).find("two").unwrap();
+        editor.update(cx, |e, _| e.buffer_mut().set_cursor(at, false));
+        assert!(editor.read_with(cx, |e, _| e.column_menu_state() == Some(ColumnMenu::Float)));
+        assert!(run(cx, &|e, w, c| e.flip_float(w, c)));
+        assert!(text_of(cx).starts_with("::: float left 30%\n"));
+        assert!(run(cx, &|e, w, c| e.move_float(true, w, c)));
+        assert_eq!(
+            text_of(cx),
+            "one\n\n::: float left 30%\n\nF\n\n:::\n\ntwo\n\nthree"
+        );
+        // Nothing before "one" to move past.
+        let at = text_of(cx).find("two").unwrap();
+        editor.update(cx, |e, _| e.buffer_mut().set_cursor(at, false));
+        assert!(run(cx, &|e, w, c| e.move_float(false, w, c)));
+        assert_eq!(
+            text_of(cx),
+            "::: float left 30%\n\nF\n\n:::\n\none\n\ntwo\n\nthree"
+        );
+        assert!(!run(cx, &|e, w, c| e.move_float(false, w, c)));
+        assert!(run(cx, &|e, w, c| e.unwrap_float(w, c)));
+        assert_eq!(text_of(cx), "F\n\none\n\ntwo\n\nthree");
     }
 
     /// Resizing a float block rewrites only its open markers (not the text that
