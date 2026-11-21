@@ -161,7 +161,7 @@ impl ListNode {
 /// `line.trim().is_empty()`, deciding from the first byte when it is a
 /// printable ASCII character (nearly every line) before the Unicode-aware
 /// trim.
-pub(in crate::text_editor) fn is_blank(line: &str) -> bool {
+pub(super) fn is_blank(line: &str) -> bool {
     match line.as_bytes().first() {
         None => true,
         Some(&b) if b > b' ' && b < 0x7f => false,

@@ -71,9 +71,23 @@ mod context;
 mod inline;
 mod line;
 
+// What the rest of the editor uses. Everything else in the sibling files is
+// `pub(super)`: visible to `preview` and its tests, not beyond.
+pub(in crate::text_editor) use build::{
+    build_callout_header_line, build_cell_line, build_display_line, build_display_line_in_context,
+    hidden_line, is_thematic_break, raw_cell_line,
+};
+pub(in crate::text_editor) use context::{LineContext, OpenBlock, block_context_step, line_indent};
 pub(in crate::text_editor) use fence::LineRole;
-#[allow(unused_imports)]
-pub(in crate::text_editor) use {build::*, context::*, inline::*, line::*};
+pub(in crate::text_editor) use line::{
+    DisplayLine, DisplaySegment, InlineStyle, LineIndent, Widget,
+};
+
+// Siblings and the tests reach each other's items through this module.
+use {build::*, context::*, inline::*, line::*};
+
+#[cfg(test)]
+pub(in crate::text_editor) use context::{classify_block_context, classify_block_context_from};
 
 #[cfg(test)]
 mod tests;
