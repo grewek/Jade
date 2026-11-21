@@ -1023,7 +1023,7 @@ pub(super) fn trace_geometry(
                 );
                 let first = line_top(column, top, table.start_line);
                 let end = line_top(column, top, table.end_line);
-                let width = boxed.x(table_box::box_width(&boxed.widths));
+                let width = boxed.box_px();
                 tables.push((
                     table.start_line,
                     f32::from(first),

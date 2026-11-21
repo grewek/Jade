@@ -3208,6 +3208,10 @@ pub(super) struct TableColumns {
     pub(super) widths: Vec<usize>,
     pub(super) aligns: Vec<table_preview::Align>,
     pub(super) char_width: Pixels,
+    /// The width the box is stretched to: the whole of its room when the table
+    /// had to shrink to fit (so its edge lines up with a callout above or below
+    /// it), else 0 for the natural width.
+    fill: Pixels,
 }
 
 impl TableColumns {
@@ -3223,11 +3227,21 @@ impl TableColumns {
             widths: table_preview::resolve_widths(&table.columns, max_chars),
             aligns: table.columns.iter().map(|c| c.align).collect(),
             char_width,
+            fill: if max_chars.is_some_and(|m| !table_preview::fits_unshrunk(&table.columns, m)) {
+                width
+            } else {
+                px(0.)
+            },
         }
     }
 
     fn x(&self, chars: f32) -> Pixels {
         self.char_width * chars
+    }
+
+    /// The box's width: its columns', or its room where the table shrank.
+    pub(super) fn box_px(&self) -> Pixels {
+        self.x(table_box::box_width(&self.widths)).max(self.fill)
     }
 }
 
@@ -3290,9 +3304,12 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
         .into_iter()
         .chain((table.start_line + 3..=table.end_line).map(boundary))
         .collect();
-    let col_x = (0..=columns.widths.len())
+    let mut col_x: Vec<f32> = (0..=columns.widths.len())
         .map(|c| f32::from(columns.x(table_box::column_left(&columns.widths, c))))
         .collect();
+    if let Some(last) = col_x.last_mut() {
+        *last = f32::from(columns.box_px());
+    }
     (Grid { col_x, row_y }, top)
 }
 
@@ -3640,7 +3657,7 @@ fn paint_table_box(
     let strong = palette.color(Role::BorderStrong);
     let light = palette.color(Role::Border);
     let (top, bottom) = (at(table.start_line), at(table.end_line));
-    let width = columns.x(table_box::box_width(&columns.widths));
+    let width = columns.box_px();
     let header_bottom = at(table.start_line + 2).min(bottom);
     let line = |x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla| {
         fill(
@@ -6109,6 +6126,29 @@ mod tests {
         rows.mark_changed(10..14);
         rows.mark_changed(3..5);
         assert_eq!(rows.pending, Some(3..14));
+    }
+
+    /// A table that had to shrink to its room fills it, so its edge lines up
+    /// with a callout in the same column; one that fits keeps its natural width.
+    #[gpui_kit::test]
+    fn a_shrunk_table_fills_its_room(cx: &mut TestAppContext) {
+        use super::super::table_preview::classify_tables;
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let text = "| a very long heading | another long heading |\n| - | - |\n| x | y |\n";
+            let table = classify_tables(text).1.remove(0);
+            let narrow =
+                super::TableColumns::of(&table, px(170.), (&font, size, style.color), window);
+            assert_eq!(narrow.box_px(), px(170.));
+            let wide =
+                super::TableColumns::of(&table, px(2000.), (&font, size, style.color), window);
+            assert!(wide.box_px() < px(2000.));
+        })
+        .unwrap();
     }
 
     /// A float block keeps a row of air below its lowest float, so what follows
