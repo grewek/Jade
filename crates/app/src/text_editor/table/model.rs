@@ -1,14 +1,14 @@
 //! Table detection and row-parsing — the other *block*-level construct
-//! besides fenced code (`block_preview.rs`), needing cross-line state the
+//! besides fenced code (`preview/fence.rs`), needing cross-line state the
 //! same way: a line's role (header/delimiter/body row, or not a table at
 //! all) and a table's column count/width/alignment all depend on every row
 //! of that table together, not on any single line alone.
 //!
-//! Deliberately independent of `block_preview.rs`'s fence tracking and
-//! `live_preview.rs`'s `classify_block_context` — neither knows about the
+//! Deliberately independent of `preview/fence.rs`'s fence tracking and
+//! `preview/`'s `classify_block_context` — neither knows about the
 //! other, same as those two don't know about each other either.
 //! `element.rs` only ever consults this module's output for a line already
-//! classified `block_preview::LineRole::Plain`, so a table-like pipe
+//! classified `preview::LineRole::Plain`, so a table-like pipe
 //! sequence inside a fenced code block is never mistaken for a real table
 //! (this module's own scan would still "detect" it, since it has no fence
 //! awareness, but nothing ever looks that detection up for a fenced line).
@@ -17,7 +17,7 @@
 //! compounding limit in this editor.
 //!
 //! Rendering a table as an actually-aligned grid (not just markup hidden in
-//! place, like every other construct) is `live_preview.rs`'s
+//! place, like every other construct) is `preview/`'s
 //! `build_table_row`/`build_table_rule` — made tractable by this editor's
 //! font always being monospace (see `element.rs`'s `render_editor`): a
 //! column's width is a plain character count, with no pixel measurement
@@ -128,7 +128,7 @@ pub(in crate::text_editor) fn for_each_cell_range(
 pub const LINE_BREAK: &str = "<br>";
 
 /// How many lines `line` renders on when each of its cells is wrapped to
-/// `widths` — exactly the number of lines `live_preview::build_table_row`
+/// `widths` — exactly the number of lines `preview::build_table_row`
 /// returns for it, without building them. A cell no longer than its column is
 /// wide always fits one line (wrapping only ever removes whitespace), which is
 /// nearly every cell, so only an over-wide one is counted word by word. A row
@@ -357,8 +357,8 @@ pub(in crate::text_editor) fn classify_table_list_from<'a>(
 /// Resolves every table in the whole `source` document: for each line, the
 /// index into the returned `Vec<Table>` it belongs to (if any), and each
 /// table's resolved columns. A single sequential pass, mirroring
-/// `block_preview::classify_lines`'s fence-tracking and
-/// `live_preview::classify_block_context`'s list-nesting pass — the same
+/// `preview::fence::classify_lines`'s fence-tracking and
+/// `preview::classify_block_context`'s list-nesting pass — the same
 /// kind of whole-document state this module's own doc comment explains
 /// tables need and single-line detection can't provide.
 #[cfg(test)]
@@ -438,7 +438,7 @@ pub fn fits_unshrunk(columns: &[Column], max_total_chars: impl Into<Option<usize
 /// the table's actual left/right border lines are painted as real vector
 /// quads over them, see `column_divider_char_offsets` below, not drawn as
 /// text), plus a 3-character blank gap between every pair of adjacent
-/// columns — see `live_preview::build_table_row`.
+/// columns — see `preview::build_table_row`.
 pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usize> {
     let natural: Vec<usize> = columns.iter().map(|c| c.width).collect();
     if columns.is_empty() || fits_unshrunk(columns, max_total_chars) {
@@ -484,7 +484,7 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
 
 /// `columns`' widths as actually used for rendering — [`cap_column_widths`]
 /// if `max_total_chars` is given, else each column's own natural width
-/// verbatim. The one place both `live_preview::build_table_row` and
+/// verbatim. The one place both `preview::build_table_row` and
 /// `element.rs`'s border-painting code (which needs the *same* resolved
 /// widths `build_table_row` used, to position its vector lines at exactly
 /// the gaps that row's text actually left blank) make this decision, so

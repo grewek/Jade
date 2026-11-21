@@ -2,7 +2,7 @@
 //! feature: `start_if_enabled` never starts a trace, so the other methods
 //! are unreachable and exist only to keep `element.rs` free of `#[cfg]`.
 
-use super::callout::CalloutType;
+use super::preview::callout::CalloutType;
 
 /// Built only by the caller's closure, which never runs here.
 #[allow(dead_code)]

@@ -4,9 +4,7 @@
 //! "Custom editor" section for the phased plan this is built in.
 
 pub mod bench_api;
-mod block_preview;
 mod buffer;
-mod callout;
 mod colors;
 mod columns;
 mod doc_stats;
@@ -20,12 +18,12 @@ mod input_handler;
 mod layout;
 mod line_chunks;
 mod link_table;
-mod live_preview;
 #[cfg(any(test, feature = "debug-socket"))]
 mod paint_trace;
 #[cfg(not(any(test, feature = "debug-socket")))]
 #[path = "paint_trace_stub.rs"]
 mod paint_trace;
+mod preview;
 mod rows;
 mod table;
 #[cfg(test)]

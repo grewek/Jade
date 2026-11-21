@@ -2,11 +2,11 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
-use crate::text_editor::block_preview::LineRole;
-use crate::text_editor::callout::{Callout, callout_index_at};
 use crate::text_editor::document_cache::DocumentCache;
 use crate::text_editor::image::Sizes as ImageSizes;
-use crate::text_editor::live_preview::LineContext;
+use crate::text_editor::preview::LineContext;
+use crate::text_editor::preview::LineRole;
+use crate::text_editor::preview::callout::{Callout, callout_index_at};
 use crate::text_editor::table::{Table, table_index_at};
 
 /// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
@@ -158,7 +158,7 @@ pub(in crate::text_editor) fn is_table_active(
 }
 
 /// Pixel width of one structural indent level (see
-/// `live_preview::LineIndent`) — applied identically by `paint_lines`,
+/// `preview::LineIndent`) — applied identically by `paint_lines`,
 /// `offset_for_position`, and (via [`indent_px`]) `input_handler.rs`'s
 /// `bounds_for_range`, so a line's painted position and its hit-testing/IME
 /// math always agree.

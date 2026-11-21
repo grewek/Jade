@@ -11,7 +11,6 @@ pub(super) use column_edit::ColumnMenu;
 mod table_edit;
 
 use super::EditorBuffer;
-use super::callout::callout_index_at;
 use super::columns::handles::ColumnDrag;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
@@ -19,6 +18,7 @@ use super::element::{render_editor, render_params};
 use super::headings::find_heading_line;
 use super::image;
 use super::link_table::LinkTable;
+use super::preview::callout::callout_index_at;
 use super::rows::{Change, Inputs, Invalidate, RowCache};
 use super::table::handles::{Handle, TableDrag};
 use jade_core::link_scan::{LinkKind, scan_line};

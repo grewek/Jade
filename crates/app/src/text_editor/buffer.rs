@@ -4,8 +4,8 @@
 //! `text_editor/` section): a `String`-backed buffer the GPUI-facing element
 //! (rendering, mouse, keyboard, IME) will drive. Kept separate and GPUI-free
 //! so the editing logic itself is exhaustively unit-testable, the same
-//! pure-logic-first approach every Live Preview module (`live_preview.rs`,
-//! `block_preview.rs`, `table::model.rs`) uses too.
+//! pure-logic-first approach every Live Preview module (`preview/`,
+//! `preview/fence.rs`, `table/model.rs`) uses too.
 //!
 //! Cursor movement is char-boundary based, not full grapheme-cluster based
 //! (a combining-mark or ZWJ emoji sequence moves one `char` at a time, not one

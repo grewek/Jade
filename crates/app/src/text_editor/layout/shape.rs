@@ -4,16 +4,16 @@ use std::ops::Range;
 use gpui_kit::*;
 
 use super::state::{LineState, TableLineKind, indent_px};
-use crate::text_editor::block_preview::LineRole;
-use crate::text_editor::callout::Callout;
 use crate::text_editor::colors::InlineColors;
 use crate::text_editor::image;
-use crate::text_editor::live_preview::{
+use crate::text_editor::preview::LineRole;
+use crate::text_editor::preview::callout::Callout;
+use crate::text_editor::preview::{
     DisplayLine, InlineStyle, LineIndent, build_callout_header_line, build_display_line,
     build_display_line_in_context, hidden_line, is_thematic_break,
 };
 
-/// The `Font` to paint a [`DisplaySegment`](super::live_preview::DisplaySegment)'s
+/// The `Font` to paint a [`DisplaySegment`](super::preview::DisplaySegment)'s
 /// visible text in, derived from `base` (the editor's ambient mono font) —
 /// only weight/style vary per [`InlineStyle`], not family or size, so every
 /// run in a shaped line still lines up on the same baseline/metrics.
@@ -41,7 +41,7 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
 /// callout, if it belongs to one: a header's title is colored with that
 /// callout's own accent (`callout_color`) rather than the generic
 /// `CalloutTitle` default of `base`, and a callout's *body* text — still
-/// styled plain `Blockquote`/`ListMarker` by `live_preview.rs`, which has
+/// styled plain `Blockquote`/`ListMarker` by `preview/`, which has
 /// no idea callouts exist — uses `base` instead of the usual muted
 /// blockquote gray, since the background tint already carries the visual
 /// distinction a plain quote's dimmer text otherwise provides.
@@ -111,16 +111,16 @@ fn wrap_width_for(
 /// for a table row/rule, which must stay unwrapped or its column alignment
 /// breaks), alongside the [`DisplayLine`] mapping needed to convert a raw
 /// buffer offset into a position in it (or back). `role` (from
-/// `block_preview::classify_lines`, computed once per document) picks
+/// `preview::fence::classify_lines`, computed once per document) picks
 /// between three cases:
 /// - [`LineRole::FenceContent`]: always literal (`build_display_line(line,
 ///   true)`, i.e. the same "show it verbatim" path an active line takes) —
 ///   code fence content is never Markdown, so `active` doesn't apply to it.
 /// - [`LineRole::FenceDelimiter`]: raw when `active`, else [`hidden_line`]
 ///   — the fence marker itself has no "remainder" to show once hidden,
-///   unlike every other hidden-prefix case in `live_preview.rs`.
+///   unlike every other hidden-prefix case in `preview/`.
 /// - [`LineRole::Plain`]: a callout header line (`callout_is_header`, from
-///   `callout::classify_callouts`) outside any table renders via
+///   `preview::callout::classify_callouts`) outside any table renders via
 ///   `build_callout_header_line` instead — see that function's own doc
 ///   comment; a callout's *body* lines need no special dispatch here at
 ///   all, rendering as ordinary blockquote content exactly like any other
@@ -131,7 +131,7 @@ fn wrap_width_for(
 ///   vector rule directly over the gap, same reasoning as a table's own
 ///   grid lines. Otherwise, a line that isn't part of a table renders via
 ///   `build_display_line_in_context(line, active, block_ctx)` — `block_ctx`
-///   (from `live_preview::classify_block_context`, also computed once per
+///   (from `preview::classify_block_context`, also computed once per
 ///   document) resolves nested-list depth and lazy continuation, neither
 ///   of which `line` alone carries enough information for. A line that
 ///   *is* part of a table (`table_kind`, from `table_line_kind`) instead

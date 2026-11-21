@@ -7,7 +7,7 @@
 
 use std::ops::Range;
 
-use super::super::live_preview::{build_cell_line, raw_cell_line};
+use super::super::preview::{build_cell_line, raw_cell_line};
 use super::model::{Align, LINE_BREAK, for_each_cell_range};
 
 /// Space on each side of a cell's text, in characters. The grid is laid out in

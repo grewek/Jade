@@ -4,7 +4,7 @@
 
 use gpui_kit::Hsla;
 
-use super::callout::CalloutType;
+use super::preview::callout::CalloutType;
 use crate::theme::{Palette, Role};
 
 /// One entry per callout color group, in `callouts` order.

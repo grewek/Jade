@@ -6,8 +6,6 @@ use crate::text_editor::table;
 use gpui_kit::*;
 
 use super::Env;
-use crate::text_editor::block_preview::LineRole;
-use crate::text_editor::callout::Callout;
 use crate::text_editor::columns::{self, Columns};
 use crate::text_editor::document_cache::DocumentCache;
 use crate::text_editor::element::region;
@@ -16,7 +14,9 @@ use crate::text_editor::layout::{
     LineState, build_display_lines, callout_at_line, char_budget, fit_with_indent, indent_px,
     shape_display_line, wrapped_row_count,
 };
-use crate::text_editor::live_preview::{LineContext, line_indent};
+use crate::text_editor::preview::LineRole;
+use crate::text_editor::preview::callout::Callout;
+use crate::text_editor::preview::{LineContext, line_indent};
 use crate::text_editor::table::Table;
 
 /// The parts of a [`DocumentCache`] a row count reads, as plain slices (the
@@ -228,7 +228,7 @@ fn pure_row_counts_in(
 ///
 /// Still needs the indent level right (a wider wrap width than the real
 /// one would *under*-estimate, the one way this could go unsafe) — reuses
-/// `live_preview::line_indent` (the same cheap prefix-only check `build_
+/// `preview::line_indent` (the same cheap prefix-only check `build_
 /// display_line` itself uses, not the expensive scan) combined with the
 /// line's already-known `LineContext` (from `DocumentCache`, itself
 /// already computed — not rederived here) the same way `build_display_

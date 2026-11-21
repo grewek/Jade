@@ -1,14 +1,14 @@
 //! Whole-document line classification for fenced code blocks — the one
 //! Live Preview construct that can't be told apart one line at a time.
 //!
-//! Headings, blockquotes, and list markers (`live_preview.rs`) don't need
+//! Headings, blockquotes, and list markers (`preview/`) don't need
 //! this: each is fully determined by its own line's content alone. Whether
 //! a line sits *inside* an open code fence, though, depends on whether an
 //! earlier line opened one and no later line (before this one) closed it —
 //! genuinely whole-document state, however small.
 //!
 //! Deliberately hand-written (not `markdown::to_mdast`), same style as
-//! `live_preview.rs`'s own detectors: fence open/close is a simple enough
+//! `preview/`'s own detectors: fence open/close is a simple enough
 //! rule (a line starting with 3-or-more of the same fence character, `` ` ``
 //! or `~`) to track directly with one sequential pass, rather than paying
 //! for a full AST parse on every keystroke just for this.
@@ -17,7 +17,7 @@
 /// fenced code blocks are concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LineRole {
-    /// Not inside a fence — `live_preview::build_display_line` applies as
+    /// Not inside a fence — `preview::build_display_line` applies as
     /// normal (headings/emphasis/code-spans/wikilinks/blockquotes/lists).
     Plain,
     /// The opening or closing fence line itself (e.g. `` ```rust `` or
@@ -34,11 +34,11 @@ pub enum LineRole {
 /// how long its opening run was — the *entire* cross-line state this
 /// classifier carries (see [`step`]), which is what makes it resumable from
 /// any line given just this one small value.
-pub(super) type FenceState = jade_core::fence::FenceState;
+pub(in crate::text_editor) type FenceState = jade_core::fence::FenceState;
 
 /// Lossless 8-byte form of a [`FenceState`] (24 bytes as an `Option`), for
 /// the per-line state array in `document_cache.rs`.
-pub(super) fn pack_fence(state: FenceState) -> u64 {
+pub(in crate::text_editor) fn pack_fence(state: FenceState) -> u64 {
     match state {
         None => 0,
         Some((ch, len)) => {
@@ -48,7 +48,7 @@ pub(super) fn pack_fence(state: FenceState) -> u64 {
     }
 }
 
-pub(super) fn unpack_fence(packed: u64) -> FenceState {
+pub(in crate::text_editor) fn unpack_fence(packed: u64) -> FenceState {
     (packed != 0).then_some((
         (packed >> 48 & 0xFF) as u8,
         (packed & ((1 << 48) - 1)) as usize,
@@ -62,7 +62,7 @@ pub(super) fn unpack_fence(packed: u64) -> FenceState {
 /// (`document_cache.rs`) can resume classification from an arbitrary line's
 /// cached entering state instead of only ever starting fresh from the
 /// document's first line.
-pub(super) fn step(state: FenceState, line: &str) -> (LineRole, FenceState) {
+pub(in crate::text_editor) fn step(state: FenceState, line: &str) -> (LineRole, FenceState) {
     use jade_core::fence::{FenceRole, step};
     let (role, next) = step(state, line);
     let role = match role {
@@ -88,7 +88,7 @@ pub(super) fn step(state: FenceState, line: &str) -> (LineRole, FenceState) {
 /// (including the incremental path's own) checks itself against, rather
 /// than removed once production stopped calling it directly.
 #[cfg(test)]
-pub(super) fn classify_lines(source: &str) -> Vec<LineRole> {
+pub(in crate::text_editor) fn classify_lines(source: &str) -> Vec<LineRole> {
     classify_lines_from(source, None)
         .into_iter()
         .map(|(role, _)| role)
@@ -105,7 +105,10 @@ pub(super) fn classify_lines(source: &str) -> Vec<LineRole> {
 /// know the moment it's safe to stop and reuse the old cached suffix
 /// unchanged, rather than re-walking the rest of the document — see
 /// `document_cache.rs`.
-pub(super) fn classify_lines_from(source: &str, state: FenceState) -> Vec<(LineRole, FenceState)> {
+pub(in crate::text_editor) fn classify_lines_from(
+    source: &str,
+    state: FenceState,
+) -> Vec<(LineRole, FenceState)> {
     let mut state = state;
     source
         .split('\n')

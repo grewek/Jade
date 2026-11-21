@@ -16,8 +16,6 @@ mod table_paint;
 mod widgets;
 
 use super::Editor;
-use super::block_preview::LineRole;
-use super::callout::{Callout, callout_index_at};
 use super::colors::{InlineColors, callout_role};
 use super::columns::handles::ColumnDrag;
 use super::columns::{self, Columns};
@@ -29,10 +27,12 @@ use super::layout::{
     shape_display_line, shape_entry, table_line_kind,
 };
 use super::link_table::LinkTable;
-use super::live_preview::{
+use super::paint_trace::{FrameInfo, PaintTrace};
+use super::preview::LineRole;
+use super::preview::callout::{Callout, callout_index_at};
+use super::preview::{
     DisplayLine, InlineStyle, LineIndent, Widget, build_cell_line, is_thematic_break, raw_cell_line,
 };
-use super::paint_trace::{FrameInfo, PaintTrace};
 use super::rows::{Change, Inputs, RowCache};
 use super::table::Align;
 use super::table::handles::{Grid, Handle, TableDrag};
@@ -534,8 +534,8 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
 #[cfg(test)]
 mod tests {
     use super::super::Editor;
-    use super::super::block_preview::LineRole;
-    use super::super::live_preview::LineIndent;
+    use super::super::preview::LineIndent;
+    use super::super::preview::LineRole;
     use super::super::table::classify_tables;
     use super::super::test_support::apply_edit;
     use super::LineState;
@@ -1425,7 +1425,7 @@ mod tests {
         // being indexed in step with `text.split('\n')` and `line_roles` —
         // an off-by-one there would panic (index out of bounds) rather than
         // just render wrong, so this alone is a meaningful regression net
-        // on top of `live_preview`'s own exhaustive pure-logic tests.
+        // on top of `preview`'s own exhaustive pure-logic tests.
         let text = "1. outer\n   - inner\n     still inner, lazy continuation\n> quoted\nlazy quote continuation";
         let (window, editor) = open_editor(cx, text);
         editor.update(cx, |editor, _| {
@@ -1633,7 +1633,7 @@ mod tests {
             let font = text_style.font();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
             // `active: true` on its own would normally be enough to show a
-            // line verbatim anyway (see `live_preview`'s own tests) — the
+            // line verbatim anyway (see `preview`'s own tests) — the
             // real thing this test guards is that `FenceContent` forces the
             // same literal treatment regardless of `active`, since a fenced
             // code line must never have its content inline-scanned at all,

@@ -6,12 +6,12 @@
 
 use gpui_kit::*;
 
-use super::super::block_preview::LineRole;
 use super::super::columns;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
 use super::super::document_cache::DocumentCache;
 use super::super::element::render_params;
+use super::super::preview::LineRole;
 use super::super::rows::{Change, Inputs};
 use super::Editor;
 
@@ -218,7 +218,8 @@ impl Editor {
         let plain = |l: usize| {
             doc.line_roles().get(l) == Some(&LineRole::Plain)
                 && crate::text_editor::table::table_index_at(doc.tables(), l).is_none()
-                && crate::text_editor::callout::callout_index_at(doc.callouts(), l).is_none()
+                && crate::text_editor::preview::callout::callout_index_at(doc.callouts(), l)
+                    .is_none()
         };
         if blank(line) || !plain(line) {
             return None;

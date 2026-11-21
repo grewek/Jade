@@ -16,9 +16,9 @@ use std::ops::Range;
 
 use jade_core::link_scan::{LinkKind, scan_line};
 
-use super::block_preview::LineRole;
 use super::document_cache::{DocumentCache, EditPatch};
 use super::line_chunks::map_line_chunks;
+use super::preview::LineRole;
 
 /// Room kept free after a rebuild so typing a link does not reallocate.
 const SLACK: usize = 64;

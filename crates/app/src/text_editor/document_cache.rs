@@ -1,7 +1,7 @@
 //! A persistent, edit-patched cache of the four whole-document Live Preview
-//! classification passes (`block_preview::classify_lines`,
-//! `live_preview::classify_block_context`, `table::classify_tables`,
-//! `callout::classify_callouts`) — see ARCHITECTURE.md's own bullet on
+//! classification passes (`preview::fence::classify_lines`,
+//! `preview::classify_block_context`, `table::classify_tables`,
+//! `preview::callout::classify_callouts`) — see ARCHITECTURE.md's own bullet on
 //! incremental classification for why this exists: re-running all four from
 //! scratch on every paint cost ~420ms combined on the 320K-line stress
 //! fixture, re-paid on every keystroke, nowhere near the 16.66ms/60fps bar.
@@ -40,12 +40,12 @@
 use super::table;
 use std::ops::Range;
 
-use super::block_preview::{self, LineRole};
-use super::callout::{self, Callout, CalloutState};
 use super::columns::{self, Columns, Placed};
 use super::fenwick::{Fenwick, LINE_GROWTH_SLACK};
 use super::image::Sizes as ImageSizes;
-use super::live_preview::{self, LineContext, OpenBlock};
+use super::preview::callout::{Callout, CalloutState};
+use super::preview::fence::LineRole;
+use super::preview::{self, LineContext, OpenBlock};
 use super::table::{Table, is_pipe_row};
 
 /// A tree-sitter-`InputEdit`-style description of what just changed in the
@@ -463,8 +463,8 @@ impl DocumentCache {
         let mut states = Vec::with_capacity(n + LINE_GROWTH_SLACK);
         let mut state = None;
         for line in lines_of(text, strides) {
-            states.push(block_preview::pack_fence(state));
-            let (role, next) = block_preview::step(state, line);
+            states.push(preview::fence::pack_fence(state));
+            let (role, next) = preview::fence::step(state, line);
             roles.push(role);
             state = next;
         }
@@ -479,7 +479,7 @@ impl DocumentCache {
         let mut state = CalloutState::default();
         for (i, line) in lines_of(text, strides).enumerate() {
             states.push(state.pack());
-            state = callout::step(state, line, i, &mut callouts).1;
+            state = preview::callout::step(state, line, i, &mut callouts).1;
         }
         self.callout_states = states;
         self.callouts = callouts;
@@ -492,7 +492,7 @@ impl DocumentCache {
         let mut open = OpenBlock::None;
         for line in lines_of(text, strides) {
             states.push(open.clone());
-            let (ctx, next) = live_preview::block_context_step(open, line);
+            let (ctx, next) = preview::block_context_step(open, line);
             contexts.push(ctx);
             open = next;
         }
@@ -813,11 +813,11 @@ impl DocumentCache {
         })
     }
 
-    /// The real incremental path for `block_preview`: resumes from the
+    /// The real incremental path for `preview::fence`: resumes from the
     /// edited line's cached entering fence state, walks forward over the
     /// *new* text (one line at a time, via [`lines_from`] — never
     /// materializing the whole document's lines, see this module's own doc
-    /// comment) re-running [`block_preview::step`], and stops the moment a
+    /// comment) re-running [`preview::fence::step`], and stops the moment a
     /// freshly computed exit state matches what was already cached for the
     /// next line — everything after that point is provably identical to
     /// before (same state in, same unchanged text, same result), so it's
@@ -839,10 +839,10 @@ impl DocumentCache {
         let last_touched_line = span.last_new_line();
 
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
-        let mut state = block_preview::unpack_fence(self.fence_states[start_line]);
+        let mut state = preview::fence::unpack_fence(self.fence_states[start_line]);
         for (i, (line, line_len, has_next_line)) in (start_line..).zip(lines_from(text, start_byte))
         {
-            let (role, next_state) = block_preview::step(state, line);
+            let (role, next_state) = preview::fence::step(state, line);
             self.line_roles[i] = role;
 
             let old_len = self.line_index.prefix_sum(i + 1) - self.line_index.prefix_sum(i);
@@ -850,7 +850,7 @@ impl DocumentCache {
             self.line_index.add_at(i, new_len - old_len);
 
             let has_next = i + 1 < old_line_count;
-            let packed_next = block_preview::pack_fence(next_state);
+            let packed_next = preview::fence::pack_fence(next_state);
             let reconverged =
                 has_next && i >= last_touched_line && self.fence_states[i + 1] == packed_next;
             if has_next {
@@ -896,7 +896,7 @@ impl DocumentCache {
         let mut reconverged = false;
         let mut open_at_stop = false;
         for (i, (line, ..)) in (start_line..).zip(lines_from(text, start_byte)) {
-            let (_, next_state) = callout::step(state, line, i, &mut fresh);
+            let (_, next_state) = preview::callout::step(state, line, i, &mut fresh);
             let packed_next = next_state.pack();
             last_walked = i;
             if i + 1 >= old_line_count {
@@ -949,7 +949,7 @@ impl DocumentCache {
         start_line..(last_walked + 1)
     }
 
-    /// The real incremental path for `live_preview`'s block context: the
+    /// The real incremental path for `preview`'s block context: the
     /// same resumable-walk shape as `patch_block_preview` — `OpenBlock`
     /// never references an external index the way a callout's state does,
     /// so (unlike `patch_callouts`) a plain state-equality check at
@@ -962,7 +962,7 @@ impl DocumentCache {
         let start_byte = self.line_index.prefix_sum(start_line) as usize;
         let mut state = self.open_block_states[start_line].clone();
         for (i, (line, ..)) in (start_line..).zip(lines_from(text, start_byte)) {
-            let (ctx, next_state) = live_preview::block_context_step(state, line);
+            let (ctx, next_state) = preview::block_context_step(state, line);
             self.block_contexts[i] = ctx;
 
             let has_next = i + 1 < old_line_count;
@@ -1204,7 +1204,7 @@ mod tests {
     /// sequence of edits (including ones that change the document's line
     /// count, forcing the fallback path), the incrementally-maintained
     /// `line_roles` must equal calling `classify_lines` fresh on the
-    /// resulting text — the "oracle" `block_preview.rs`'s own module doc
+    /// resulting text — the "oracle" `preview/fence.rs`'s own module doc
     /// now describes it as.
     #[test]
     fn incremental_block_preview_matches_the_oracle_after_a_hand_picked_sequence_of_edits() {
@@ -1214,7 +1214,7 @@ mod tests {
         let mut cache = DocumentCache::new(&text);
         assert_eq!(
             cache.line_roles(),
-            block_preview::classify_lines(&text).as_slice()
+            preview::fence::classify_lines(&text).as_slice()
         );
 
         // (start, delete_len, insert) — a mix of same-line-count edits
@@ -1233,7 +1233,7 @@ mod tests {
             let old_end = start + delete_len;
             let (new_text, edit) = apply_edit(&text, start, old_end, insert);
             cache.record_edit(&new_text, edit);
-            let expected = block_preview::classify_lines(&new_text);
+            let expected = preview::fence::classify_lines(&new_text);
             assert_eq!(
                 cache.line_roles(),
                 expected.as_slice(),
@@ -1313,7 +1313,7 @@ mod tests {
 
     fn callout_for_line_of(cache: &DocumentCache) -> Vec<Option<usize>> {
         (0..cache.line_count())
-            .map(|i| callout::callout_index_at(cache.callouts(), i))
+            .map(|i| preview::callout::callout_index_at(cache.callouts(), i))
             .collect()
     }
 
@@ -1592,7 +1592,7 @@ mod tests {
             let (new_text, edit) = apply_edit(&text, start, old_end, fragment);
             cache.record_edit(&new_text, edit);
 
-            let expected_roles = block_preview::classify_lines(&new_text);
+            let expected_roles = preview::fence::classify_lines(&new_text);
             assert_eq!(
                 cache.line_roles(),
                 expected_roles.as_slice(),
@@ -1600,7 +1600,7 @@ mod tests {
             );
 
             let (expected_callout_for_line, expected_callouts) =
-                callout::classify_callouts(&new_text);
+                preview::callout::classify_callouts(&new_text);
             assert_eq!(
                 callout_for_line_of(&cache),
                 expected_callout_for_line,
@@ -1612,7 +1612,7 @@ mod tests {
                 "callouts step={step} edit=({start},{old_end},{fragment:?}) text={new_text:?}"
             );
 
-            let expected_contexts = live_preview::classify_block_context(&new_text);
+            let expected_contexts = preview::classify_block_context(&new_text);
             assert_eq!(
                 cache.block_contexts(),
                 expected_contexts.as_slice(),
@@ -1644,7 +1644,7 @@ mod tests {
     /// Diagnostic, not a correctness test — measures (via `crate::test_
     /// alloc`'s counting allocator, not OS-level RSS) how much of
     /// `DocumentCache::new`'s own allocation cost on the 320K-line stress
-    /// fixture is specifically `live_preview::classify_block_context`'s
+    /// fixture is specifically `preview::classify_block_context`'s
     /// `OpenBlock::List(Vec<usize>)` tracking — every line inside an open
     /// list clones the whole nesting-depth stack (`open = next.clone()` in
     /// `classify_block_context_from`'s loop), a *separate heap allocation
@@ -1664,8 +1664,7 @@ mod tests {
 
         crate::test_alloc::reset();
         let before = crate::test_alloc::snapshot();
-        let block_context_results =
-            live_preview::classify_block_context_from(&text, OpenBlock::None);
+        let block_context_results = preview::classify_block_context_from(&text, OpenBlock::None);
         let list_lines = block_context_results
             .iter()
             .filter(|(_, state)| matches!(state, OpenBlock::List(_)))

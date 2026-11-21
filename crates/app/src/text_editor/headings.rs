@@ -2,8 +2,8 @@
 //! points at. Runs once per followed link and walks the note's lines, so it
 //! keeps nothing between calls.
 
-use super::block_preview::LineRole;
 use super::document_cache::DocumentCache;
+use super::preview::LineRole;
 
 /// The heading text of `line` (`## Title ##` gives `Title`), if it is an ATX
 /// heading: one to six `#`, then a space.

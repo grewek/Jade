@@ -123,7 +123,7 @@ pub(super) fn paint_widgets(
             Widget::CalloutIcon(kind) => {
                 let icon = square(font_size);
                 paint_icon(
-                    crate::text_editor::callout::callout_icon(kind),
+                    crate::text_editor::preview::callout::callout_icon(kind),
                     icon,
                     inline.callout(kind),
                     (window, cx),
