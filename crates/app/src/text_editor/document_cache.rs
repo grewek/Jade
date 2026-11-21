@@ -1109,7 +1109,8 @@ fn lines_of<'a>(text: &'a str, strides: &'a [i64]) -> impl Iterator<Item = &'a s
 
 /// `line` moved by `delta` lines.
 /// A callout the user folded or unfolded keeps that state when an edit
-/// re-derives it, matched by its header line (the walk restarts every callout
+/// re-derives it, matched by its header line and its marker (a `-` rewritten
+/// to `+` starts over) (the walk restarts every callout
 /// it touches from the marker's own state). `old_last` is the last touched
 /// line in the old numbering; lines after it moved by `delta`.
 fn carry_fold_state(fresh: &mut [Callout], old: &[Callout], old_last: usize, delta: isize) {
@@ -1121,9 +1122,12 @@ fn carry_fold_state(fresh: &mut [Callout], old: &[Callout], old_last: usize, del
         }
     };
     for c in fresh {
-        let kept = old
-            .iter()
-            .find(|old| old.foldable && c.foldable && moved(old.start_line) == c.start_line);
+        let kept = old.iter().find(|old| {
+            old.foldable
+                && c.foldable
+                && old.marker_folded == c.marker_folded
+                && moved(old.start_line) == c.start_line
+        });
         if let Some(old) = kept {
             c.folded = old.folded;
         }
@@ -1414,6 +1418,22 @@ mod tests {
         assert!(!cache.callouts()[1].folded);
     }
 
+    /// Rewriting the header's marker drops the fold the user made: the file now
+    /// says something else. (Found by the randomized edit test.)
+    #[test]
+    fn a_rewritten_fold_marker_starts_over() {
+        let text = "> [!note]- Title\n> body\n";
+        let mut cache = DocumentCache::new(text);
+        cache.set_folded(0, false);
+        let at = text.find('-').unwrap();
+        let (edited, edit) = apply_edit(text, at, at + 1, "+");
+        cache.record_edit(&edited, edit).unwrap();
+        assert!(!cache.callouts()[0].folded);
+        let (back, edit) = apply_edit(&edited, at, at + 1, "-");
+        cache.record_edit(&back, edit).unwrap();
+        assert!(cache.callouts()[0].folded, "`-` says folded");
+    }
+
     /// A character that removes or creates a callout used to shift every
     /// later callout count, so the walk never reconverged and ran to the end
     /// of the document (14ms on the 320K-line stress fixture).
@@ -1512,7 +1532,8 @@ mod tests {
             "intro\n```\ncode\n```\nplain\n> q\n- item\n  - nested\n    - deeper\nmore plain text here\n~~~\ntilde\n~~~\nend\n\
              > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter\n\
              | a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\nafter table\n\n\
-             ::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n",
+             ::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n\n\
+             ::: float left 30%\n\nfloat\n\n:::\n\npara one\n\npara two\n\npara three\n",
         );
         let mut cache = DocumentCache::new(&text);
 
@@ -1550,6 +1571,9 @@ mod tests {
             ":::\n",
             "\n:::\n\n",
             "::: columns\n\na\n\n---\n\nb\n\n:::\n",
+            "::: float\n",
+            "\n::: float right 20%\n\nf\n\n:::\n\n",
+            "text\n\n",
         ];
 
         for step in 0..400 {
