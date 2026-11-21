@@ -9,7 +9,7 @@ use jade_core::link_scan::{ImageEmbed, parse_image_embed_line};
 use super::info::{self, Sizes};
 use crate::text_editor::block_preview::LineRole;
 use crate::text_editor::document_cache::DocumentCache;
-use crate::text_editor::element::{LineState, TableLineKind};
+use crate::text_editor::layout::{LineState, TableLineKind};
 use crate::text_editor::live_preview::LineContext;
 
 /// Rows an image block takes until the image's real size is known.

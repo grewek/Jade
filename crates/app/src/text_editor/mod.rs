@@ -19,6 +19,7 @@ mod fenwick;
 mod headings;
 mod image;
 mod input_handler;
+mod layout;
 mod line_chunks;
 mod link_table;
 mod live_preview;

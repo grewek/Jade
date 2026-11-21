@@ -11,7 +11,8 @@ use super::super::column_ops;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
 use super::super::document_cache::DocumentCache;
-use super::super::element::{mono_char_width, render_params};
+use super::super::element::render_params;
+use super::super::layout::mono_char_width;
 use super::Editor;
 
 /// What the right-click menu offers about the structure around the caret.

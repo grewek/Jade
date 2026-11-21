@@ -15,11 +15,10 @@ use super::callout::callout_index_at;
 use super::column_handles::ColumnDrag;
 use super::doc_stats::DocStats;
 use super::document_cache::{DocumentCache, TextEdit};
-use super::element::{
-    RowHeightCache, column_width_for, mono_char_width, render_editor, render_params,
-};
+use super::element::{RowHeightCache, column_width_for, render_editor, render_params};
 use super::headings::find_heading_line;
 use super::image;
+use super::layout::mono_char_width;
 use super::link_table::LinkTable;
 use super::table_handles::{Handle, TableDrag};
 use jade_core::link_scan::{LinkKind, scan_line};
