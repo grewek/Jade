@@ -22,12 +22,13 @@ use crate::text_editor::TextSettings;
 mod chrome;
 mod dialogs;
 mod notes;
+mod search;
 mod sidebar;
 mod tabs;
 
 pub(crate) use sidebar::SidebarSide;
 #[allow(unused_imports)]
-use {chrome::*, dialogs::*, sidebar::*};
+use {chrome::*, dialogs::*, search::*, sidebar::*, tabs::*};
 
 /// The window's `app_id`; must match the desktop entry's file name.
 const APP_ID: &str = "jade";
@@ -86,27 +87,10 @@ pub(crate) enum SidebarTab {
     Search,
 }
 
-/// One open note. The editor is Jade's own `text_editor::Editor` (not
-/// `gpui-component`'s `Textarea`); each tab keeps its own, so cursor, scroll and
-/// undo survive switching tabs.
-pub(crate) struct Tab {
-    pub(crate) note_id: String,
-    editor: Entity<Editor>,
-    /// Set by the editor's `Changed` event, cleared when the autosave writes it.
-    dirty: bool,
-    _subscription: Subscription,
-}
-
 pub(crate) struct JadeApp {
     vault: Vault,
     /// Open notes, one tab each; at most one tab per note.
-    pub(crate) tabs: Vec<Tab>,
-    /// Index into `tabs` of the tab being shown.
-    pub(crate) active_tab: Option<usize>,
-    /// Horizontal scroll of the tab bar, so the active tab can be brought into view.
-    tab_scroll: ScrollHandle,
-    /// Pending debounced save of the dirty tabs; dropping it cancels the wait.
-    autosave_task: Option<Task<()>>,
+    pub(crate) tabs: Tabs,
     _quit_subscription: Subscription,
     pub(crate) error: Option<String>,
     /// Bumped whenever a note's text on disk or the set of notes changes;
@@ -123,19 +107,7 @@ pub(crate) struct JadeApp {
     pub(crate) sidebar_width: Pixels,
     pub(crate) backlinks_width: Pixels,
     resize_start: Option<ResizeStart>,
-    search_input: Entity<InputState>,
-    pub(crate) search_query: String,
-    /// Search reads note files, so results are computed once per change
-    /// (query or note text/set), never per frame: mutations set
-    /// `search_stale` and `render` recomputes when the tab is showing.
-    pub(crate) search_results: Vec<(String, String)>,
-    search_stale: bool,
-    /// Bumped per started search; a finished one whose generation is no
-    /// longer current is dropped.
-    search_generation: u64,
-    /// The in-flight background search; dropping it cancels the wait.
-    search_task: Option<Task<()>>,
-    _search_subscription: Subscription,
+    pub(crate) search: Search,
 }
 
 /// The direct parent folder id of a note/folder id, or `None` at the vault root.
@@ -147,15 +119,6 @@ impl JadeApp {
     pub(crate) fn new(vault_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let sidebar_focus = cx.focus_handle();
 
-        let search_input = cx.new(|cx| InputState::new(window, cx).placeholder("Search notes..."));
-        let search_subscription = cx.subscribe(&search_input, |this, input, event, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.search_query = input.read(cx).value().to_string();
-                this.search_stale = true;
-                cx.notify();
-            }
-        });
-
         let (vault, error) = match Vault::open(&vault_path) {
             Ok(vault) => (vault, None),
             Err(err) => (Vault::empty(vault_path), Some(err.to_string())),
@@ -163,10 +126,7 @@ impl JadeApp {
 
         Self {
             vault,
-            tabs: Vec::new(),
-            active_tab: None,
-            tab_scroll: ScrollHandle::new(),
-            autosave_task: None,
+            tabs: Tabs::new(),
             // Debounced saves can still be pending at quit.
             _quit_subscription: cx.on_app_quit(|this, cx| {
                 this.persist_all_tabs(cx);
@@ -183,13 +143,7 @@ impl JadeApp {
             sidebar_width: SIDEBAR_WIDTH_DEFAULT,
             backlinks_width: SIDEBAR_WIDTH_DEFAULT,
             resize_start: None,
-            search_input,
-            search_query: String::new(),
-            search_results: Vec::new(),
-            search_stale: true,
-            search_generation: 0,
-            search_task: None,
-            _search_subscription: search_subscription,
+            search: Search::new(window, cx),
         }
     }
 }
@@ -275,7 +229,7 @@ impl Render for JadeApp {
                 .p_4()
                 .child(format!("Could not open vault: {err}"))
                 .into_any_element()
-        } else if self.active_tab.is_some() {
+        } else if self.tabs.active_index().is_some() {
             let mut editor_pane = div()
                 .id("note-editor-pane")
                 .size_full()

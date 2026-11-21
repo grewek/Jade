@@ -11,7 +11,7 @@ impl JadeApp {
         cx: &mut Context<Self>,
     ) {
         if let Ok(id) = self.vault.create_note("Untitled", parent) {
-            self.search_stale = true;
+            self.search.mark_stale();
             self.open_note(id, window, cx);
             self.refresh_links(cx);
             self.sidebar_focus.focus(window, cx);
@@ -51,7 +51,7 @@ impl JadeApp {
         let Ok(renamed) = self.vault.rename_note_updating_links(id, new_title) else {
             return;
         };
-        self.search_stale = true;
+        self.search.mark_stale();
         // The renamed note moved; each other rewritten note changed on disk
         // under its open tab, so both are reloaded.
         self.retarget_tabs(
@@ -70,9 +70,9 @@ impl JadeApp {
 
     pub(super) fn delete_note(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.vault.delete_note(id).is_ok() {
-            self.search_stale = true;
-            if let Some(ix) = self.tab_of(id) {
-                self.remove_tab(ix);
+            self.search.mark_stale();
+            if let Some(ix) = self.tabs.index_of(id) {
+                self.tabs.remove(ix);
             }
             self.refresh_links(cx);
         }
@@ -94,7 +94,7 @@ impl JadeApp {
             return;
         };
         let new_id = renamed.new_id;
-        self.search_stale = true;
+        self.search.mark_stale();
 
         if self.collapsed_folders.remove(id) {
             self.collapsed_folders.insert(new_id.clone());
@@ -116,13 +116,13 @@ impl JadeApp {
 
     pub(super) fn delete_folder(&mut self, id: &str, cx: &mut Context<Self>) {
         if self.vault.delete_folder(id).is_ok() {
-            self.search_stale = true;
+            self.search.mark_stale();
             let prefix = format!("{id}/");
             self.collapsed_folders
                 .retain(|f| f != id && !f.starts_with(&prefix));
             for ix in (0..self.tabs.len()).rev() {
                 if self.tabs[ix].note_id.starts_with(&prefix) {
-                    self.remove_tab(ix);
+                    self.tabs.remove(ix);
                 }
             }
             self.refresh_links(cx);

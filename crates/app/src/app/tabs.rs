@@ -1,12 +1,136 @@
 //! Open notes: one tab each, their editors, saving, and link following.
+//! [`Tabs`] holds the list and its invariants; the `impl JadeApp` below
+//! orchestrates it with the vault and the window.
 
 #[allow(unused_imports)]
 use super::*;
 
+/// One open note. The editor is Jade's own `text_editor::Editor` (not
+/// `gpui-component`'s `Textarea`); each tab keeps its own, so cursor, scroll and
+/// undo survive switching tabs.
+pub(crate) struct Tab {
+    pub(crate) note_id: String,
+    pub(super) editor: Entity<Editor>,
+    /// Set by the editor's `Changed` event, cleared when the autosave writes it.
+    pub(super) dirty: bool,
+    pub(super) _subscription: Subscription,
+}
+
+/// The open notes, at most one tab per note, and which one is shown. The list
+/// and the active index only change through these methods, so the index always
+/// points at a tab (or is `None` when there is none).
+pub(crate) struct Tabs {
+    list: Vec<Tab>,
+    active: Option<usize>,
+    /// Horizontal scroll of the tab bar, so the active tab can be brought into view.
+    scroll: ScrollHandle,
+    /// Pending debounced save of the dirty tabs; dropping it cancels the wait.
+    autosave: Option<Task<()>>,
+}
+
+impl Tabs {
+    pub(super) fn new() -> Self {
+        Self {
+            list: Vec::new(),
+            active: None,
+            scroll: ScrollHandle::new(),
+            autosave: None,
+        }
+    }
+
+    /// The tab being shown.
+    pub(crate) fn active(&self) -> Option<&Tab> {
+        self.list.get(self.active?)
+    }
+
+    pub(crate) fn active_index(&self) -> Option<usize> {
+        self.active
+    }
+
+    pub(super) fn index_of(&self, note_id: &str) -> Option<usize> {
+        self.list.iter().position(|tab| tab.note_id == note_id)
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.list.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.list.is_empty()
+    }
+
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, Tab> {
+        self.list.iter()
+    }
+
+    pub(super) fn iter_mut(&mut self) -> std::slice::IterMut<'_, Tab> {
+        self.list.iter_mut()
+    }
+
+    /// Adds a tab at the end and shows it; returns its index.
+    pub(super) fn push(&mut self, tab: Tab) -> usize {
+        self.list.push(tab);
+        let ix = self.list.len() - 1;
+        self.active = Some(ix);
+        self.scroll.scroll_to_item(ix);
+        ix
+    }
+
+    /// Shows tab `ix` and scrolls the bar to it; `false` when there is none.
+    pub(super) fn activate(&mut self, ix: usize) -> bool {
+        if ix >= self.list.len() {
+            return false;
+        }
+        self.active = Some(ix);
+        self.scroll.scroll_to_item(ix);
+        true
+    }
+
+    /// Drops the tab without saving (its note is gone, or already saved). The
+    /// right neighbour becomes active if the active tab goes, else the left.
+    pub(super) fn remove(&mut self, ix: usize) {
+        self.list.remove(ix);
+        self.active = active_after_remove(self.active, ix, self.list.len());
+    }
+
+    pub(super) fn scroll(&self) -> &ScrollHandle {
+        &self.scroll
+    }
+
+    /// Keeps (or, with `None`, cancels) the pending autosave.
+    pub(super) fn set_autosave(&mut self, task: Option<Task<()>>) {
+        self.autosave = task;
+    }
+}
+
+impl std::ops::Index<usize> for Tabs {
+    type Output = Tab;
+
+    fn index(&self, ix: usize) -> &Tab {
+        &self.list[ix]
+    }
+}
+
+impl std::ops::IndexMut<usize> for Tabs {
+    fn index_mut(&mut self, ix: usize) -> &mut Tab {
+        &mut self.list[ix]
+    }
+}
+
+/// The active index after tab `removed` went, `len` tabs being left.
+fn active_after_remove(active: Option<usize>, removed: usize, len: usize) -> Option<usize> {
+    match active {
+        _ if len == 0 => None,
+        Some(active) if active == removed => Some(removed.min(len - 1)),
+        Some(active) if active > removed => Some(active - 1),
+        other => other,
+    }
+}
+
 impl JadeApp {
     /// The tab being shown.
     pub(super) fn active(&self) -> Option<&Tab> {
-        self.tabs.get(self.active_tab?)
+        self.tabs.active()
     }
 
     pub(crate) fn selected_id(&self) -> Option<&str> {
@@ -18,7 +142,7 @@ impl JadeApp {
     }
 
     pub(super) fn tab_of(&self, note_id: &str) -> Option<usize> {
-        self.tabs.iter().position(|tab| tab.note_id == note_id)
+        self.tabs.index_of(note_id)
     }
 
     /// Reads `id` from the vault into a fresh editor; the editor takes the only
@@ -141,7 +265,7 @@ impl JadeApp {
         if let Some(ix) = self.tab_of(&id) {
             return self.activate_tab(ix, window, cx);
         }
-        let Some(active) = self.active_tab else {
+        let Some(active) = self.tabs.active_index() else {
             return self.open_note_in_new_tab(id, window, cx);
         };
         // Save the outgoing note ourselves before replacing its editor: an
@@ -170,18 +294,14 @@ impl JadeApp {
             return;
         };
         self.tabs.push(tab);
-        self.active_tab = Some(self.tabs.len() - 1);
-        self.tab_scroll.scroll_to_item(self.tabs.len() - 1);
         self.focus_active_editor(window, cx);
         cx.notify();
     }
 
     pub(super) fn activate_tab(&mut self, ix: usize, window: &mut Window, cx: &mut Context<Self>) {
-        if ix >= self.tabs.len() {
+        if !self.tabs.activate(ix) {
             return;
         }
-        self.active_tab = Some(ix);
-        self.tab_scroll.scroll_to_item(ix);
         self.focus_active_editor(window, cx);
         cx.notify();
     }
@@ -192,24 +312,12 @@ impl JadeApp {
             return;
         }
         self.persist_tab(ix, cx);
-        let was_active = self.active_tab == Some(ix);
-        self.remove_tab(ix);
+        let was_active = self.tabs.active_index() == Some(ix);
+        self.tabs.remove(ix);
         if was_active {
             self.focus_active_editor(window, cx);
         }
         cx.notify();
-    }
-
-    /// Drops the tab without saving (its note is gone, or already saved). The
-    /// right neighbour becomes active if the active tab goes, else the left.
-    pub(super) fn remove_tab(&mut self, ix: usize) {
-        self.tabs.remove(ix);
-        self.active_tab = match self.active_tab {
-            _ if self.tabs.is_empty() => None,
-            Some(active) if active == ix => Some(ix.min(self.tabs.len() - 1)),
-            Some(active) if active > ix => Some(active - 1),
-            other => other,
-        };
     }
 
     /// Writes the tab's text to the note's file straight from the buffer (no
@@ -220,7 +328,7 @@ impl JadeApp {
             .vault
             .save_note(&tab.note_id, tab.editor.read(cx).buffer().text());
         tab.dirty = false;
-        self.search_stale = true;
+        self.search.mark_stale();
         self.content_generation += 1;
     }
 
@@ -279,17 +387,18 @@ impl JadeApp {
     /// saving rescans the whole note for wikilinks and rewrites the file, which
     /// is far too much work to do per keystroke.
     pub(super) fn autosave(&mut self, cx: &mut Context<Self>) {
-        self.autosave_task = Some(cx.spawn(async move |this, cx| {
+        let task = cx.spawn(async move |this, cx| {
             cx.background_executor().timer(AUTOSAVE_DEBOUNCE).await;
             this.update(cx, |this, cx| this.save_dirty_tabs(cx)).ok();
-        }));
+        });
+        self.tabs.set_autosave(Some(task));
     }
 
     /// Persists the dirty tabs, and re-renders so e.g. the backlinks panel
     /// reflects newly-typed wikilinks. Only dirty ones: a background tab holding
     /// a huge note must not be rewritten for every edit elsewhere.
     pub(super) fn save_dirty_tabs(&mut self, cx: &mut Context<Self>) {
-        self.autosave_task = None;
+        self.tabs.set_autosave(None);
         for ix in 0..self.tabs.len() {
             if self.tabs[ix].dirty {
                 self.persist_tab(ix, cx);
@@ -314,14 +423,33 @@ impl JadeApp {
             match self.new_tab(&new_id, window, cx) {
                 Some(tab) => {
                     self.tabs[ix] = tab;
-                    reloaded_active |= self.active_tab == Some(ix);
+                    reloaded_active |= self.tabs.active_index() == Some(ix);
                 }
-                None => self.remove_tab(ix),
+                None => self.tabs.remove(ix),
             }
         }
         if reloaded_active {
             self.focus_active_editor(window, cx);
         }
         cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::active_after_remove;
+
+    #[test]
+    fn removing_a_tab_keeps_the_active_index_pointing_at_a_tab() {
+        // The active tab goes: its right neighbour takes over, else the left.
+        assert_eq!(active_after_remove(Some(1), 1, 2), Some(1));
+        assert_eq!(active_after_remove(Some(2), 2, 2), Some(1));
+        // A tab before the active one goes: the index shifts down.
+        assert_eq!(active_after_remove(Some(2), 0, 2), Some(1));
+        // A tab after it goes: nothing changes.
+        assert_eq!(active_after_remove(Some(0), 2, 2), Some(0));
+        // The last tab goes.
+        assert_eq!(active_after_remove(Some(0), 0, 0), None);
+        assert_eq!(active_after_remove(None, 0, 1), None);
     }
 }

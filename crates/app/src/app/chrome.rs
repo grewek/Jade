@@ -24,14 +24,14 @@ impl JadeApp {
         let tabs: Vec<AnyElement> = (0..self.tabs.len())
             .map(|ix| self.render_tab(ix, cx))
             .collect();
-        let scroll = self.tab_scroll.clone();
+        let scroll = self.tabs.scroll().clone();
         let strip = div()
             .id("tab-bar")
             .test_support()
             .flex()
             .flex_row()
             .overflow_x_scroll()
-            .track_scroll(&self.tab_scroll)
+            .track_scroll(self.tabs.scroll())
             .bg(bar)
             // A plain mouse wheel only scrolls vertically; a row of tabs that
             // cannot be reached with it would be stuck.
@@ -60,7 +60,7 @@ impl JadeApp {
             .child(strip)
             .child(
                 div().absolute().inset_0().child(
-                    Scrollbar::horizontal(&self.tab_scroll)
+                    Scrollbar::horizontal(self.tabs.scroll())
                         .id("tab-scrollbar")
                         .viewport_from_layout(),
                 ),
@@ -112,7 +112,7 @@ impl JadeApp {
     pub(super) fn render_tab(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let tab = &self.tabs[ix];
         let border = ThemeEngine::color(cx, Role::Border);
-        let (background, foreground) = if self.active_tab == Some(ix) {
+        let (background, foreground) = if self.tabs.active_index() == Some(ix) {
             (
                 ThemeEngine::color(cx, Role::Background),
                 ThemeEngine::color(cx, Role::Text),

@@ -2116,25 +2116,25 @@ fn search_results_are_cached_until_something_changes(cx: &mut TestAppContext) {
     std::fs::write(dir.path().join("Note.md"), "alpha").unwrap();
     let (_window, app) = open_app(cx, dir.path().to_path_buf());
     let refresh = |cx: &mut TestAppContext| {
-        app.update(cx, |app, cx| app.refresh_search(cx));
+        app.update(cx, |app, cx| app.search.refresh(&app.vault, cx));
         cx.run_until_parked();
     };
-    app.update(cx, |app, _| app.search_query = "alpha".to_string());
+    app.update(cx, |app, _| app.search.set_query_for_test("alpha"));
     refresh(cx);
-    assert_eq!(app.read_with(cx, |a, _| a.search_results.len()), 1);
+    assert_eq!(app.read_with(cx, |a, _| a.search.results().len()), 1);
 
     std::fs::write(dir.path().join("Note.md"), "beta").unwrap();
     refresh(cx);
     assert_eq!(
-        app.read_with(cx, |a, _| a.search_results.len()),
+        app.read_with(cx, |a, _| a.search.results().len()),
         1,
         "cached: no re-read when not stale"
     );
 
-    app.update(cx, |app, _| app.search_stale = true);
+    app.update(cx, |app, _| app.search.mark_stale());
     refresh(cx);
     assert!(
-        app.read_with(cx, |a, _| a.search_results.is_empty()),
+        app.read_with(cx, |a, _| a.search.results().is_empty()),
         "stale: re-read from disk"
     );
 }
@@ -2147,15 +2147,16 @@ fn a_superseded_search_does_not_overwrite_newer_results(cx: &mut TestAppContext)
     let (_window, app) = open_app(cx, dir.path().to_path_buf());
     // Two searches started back to back; only the second may land.
     app.update(cx, |app, cx| {
-        app.search_query = "alpha".to_string();
-        app.refresh_search(cx);
-        app.search_query = "beta".to_string();
-        app.search_stale = true;
-        app.refresh_search(cx);
+        app.search.set_query_for_test("alpha");
+        app.search.refresh(&app.vault, cx);
+        app.search.set_query_for_test("beta");
+        app.search.mark_stale();
+        app.search.refresh(&app.vault, cx);
     });
     cx.run_until_parked();
     let titles = app.read_with(cx, |a, _| {
-        a.search_results
+        a.search
+            .results()
             .iter()
             .map(|r| r.1.clone())
             .collect::<Vec<_>>()
@@ -2893,7 +2894,7 @@ fn open_via_menu(cx: &mut TestAppContext, window: AnyWindowHandle, note: &str, i
 fn tabs_of(cx: &mut TestAppContext, app: &Entity<JadeApp>) -> (Vec<String>, Option<usize>) {
     app.read_with(cx, |app, _| {
         let ids = app.tabs.iter().map(|t| t.note_id.clone()).collect();
-        (ids, app.active_tab)
+        (ids, app.tabs.active_index())
     })
 }
 

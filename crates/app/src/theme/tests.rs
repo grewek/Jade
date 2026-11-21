@@ -713,6 +713,7 @@ fn ui_code_has_no_color_literals() {
         ("app/chrome.rs", include_str!("../app/chrome.rs")),
         ("app/dialogs.rs", include_str!("../app/dialogs.rs")),
         ("app/notes.rs", include_str!("../app/notes.rs")),
+        ("app/search.rs", include_str!("../app/search.rs")),
         ("app/sidebar.rs", include_str!("../app/sidebar.rs")),
         ("app/tabs.rs", include_str!("../app/tabs.rs")),
         ("element.rs", include_str!("../text_editor/element.rs")),
