@@ -82,7 +82,7 @@ Lets a tool (Claude) drive and observe the live app. Code: `crates/debug-protoco
   - Drag a float to another paragraph (step 3's last part). The interaction is undecided: a grab handle versus a "move float up/down" command.
   - The flip/unwrap menu for float blocks is still off (`column_menu_state` returns `None` for tail regions).
   - Whether a float's grip should follow the drawn width in a narrow window, where `MIN_CHANNEL` scales floats down (asked, unanswered).
-  - A float-heavy benchmark in `benches/layout.rs` (floats are only covered by tests and the live harness).
+  - ~~A float-heavy benchmark~~ done on `feature/float-followups`: `open_note/floats` and `frame/floats/*` (1500 float blocks, alternating sides; release headless: open 18ms, idle 0.69ms, keystroke 1.02ms, scroll 0.80ms, all under 16.66ms).
   - Estimate drift: the cold content height of the tutorial still moves ~10% (about 700px) as paint verifies it, from the monospace estimate of plain paragraphs; the scrollbar is steadier but not exact.
   - Tables stretch to their column only when they had to shrink; a table that fits stays natural width, so its right edge may not line up with a callout in the same column (decided to leave as is).
   - Review the `Database Normalization` tutorial note's prose (it lives in the gitignored `vault/`) and how its foldable answers callout looks.
