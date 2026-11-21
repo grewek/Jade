@@ -14,8 +14,8 @@ use gpui_kit::*;
 
 use crate::text_editor::document_cache::{DocumentCache, EditPatch};
 use crate::text_editor::element::region;
-use crate::text_editor::fenwick::Fenwick;
 use crate::text_editor::layout::mono_char_width;
+use crate::text_editor::lines::Fenwick;
 use count::{
     DocView, RowParams, active_table, patched_row_count, pure_row_counts, row_count_for_line,
     row_owner, shaped_row_count_for_line,

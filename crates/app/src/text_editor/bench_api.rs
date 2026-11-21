@@ -3,8 +3,9 @@
 //! so the optimizer cannot discard the work being timed.
 
 use super::doc_stats::DocStats;
-use super::document_cache::{DocumentCache, EditPatch, TextEdit, line_strides as strides_of};
-use super::fenwick::Fenwick;
+use super::document_cache::{DocumentCache, EditPatch, TextEdit};
+use super::lines::Fenwick;
+use super::lines::line_strides as strides_of;
 use super::link_table::LinkTable;
 
 pub use super::buffer::EditorBuffer;

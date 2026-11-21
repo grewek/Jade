@@ -20,9 +20,9 @@
 /// Spare element capacity kept past a per-line `Vec`'s length, so Enter
 /// doesn't reallocate it (a doubling realloc of a multi-MB array leaves a
 /// freed hole the allocator keeps).
-pub(super) const LINE_GROWTH_SLACK: usize = 4096;
+pub(in crate::text_editor) const LINE_GROWTH_SLACK: usize = 4096;
 
-pub(super) struct Fenwick {
+pub(in crate::text_editor) struct Fenwick {
     /// 1-indexed internally (`tree[0]` unused) — the standard Fenwick tree
     /// layout, so every index arithmetic below matches textbook
     /// descriptions of the structure.
@@ -30,7 +30,7 @@ pub(super) struct Fenwick {
 }
 
 impl Fenwick {
-    pub(super) fn new(values: &[i64]) -> Self {
+    pub(in crate::text_editor) fn new(values: &[i64]) -> Self {
         let mut tree = Vec::with_capacity(values.len() + 1 + LINE_GROWTH_SLACK);
         tree.push(0);
         tree.extend_from_slice(values);
@@ -41,7 +41,7 @@ impl Fenwick {
 
     /// Like [`Self::new`], but takes ownership of `values` and reuses its
     /// buffer instead of copying it (a second multi-MB allocation).
-    pub(super) fn from_vec(mut values: Vec<i64>) -> Self {
+    pub(in crate::text_editor) fn from_vec(mut values: Vec<i64>) -> Self {
         values.reserve_exact(1 + LINE_GROWTH_SLACK);
         values.insert(0, 0);
         let mut fenwick = Self { tree: values };
@@ -76,7 +76,7 @@ impl Fenwick {
 
     /// Inserts `delta` zero values at index `at` (`delta > 0`), or removes
     /// `-delta` values starting at `at` (`delta < 0`). O(n), in place.
-    pub(super) fn resize(&mut self, at: usize, delta: isize) {
+    pub(in crate::text_editor) fn resize(&mut self, at: usize, delta: isize) {
         let n = self.len();
         assert!(at <= n, "resize position {at} past length {n}");
         if delta == 0 {
@@ -97,13 +97,13 @@ impl Fenwick {
         self.build_in_place();
     }
 
-    pub(super) fn len(&self) -> usize {
+    pub(in crate::text_editor) fn len(&self) -> usize {
         self.tree.len() - 1
     }
 
     /// Adds `delta` to the value at index `i` — the one point update every
     /// later prefix-sum query downstream of `i` needs to reflect.
-    pub(super) fn add_at(&mut self, i: usize, delta: i64) {
+    pub(in crate::text_editor) fn add_at(&mut self, i: usize, delta: i64) {
         if delta == 0 {
             return;
         }
@@ -117,7 +117,7 @@ impl Fenwick {
     /// Sum of values at indices `0..i` (exclusive) — e.g. `prefix_sum(k)` is
     /// the byte offset line `k` begins at, when this tree's values are
     /// per-line byte strides.
-    pub(super) fn prefix_sum(&self, i: usize) -> i64 {
+    pub(in crate::text_editor) fn prefix_sum(&self, i: usize) -> i64 {
         let mut i = i;
         let mut sum = 0;
         while i > 0 {
@@ -130,7 +130,7 @@ impl Fenwick {
     /// `prefix_sum(i)` for every `i` in `0..=len`, in one O(n) sweep (each
     /// node's prefix is its parent-in-the-prefix-chain's prefix plus its own
     /// partial sum) instead of `len` separate O(log n) queries.
-    pub(super) fn prefix_sums(&self) -> Vec<i64> {
+    pub(in crate::text_editor) fn prefix_sums(&self) -> Vec<i64> {
         let n = self.len();
         let mut sums = Vec::with_capacity(n + 1);
         sums.push(0);
@@ -140,7 +140,7 @@ impl Fenwick {
         sums
     }
 
-    pub(super) fn total(&self) -> i64 {
+    pub(in crate::text_editor) fn total(&self) -> i64 {
         self.prefix_sum(self.len())
     }
 
@@ -149,7 +149,7 @@ impl Fenwick {
     /// values are per-line byte strides. `None` if `target` is negative or
     /// past the tree's total (including exactly at the total, which is one
     /// past the last index's own range).
-    pub(super) fn find(&self, target: i64) -> Option<usize> {
+    pub(in crate::text_editor) fn find(&self, target: i64) -> Option<usize> {
         if target < 0 || target >= self.total() {
             return None;
         }

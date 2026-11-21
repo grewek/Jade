@@ -11,12 +11,11 @@ mod doc_stats;
 mod document_cache;
 mod editor;
 mod element;
-mod fenwick;
 mod headings;
 mod image;
 mod input_handler;
 mod layout;
-mod line_chunks;
+mod lines;
 mod link_table;
 #[cfg(any(test, feature = "debug-socket"))]
 mod paint_trace;

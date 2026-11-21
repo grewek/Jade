@@ -7,8 +7,8 @@
 //! Unicode scalar values, spaces included, line breaks excluded.
 
 use super::document_cache::{DocumentCache, EditPatch};
-use super::fenwick::LINE_GROWTH_SLACK;
-use super::line_chunks::map_line_chunks;
+use super::lines::LINE_GROWTH_SLACK;
+use super::lines::chunks::map_line_chunks;
 
 /// (words, characters) of one line.
 type Counts = (u32, u32);
@@ -163,7 +163,7 @@ impl DocStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_editor::line_chunks::PARALLEL_MIN_BYTES;
+    use crate::text_editor::lines::chunks::PARALLEL_MIN_BYTES;
     use crate::text_editor::test_support::{Rng, random_edit};
 
     #[test]

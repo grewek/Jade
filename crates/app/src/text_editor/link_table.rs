@@ -17,7 +17,7 @@ use std::ops::Range;
 use jade_core::link_scan::{LinkKind, scan_line};
 
 use super::document_cache::{DocumentCache, EditPatch};
-use super::line_chunks::map_line_chunks;
+use super::lines::chunks::map_line_chunks;
 use super::preview::LineRole;
 
 /// Room kept free after a rebuild so typing a link does not reallocate.
@@ -252,7 +252,7 @@ impl LinkTable {
 mod tests {
     use super::*;
     use crate::text_editor::document_cache::TextEdit;
-    use crate::text_editor::line_chunks::PARALLEL_MIN_BYTES;
+    use crate::text_editor::lines::chunks::PARALLEL_MIN_BYTES;
     use crate::text_editor::test_support::{Rng, random_edit};
 
     fn table_of(text: &str) -> LinkTable {

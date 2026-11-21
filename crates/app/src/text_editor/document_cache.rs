@@ -19,7 +19,7 @@
 //! shared piece every incremental classifier needs and none of the four
 //! `classify_*` passes themselves care about: mapping an edit's byte offset
 //! to a line index in O(log n), without counting newlines from the start of
-//! the document — see `fenwick.rs`'s own doc comment for why that matters.
+//! the document — see `lines/fenwick.rs`'s own doc comment for why that matters.
 //! Every patch function below also walks forward from the edited line
 //! using a running byte cursor and `text[cursor..].find('\n')` rather than
 //! ever materializing the whole document's lines into a `Vec<&str>` first —
@@ -41,8 +41,12 @@ use super::table;
 use std::ops::Range;
 
 use super::columns::{self, Columns, Placed};
-use super::fenwick::{Fenwick, LINE_GROWTH_SLACK};
 use super::image::Sizes as ImageSizes;
+#[cfg(test)]
+use super::lines::count_lines;
+use super::lines::{
+    Fenwick, LINE_GROWTH_SLACK, line_strides, lines_from, lines_of, resize_vec, shift_line,
+};
 use super::preview::callout::{Callout, CalloutState};
 use super::preview::fence::LineRole;
 use super::preview::{self, LineContext, OpenBlock};
@@ -140,7 +144,7 @@ pub(super) struct DocumentCache {
     /// Per-line byte strides (`line_text.len() + 1` for every line but the
     /// last, which has no trailing `\n`) — lets every patch function below
     /// map an edit's byte offset to a line index in O(log n) instead of
-    /// counting newlines from the start of the document. See `fenwick.rs`.
+    /// counting newlines from the start of the document. See `lines/fenwick.rs`.
     /// Shared across classifiers — there's only one true line layout.
     line_index: Fenwick,
     block_contexts: Vec<LineContext>,
@@ -1001,114 +1005,6 @@ fn union_ranges(a: Range<usize>, b: Range<usize>) -> Range<usize> {
     a.start.min(b.start)..a.end.max(b.end)
 }
 
-/// The number of lines `text.split('\n')` yields; the oracle for
-/// [`line_strides`].
-#[cfg(test)]
-fn count_lines(text: &str) -> usize {
-    text.as_bytes()
-        .iter()
-        .map(|&b| usize::from(b == b'\n'))
-        .sum::<usize>()
-        + 1
-}
-
-/// Each line's byte stride (`len + 1`, except the last line, which has no
-/// trailing `\n`), with room for [`LINE_GROWTH_SLACK`] more lines. The one
-/// scan for newlines in a cold build.
-pub(super) fn line_strides(text: &str) -> Vec<i64> {
-    // A guess at the line count (the stress fixture averages 37 bytes per
-    // line): counting first costs as much as the scan, and growing the
-    // vector once or twice is cheaper than that.
-    let mut strides = Vec::with_capacity(text.len() / 32 + LINE_GROWTH_SLACK);
-    let mut previous = 0;
-    for_each_newline(text.as_bytes(), |newline| {
-        strides.push((newline + 1 - previous) as i64);
-        previous = newline + 1;
-    });
-    strides.push((text.len() - previous) as i64);
-    strides
-}
-
-/// Calls `visit` with the byte offset of every `\n`, in order. Short lines
-/// make a `memchr` call per line cost more than the scan itself, so the text
-/// is scanned a block at a time and only the set bits are visited.
-fn for_each_newline(bytes: &[u8], visit: impl FnMut(usize)) {
-    #[cfg(target_arch = "x86_64")]
-    return for_each_newline_sse2(bytes, visit);
-    #[cfg(not(target_arch = "x86_64"))]
-    for_each_newline_swar(bytes, visit);
-}
-
-/// 16 bytes per step with SSE2, which every x86_64 CPU has.
-#[cfg(target_arch = "x86_64")]
-fn for_each_newline_sse2(bytes: &[u8], mut visit: impl FnMut(usize)) {
-    use std::arch::x86_64::{
-        __m128i, _mm_cmpeq_epi8, _mm_loadu_si128, _mm_movemask_epi8, _mm_set1_epi8,
-    };
-    let (chunks, remainder) = bytes.as_chunks::<16>();
-    let mut base = 0;
-    // SAFETY: SSE2 is part of the x86_64 baseline; each load reads exactly
-    // the 16 bytes of `chunk` (unaligned loads are allowed).
-    let newline = unsafe { _mm_set1_epi8(b'\n' as i8) };
-    for chunk in chunks {
-        let mut mask = unsafe {
-            let block = _mm_loadu_si128(chunk.as_ptr().cast::<__m128i>());
-            _mm_movemask_epi8(_mm_cmpeq_epi8(block, newline)) as u32
-        };
-        while mask != 0 {
-            visit(base + mask.trailing_zeros() as usize);
-            mask &= mask - 1;
-        }
-        base += 16;
-    }
-    for (i, &byte) in remainder.iter().enumerate() {
-        if byte == b'\n' {
-            visit(base + i);
-        }
-    }
-}
-
-/// Eight bytes per step in plain integer arithmetic, for targets without
-/// the SSE2 path (and as its oracle in the tests).
-#[cfg_attr(target_arch = "x86_64", allow(dead_code))]
-fn for_each_newline_swar(bytes: &[u8], mut visit: impl FnMut(usize)) {
-    const LOW_7: u64 = 0x7f7f_7f7f_7f7f_7f7f;
-    const NEWLINES: u64 = 0x0a0a_0a0a_0a0a_0a0a;
-    let (chunks, remainder) = bytes.as_chunks::<8>();
-    let mut base = 0;
-    for &chunk in chunks {
-        let x = u64::from_le_bytes(chunk) ^ NEWLINES;
-        // The high bit of each byte that was `\n` (so is zero in `x`), and
-        // no other bit: the exact zero-byte test, free of false positives.
-        let mut zero_bytes = !(((x & LOW_7) + LOW_7) | x | LOW_7);
-        while zero_bytes != 0 {
-            visit(base + (zero_bytes.trailing_zeros() / 8) as usize);
-            zero_bytes &= zero_bytes - 1;
-        }
-        base += 8;
-    }
-    for (i, &byte) in remainder.iter().enumerate() {
-        if byte == b'\n' {
-            visit(base + i);
-        }
-    }
-}
-
-/// The lines `strides` (from [`line_strides`] of `text`) describe, without
-/// scanning for newlines again.
-fn lines_of<'a>(text: &'a str, strides: &'a [i64]) -> impl Iterator<Item = &'a str> + 'a {
-    let last = strides.len().saturating_sub(1);
-    let mut start = 0;
-    strides.iter().enumerate().map(move |(i, &stride)| {
-        let stride = stride as usize;
-        let end = start + if i < last { stride - 1 } else { stride };
-        let line = &text[start..end];
-        start += stride;
-        line
-    })
-}
-
-/// `line` moved by `delta` lines.
 /// A callout the user folded or unfolded keeps that state when an edit
 /// re-derives it, matched by its header line and its marker (a `-` rewritten
 /// to `+` starts over) (the walk restarts every callout
@@ -1135,28 +1031,6 @@ fn carry_fold_state(fresh: &mut [Callout], old: &[Callout], old_last: usize, del
     }
 }
 
-fn shift_line(line: usize, delta: isize) -> usize {
-    let shifted = line as isize + delta;
-    debug_assert!(shifted >= 0, "line {line} shifted by {delta}");
-    shifted.max(0) as usize
-}
-
-/// Inserts `delta` copies of the entry before `at` (`delta > 0`) or removes
-/// `-delta` entries starting at `at` (`delta < 0`). Grows in fixed chunks:
-/// see [`LINE_GROWTH_SLACK`].
-fn resize_vec<T: Clone>(v: &mut Vec<T>, at: usize, delta: isize) {
-    if delta > 0 {
-        let k = delta as usize;
-        let fill = v[at - 1].clone();
-        if v.capacity() - v.len() < k {
-            v.reserve_exact(k.max(LINE_GROWTH_SLACK));
-        }
-        v.splice(at..at, std::iter::repeat_n(fill, k));
-    } else {
-        v.drain(at..at + delta.unsigned_abs());
-    }
-}
-
 /// Keeps [`LINE_GROWTH_SLACK`] spare entries in every per-line array.
 fn reserve_line_slack(cache: &mut DocumentCache) {
     fn slack<T>(v: &mut Vec<T>) {
@@ -1169,29 +1043,6 @@ fn reserve_line_slack(cache: &mut DocumentCache) {
     slack(&mut cache.block_contexts);
     slack(&mut cache.open_block_states);
     slack(&mut cache.callout_states);
-}
-
-/// Yields `(line_text, line_len, has_next_line)` starting at `start_byte`
-/// (which must be a real line-start byte offset in `text`), walking
-/// forward via a running cursor and `text[cursor..].find('\n')` rather
-/// than ever materializing the whole document's lines — the technique
-/// every patch function above relies on to stay bounded by how far it
-/// actually walks, not by the document's total length. The same bounded-
-/// scan idea `buffer.rs`'s own `line_start`/`line_end` already use, just
-/// walking forward instead of from a single point.
-fn lines_from(text: &str, start_byte: usize) -> impl Iterator<Item = (&str, usize, bool)> {
-    let mut cursor = start_byte;
-    std::iter::from_fn(move || {
-        if cursor > text.len() {
-            return None;
-        }
-        let rest = &text[cursor..];
-        let line_len = rest.find('\n').unwrap_or(rest.len());
-        let line = &rest[..line_len];
-        let has_next_line = cursor + line_len < text.len();
-        cursor += line_len + 1;
-        Some((line, line_len, has_next_line))
-    })
 }
 
 #[cfg(test)]
@@ -1364,7 +1215,7 @@ mod tests {
     /// Same property, exercised over many pseudo-random edits — deliberate
     /// coverage of positions/fragments a hand-picked sequence wouldn't
     /// think to try, same "fuzz the invariant against the oracle" approach
-    /// `fenwick.rs`'s own random test uses. Covers both `line_roles` and
+    /// `lines/fenwick.rs`'s own random test uses. Covers both `line_roles` and
     /// `callout_for_line`/`callouts` together, since every edit exercises
     /// both patch functions at once via the same `record_edit` call.
     #[test]
@@ -1767,44 +1618,6 @@ mod line_stride_tests {
             assert_eq!(lines, expected, "{text:?}");
             assert_eq!(strides.len(), count_lines(text), "{text:?}");
             assert_eq!(strides.iter().sum::<i64>() as usize, text.len(), "{text:?}");
-        }
-    }
-}
-
-#[cfg(test)]
-mod newline_offset_tests {
-    use super::{for_each_newline, for_each_newline_swar};
-
-    #[test]
-    fn finds_exactly_the_newlines_at_every_alignment_and_length() {
-        let mut seed = 0x2545_F491_4F6C_DD1Du64;
-        let mut next = move || {
-            seed ^= seed << 13;
-            seed ^= seed >> 7;
-            seed ^= seed << 17;
-            seed
-        };
-        // Bytes that stress the zero-byte test: 0x0a itself, its neighbours,
-        // 0x8a (high bit set), 0x00 and 0xff.
-        let alphabet = [b'\n', b'\n', 0x09, 0x0b, 0x8a, 0x00, 0xff, b'a', b' '];
-        for len in 0..140 {
-            for _ in 0..200 {
-                let bytes: Vec<u8> = (0..len)
-                    .map(|_| alphabet[(next() % alphabet.len() as u64) as usize])
-                    .collect();
-                let expected: Vec<usize> = bytes
-                    .iter()
-                    .enumerate()
-                    .filter(|&(_, &b)| b == b'\n')
-                    .map(|(i, _)| i)
-                    .collect();
-                let mut got = Vec::new();
-                for_each_newline(&bytes, |at| got.push(at));
-                assert_eq!(got, expected, "{bytes:?}");
-                let mut swar = Vec::new();
-                for_each_newline_swar(&bytes, |at| swar.push(at));
-                assert_eq!(swar, expected, "swar {bytes:?}");
-            }
         }
     }
 }
