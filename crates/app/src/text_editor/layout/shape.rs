@@ -1,3 +1,4 @@
+use crate::text_editor::table;
 use std::ops::Range;
 
 use gpui_kit::*;
@@ -11,7 +12,6 @@ use crate::text_editor::live_preview::{
     DisplayLine, InlineStyle, LineIndent, build_callout_header_line, build_display_line,
     build_display_line_in_context, hidden_line, is_thematic_break,
 };
-use crate::text_editor::table_preview;
 
 /// The `Font` to paint a [`DisplaySegment`](super::live_preview::DisplaySegment)'s
 /// visible text in, derived from `base` (the editor's ambient mono font) —
@@ -198,10 +198,10 @@ pub(in crate::text_editor) fn build_display_lines(
             TableLineKind::Row(table) => {
                 let max_chars =
                     table_row_char_budget(available_width, font, font_size, text_color, window);
-                let widths = table_preview::resolve_widths(&table.columns, max_chars);
+                let widths = table::model::resolve_widths(&table.columns, max_chars);
                 vec![
                     hidden_line(line);
-                    table_preview::row_line_count_editing(line, &widths, state.editing_cell)
+                    table::model::row_line_count_editing(line, &widths, state.editing_cell)
                 ]
             }
         },
@@ -416,7 +416,7 @@ pub(in crate::text_editor) fn mono_char_width(
 /// The character budget a table row/rule should fit within, given
 /// `available_width` — `None` if that's non-positive (shouldn't happen in
 /// practice, but a column-width budget of `0` would make
-/// `table_preview::cap_column_widths` collapse every column uselessly) or
+/// `table::model::cap_column_widths` collapse every column uselessly) or
 /// [`mono_char_width`] can't be measured for some reason.
 fn table_row_char_budget(
     available_width: Pixels,

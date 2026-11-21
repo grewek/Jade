@@ -1,3 +1,4 @@
+use super::table;
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
@@ -34,11 +35,11 @@ use super::live_preview::{
 };
 use super::paint_trace::{FrameInfo, PaintTrace};
 use super::rows::{Change, Inputs, RowCache};
-use super::table_box::{self, layout_row_editing};
-use super::table_handles::{self, Grid, Handle, TableDrag};
-use super::table_ops::Op;
-use super::table_preview::Align;
-use super::table_preview::{self, Table, table_index_at};
+use super::table::geometry::layout_row_editing;
+use super::table::handles::{Grid, Handle, TableDrag};
+use super::table::model::Align;
+use super::table::model::{Table, table_index_at};
+use super::table::ops::Op;
 use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
 #[allow(unused_imports)]
@@ -419,7 +420,7 @@ pub(super) struct FrameView {
 /// What painting a table needs about the columns it is drawn with.
 pub(super) struct TableColumns {
     pub(super) widths: Vec<usize>,
-    pub(super) aligns: Vec<table_preview::Align>,
+    pub(super) aligns: Vec<table::model::Align>,
     pub(super) char_width: Pixels,
     /// The width the box is stretched to: the whole of its room when the table
     /// had to shrink to fit (so its edge lines up with a callout above or below
@@ -437,10 +438,10 @@ impl TableColumns {
         let char_width = mono_char_width(font, font_size, text_color, window);
         let max_chars = char_budget(width, char_width);
         Self {
-            widths: table_preview::resolve_widths(&table.columns, max_chars),
+            widths: table::model::resolve_widths(&table.columns, max_chars),
             aligns: table.columns.iter().map(|c| c.align).collect(),
             char_width,
-            fill: if max_chars.is_some_and(|m| !table_preview::fits_unshrunk(&table.columns, m)) {
+            fill: if max_chars.is_some_and(|m| !table::model::fits_unshrunk(&table.columns, m)) {
                 width
             } else {
                 px(0.)
@@ -454,7 +455,8 @@ impl TableColumns {
 
     /// The box's width: its columns', or its room where the table shrank.
     pub(super) fn box_px(&self) -> Pixels {
-        self.x(table_box::box_width(&self.widths)).max(self.fill)
+        self.x(table::geometry::box_width(&self.widths))
+            .max(self.fill)
     }
 }
 
@@ -518,7 +520,7 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
         .chain((table.start_line + 3..=table.end_line).map(boundary))
         .collect();
     let mut col_x: Vec<f32> = (0..=columns.widths.len())
-        .map(|c| f32::from(columns.x(table_box::column_left(&columns.widths, c))))
+        .map(|c| f32::from(columns.x(table::geometry::column_left(&columns.widths, c))))
         .collect();
     if let Some(last) = col_x.last_mut() {
         *last = f32::from(columns.box_px());
@@ -535,7 +537,7 @@ mod tests {
     use super::super::Editor;
     use super::super::block_preview::LineRole;
     use super::super::live_preview::LineIndent;
-    use super::super::table_preview::classify_tables;
+    use super::super::table::model::classify_tables;
     use super::super::test_support::apply_edit;
     use super::LineState;
     use super::{TableLineKind, shape_display_line};
@@ -1696,7 +1698,7 @@ mod tests {
     /// over the other column.
     #[gpui_kit::test]
     fn table_controls_work_on_a_table_in_a_column(cx: &mut TestAppContext) {
-        use super::super::table_handles::Handle;
+        use super::super::table::handles::Handle;
         use super::px;
         use super::{FrameView, LineLayout, RowCache, handle_for_pointer, hover_for_pointer};
         use gpui::{Bounds, size};
@@ -1778,7 +1780,7 @@ mod tests {
             let doc = doc_cache.borrow();
             let (grid, origin) =
                 super::table_grid(&view, &doc, text, &doc.tables()[0], window).unwrap();
-            let (x, y, w, h) = super::table_handles::rect_of(&grid, grip);
+            let (x, y, w, h) = super::table::handles::rect_of(&grid, grip);
             let centre = origin + point(px(x + w / 2.), px(y + h / 2.));
             assert_eq!(
                 handle_for_pointer(editor, &view, centre, window),
@@ -1919,7 +1921,7 @@ mod tests {
     /// with a callout in the same column; one that fits keeps its natural width.
     #[gpui_kit::test]
     fn a_shrunk_table_fills_its_room(cx: &mut TestAppContext) {
-        use super::super::table_preview::classify_tables;
+        use super::super::table::model::classify_tables;
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -2243,7 +2245,7 @@ mod tests {
     #[gpui_kit::test]
     fn region_controls_hover_press_and_drag(cx: &mut TestAppContext) {
         use super::super::column_handles::{self, ColumnDrag};
-        use super::super::table_handles::Handle;
+        use super::super::table::handles::Handle;
         use super::px;
         use super::{FrameView, LineLayout, RowCache};
         use super::{column_drag_percent, column_handle_for_pointer, column_hover_for_pointer};
@@ -3778,7 +3780,7 @@ mod tests {
 
     /// Table cell editing, driven through the real key and text paths.
     mod table_cells {
-        use super::super::{Grid, Handle, TableColumns, render_params, table_box, table_handles};
+        use super::super::{Grid, Handle, TableColumns, render_params, table};
         use super::*;
         const TABLE: &str = "| a | b |\n|---|---|\n| c | d |\n\nend";
 
@@ -4169,7 +4171,7 @@ mod tests {
                 );
                 let line = f32::from(window.line_height());
                 let col_x = (0..=columns.widths.len())
-                    .map(|c| f32::from(columns.x(table_box::column_left(&columns.widths, c))))
+                    .map(|c| f32::from(columns.x(table::geometry::column_left(&columns.widths, c))))
                     .collect();
                 // The header and the delimiter band are 2 lines, then 1 per row.
                 let row_y = [0.0, 2.0, 3.0, 4.0, 5.0].map(|n| n * line).to_vec();
@@ -4211,7 +4213,7 @@ mod tests {
         }
 
         fn centre_of(grid: &Grid, origin: Point<Pixels>, handle: Handle) -> Point<Pixels> {
-            let (x, y, w, h) = table_handles::rect_of(grid, handle);
+            let (x, y, w, h) = table::handles::rect_of(grid, handle);
             origin + point(px(x + w / 2.0), px(y + h / 2.0))
         }
 

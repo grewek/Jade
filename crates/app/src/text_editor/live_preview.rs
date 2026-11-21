@@ -14,8 +14,8 @@
 //!
 //! Scope deliberately narrow for this first pass: headings, bold, italic,
 //! inline code, strikethrough, wikilinks, blockquote `>` prefixes, list
-//! markers, and tables (`table_preview.rs`'s detection, this module's
-//! `table_box` rendering) — not the full
+//! markers, and tables (`table::model.rs`'s detection, this module's
+//! `table::geometry` rendering) — not the full
 //! CommonMark/GFM grammar (no autolinks). Emphasis matching is also
 //! simplified: `**x**`/`__x__` is bold, a lone `*x*`/`_x_` is italic,
 //! without CommonMark's full left/right-flanking delimiter-run algorithm —

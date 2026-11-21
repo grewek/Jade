@@ -1,7 +1,7 @@
 //! The controls on a side-by-side region: a grip on each divider to drag the
 //! ratio, a `+` to add a column and a button to unwrap, both above the region's
 //! right end. Pure geometry in pixels from the region's top left (like
-//! `table_handles.rs`), so what is drawn and what a press hits share numbers.
+//! `table/handles.rs`), so what is drawn and what a press hits share numbers.
 
 /// Radius of the round buttons.
 pub(super) const RADIUS: f32 = 8.0;

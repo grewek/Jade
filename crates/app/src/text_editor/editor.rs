@@ -20,7 +20,7 @@ use super::headings::find_heading_line;
 use super::image;
 use super::link_table::LinkTable;
 use super::rows::{Change, Inputs, Invalidate, RowCache};
-use super::table_handles::{Handle, TableDrag};
+use super::table::handles::{Handle, TableDrag};
 use jade_core::link_scan::{LinkKind, scan_line};
 
 /// The `TextEdit` for a plain insertion of `inserted_len` bytes replacing

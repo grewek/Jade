@@ -5,7 +5,7 @@
 
 /// Row and column boundaries of one table box, in pixels from its top left.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Grid {
+pub(in crate::text_editor) struct Grid {
     /// `columns + 1` x positions: the left edge, each divider, the right edge.
     pub col_x: Vec<f32>,
     /// `rows + 1` y positions, row 0 being the header (with the delimiter's
@@ -36,7 +36,7 @@ impl Grid {
 /// being the right edge); of rows it is the top of row `b` (`rows` being the
 /// bottom), and the one above the header is never offered.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Handle {
+pub(in crate::text_editor) enum Handle {
     AddColumn(usize),
     AddRow(usize),
     ColumnGrip(usize),
@@ -47,23 +47,23 @@ pub(super) enum Handle {
 /// A grip being dragged: which table, which grip, and the boundary the pointer
 /// is over now (the drop target).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct TableDrag {
+pub(in crate::text_editor) struct TableDrag {
     pub table: usize,
     pub grip: Handle,
     pub over: usize,
 }
 
 /// Radius of a `+` circle.
-pub(super) const RADIUS: f32 = 8.0;
+pub(in crate::text_editor) const RADIUS: f32 = 8.0;
 /// A grip's long and short side.
-pub(super) const GRIP_LONG: f32 = 22.0;
-pub(super) const GRIP_SHORT: f32 = 10.0;
+pub(in crate::text_editor) const GRIP_LONG: f32 = 22.0;
+pub(in crate::text_editor) const GRIP_SHORT: f32 = 10.0;
 /// How far left of and above the box the pointer still counts as over it, so
 /// the controls straddling its edge can be reached.
-pub(super) const MARGIN: f32 = 16.0;
+pub(in crate::text_editor) const MARGIN: f32 = 16.0;
 
 /// The controls to show with the pointer at `p`; none away from the table.
-pub(super) fn hover_at(grid: &Grid, p: (f32, f32)) -> Vec<Handle> {
+pub(in crate::text_editor) fn hover_at(grid: &Grid, p: (f32, f32)) -> Vec<Handle> {
     let (x, y) = p;
     if x < -MARGIN || y < -MARGIN || x > grid.width() + MARGIN || y > grid.height() + MARGIN {
         return Vec::new();
@@ -94,7 +94,7 @@ fn span_at(edges: &[f32], at: f32) -> usize {
 }
 
 /// A control's rectangle as `(x, y, width, height)`.
-pub(super) fn rect_of(grid: &Grid, handle: Handle) -> (f32, f32, f32, f32) {
+pub(in crate::text_editor) fn rect_of(grid: &Grid, handle: Handle) -> (f32, f32, f32, f32) {
     let centered = |cx: f32, cy: f32, w: f32, h: f32| (cx - w / 2.0, cy - h / 2.0, w, h);
     match handle {
         Handle::AddColumn(b) => centered(grid.col_x[b], 0.0, 2.0 * RADIUS, 2.0 * RADIUS),
@@ -112,7 +112,11 @@ pub(super) fn rect_of(grid: &Grid, handle: Handle) -> (f32, f32, f32, f32) {
 
 /// Which of the `shown` controls the point is on; the `+` circles win over
 /// the grips where they overlap.
-pub(super) fn handle_at(grid: &Grid, shown: &[Handle], p: (f32, f32)) -> Option<Handle> {
+pub(in crate::text_editor) fn handle_at(
+    grid: &Grid,
+    shown: &[Handle],
+    p: (f32, f32),
+) -> Option<Handle> {
     let inside = |handle: Handle| {
         let (x, y, w, h) = rect_of(grid, handle);
         (x..=x + w).contains(&p.0) && (y..=y + h).contains(&p.1)
@@ -127,13 +131,13 @@ pub(super) fn handle_at(grid: &Grid, shown: &[Handle], p: (f32, f32)) -> Option<
 }
 
 /// Where a dragged column is dropped with the pointer at `x`: a column boundary.
-pub(super) fn column_drop(grid: &Grid, x: f32) -> usize {
+pub(in crate::text_editor) fn column_drop(grid: &Grid, x: f32) -> usize {
     nearest(&grid.col_x, x, 0)
 }
 
 /// Where a dragged body row is dropped with the pointer at `y`: a row boundary
 /// below the header.
-pub(super) fn row_drop(grid: &Grid, y: f32) -> usize {
+pub(in crate::text_editor) fn row_drop(grid: &Grid, y: f32) -> usize {
     nearest(&grid.row_y, y, 1)
 }
 

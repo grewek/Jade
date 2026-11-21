@@ -1,8 +1,9 @@
 //! Painting a rendered table: its box, grid, the edited cell and the controls on
 //! its edge. Moves into the table module with the rest of table code.
 
-#[allow(unused_imports)]
 use super::*;
+#[allow(unused_imports)]
+use crate::text_editor::table;
 
 /// Corner radius of a table's box.
 pub(super) const TABLE_RADIUS: Pixels = px(6.);
@@ -120,7 +121,7 @@ pub(super) fn paint_table_box(
         BorderStyle::Solid,
     ));
     for column in 1..columns.widths.len() {
-        let x = left + columns.x(table_box::column_left(&columns.widths, column));
+        let x = left + columns.x(table::geometry::column_left(&columns.widths, column));
         window.paint_quad(line(x, top, TABLE_LINE_WIDTH, bottom - top, light));
     }
     // Between body rows, in the visible part only.
@@ -307,7 +308,7 @@ pub(super) fn paint_table_handles(
     (window, cx): (&mut Window, &mut App),
 ) {
     let at = |handle: Handle| {
-        let (x, y, w, h) = table_handles::rect_of(grid, handle);
+        let (x, y, w, h) = table::handles::rect_of(grid, handle);
         Bounds {
             origin: origin + point(px(x), px(y)),
             size: size(px(w), px(h)),
@@ -364,13 +365,13 @@ pub(super) fn paint_table_row(
         .enumerate()
     {
         let column_width = columns.x(columns.widths[c] as f32);
-        let left = origin.x + columns.x(table_box::text_left(&columns.widths, c));
+        let left = origin.x + columns.x(table::geometry::text_left(&columns.widths, c));
         // The cell being edited is always left-aligned, so typing starts at its
         // left edge whatever the column's alignment.
         let fraction = if editing == Some(c) {
             0.0
         } else {
-            table_box::align_fraction(columns.aligns[c])
+            table::geometry::align_fraction(columns.aligns[c])
         };
         for (j, range) in cell.lines.iter().enumerate() {
             if range.is_empty() {
@@ -424,15 +425,16 @@ pub(super) fn paint_editing_cell(
         origin,
         line_height,
     } = *cell;
-    let lines = &table_box::layout_row_editing(line, &columns.widths, Some(column))[column].lines;
+    let lines =
+        &table::geometry::layout_row_editing(line, &columns.widths, Some(column))[column].lines;
     let height = line_height
-        * table_box::layout_row_editing(line, &columns.widths, Some(column))
+        * table::geometry::layout_row_editing(line, &columns.widths, Some(column))
             .iter()
             .map(|c| c.lines.len())
             .max()
             .unwrap_or(1) as f32;
-    let left = origin.x + columns.x(table_box::column_left(&columns.widths, column));
-    let width = columns.x(columns.widths[column] as f32 + 2.0 * table_box::CELL_PAD);
+    let left = origin.x + columns.x(table::geometry::column_left(&columns.widths, column));
+    let width = columns.x(columns.widths[column] as f32 + 2.0 * table::geometry::CELL_PAD);
     window.paint_quad(quad(
         Bounds {
             origin: point(left, origin.y),
@@ -445,7 +447,7 @@ pub(super) fn paint_editing_cell(
         BorderStyle::Solid,
     ));
     let x_of = |range: &Range<usize>, offset: usize| {
-        columns.x(table_box::x_in_line(
+        columns.x(table::geometry::x_in_line(
             line,
             &columns.widths,
             column,
@@ -476,7 +478,7 @@ pub(super) fn paint_editing_cell(
     }
     if let Some(caret) = caret.filter(|c| *c >= line_start) {
         let offset = caret - line_start;
-        let (row, x) = table_box::caret_at(line, &columns.widths, column, offset);
+        let (row, x) = table::geometry::caret_at(line, &columns.widths, column, offset);
         window.paint_quad(fill(
             Bounds {
                 origin: point(origin.x + columns.x(x), origin.y + line_height * row as f32),

@@ -1,6 +1,6 @@
 //! A persistent, edit-patched cache of the four whole-document Live Preview
 //! classification passes (`block_preview::classify_lines`,
-//! `live_preview::classify_block_context`, `table_preview::classify_tables`,
+//! `live_preview::classify_block_context`, `table::model::classify_tables`,
 //! `callout::classify_callouts`) — see ARCHITECTURE.md's own bullet on
 //! incremental classification for why this exists: re-running all four from
 //! scratch on every paint cost ~420ms combined on the 320K-line stress
@@ -37,6 +37,7 @@
 //! struct's own doc comment for the next classification-adjacent cost this
 //! unblocks).
 
+use super::table;
 use std::ops::Range;
 
 use super::block_preview::{self, LineRole};
@@ -45,7 +46,7 @@ use super::columns::{self, Columns, Placed};
 use super::fenwick::{Fenwick, LINE_GROWTH_SLACK};
 use super::image::Sizes as ImageSizes;
 use super::live_preview::{self, LineContext, OpenBlock};
-use super::table_preview::{self, Table, is_pipe_row};
+use super::table::model::{Table, is_pipe_row};
 
 /// A tree-sitter-`InputEdit`-style description of what just changed in the
 /// buffer: the byte range `start_byte..old_end_byte` in the *old* text was
@@ -523,7 +524,7 @@ impl DocumentCache {
     }
 
     pub(super) fn recompute_tables(&mut self, text: &str, strides: &[i64]) {
-        self.tables = table_preview::classify_table_list_from(lines_of(text, strides));
+        self.tables = table::model::classify_table_list_from(lines_of(text, strides));
     }
 
     /// Every line's start byte, plus the document's length as a final entry
@@ -594,7 +595,7 @@ impl DocumentCache {
         (first, end.max(first))
     }
 
-    /// The real incremental path for `table_preview`: unlike the other
+    /// The real incremental path for `table::model`: unlike the other
     /// three classifiers, a table's column widths are an aggregate over
     /// its whole row range, so there's no meaningful per-line "entering
     /// state" to resume from — instead, this rescans just the bounded
@@ -610,10 +611,10 @@ impl DocumentCache {
     /// table), and the maximal run of pipe-row lines (in the new text)
     /// containing that — a table can only ever start or end at a
     /// non-pipe-row boundary, so within one such run there's at most one
-    /// table either way (`table_preview::classify_tables`'s own row-
+    /// table either way (`table::model::classify_tables`'s own row-
     /// consumption loop never starts a second one mid-run).
     ///
-    /// `table_preview::classify_tables` (the existing, already-correct
+    /// `table::model::classify_tables` (the existing, already-correct
     /// whole-document function) is reused directly on just that window's
     /// substring, then spliced back in: tables entirely before/after the
     /// window are kept, with only `table_for_line` entries actually inside
@@ -686,7 +687,7 @@ impl DocumentCache {
         let window_start_byte = self.line_index.prefix_sum(window_start) as usize;
         let window_end_byte = self.line_end_byte(window_end - 1);
         let window_text = &text[window_start_byte..window_end_byte];
-        let local_tables = table_preview::classify_table_list(window_text);
+        let local_tables = table::model::classify_table_list(window_text);
 
         let prefix_table_count = self.tables.partition_point(|t| t.end_line <= window_start);
         let suffix_start_idx = self.tables.partition_point(|t| t.start_line < window_end);
@@ -1269,7 +1270,7 @@ mod tests {
         let blank_line_start = text.find("\n\n| c").unwrap() + 1;
         let (new_text, edit) = apply_edit(&text, blank_line_start, blank_line_start + 1, "");
         cache.record_edit(&new_text, edit);
-        let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
+        let (expected_for_line, expected_tables) = table::model::classify_tables(&new_text);
         assert_eq!(table_for_line_of(&cache), expected_for_line);
         assert_eq!(cache.tables(), expected_tables.as_slice());
         assert_eq!(cache.tables().len(), 1, "the two tables merged into one");
@@ -1288,7 +1289,7 @@ mod tests {
         let delim_start = text.find("| --- | --- |").unwrap();
         let (new_text, edit) = apply_edit(&text, delim_start, delim_start + 1, "x");
         cache.record_edit(&new_text, edit);
-        let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
+        let (expected_for_line, expected_tables) = table::model::classify_tables(&new_text);
         assert_eq!(table_for_line_of(&cache), expected_for_line);
         assert_eq!(cache.tables(), expected_tables.as_slice());
         text = new_text;
@@ -1297,7 +1298,7 @@ mod tests {
         // must be a complete no-op for this classifier.
         let (new_text, edit) = apply_edit(&text, 0, 0, "BEFORE ");
         cache.record_edit(&new_text, edit);
-        let (expected_for_line, expected_tables) = table_preview::classify_tables(&new_text);
+        let (expected_for_line, expected_tables) = table::model::classify_tables(&new_text);
         assert_eq!(table_for_line_of(&cache), expected_for_line);
         assert_eq!(cache.tables(), expected_tables.as_slice());
     }
@@ -1306,7 +1307,7 @@ mod tests {
     /// and `callouts`: compared against the whole-document oracles.
     fn table_for_line_of(cache: &DocumentCache) -> Vec<Option<usize>> {
         (0..cache.line_count())
-            .map(|i| table_preview::table_index_at(cache.tables(), i))
+            .map(|i| table::model::table_index_at(cache.tables(), i))
             .collect()
     }
 
@@ -1619,7 +1620,7 @@ mod tests {
             );
 
             let (expected_table_for_line, expected_tables) =
-                table_preview::classify_tables(&new_text);
+                table::model::classify_tables(&new_text);
             assert_eq!(
                 table_for_line_of(&cache),
                 expected_table_for_line,

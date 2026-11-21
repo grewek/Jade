@@ -1,8 +1,9 @@
 //! Pointer input: hit-testing a click to a buffer offset and the mouse listeners
 //! registered each frame, plus the pointer helpers for tables and regions.
 
-#[allow(unused_imports)]
 use super::*;
+#[allow(unused_imports)]
+use crate::text_editor::table;
 
 /// Registers this frame's mouse listeners: press to focus and place the
 /// cursor (collapsing any selection), drag (move while the button that
@@ -465,7 +466,7 @@ pub(super) fn hit_in_line(
         );
         let row = ((relative_y - y_offset) / line_height) as usize;
         let x = (position.x - bounds.origin.x) / columns.char_width;
-        let offset = table_box::offset_at_editing(
+        let offset = table::geometry::offset_at_editing(
             line_text,
             &columns.widths,
             &columns.aligns,
@@ -684,8 +685,8 @@ pub(super) fn min_column_px(
         .iter()
         .take_while(|t| t.start_line < lines.end)
         .map(|t| {
-            let widths = vec![table_preview::MIN_COLUMN_WIDTH; t.columns.len()];
-            table_box::box_width(&widths) * char_width
+            let widths = vec![table::model::MIN_COLUMN_WIDTH; t.columns.len()];
+            table::geometry::box_width(&widths) * char_width
         })
         .fold(0., f32::max)
 }
@@ -702,7 +703,7 @@ pub(super) fn table_at_pointer(
     let text = editor.buffer().text();
     let tables = doc.tables();
     let y = position.y - view.bounds.origin.y;
-    let margin = px(table_handles::MARGIN);
+    let margin = px(table::handles::MARGIN);
     let relative = |origin: Point<Pixels>| {
         (
             f32::from(position.x - origin.x),
@@ -735,7 +736,7 @@ pub(super) fn table_at_pointer(
             };
             let p = relative(origin);
             let (width, height) = (grid.col_x.last().copied(), grid.row_y.last().copied());
-            let reach = table_handles::MARGIN;
+            let reach = table::handles::MARGIN;
             let inside = p.0 >= -reach
                 && p.1 >= -reach
                 && width.is_some_and(|w| p.0 <= w + reach)
@@ -768,7 +769,7 @@ pub(super) fn hover_for_pointer(
     window: &mut Window,
 ) -> Option<(usize, Vec<Handle>)> {
     let (index, grid, p) = table_at_pointer(editor, view, position, window)?;
-    let shown = table_handles::hover_at(&grid, p);
+    let shown = table::handles::hover_at(&grid, p);
     (!shown.is_empty()).then_some((index, shown))
 }
 
@@ -780,8 +781,8 @@ pub(super) fn handle_for_pointer(
     window: &mut Window,
 ) -> Option<(usize, Handle)> {
     let (index, grid, p) = table_at_pointer(editor, view, position, window)?;
-    let shown = table_handles::hover_at(&grid, p);
-    table_handles::handle_at(&grid, &shown, p).map(|handle| (index, handle))
+    let shown = table::handles::hover_at(&grid, p);
+    table::handles::handle_at(&grid, &shown, p).map(|handle| (index, handle))
 }
 
 /// The drop boundary for a grip drag with the pointer at `position`.
@@ -797,9 +798,9 @@ pub(super) fn drop_for_pointer(
     let (grid, origin) = table_grid(view, &doc, editor.buffer().text(), table, window)?;
     Some(match drag.grip {
         Handle::ColumnGrip(_) => {
-            table_handles::column_drop(&grid, f32::from(position.x - origin.x))
+            table::handles::column_drop(&grid, f32::from(position.x - origin.x))
         }
-        _ => table_handles::row_drop(&grid, f32::from(position.y - origin.y)),
+        _ => table::handles::row_drop(&grid, f32::from(position.y - origin.y)),
     })
 }
 

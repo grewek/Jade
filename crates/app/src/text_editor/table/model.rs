@@ -92,7 +92,10 @@ pub fn scan_row(line: &str) -> Row {
 /// Calls `visit` with the byte range of each cell of `line`, in order, and
 /// returns `(has_leading_pipe, has_trailing_pipe)`. The one place the
 /// cell-splitting rules live, shared by [`scan_row`] and [`row_line_count`].
-pub(super) fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>)) -> (bool, bool) {
+pub(in crate::text_editor) fn for_each_cell_range(
+    line: &str,
+    mut visit: impl FnMut(Range<usize>),
+) -> (bool, bool) {
     let bytes = line.as_bytes();
     let has_leading_pipe = bytes.first() == Some(&b'|');
     let start = usize::from(has_leading_pipe);
@@ -136,15 +139,15 @@ pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
 }
 
 /// [`row_line_count`] for a row whose cell `editing` is being edited: that cell
-/// shows its text verbatim (see `table_box::wrap_raw`), so it wraps differently.
+/// shows its text verbatim (see `table::geometry::wrap_raw`), so it wraps differently.
 pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usize>) -> usize {
     let mut lines = 1;
     let mut column = 0;
     for_each_cell_range(line, |raw| {
         if let Some(&width) = widths.get(column) {
             if editing == Some(column) {
-                let shown = super::table_box::edit_range(line, raw);
-                lines = lines.max(super::table_box::raw_line_count(&line[shown], width));
+                let shown = super::geometry::edit_range(line, raw);
+                lines = lines.max(super::geometry::raw_line_count(&line[shown], width));
             } else {
                 let cell = line[raw].trim();
                 // Bytes are never fewer than characters.
@@ -272,7 +275,7 @@ fn parse_delimiter_row(line: &str, expected_columns: usize) -> Option<Vec<Align>
 /// The index of the table containing `line`, if any. Tables are sorted and
 /// disjoint, so this is a binary search; it replaces a per-line lookup array
 /// that was 16 bytes per document line.
-pub(super) fn table_index_at(tables: &[Table], line: usize) -> Option<usize> {
+pub(in crate::text_editor) fn table_index_at(tables: &[Table], line: usize) -> Option<usize> {
     let i = tables.partition_point(|t| t.end_line <= line);
     tables.get(i).filter(|t| t.start_line <= line).map(|_| i)
 }
@@ -281,7 +284,7 @@ pub(super) fn table_index_at(tables: &[Table], line: usize) -> Option<usize> {
 /// cheapest possible check, same spirit as this module's other
 /// simplifications; the real validation happens via the *next* line having
 /// to be a valid delimiter row for a table to be recognized at all.
-pub(super) fn is_pipe_row(line: &str) -> bool {
+pub(in crate::text_editor) fn is_pipe_row(line: &str) -> bool {
     // The byte search skips `str::contains`'s char-pattern machinery, which
     // costs more than the scan itself on a short line.
     line.as_bytes().contains(&b'|')
@@ -291,12 +294,14 @@ pub(super) fn is_pipe_row(line: &str) -> bool {
 /// [`classify_tables`]' second value, computed in one streaming pass without
 /// materializing the document's lines or a per-line lookup (which cost
 /// ~12MB of transient allocation on the 320K-line stress fixture).
-pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
+pub(in crate::text_editor) fn classify_table_list(source: &str) -> Vec<Table> {
     classify_table_list_from(source.split('\n'))
 }
 
 /// [`classify_table_list`] over lines the caller already split.
-pub(super) fn classify_table_list_from<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<Table> {
+pub(in crate::text_editor) fn classify_table_list_from<'a>(
+    lines: impl Iterator<Item = &'a str>,
+) -> Vec<Table> {
     let mut lines = lines.enumerate().peekable();
     let mut tables = Vec::new();
 
@@ -797,7 +802,7 @@ mod tests {
     /// multi-byte characters, at every width a column can shrink to.
     #[test]
     fn wrapped_line_count_matches_wrap_cell_text() {
-        use super::super::test_support::Rng;
+        use super::super::super::test_support::Rng;
         let pieces = [
             "a",
             "bb",
@@ -880,8 +885,8 @@ mod tests {
             for line in lines {
                 assert_eq!(
                     row_line_count(line, &widths),
-                    crate::text_editor::table_box::row_height(
-                        &crate::text_editor::table_box::layout_row(line, &widths)
+                    crate::text_editor::table::geometry::row_height(
+                        &crate::text_editor::table::geometry::layout_row(line, &widths)
                     ),
                     "line {line:?} budget {budget:?} widths {widths:?}"
                 );

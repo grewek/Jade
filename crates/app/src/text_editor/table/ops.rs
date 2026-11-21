@@ -3,15 +3,15 @@
 //! the result against the old lines and replaces only what changed, as one
 //! undoable edit.
 
-use super::table_box::cell_ranges;
-use super::table_preview::Align;
+use super::geometry::cell_ranges;
+use super::model::Align;
 
 /// Row 0 of a table is its header and row 1 the delimiter.
 const DELIMITER_ROW: usize = 1;
 
 /// What a menu entry or shortcut does to the table around the caret.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Op {
+pub(in crate::text_editor) enum Op {
     RowAbove,
     RowBelow,
     ColumnLeft,
@@ -24,7 +24,7 @@ pub(super) enum Op {
 /// The table's lines after an [`Op`] and where the caret goes: `(row, column)`
 /// of the cell it should land in.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct Edited {
+pub(in crate::text_editor) struct Edited {
     pub lines: Vec<String>,
     pub caret: (usize, usize),
 }
@@ -42,7 +42,7 @@ fn join(cells: &[String]) -> String {
 }
 
 /// A row of `columns` empty cells, `| | |`.
-pub(super) fn empty_row(columns: usize) -> String {
+pub(in crate::text_editor) fn empty_row(columns: usize) -> String {
     join(&vec![" ".to_string(); columns])
 }
 
@@ -52,7 +52,7 @@ fn column_count(lines: &[&str]) -> usize {
 }
 
 /// Whether `op` can run with the caret in `row` and `column` of `lines`.
-pub(super) fn enabled(lines: &[&str], row: usize, op: Op) -> bool {
+pub(in crate::text_editor) fn enabled(lines: &[&str], row: usize, op: Op) -> bool {
     match op {
         Op::RowAbove | Op::DeleteRow => row > DELIMITER_ROW,
         Op::DeleteColumn => column_count(lines) > 1,
@@ -62,7 +62,12 @@ pub(super) fn enabled(lines: &[&str], row: usize, op: Op) -> bool {
 
 /// `op` applied to `lines` with the caret in cell `column` of row `row`;
 /// `None` when it does not apply (see [`enabled`]).
-pub(super) fn apply(lines: &[&str], row: usize, column: usize, op: Op) -> Option<Edited> {
+pub(in crate::text_editor) fn apply(
+    lines: &[&str],
+    row: usize,
+    column: usize,
+    op: Op,
+) -> Option<Edited> {
     if !enabled(lines, row, op) {
         return None;
     }
@@ -124,7 +129,7 @@ pub(super) fn apply(lines: &[&str], row: usize, column: usize, op: Op) -> Option
 /// Moves body line `from` to just before line `before` (`before` may be one
 /// past the last line). `None` for the header or delimiter, or a move that
 /// changes nothing. The caret goes to cell `column` of the moved row.
-pub(super) fn move_row(
+pub(in crate::text_editor) fn move_row(
     lines: &[&str],
     from: usize,
     before: usize,
@@ -149,7 +154,7 @@ pub(super) fn move_row(
 /// Moves column `from` to just before column `before` (`before` may be the
 /// column count), in every row including the delimiter, so its alignment
 /// travels with it. `None` for a move that changes nothing.
-pub(super) fn move_column(
+pub(in crate::text_editor) fn move_column(
     lines: &[&str],
     from: usize,
     before: usize,

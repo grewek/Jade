@@ -29,10 +29,7 @@ mod paint_trace;
 #[path = "paint_trace_stub.rs"]
 mod paint_trace;
 mod rows;
-mod table_box;
-mod table_handles;
-mod table_ops;
-mod table_preview;
+mod table;
 #[cfg(test)]
 mod test_support;
 

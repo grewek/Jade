@@ -14,10 +14,10 @@
 //! block_context`'s own `Open::Blockquote` state never needed that
 //! distinction (every `>`-prefixed line is already self-sufficient for
 //! plain blockquote rendering), so this module tracks it itself via
-//! [`classify_callouts`], a sequential pass mirroring `table_preview::
+//! [`classify_callouts`], a sequential pass mirroring `table::model::
 //! classify_tables`'s shape. Deliberately independent of `live_preview.rs`'s
 //! own blockquote-prefix detection (same "each scanner is self-contained"
-//! precedent `table_preview.rs`/`block_preview.rs` already set) — this
+//! precedent `table::model.rs`/`block_preview.rs` already set) — this
 //! module has its own tiny `>`-prefix scan rather than reaching into
 //! `live_preview`'s private one.
 //!
@@ -31,7 +31,7 @@
 //!
 //! Colors and icons are deliberately *not* here — [`CalloutType`] is pure
 //! data, resolved to an actual `Hsla`/glyph only in `element.rs`, same
-//! boundary `table_preview.rs` keeps for its own data.
+//! boundary `table::model.rs` keeps for its own data.
 //!
 //! Render-only for now: the fold marker (`+`/`-`) is parsed and hidden (see
 //! [`callout_header_prefix`]) so it doesn't leak into the title, but this
@@ -245,7 +245,7 @@ fn looks_like_heading(line: &str) -> bool {
 }
 
 /// Resolves, for every line of `source`, which [`Callout`] (if any) it
-/// belongs to — a sequential pass mirroring `table_preview::
+/// belongs to — a sequential pass mirroring `table::model::
 /// classify_tables`'s shape. Tracks two bits of state: `block_open` (was
 /// the *previous* line part of an open blockquote block at all, callout or
 /// not — this is what lets a line tell "I'm a fresh blockquote start" apart
