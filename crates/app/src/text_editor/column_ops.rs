@@ -48,6 +48,15 @@ pub fn float_markers(lines: &[&str], region: &Columns, shares: &[u8]) -> Vec<Str
     out
 }
 
+/// The float block region with float `k` on its other side.
+pub fn float_flipped(lines: &[&str], region: &Columns, k: usize) -> Vec<String> {
+    assert!(region.tail && k < region.floats().len());
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    let f = region.floats()[k];
+    out[region.open_of(k) - region.start_line] = float_marker(!f.right, f.share);
+    out
+}
+
 /// `block` as a float on one side, `text` (already without markers) flowing
 /// around it.
 pub fn floated(block: &[&str], text: &[&str], right: bool) -> Vec<String> {
