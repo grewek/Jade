@@ -178,18 +178,29 @@ fn broken_in(broken: &[Range<usize>], piece: &Range<usize>) -> Vec<Range<usize>>
 /// Where the text may run at one row of an aside: the floats stacked down a
 /// side keep that side's rows (and a row of air after them) to themselves.
 struct Bands {
-    /// Rows each side is taken for, including the air below its last float.
-    occupied: [usize; 2],
+    /// Where each float is: its side and the rows it takes, including the air
+    /// below it. Floats on one side never overlap (a later one waits below).
+    placed: Vec<Placed>,
     /// Each side's width with its gap to the text, in pixels.
     reserved: [Pixels; 2],
     total: Pixels,
+}
+
+/// A float's side (`LEFT` or `RIGHT`) and rows.
+struct Placed {
+    side: usize,
+    rows: Range<usize>,
 }
 
 impl Bands {
     /// The left edge and width of the text at `row`.
     fn at(&self, row: usize) -> (Pixels, Pixels) {
         let side = |s: usize| {
-            if row < self.occupied[s] {
+            if self
+                .placed
+                .iter()
+                .any(|p| p.side == s && p.rows.contains(&row))
+            {
                 self.reserved[s]
             } else {
                 px(0.)
@@ -202,12 +213,86 @@ impl Bands {
     /// How many rows from `row` on stay in the same band (`usize::MAX` once no
     /// float is left).
     fn rows_from(&self, row: usize) -> usize {
-        self.occupied
+        self.placed
             .iter()
-            .filter(|&&o| row < o)
-            .map(|&o| o - row)
+            .filter_map(|p| match row {
+                r if r < p.rows.start => Some(p.rows.start - r),
+                r if r < p.rows.end => Some(p.rows.end - r),
+                _ => None,
+            })
             .min()
             .unwrap_or(usize::MAX)
+    }
+
+    /// The row from which a float on `side` has the side to itself.
+    fn side_end(&self, side: usize) -> usize {
+        self.placed
+            .iter()
+            .filter(|p| p.side == side)
+            .map(|p| p.rows.end)
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+/// One float of an aside, shaped at its own width, waiting to be put down.
+struct FloatShape {
+    side: usize,
+    x: Pixels,
+    width: Pixels,
+    /// The shaped lines, from `y` 0.
+    lines: Vec<ShapedLine>,
+    height: Pixels,
+}
+
+/// The floats of an aside: each is placed where the text reaches the block it
+/// was written in (an aside's all at its top), on its side below what is
+/// already there.
+struct Floats {
+    shaped: Vec<FloatShape>,
+    /// Where each side is free from, in pixels.
+    side_y: [Pixels; 2],
+    next: usize,
+    bands: Bands,
+    /// The placed floats' columns.
+    columns: Vec<ShapedColumn>,
+    /// The bottom row of the lowest float, air excluded.
+    float_rows: usize,
+}
+
+impl Floats {
+    /// Places every float written before `line` (the text lines come in
+    /// order), the flow being at `y`.
+    fn place_before(&mut self, region: &Columns, line: usize, y: Pixels, line_height: Pixels) {
+        while self.next < self.shaped.len() && region.float_anchor(self.next) < line {
+            self.place_next(y, line_height);
+        }
+    }
+
+    fn place_next(&mut self, y: Pixels, line_height: Pixels) {
+        let float = &mut self.shaped[self.next];
+        self.next += 1;
+        if float.height <= px(0.) {
+            return;
+        }
+        let rows_of = |y: Pixels| (y / line_height).round() as usize;
+        let top = y.max(self.side_y[float.side]);
+        let mut lines = std::mem::take(&mut float.lines);
+        for l in &mut lines {
+            l.y += top;
+        }
+        // A row of air below a float, before text or the next float.
+        self.side_y[float.side] = top + float.height + line_height;
+        self.bands.placed.push(Placed {
+            side: float.side,
+            rows: rows_of(top)..rows_of(self.side_y[float.side]),
+        });
+        self.float_rows = self.float_rows.max(rows_of(top + float.height));
+        self.columns.push(ShapedColumn {
+            x: float.x,
+            width: float.width,
+            lines,
+        });
     }
 }
 
@@ -228,16 +313,14 @@ fn shape_aside(
 ) -> ShapedRegion {
     let total = px(split.total);
     let text_part = region.count - 1;
-    let mut columns = Vec::with_capacity(region.count);
-    let mut side_y = [px(0.); 2];
     let mut side_width = [px(0.); 2];
+    let mut shaped_floats = Vec::with_capacity(text_part);
     for k in 0..text_part {
         let side = usize::from(split.float_is_right(k));
         let (x, width) = (px(split.x(k)), px(split.width(k)));
         side_width[side] = width;
-        let top = side_y[side];
         let mut lines = Vec::new();
-        let mut y = top;
+        let mut y = px(0.);
         for i in region.column_lines(k) {
             let (results, broken, height) = shape_at(
                 text,
@@ -260,35 +343,46 @@ fn shape_aside(
             });
             y += height;
         }
-        // A row of air below a float, before text or the next float.
-        side_y[side] = if y > top { y + line_height } else { top };
-        columns.push(ShapedColumn { x, width, lines });
+        shaped_floats.push(FloatShape {
+            side,
+            x,
+            width,
+            lines,
+            height: y,
+        });
     }
     let rows_of = |y: Pixels| (y / line_height).round() as usize;
-    let bands = Bands {
-        occupied: [rows_of(side_y[LEFT]), rows_of(side_y[RIGHT])],
-        reserved: side_width.map(|w| {
-            if w > px(0.) {
-                w + px(columns::GAP)
-            } else {
-                px(0.)
-            }
-        }),
-        total,
+    let mut floats = Floats {
+        shaped: shaped_floats,
+        side_y: [px(0.); 2],
+        next: 0,
+        bands: Bands {
+            placed: Vec::new(),
+            reserved: side_width.map(|w| {
+                if w > px(0.) {
+                    w + px(columns::GAP)
+                } else {
+                    px(0.)
+                }
+            }),
+            total,
+        },
+        columns: Vec::with_capacity(region.count),
+        float_rows: 0,
     };
-    let float_rows = bands.occupied.iter().map(|&o| o.saturating_sub(1)).max();
 
     let mut flow_lines: Vec<ShapedLine> = Vec::new();
     let mut y = px(0.);
     let mut block_band: Option<((bool, usize), Pixels, Pixels)> = None;
-    for i in region.column_lines(text_part) {
+    for i in region.text_lines() {
+        floats.place_before(region, i, y, line_height);
         let row = rows_of(y);
         let block = table_index_at(doc.tables(), i)
             .map(|t| (true, t))
             .or_else(|| callout_index_at(doc.callouts(), i).map(|c| (false, c)));
         let (x, width) = match (block, block_band) {
             (Some(b), Some((id, x, w))) if b == id => (x, w),
-            _ => bands.at(row),
+            _ => floats.bands.at(row),
         };
         block_band = block.map(|b| (b, x, width));
         let (results, broken, height) = shape_at(
@@ -307,7 +401,7 @@ fn shape_aside(
         let state = column_state(doc, i, (cursor, focused), &broken);
         let continues = block.is_some();
         let cuttable = !continues
-            && rows > bands.rows_from(row)
+            && rows > floats.bands.rows_from(row)
             && results.len() == 1
             && flowable(&state, &results[0].1, line_text);
         if cuttable {
@@ -315,8 +409,8 @@ fn shape_aside(
             let mut rest = results[0].1.clone();
             let (mut base, mut at_row) = (0usize, row);
             loop {
-                let (bx, bw) = bands.at(at_row);
-                let room = bands.rows_from(at_row);
+                let (bx, bw) = floats.bands.at(at_row);
+                let room = floats.bands.rows_from(at_row);
                 let whole = shape_entry(
                     &rest,
                     Some(bw),
@@ -384,7 +478,10 @@ fn shape_aside(
         });
         y += height;
     }
+    // A float written after the last line of text goes below it.
+    floats.place_before(region, usize::MAX, y, line_height);
     let flow_rows = rows_of(y);
+    let mut columns = std::mem::take(&mut floats.columns);
     columns.push(ShapedColumn {
         x: px(split.x(text_part)),
         width: px(split.width(text_part)),
@@ -393,7 +490,7 @@ fn shape_aside(
     columns.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     ShapedRegion {
         columns,
-        rows: float_rows.unwrap_or(0).max(flow_rows).max(1),
+        rows: floats.float_rows.max(flow_rows).max(1),
         total,
     }
 }

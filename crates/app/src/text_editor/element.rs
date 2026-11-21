@@ -5950,6 +5950,73 @@ mod tests {
         .unwrap();
     }
 
+    /// A second float block joins the first's region: written after some text it
+    /// is put down below that text, on the other side beside it, and the text
+    /// flows between the two. On the same side it waits below the first.
+    #[gpui_kit::test]
+    fn a_later_float_is_placed_where_the_text_reaches_it(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        let para = "flowing words ".repeat(60);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: float left 20%\n\nA one\n\nA two\n\n:::\n\n{para}\n\n::: float right 20%\n\nB one\n\nB two\n\n:::\n\n::: float left 20%\n\nC\n\n:::\n\n{para}\n"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("the floats lay out");
+            assert_eq!(region.count, 4, "three floats share one region");
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let first_y = |prefix: &str| {
+                shaped
+                    .columns
+                    .iter()
+                    .flat_map(|c| &c.lines)
+                    .find(|sl| text[doc.line_start_byte(sl.line)..].starts_with(prefix))
+                    .map(|sl| (sl.x, sl.y))
+                    .unwrap_or_else(|| panic!("{prefix} is laid out"))
+            };
+            let (a_x, a_y) = first_y("A one");
+            let (b_x, b_y) = first_y("B one");
+            let (c_x, c_y) = first_y("C");
+            assert_eq!(a_y, px(0.), "the first float is at the top");
+            assert!(a_x < b_x, "B is on the right");
+            // B is down below the paragraph's first rows, not at the top.
+            assert!(b_y > px(0.), "B waits for the text that precedes it");
+            // C is on A's side and waits for A to end.
+            assert_eq!(c_x, a_x);
+            assert!(c_y >= a_y + lh * 3., "C is below A");
+            // The text goes on beside whichever floats are down.
+            let widths: Vec<_> = shaped
+                .columns
+                .iter()
+                .flat_map(|c| &c.lines)
+                .filter(|sl| text[doc.line_start_byte(sl.line)..].starts_with("flowing"))
+                .map(|sl| sl.width)
+                .collect();
+            assert!(widths.iter().any(|&w| w < px(1400.)));
+            assert!(widths.iter().any(|&w| w == px(1400.)));
+        })
+        .unwrap();
+    }
+
     /// Up and Down step one painted row, so a wrapped paragraph beside a float
     /// is walked row by row (not left for the float's last line), keeping the
     /// caret's x, and the row below the cut is reached from the one above it.
