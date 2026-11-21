@@ -252,8 +252,20 @@ impl Editor {
                     self.buffer.set_cursor(start, false);
                 }
             }
-            self.document_cache.borrow_mut().set_folded(index, !folded);
-            self.row_height_cache.borrow_mut().invalidate_width();
+            let lines = {
+                let mut doc = self.document_cache.borrow_mut();
+                doc.set_folded(index, !folded);
+                let callout = &doc.callouts()[index];
+                callout.start_line..callout.end_line
+            };
+            self.row_height_cache.borrow_mut().mark_changed(lines);
+            // The caret stays put, wherever it is: folding must not scroll back
+            // to it (a first click on a fold marker in a note not yet focused
+            // would send the view to a caret at the top).
+            if self.last_autoscrolled_cursor.get().is_none() {
+                self.last_autoscrolled_cursor
+                    .set(Some(self.buffer.cursor()));
+            }
             cx.notify();
         }
     }

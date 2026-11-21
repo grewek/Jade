@@ -346,6 +346,10 @@ pub(super) struct RowHeightCache {
     /// Corrections `paint_lines`' own per-line loop still had to make: after
     /// [`LineLayout::verify_rows`] there should be none.
     pub(super) late_corrections: usize,
+    /// Lines whose row counts changed without an edit (a callout folded or
+    /// opened), patched at the next layout instead of rebuilding every count
+    /// from estimates, which moved the content height under the view.
+    pending: Option<std::ops::Range<usize>>,
 }
 
 impl RowHeightCache {
@@ -362,7 +366,16 @@ impl RowHeightCache {
             char_width: px(0.),
             verified: 0..0,
             late_corrections: 0,
+            pending: None,
         }
+    }
+
+    /// Marks `lines` to be recounted at the next layout.
+    pub(super) fn mark_changed(&mut self, lines: std::ops::Range<usize>) {
+        self.pending = Some(match self.pending.take() {
+            Some(old) => old.start.min(lines.start)..old.end.max(lines.end),
+            None => lines,
+        });
     }
 
     pub(super) fn line_count(&self) -> usize {
@@ -476,6 +489,7 @@ impl RowHeightCache {
         self.available_width = available_width;
         self.char_width = char_width;
         self.verified = 0..0;
+        self.pending = None;
     }
 
     /// Mirrors `patch`'s line-count change in the row counts, so
@@ -742,9 +756,10 @@ fn pure_row_counts_in(
             }
             let region = view.columns.get(next_region).filter(|r| r.start_line <= i);
             let shown = region.filter(|_| Some(next_region) != view.raw_region);
-            if let Some(r) =
-                shown.filter(|r| columns::split(width, &r.percent[..r.count]).is_some())
-            {
+            if let Some(r) = shown.filter(|r| match r.kind {
+                columns::Kind::Aside => columns::aside_split(width, r.floats()).is_some(),
+                columns::Kind::Columns => columns::split(width, &r.percent[..r.count]).is_some(),
+            }) {
                 if i == r.start_line {
                     shaped.push(i);
                 }
@@ -911,6 +926,18 @@ fn row_count_for_line(
         if i != region.start_line {
             return 0;
         }
+        if region.is_aside() {
+            return aside_row_estimate(
+                text,
+                doc,
+                (&region, &split),
+                (cursor, focused),
+                char_width,
+                (font, font_size),
+                text_color,
+                window,
+            );
+        }
         let widths = (0..region.count).map(|k| px(split.width(k)));
         let mut height = 1;
         for (k, width) in widths.enumerate() {
@@ -941,6 +968,49 @@ fn row_count_for_line(
         available_width,
         window,
     )
+}
+
+/// An aside's rows without shaping it: the taller float stack, or that plus
+/// what the text needs past the stacks (it wraps at the narrow channel beside
+/// them and at the full width below). Summing every column's rows, as a
+/// side-by-side region does, counts the text as if it stayed in the channel,
+/// far too tall for a float block, and the scrollbar shifted as paint
+/// corrected it.
+#[allow(clippy::too_many_arguments)]
+fn aside_row_estimate(
+    text: &str,
+    doc: &DocumentCache,
+    (region, split): (&Columns, &columns::Split),
+    (cursor, focused): (usize, bool),
+    char_width: Pixels,
+    (font, font_size): (&Font, Pixels),
+    text_color: Hsla,
+    window: &mut Window,
+) -> usize {
+    let rows_of = |lines: &mut dyn Iterator<Item = usize>, width: Pixels, window: &mut Window| {
+        lines
+            .map(|line| {
+                let state = LineState::in_column(doc, line, cursor, focused);
+                state_row_count(
+                    text, doc, line, &state, char_width, font, font_size, text_color, width, window,
+                )
+            })
+            .sum::<usize>()
+    };
+    let text_part = region.count - 1;
+    let mut stacks = [0usize; 2];
+    for (k, spec) in region.floats().iter().enumerate() {
+        let rows = rows_of(&mut region.column_lines(k), px(split.width(k)), window);
+        // A row of air between floats on one side.
+        stacks[usize::from(spec.right)] += rows + 1;
+    }
+    let stack = stacks[0].max(stacks[1]);
+    let narrow = split.width(text_part);
+    let channel_rows = rows_of(&mut region.text_lines(), px(narrow), window);
+    let beyond = channel_rows.saturating_sub(stack);
+    let full = split.total.max(narrow);
+    let below = (beyond as f32 * narrow / full).ceil() as usize;
+    (stack + below).max(1)
 }
 
 /// [`row_count_for_line`] for a patch of one or two lines: a side-by-side
@@ -1518,6 +1588,15 @@ pub(super) fn analyze_line_layout(
                 window,
             );
         } else {
+            if let Some(lines) = rows.pending.take() {
+                rows.patch_lines(
+                    text, &doc, lines, cursor, focused, char_width, font, font_size, text_color,
+                    window,
+                );
+                // Patched counts are estimates for plain lines: paint verifies
+                // the visible ones again.
+                rows.verified = 0..0;
+            }
             rows.sync_active_line(
                 text, &doc, cursor, focused, char_width, font, font_size, text_color, window,
             );
@@ -5961,6 +6040,75 @@ mod tests {
             assert_eq!(one.x, two.x);
         })
         .unwrap();
+    }
+
+    /// A cold rebuild counts a float block's region as a region (floats' stacks
+    /// plus text past them), close to its shaped height, so the content height
+    /// (and the scrollbar) hardly moves as paint verifies it; counted as plain
+    /// lines at full width it was half again too tall.
+    #[gpui_kit::test]
+    fn a_cold_rebuild_estimates_a_float_block_near_its_shaped_height(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        use super::{RowHeightCache, mono_char_width};
+        let para = "flowing words ".repeat(40);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: float right 30%\n\nfloat words here\n\n:::\n\n{para}\n\n{para}\n\n{para}\n\nafter"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let char_width = mono_char_width(&font, size, style.color, window);
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1000.));
+            let mut rows = RowHeightCache::empty();
+            rows.rebuild(
+                text,
+                &doc,
+                0,
+                false,
+                px(1000.),
+                char_width,
+                &font,
+                size,
+                style.color,
+                window,
+            );
+            let (region, split) = doc.side_by_side(0).unwrap();
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            )
+            .rows as f32;
+            let estimate = rows.prefix_sum(1) as f32;
+            assert!(
+                (estimate - shaped).abs() <= shaped * 0.25,
+                "estimated {estimate} rows, shaped {shaped}"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Lines marked changed are patched together (a fold then a second one
+    /// before a layout covers both).
+    #[test]
+    fn marked_lines_merge_into_one_range() {
+        let mut rows = super::RowHeightCache::empty();
+        rows.mark_changed(10..14);
+        rows.mark_changed(3..5);
+        assert_eq!(rows.pending, Some(3..14));
     }
 
     /// A float block keeps a row of air below its lowest float, so what follows
