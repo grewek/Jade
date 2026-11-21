@@ -7,7 +7,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
 pub(super) mod justify;
-mod region;
+pub(in crate::text_editor) mod region;
 
 use super::Editor;
 use super::block::{self, image_block};
@@ -2220,6 +2220,7 @@ pub(super) fn render_editor(
                         table_drag: editor_entity.read(cx).table_drag,
                         column_hover: editor_entity.read(cx).column_hover,
                         column_drag: editor_entity.read(cx).column_drag.clone(),
+                        float_spots: editor_entity.read(cx).float_spots.clone(),
                     });
                     editor_entity.update(cx, |editor, cx| {
                         editor.last_view = Some(view.clone());
@@ -2677,6 +2678,8 @@ pub(super) struct FrameView {
     /// The columns region whose controls show, and the divider being dragged.
     column_hover: Option<usize>,
     column_drag: Option<ColumnDrag>,
+    /// See `Editor::float_spots`.
+    float_spots: Rc<RefCell<Vec<(usize, Vec<region::FloatSpot>)>>>,
 }
 
 /// The byte offset closest to `position` (window coordinates): the line
@@ -3240,6 +3243,12 @@ fn column_frame_at(
         height: f32::from(height),
         can_add: region.count < columns::MAX_COLUMNS,
         buttons: !region.tail,
+        grips: editor
+            .float_spots
+            .borrow()
+            .iter()
+            .find(|(line, _)| *line == region.start_line)
+            .map_or_else(Vec::new, |(_, spots)| region::float_grips(spots, &split)),
     };
     let p = (
         f32::from(position.x - view.bounds.origin.x),
@@ -3977,6 +3986,7 @@ fn paint_lines(
     cx: &mut App,
 ) {
     let (line_roles, tables, callouts) = (doc.line_roles(), doc.tables(), doc.callouts());
+    view.float_spots.borrow_mut().clear();
     let &FrameView {
         ref layout,
         cursor,
@@ -4116,6 +4126,9 @@ fn paint_lines(
                 (inline, Some(links)),
                 window,
             );
+            view.float_spots
+                .borrow_mut()
+                .push((i, shaped.float_spots.clone()));
             region::paint_region(&env, &shaped, &region, (bounds, y_offset), (window, cx));
             // Exact rows from shaping, as the row cache does for any line.
             layout.correct_row_count(i, shaped.rows);
@@ -5837,6 +5850,7 @@ mod tests {
                 table_drag: None,
                 column_hover: None,
                 column_drag: None,
+                float_spots: Default::default(),
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;
             // The table is the right column's first block, at the region's top
@@ -5945,6 +5959,45 @@ mod tests {
             let (one, two) = (right_one.unwrap(), right_two.unwrap());
             assert_eq!(two.y, one.y + one.height + lh, "a row of air between");
             assert_eq!(one.x, two.x);
+        })
+        .unwrap();
+    }
+
+    /// A float block keeps a row of air below its lowest float, so what follows
+    /// the region (another float block, a table) never touches it.
+    #[gpui_kit::test]
+    fn a_float_block_taller_than_its_text_keeps_a_row_of_air(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        let tall = "float line\n\n".repeat(8);
+        let text: &'static str =
+            Box::leak(format!("::: float right 30%\n\n{tall}:::\n\nshort").into_boxed_str());
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("a float block lays out");
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let spot = shaped.float_spots[0];
+            let bottom = spot.top + spot.height;
+            assert!(
+                lh * shaped.rows as f32 >= bottom + lh,
+                "{} rows, the float ends at {bottom:?}",
+                shaped.rows
+            );
         })
         .unwrap();
     }
@@ -6271,6 +6324,7 @@ mod tests {
                 table_drag: None,
                 column_hover: None,
                 column_drag: None,
+                float_spots: Default::default(),
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;
             // The table is the right column's first block, at the region's top
@@ -6297,6 +6351,7 @@ mod tests {
                 height: f32::from(view.layout.height(region.start_line)),
                 can_add: true,
                 buttons: true,
+                grips: Vec::new(),
             };
             let (x, y, w, h) = column_handles::rect_of(&frame, column_handles::Handle::Divider(0));
             let grip = at(x + w / 2., px(y + h / 2.));

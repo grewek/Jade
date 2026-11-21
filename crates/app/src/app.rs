@@ -1814,7 +1814,10 @@ impl Render for JadeApp {
             // The scrollbar overlays a wrapper rather than the scroll container,
             // or it would scroll away with the content. `Scrollbar`'s default
             // mode shows it while scrolling and fades it out after idle.
-            let mut editor_area = div().relative().flex_1().min_h_0();
+            // Padded on the right: the scrollbar (absolute, over the padding box)
+            // sits there, beside the pane and not over its text. The pane itself
+            // stays unpadded, since the editor takes its width from the pane's.
+            let mut editor_area = div().relative().flex_1().min_h_0().pr(px(16.));
             if let Some(editor) = self.editor() {
                 let handle = editor.read(cx).scroll_handle();
                 editor_pane = editor_pane.track_scroll(handle);
@@ -2959,9 +2962,9 @@ mod tests {
         assert!(!frames.is_empty(), "no paint frames arrived");
         let (_, first) = &frames[0];
         // Rows are rebuilt for the real width while painting, so even the first frame
-        // wraps at the width it paints at.
+        // wraps at the width it paints at (the pane less the scrollbar's gutter).
         assert!(
-            first.contains("bounds=(277,51 982x") && first.contains("wrap_width=982"),
+            first.contains("bounds=(277,51 966x") && first.contains("wrap_width=966"),
             "first frame: {first}"
         );
         assert!(

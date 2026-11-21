@@ -50,8 +50,18 @@ pub(super) struct ShapedColumn {
     pub lines: Vec<ShapedLine>,
 }
 
+/// Where one float of an aside was put down, from the region's top.
+#[derive(Clone, Copy)]
+pub(in crate::text_editor) struct FloatSpot {
+    pub(in crate::text_editor) right: bool,
+    pub(in crate::text_editor) top: Pixels,
+    pub(in crate::text_editor) height: Pixels,
+}
+
 pub(super) struct ShapedRegion {
     pub columns: Vec<ShapedColumn>,
+    /// An aside's placed floats (none for columns).
+    pub float_spots: Vec<FloatSpot>,
     /// The region's height in rows: its tallest column, at least one.
     pub rows: usize,
     /// The line's whole width.
@@ -119,6 +129,7 @@ pub(super) fn shape_region(
     }
     ShapedRegion {
         columns: shaped,
+        float_spots: Vec::new(),
         rows,
         total: px(split.total),
     }
@@ -246,8 +257,12 @@ struct Floats {
     bands: Bands,
     /// The placed floats' columns.
     columns: Vec<ShapedColumn>,
-    /// The bottom row of the lowest float, air excluded.
+    /// The bottom row of the lowest float, air excluded (a float block's: see
+    /// `air`).
     float_rows: usize,
+    /// Whether the region keeps a row of air below its lowest float.
+    air: bool,
+    spots: Vec<FloatSpot>,
 }
 
 impl Floats {
@@ -278,11 +293,21 @@ impl Floats {
         }
         // A row of air below a float, before text or the next float.
         self.side_y[float.side] = top + float.height + line_height;
+        self.spots.push(FloatSpot {
+            right: float.side == RIGHT,
+            top,
+            height: float.height,
+        });
         self.bands.placed.push(Placed {
             side: float.side,
             rows: rows_of(top)..rows_of(self.side_y[float.side]),
         });
-        self.float_rows = self.float_rows.max(rows_of(top + float.height));
+        // A row of air below the lowest float (the next block must not touch it)
+        // is part of the region only for a float block, whose text is not what
+        // follows the floats in the document.
+        self.float_rows = self
+            .float_rows
+            .max(rows_of(top + float.height) + usize::from(self.air));
         self.columns.push(ShapedColumn {
             x: float.x,
             width: float.width,
@@ -364,6 +389,8 @@ fn shape_aside(
         },
         columns: Vec::with_capacity(region.count),
         float_rows: 0,
+        air: region.tail,
+        spots: Vec::new(),
     };
 
     let mut flow_lines: Vec<ShapedLine> = Vec::new();
@@ -494,6 +521,7 @@ fn shape_aside(
     columns.sort_by(|a, b| a.x.partial_cmp(&b.x).unwrap_or(std::cmp::Ordering::Equal));
     ShapedRegion {
         columns,
+        float_spots: floats.spots,
         rows: floats.float_rows.max(flow_rows).max(1),
         total,
     }
@@ -617,6 +645,22 @@ pub(super) fn dragged_floats(region: &Columns, percent: &[u8]) -> Vec<columns::F
         .collect()
 }
 
+/// A grip for each float, beside it: `(divider, centre y)` from the region's
+/// top. A float block's region is as tall as its text, so one grip at the top
+/// would be screens from most of its floats.
+pub(super) fn float_grips(spots: &[FloatSpot], split: &columns::Split) -> Vec<(usize, f32)> {
+    spots
+        .iter()
+        .filter_map(|spot| {
+            let divider =
+                (0..split.divider_count()).find(|&d| split.divider_is_right(d) == spot.right)?;
+            let y =
+                f32::from(spot.top) + (f32::from(spot.height) / 2.).min(column_handles::GRIP_LONG);
+            Some((divider, y))
+        })
+        .collect()
+}
+
 /// The divider grips, `+` and unwrap while the pointer is over the region, or
 /// the dragged grip and its drop line.
 fn paint_region_controls(
@@ -649,6 +693,7 @@ fn paint_region_controls(
         height,
         can_add: region.count < columns::MAX_COLUMNS,
         buttons: !region.tail,
+        grips: float_grips(&shaped.float_spots, &split),
     };
     let origin = point(bounds.origin.x + first.x, bounds.origin.y + top);
     let at = |handle| {
@@ -702,7 +747,13 @@ fn paint_region_controls(
             column_handles::Handle::Add => (true, "icons/plus.svg"),
             column_handles::Handle::Unwrap => (true, "icons/x.svg"),
         };
-        paint_control(at(handle), icon, (round, false), &colors, (window, cx));
+        for (x, y, w, h) in column_handles::rects_of(&frame, handle) {
+            let bounds = Bounds {
+                origin: origin + point(px(x), px(y)),
+                size: size(px(w), px(h)),
+            };
+            paint_control(bounds, icon, (round, false), &colors, (window, cx));
+        }
     }
 }
 

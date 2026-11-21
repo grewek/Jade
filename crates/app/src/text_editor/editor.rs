@@ -149,6 +149,9 @@ pub struct Editor {
     pub(super) table_drag: Option<TableDrag>,
     /// The columns region whose controls are shown for the pointer.
     pub(super) column_hover: Option<usize>,
+    /// Where the last frame put each aside's floats, by region's first line
+    /// (for placing a region's grips beside them).
+    pub(super) float_spots: Rc<RefCell<Vec<(usize, Vec<super::element::region::FloatSpot>)>>>,
     /// A divider being dragged.
     pub(super) column_drag: Option<ColumnDrag>,
     /// The vault root and this note's id, for finding image embeds' files.
@@ -185,6 +188,7 @@ impl Editor {
             table_hover: None,
             table_drag: None,
             column_hover: None,
+            float_spots: Rc::new(RefCell::new(Vec::new())),
             column_drag: None,
             image_context: None,
         }

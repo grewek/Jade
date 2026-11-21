@@ -24,6 +24,9 @@ pub(super) struct Frame {
     /// The `+` and unwrap buttons show: not for a float block, which has only
     /// its grips.
     pub buttons: bool,
+    /// Where each float of an aside has its grip: `(divider, centre y)`. Empty
+    /// (the grip near the region's top) for columns.
+    pub grips: Vec<(usize, f32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,8 +70,13 @@ pub(super) fn rect_of(frame: &Frame, handle: Handle) -> (f32, f32, f32, f32) {
     let round = |cx: f32| centered(cx, -RADIUS, 2.0 * RADIUS, 2.0 * RADIUS);
     match handle {
         Handle::Divider(k) => {
-            // Near the top, but inside a short region.
-            let y = (frame.height / 2.0).min(GRIP_LONG);
+            // Near the top, but inside a short region; the first float's when
+            // there are grips beside floats.
+            let y = frame
+                .grips
+                .iter()
+                .find(|&&(d, _)| d == k)
+                .map_or((frame.height / 2.0).min(GRIP_LONG), |&(_, y)| y);
             centered(frame.dividers[k], y, GRIP_SHORT, GRIP_LONG)
         }
         Handle::Unwrap => round(frame.width - RADIUS),
@@ -76,11 +84,37 @@ pub(super) fn rect_of(frame: &Frame, handle: Handle) -> (f32, f32, f32, f32) {
     }
 }
 
+/// Every place a control is drawn: a divider has a grip beside each float.
+pub(super) fn rects_of(frame: &Frame, handle: Handle) -> Vec<(f32, f32, f32, f32)> {
+    let Handle::Divider(k) = handle else {
+        return vec![rect_of(frame, handle)];
+    };
+    let at: Vec<_> = frame
+        .grips
+        .iter()
+        .filter(|&&(d, _)| d == k)
+        .map(|&(_, y)| {
+            (
+                frame.dividers[k] - GRIP_SHORT / 2.,
+                y - GRIP_LONG / 2.,
+                GRIP_SHORT,
+                GRIP_LONG,
+            )
+        })
+        .collect();
+    if at.is_empty() {
+        vec![rect_of(frame, handle)]
+    } else {
+        at
+    }
+}
+
 /// Which control the point is on.
 pub(super) fn handle_at(frame: &Frame, p: (f32, f32)) -> Option<Handle> {
     shown(frame).into_iter().find(|&handle| {
-        let (x, y, w, h) = rect_of(frame, handle);
-        (x..=x + w).contains(&p.0) && (y..=y + h).contains(&p.1)
+        rects_of(frame, handle)
+            .into_iter()
+            .any(|(x, y, w, h)| (x..=x + w).contains(&p.0) && (y..=y + h).contains(&p.1))
     })
 }
 
@@ -95,6 +129,7 @@ mod tests {
             height: 100.0,
             can_add,
             buttons: true,
+            grips: Vec::new(),
         }
     }
 
@@ -131,5 +166,26 @@ mod tests {
         f.height = 20.0;
         let (_, y, _, h) = rect_of(&f, Handle::Divider(0));
         assert!(y + h / 2.0 <= f.height);
+    }
+
+    /// A float block's region is as tall as its text: each float has its own
+    /// grip on the divider, and none shows between them.
+    #[test]
+    fn a_divider_has_a_grip_beside_each_float() {
+        let mut f = frame(false);
+        f.height = 2000.0;
+        f.grips = vec![(0, 30.0), (0, 900.0)];
+        let spots: Vec<_> = rects_of(&f, Handle::Divider(0));
+        assert_eq!(spots.len(), 2);
+        for (x, y, w, h) in spots {
+            assert_eq!(
+                handle_at(&f, (x + w / 2.0, y + h / 2.0)),
+                Some(Handle::Divider(0))
+            );
+        }
+        assert_eq!(handle_at(&f, (300.0, 500.0)), None, "between the floats");
+        // The first float's grip is the one a drag's ghost is drawn at.
+        let (_, y, _, h) = rect_of(&f, Handle::Divider(0));
+        assert_eq!(y + h / 2.0, 30.0);
     }
 }
