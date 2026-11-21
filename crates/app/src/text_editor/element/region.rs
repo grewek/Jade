@@ -10,7 +10,7 @@
 use super::*;
 
 /// One shaped line of a column: `y` is its top below the region's top.
-pub(super) struct ShapedLine {
+pub(in crate::text_editor) struct ShapedLine {
     pub line: usize,
     pub y: Pixels,
     pub height: Pixels,
@@ -44,7 +44,7 @@ impl ShapedLine {
 }
 
 /// One column: `x` and `width` are relative to the editor's left edge.
-pub(super) struct ShapedColumn {
+pub(in crate::text_editor) struct ShapedColumn {
     pub x: Pixels,
     pub width: Pixels,
     pub lines: Vec<ShapedLine>,
