@@ -1,9 +1,9 @@
 //! Structure edits on a columns region, as pure text in, text out: the lines of
 //! the whole region (open marker to close marker) go in, the lines that replace
 //! them come out, so the editor can diff them into one undo step. The pixel
-//! side (which divider is dragged, where) is `column_handles.rs`.
+//! side (which divider is dragged, where) is `columns/handles.rs`.
 
-use super::columns::{self, Columns, Kind, MAX_COLUMNS, equal_shares};
+use super::{self as columns, Columns, MAX_COLUMNS, equal_shares};
 
 /// The smallest share a column keeps when a divider is dragged.
 pub const MIN_SHARE: u8 = 10;

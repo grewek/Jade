@@ -11,7 +11,7 @@
 //! startup and ~3xxMB with the 320K-line stress fixture open, well above
 //! what the document's own text (~11.3MB) plus `DocumentCache`/
 //! `RowHeightCache`'s per-line arrays (~45MB, estimated from their actual
-//! field types) should cost. See `document_cache.rs`'s and `app.rs`'s own
+//! field types) should cost. See `doc/`'s and `app.rs`'s own
 //! tests that use this for what it found.
 
 use std::alloc::{GlobalAlloc, Layout, System};

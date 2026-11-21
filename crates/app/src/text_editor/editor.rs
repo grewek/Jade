@@ -11,18 +11,16 @@ pub(super) use column_edit::ColumnMenu;
 mod table_edit;
 
 use super::EditorBuffer;
-use super::block;
-use super::callout::callout_index_at;
-use super::column_handles::ColumnDrag;
+use super::columns::handles::ColumnDrag;
+use super::doc::{DocumentCache, TextEdit};
 use super::doc_stats::DocStats;
-use super::document_cache::{DocumentCache, TextEdit};
-use super::element::{
-    RowHeightCache, column_width_for, mono_char_width, render_editor, render_params,
-};
+use super::element::{render_editor, render_params};
 use super::headings::find_heading_line;
-use super::images::{self, ImageInfo};
+use super::image;
 use super::link_table::LinkTable;
-use super::table_handles::{Handle, TableDrag};
+use super::preview::callout::callout_index_at;
+use super::rows::{Change, Inputs, Invalidate, RowCache};
+use super::table::handles::{Handle, TableDrag};
 use jade_core::link_scan::{LinkKind, scan_line};
 
 /// The `TextEdit` for a plain insertion of `inserted_len` bytes replacing
@@ -123,8 +121,8 @@ pub struct Editor {
     /// `'static` canvas paint closure without touching the entity.
     pub(super) document_cache: Rc<RefCell<DocumentCache>>,
     /// Persisted per-line row-height estimates for the buffer's current
-    /// text — see `element::RowHeightCache`'s own module doc. Starts empty
-    /// (`RowHeightCache::empty()`): unlike `document_cache` above, building
+    /// text — see `element::RowCache`'s own module doc. Starts empty
+    /// (`RowCache::empty()`): unlike `document_cache` above, building
     /// this needs a `Font`/`Window` to measure a monospace character's
     /// advance width, neither of which `Editor::new` has — it's populated
     /// lazily by `element::analyze_line_layout`'s fingerprint check on the
@@ -132,7 +130,7 @@ pub struct Editor {
     /// use" shape `available_width`'s own `Pixels::MAX`-before-first-layout
     /// fallback already has. Same `Rc<RefCell<_>>` sharing reasoning as
     /// `document_cache`.
-    pub(super) row_height_cache: Rc<RefCell<RowHeightCache>>,
+    pub(super) row_height_cache: Rc<RefCell<RowCache>>,
     /// Word and character counts for the status bar, patched per edit.
     doc_stats: DocStats,
     /// Where the note's links are, patched per edit.
@@ -179,7 +177,7 @@ impl Editor {
             last_view: None,
             visual_goal: None,
             document_cache,
-            row_height_cache: Rc::new(RefCell::new(RowHeightCache::empty())),
+            row_height_cache: Rc::new(RefCell::new(RowCache::empty())),
             doc_stats,
             link_table,
             hovering_link: false,
@@ -258,7 +256,9 @@ impl Editor {
                 let callout = &doc.callouts()[index];
                 callout.start_line..callout.end_line
             };
-            self.row_height_cache.borrow_mut().mark_changed(lines);
+            self.row_height_cache
+                .borrow_mut()
+                .invalidate(Invalidate::Lines(lines));
             // The caret stays put, wherever it is: folding must not scroll back
             // to it (a first click on a fold marker in a note not yet focused
             // would send the view to a caret at the top).
@@ -279,7 +279,9 @@ impl Editor {
             && doc.callouts()[index].hides(line)
         {
             doc.set_folded(index, false);
-            self.row_height_cache.borrow_mut().invalidate_width();
+            self.row_height_cache
+                .borrow_mut()
+                .invalidate(Invalidate::Width);
         }
     }
 
@@ -300,10 +302,10 @@ impl Editor {
         };
         let targets = {
             let mut doc = self.document_cache.borrow_mut();
-            let targets = block::unknown_image_targets(self.buffer.text(), &doc, lines);
+            let targets = image::unknown_targets(self.buffer.text(), &doc, lines);
             // Marked as asked for, so a second edit of the line does not ask again.
             for target in &targets {
-                doc.images_mut().insert(target, None);
+                doc.view.images_mut().insert(target, None);
             }
             targets
         };
@@ -314,7 +316,7 @@ impl Editor {
             let sizes = cx
                 .background_spawn(async move {
                     let (root, note_id) = &*context;
-                    let read = |target: &String| images::read_info(root, note_id, target);
+                    let read = |target: &String| image::read_info(root, note_id, target);
                     targets
                         .iter()
                         .map(|t| (t.clone(), read(t)))
@@ -327,12 +329,18 @@ impl Editor {
         .detach();
     }
 
-    fn apply_image_sizes(&mut self, sizes: &[(String, Option<ImageInfo>)], cx: &mut Context<Self>) {
+    fn apply_image_sizes(
+        &mut self,
+        sizes: &[(String, Option<image::Info>)],
+        cx: &mut Context<Self>,
+    ) {
         let mut doc = self.document_cache.borrow_mut();
         for (target, size) in sizes {
-            doc.images_mut().insert(target, size.clone());
+            doc.view.images_mut().insert(target, size.clone());
         }
-        self.row_height_cache.borrow_mut().invalidate_width();
+        self.row_height_cache
+            .borrow_mut()
+            .invalidate(Invalidate::Width);
         cx.notify();
     }
 
@@ -465,7 +473,7 @@ impl Editor {
     /// Visible lines `paint_lines` still had to re-measure after the pre-pass.
     #[cfg(test)]
     pub fn late_row_corrections(&self) -> usize {
-        self.row_height_cache.borrow().late_corrections
+        self.row_height_cache.borrow().trace_state().2
     }
 
     pub fn buffer_mut(&mut self) -> &mut EditorBuffer {
@@ -523,58 +531,27 @@ impl Editor {
         self.request_image_sizes(touched, cx);
 
         let params = render_params(self, window, cx);
-        let cursor = self.buffer.cursor();
-        let focused = self.focus_handle.is_focused(window);
-        let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
-        let touched = patch.as_ref().map(|p| p.touched.clone());
-        let rebuild = {
-            let doc = self.document_cache.borrow();
-            let mut rows = self.row_height_cache.borrow_mut();
-            if let Some(patch) = &patch {
-                rows.resize_for(patch, &doc);
-            }
-            touched.is_none() || rows.needs_full_rebuild(&doc, params.available_width, char_width)
+        let inp = Inputs {
+            text,
+            cursor: self.buffer.cursor(),
+            focused: self.focus_handle.is_focused(window),
+            width: params.available_width,
+            font: &params.font,
+            font_size: params.font_size,
+            text_color: params.text_color,
         };
-        if rebuild {
-            // Set only where the rows are rebuilt: see `analyze_line_layout`.
-            self.document_cache
-                .borrow_mut()
-                .set_column_width(column_width_for(params.available_width));
-        }
-        let doc = self.document_cache.borrow();
         let mut rows = self.row_height_cache.borrow_mut();
-        match touched {
-            Some(range) if !rebuild => {
-                rows.patch_lines(
-                    text,
-                    &doc,
-                    range,
-                    cursor,
-                    focused,
-                    char_width,
-                    &params.font,
-                    params.font_size,
-                    params.text_color,
-                    window,
-                );
+        match &patch {
+            Some(patch) => {
+                rows.update(&self.document_cache, Change::Edit(patch), &inp, window);
             }
-            _ => {
-                rows.rebuild(
-                    text,
-                    &doc,
-                    cursor,
-                    focused,
-                    params.available_width,
-                    char_width,
-                    &params.font,
-                    params.font_size,
-                    params.text_color,
-                    window,
-                );
+            // No patch to apply: every count is rebuilt.
+            None => {
+                rows.invalidate(Invalidate::Width);
+                rows.update(&self.document_cache, Change::Layout, &inp, window);
             }
         }
         drop(rows);
-        drop(doc);
 
         self.notify_changed(cx);
     }
@@ -879,6 +856,7 @@ impl Render for Editor {
         self.sync_column_view(window, cx);
         self.document_cache
             .borrow_mut()
+            .view
             .set_justify(super::TextSettings::justify(cx));
         render_editor(self, cx.entity(), window, cx)
     }

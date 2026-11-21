@@ -6,12 +6,13 @@
 
 use gpui_kit::*;
 
-use super::super::block_preview::LineRole;
-use super::super::column_ops;
+use super::super::columns;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
-use super::super::document_cache::DocumentCache;
-use super::super::element::{mono_char_width, render_params};
+use super::super::doc::DocumentCache;
+use super::super::element::render_params;
+use super::super::preview::LineRole;
+use super::super::rows::{Change, Inputs};
 use super::Editor;
 
 /// What the right-click menu offers about the structure around the caret.
@@ -122,9 +123,9 @@ impl Editor {
             .as_ref()
             .map(|d| (d.region, d.percent.clone()));
         let mut doc = self.document_cache.borrow_mut();
-        let before = (doc.raw_region(), doc.column_preview_region());
-        let changed = doc.set_raw_region(raw) | doc.set_column_preview(preview);
-        let after = (doc.raw_region(), doc.column_preview_region());
+        let before = (doc.view.raw_region(), doc.view.column_preview_region());
+        let changed = doc.view.set_raw_region(raw) | doc.view.set_column_preview(preview);
+        let after = (doc.view.raw_region(), doc.view.column_preview_region());
         let regions: Vec<usize> = [before.0, before.1, after.0, after.1]
             .into_iter()
             .flatten()
@@ -146,33 +147,22 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         let params = render_params(self, window, cx);
-        let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
-        let cursor = self.buffer.cursor();
-        let focused = self.focus_handle.is_focused(window);
-        let doc = self.document_cache.borrow();
+        let inp = Inputs {
+            text: self.buffer.text(),
+            cursor: self.buffer.cursor(),
+            focused: self.focus_handle.is_focused(window),
+            width: params.available_width,
+            font: &params.font,
+            font_size: params.font_size,
+            text_color: params.text_color,
+        };
         let mut rows = self.row_height_cache.borrow_mut();
-        if rows.needs_full_rebuild(&doc, params.available_width, char_width) {
-            // Not built for this width yet: the next paint rebuilds anyway.
-            rows.invalidate_width();
-            return;
-        }
-        let text = self.buffer.text();
         for &index in regions {
-            let Some(region) = doc.columns().get(index) else {
+            let Some(region) = self.document_cache.borrow().columns().get(index).copied() else {
                 continue;
             };
-            rows.patch_lines(
-                text,
-                &doc,
-                region.start_line..region.end_line,
-                cursor,
-                focused,
-                char_width,
-                &params.font,
-                params.font_size,
-                params.text_color,
-                window,
-            );
+            let lines = region.start_line..region.end_line;
+            rows.update(&self.document_cache, Change::Lines(lines), &inp, window);
         }
     }
 
@@ -185,7 +175,7 @@ impl Editor {
             let Some(index) = doc.region_index_at(line) else {
                 return false;
             };
-            (index, doc.raw_region() == Some(index))
+            (index, doc.view.raw_region() == Some(index))
         };
         self.raw_region_pinned = (!raw).then_some(index);
         cx.notify();
@@ -227,8 +217,9 @@ impl Editor {
         };
         let plain = |l: usize| {
             doc.line_roles().get(l) == Some(&LineRole::Plain)
-                && crate::text_editor::table_preview::table_index_at(doc.tables(), l).is_none()
-                && crate::text_editor::callout::callout_index_at(doc.callouts(), l).is_none()
+                && crate::text_editor::table::table_index_at(doc.tables(), l).is_none()
+                && crate::text_editor::preview::callout::callout_index_at(doc.callouts(), l)
+                    .is_none()
         };
         if blank(line) || !plain(line) {
             return None;
@@ -309,9 +300,9 @@ impl Editor {
                 return None;
             }
             Some(match region.kind {
-                Kind::Aside if region.tail => column_ops::float_markers(lines, region, &percent),
-                Kind::Aside => column_ops::aside_markers(lines, region, &percent, false),
-                Kind::Columns => column_ops::with_ratio(lines, &percent),
+                Kind::Aside if region.tail => columns::ops::float_markers(lines, region, &percent),
+                Kind::Aside => columns::ops::aside_markers(lines, region, &percent, false),
+                Kind::Columns => columns::ops::with_ratio(lines, &percent),
             })
         })
     }
@@ -325,9 +316,9 @@ impl Editor {
     ) -> bool {
         self.edit_region(index, window, cx, |lines, region| {
             if region.is_aside() {
-                column_ops::with_added_float(lines, region)
+                columns::ops::with_added_float(lines, region)
             } else {
-                column_ops::with_added_column(lines, region)
+                columns::ops::with_added_column(lines, region)
             }
         })
     }
@@ -340,7 +331,7 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.edit_region(index, window, cx, |lines, region| {
-            Some(column_ops::unwrapped(lines, region))
+            Some(columns::ops::unwrapped(lines, region))
         })
     }
 
@@ -360,7 +351,7 @@ impl Editor {
         self.edit_region(index, window, cx, |lines, region| {
             region
                 .is_aside()
-                .then(|| column_ops::flipped(lines, region))
+                .then(|| columns::ops::flipped(lines, region))
         })
     }
 
@@ -392,7 +383,7 @@ impl Editor {
             return false;
         };
         self.edit_region(index, window, cx, |lines, region| {
-            Some(column_ops::float_flipped(lines, region, k))
+            Some(columns::ops::float_flipped(lines, region, k))
         })
     }
 
@@ -521,7 +512,10 @@ impl Editor {
             }
             let lines: Vec<&str> = block.clone().map(line_text).collect();
             let range = doc.line_start_byte(block.start)..doc.line_end_byte(end - 1);
-            (range, column_ops::floated(&lines, &text, right).join("\n"))
+            (
+                range,
+                columns::ops::floated(&lines, &text, right).join("\n"),
+            )
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
@@ -570,7 +564,7 @@ impl Editor {
                 .map(|l| &source[doc.line_start_byte(l)..doc.line_end_byte(l)])
                 .collect();
             let range = doc.line_start_byte(block.start)..doc.line_end_byte(block.end - 1);
-            (range, column_ops::wrapped(&lines).join("\n"))
+            (range, columns::ops::wrapped(&lines).join("\n"))
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);

@@ -1,21 +1,21 @@
 //! Where a table row's text goes inside its box: for each column, the lines its
 //! cell wraps onto, as byte ranges of the row's source line. No pixels and no
 //! shaping here, so it is cheap to test; `element.rs` places and paints the
-//! lines. Wrapping is the same greedy fill `table_preview::wrapped_line_count`
+//! lines. Wrapping is the same greedy fill `table::model::wrapped_line_count`
 //! counts (checked against it), so a row's height is the same however it is
 //! asked for.
 
 use std::ops::Range;
 
-use super::live_preview::{build_cell_line, raw_cell_line};
-use super::table_preview::{Align, LINE_BREAK, for_each_cell_range};
+use super::super::preview::{build_cell_line, raw_cell_line};
+use super::model::{Align, LINE_BREAK, for_each_cell_range};
 
 /// Space on each side of a cell's text, in characters. The grid is laid out in
 /// characters (the font is monospace); `element.rs` multiplies by the advance.
-pub(super) const CELL_PAD: f32 = 1.5;
+pub(in crate::text_editor) const CELL_PAD: f32 = 1.5;
 
 /// Where `column`'s box starts, in characters from the table's left edge.
-pub(super) fn column_left(widths: &[usize], column: usize) -> f32 {
+pub(in crate::text_editor) fn column_left(widths: &[usize], column: usize) -> f32 {
     widths[..column]
         .iter()
         .map(|&w| w as f32 + 2.0 * CELL_PAD)
@@ -23,12 +23,12 @@ pub(super) fn column_left(widths: &[usize], column: usize) -> f32 {
 }
 
 /// Where `column`'s text starts, in characters from the table's left edge.
-pub(super) fn text_left(widths: &[usize], column: usize) -> f32 {
+pub(in crate::text_editor) fn text_left(widths: &[usize], column: usize) -> f32 {
     column_left(widths, column) + CELL_PAD
 }
 
 /// The table's width in characters, borders included.
-pub(super) fn box_width(widths: &[usize]) -> f32 {
+pub(in crate::text_editor) fn box_width(widths: &[usize]) -> f32 {
     column_left(widths, widths.len())
 }
 
@@ -41,7 +41,7 @@ fn column_at(widths: &[usize], x: f32) -> usize {
 }
 
 /// How far into the spare room of its column a cell's text sits.
-pub(super) fn align_fraction(align: Align) -> f32 {
+pub(in crate::text_editor) fn align_fraction(align: Align) -> f32 {
     match align {
         Align::Left => 0.0,
         Align::Center => 0.5,
@@ -53,7 +53,7 @@ pub(super) fn align_fraction(align: Align) -> f32 {
 /// left edge, `row` lines below the row's top. The nearest character of the
 /// cell line under it, mapped through what that line shows (hidden markup).
 #[cfg(test)]
-pub(super) fn offset_at(
+pub(in crate::text_editor) fn offset_at(
     line: &str,
     widths: &[usize],
     aligns: &[Align],
@@ -64,7 +64,7 @@ pub(super) fn offset_at(
 }
 
 /// [`offset_at`] on a row whose cell `editing` shows its text verbatim.
-pub(super) fn offset_at_editing(
+pub(in crate::text_editor) fn offset_at_editing(
     line: &str,
     widths: &[usize],
     aligns: &[Align],
@@ -100,7 +100,7 @@ pub(super) fn offset_at_editing(
 /// The part of a cell that is edited: its raw text without the single space of
 /// padding `| a |` conventionally has on each side (`raw` is the cell's whole
 /// range between its pipes). Extra spaces are text and stay editable.
-pub(super) fn edit_range(line: &str, raw: Range<usize>) -> Range<usize> {
+pub(in crate::text_editor) fn edit_range(line: &str, raw: Range<usize>) -> Range<usize> {
     let cell = &line[raw.clone()];
     if cell == " " {
         return raw.start..raw.start;
@@ -111,7 +111,7 @@ pub(super) fn edit_range(line: &str, raw: Range<usize>) -> Range<usize> {
 }
 
 /// The raw range of every cell of `line`, between its pipes.
-pub(super) fn cell_ranges(line: &str) -> Vec<Range<usize>> {
+pub(in crate::text_editor) fn cell_ranges(line: &str) -> Vec<Range<usize>> {
     let mut ranges = Vec::new();
     for_each_cell_range(line, |raw| ranges.push(raw));
     ranges
@@ -119,7 +119,7 @@ pub(super) fn cell_ranges(line: &str) -> Vec<Range<usize>> {
 
 /// The column whose cell holds byte `offset` of `line`: the one it is inside,
 /// or the nearest when it is on a pipe or past the ends.
-pub(super) fn cell_at(line: &str, offset: usize) -> usize {
+pub(in crate::text_editor) fn cell_at(line: &str, offset: usize) -> usize {
     let ranges = cell_ranges(line);
     ranges
         .iter()
@@ -156,7 +156,7 @@ fn raw_cuts(text: &str, width: usize, mut emit: impl FnMut(Range<usize>)) {
 }
 
 /// How many lines [`wrap_raw`] gives `text`.
-pub(super) fn raw_line_count(text: &str, width: usize) -> usize {
+pub(in crate::text_editor) fn raw_line_count(text: &str, width: usize) -> usize {
     text.split(LINE_BREAK)
         .map(|part| {
             let mut count = 0;
@@ -196,7 +196,7 @@ fn line_at_offset(lines: &[Range<usize>], offset: usize) -> usize {
 
 /// One column's cell of one row.
 #[derive(Debug, PartialEq, Eq)]
-pub(super) struct CellBox {
+pub(in crate::text_editor) struct CellBox {
     /// The cell's wrapped lines, never empty. Each is a byte range of the
     /// source line covering whole words; a cell with no text has one empty
     /// range at the cell's start.
@@ -205,7 +205,7 @@ pub(super) struct CellBox {
 
 /// How many lines the row is tall: its tallest cell.
 #[cfg(test)]
-pub(super) fn row_height(cells: &[CellBox]) -> usize {
+pub(in crate::text_editor) fn row_height(cells: &[CellBox]) -> usize {
     cells.iter().map(|c| c.lines.len()).max().unwrap_or(1)
 }
 
@@ -213,13 +213,13 @@ pub(super) fn row_height(cells: &[CellBox]) -> usize {
 /// row with fewer cells than columns gets empty ones at its end; extra cells
 /// are ignored, as in `row_line_count`.
 #[cfg(test)]
-pub(super) fn layout_row(line: &str, widths: &[usize]) -> Vec<CellBox> {
+pub(in crate::text_editor) fn layout_row(line: &str, widths: &[usize]) -> Vec<CellBox> {
     layout_row_editing(line, widths, None)
 }
 
 /// [`layout_row`] for a row whose cell `editing` is being edited: that cell is
 /// laid out by [`wrap_raw`].
-pub(super) fn layout_row_editing(
+pub(in crate::text_editor) fn layout_row_editing(
     line: &str,
     widths: &[usize],
     editing: Option<usize>,
@@ -243,7 +243,7 @@ pub(super) fn layout_row_editing(
         .collect()
 }
 
-/// The greedy fill of `table_preview::wrapped_line_count`, returning where each
+/// The greedy fill of `table::model::wrapped_line_count`, returning where each
 /// line is instead of how many there are.
 fn wrap_ranges(line: &str, raw: Range<usize>, width: usize) -> Vec<Range<usize>> {
     let cell = &line[raw.clone()];
@@ -334,7 +334,12 @@ fn shown_len(word: &str) -> usize {
 
 /// Where byte `offset` of the edited cell `column` of `line` is: the row of the
 /// cell it is on, and its x in characters from the table's left edge.
-pub(super) fn caret_at(line: &str, widths: &[usize], column: usize, offset: usize) -> (usize, f32) {
+pub(in crate::text_editor) fn caret_at(
+    line: &str,
+    widths: &[usize],
+    column: usize,
+    offset: usize,
+) -> (usize, f32) {
     let cell = &layout_row_editing(line, widths, Some(column))[column];
     let row = line_at_offset(&cell.lines, offset);
     (
@@ -344,7 +349,7 @@ pub(super) fn caret_at(line: &str, widths: &[usize], column: usize, offset: usiz
 }
 
 /// x in characters of byte `offset` on the edited cell line `range`.
-pub(super) fn x_in_line(
+pub(in crate::text_editor) fn x_in_line(
     line: &str,
     widths: &[usize],
     column: usize,
@@ -358,7 +363,7 @@ pub(super) fn x_in_line(
 
 /// The byte of the edited cell line `range` nearest `x` characters from the
 /// table's left edge.
-pub(super) fn offset_in_line(
+pub(in crate::text_editor) fn offset_in_line(
     line: &str,
     widths: &[usize],
     column: usize,
@@ -377,8 +382,8 @@ pub(super) fn offset_in_line(
 
 #[cfg(test)]
 mod tests {
-    use super::super::table_preview::{row_line_count, row_line_count_editing, wrap_cell_text};
-    use super::super::test_support::Rng;
+    use super::super::super::test_support::Rng;
+    use super::super::model::{row_line_count, row_line_count_editing, wrap_cell_text};
     use super::*;
 
     fn texts<'a>(line: &'a str, cell: &CellBox) -> Vec<&'a str> {

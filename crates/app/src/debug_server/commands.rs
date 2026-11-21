@@ -136,7 +136,7 @@ fn app_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
         AppState {
             note: app.selected_id().map(str::to_string),
             tabs: app.tabs.iter().map(|tab| tab.note_id.clone()).collect(),
-            active_tab: app.active_tab,
+            active_tab: app.tabs.active_index(),
             words: app.editor().map_or(0, |e| e.read(cx).word_count()),
             chars: app.editor().map_or(0, |e| e.read(cx).char_count()),
             links: app.editor().map_or(0, |e| e.read(cx).link_count()),
@@ -146,8 +146,8 @@ fn app_state(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
                 crate::SidebarTab::Search => "search",
             }
             .into(),
-            search_query: app.search_query.clone(),
-            search_results: app.search_results.len(),
+            search_query: app.search.query().to_string(),
+            search_results: app.search.results().len(),
             sidebar_width: f32::from(app.sidebar_width),
             backlinks_width: f32::from(app.backlinks_width),
             dialog_open,

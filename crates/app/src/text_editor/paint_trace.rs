@@ -9,7 +9,7 @@
 use std::fmt::Write as _;
 use std::sync::Mutex;
 
-use super::callout::CalloutType;
+use super::preview::callout::CalloutType;
 
 /// Pixel disagreement below this is rounding, not a bug.
 const TOLERANCE: f32 = 0.5;

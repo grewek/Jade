@@ -1,20 +1,20 @@
 //! The controls on a side-by-side region: a grip on each divider to drag the
 //! ratio, a `+` to add a column and a button to unwrap, both above the region's
 //! right end. Pure geometry in pixels from the region's top left (like
-//! `table_handles.rs`), so what is drawn and what a press hits share numbers.
+//! `table/handles.rs`), so what is drawn and what a press hits share numbers.
 
 /// Radius of the round buttons.
-pub(super) const RADIUS: f32 = 8.0;
+pub(in crate::text_editor) const RADIUS: f32 = 8.0;
 /// A divider grip's long and short side.
-pub(super) const GRIP_LONG: f32 = 22.0;
-pub(super) const GRIP_SHORT: f32 = 10.0;
+pub(in crate::text_editor) const GRIP_LONG: f32 = 22.0;
+pub(in crate::text_editor) const GRIP_SHORT: f32 = 10.0;
 /// How far above the region the pointer still counts as over it, so the
 /// buttons straddling its top edge can be reached.
-pub(super) const MARGIN: f32 = 2.0 * RADIUS + 4.0;
+pub(in crate::text_editor) const MARGIN: f32 = 2.0 * RADIUS + 4.0;
 
 /// A region's size and where its dividers are, from its top left.
 #[derive(Debug, Clone, PartialEq)]
-pub(super) struct Frame {
+pub(in crate::text_editor) struct Frame {
     /// The x of each divider.
     pub dividers: Vec<f32>,
     pub width: f32,
@@ -30,7 +30,7 @@ pub(super) struct Frame {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Handle {
+pub(in crate::text_editor) enum Handle {
     /// The grip on the divider between column `k` and `k + 1`.
     Divider(usize),
     Add,
@@ -40,19 +40,19 @@ pub(super) enum Handle {
 /// A divider being dragged: which region, which divider, and the shares the
 /// pointer would give now (applied on release).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ColumnDrag {
+pub(in crate::text_editor) struct ColumnDrag {
     pub region: usize,
     pub divider: usize,
     pub percent: Vec<u8>,
 }
 
 /// Whether the controls show for the pointer at `p`.
-pub(super) fn hover_at(frame: &Frame, p: (f32, f32)) -> bool {
+pub(in crate::text_editor) fn hover_at(frame: &Frame, p: (f32, f32)) -> bool {
     (0.0..=frame.width).contains(&p.0) && (-MARGIN..=frame.height).contains(&p.1)
 }
 
 /// The controls to draw: every divider's grip, `+` unless at the limit, unwrap.
-pub(super) fn shown(frame: &Frame) -> Vec<Handle> {
+pub(in crate::text_editor) fn shown(frame: &Frame) -> Vec<Handle> {
     let mut out: Vec<Handle> = (0..frame.dividers.len()).map(Handle::Divider).collect();
     if !frame.buttons {
         return out;
@@ -65,7 +65,7 @@ pub(super) fn shown(frame: &Frame) -> Vec<Handle> {
 }
 
 /// A control's rectangle as `(x, y, width, height)`.
-pub(super) fn rect_of(frame: &Frame, handle: Handle) -> (f32, f32, f32, f32) {
+pub(in crate::text_editor) fn rect_of(frame: &Frame, handle: Handle) -> (f32, f32, f32, f32) {
     let centered = |cx: f32, cy: f32, w: f32, h: f32| (cx - w / 2.0, cy - h / 2.0, w, h);
     let round = |cx: f32| centered(cx, -RADIUS, 2.0 * RADIUS, 2.0 * RADIUS);
     match handle {
@@ -85,7 +85,7 @@ pub(super) fn rect_of(frame: &Frame, handle: Handle) -> (f32, f32, f32, f32) {
 }
 
 /// Every place a control is drawn: a divider has a grip beside each float.
-pub(super) fn rects_of(frame: &Frame, handle: Handle) -> Vec<(f32, f32, f32, f32)> {
+pub(in crate::text_editor) fn rects_of(frame: &Frame, handle: Handle) -> Vec<(f32, f32, f32, f32)> {
     let Handle::Divider(k) = handle else {
         return vec![rect_of(frame, handle)];
     };
@@ -110,7 +110,7 @@ pub(super) fn rects_of(frame: &Frame, handle: Handle) -> Vec<(f32, f32, f32, f32
 }
 
 /// Which control the point is on.
-pub(super) fn handle_at(frame: &Frame, p: (f32, f32)) -> Option<Handle> {
+pub(in crate::text_editor) fn handle_at(frame: &Frame, p: (f32, f32)) -> Option<Handle> {
     shown(frame).into_iter().find(|&handle| {
         rects_of(frame, handle)
             .into_iter()

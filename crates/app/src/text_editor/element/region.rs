@@ -1,5 +1,5 @@
 //! Painting and hit-testing a columns region laid out side by side (see
-//! `columns.rs`). The region is one block in the row cache: its first line has
+//! `columns/mod.rs`). The region is one block in the row cache: its first line has
 //! the height of its tallest column and the rest have none, so everything here
 //! is placed from that line's top. A column's lines are shaped at the column's
 //! width ([`shape_region`], used by painting and by clicks, so both see the same
@@ -10,7 +10,7 @@
 use super::*;
 
 /// One shaped line of a column: `y` is its top below the region's top.
-pub(super) struct ShapedLine {
+pub(in crate::text_editor) struct ShapedLine {
     pub line: usize,
     pub y: Pixels,
     pub height: Pixels,
@@ -44,7 +44,7 @@ impl ShapedLine {
 }
 
 /// One column: `x` and `width` are relative to the editor's left edge.
-pub(super) struct ShapedColumn {
+pub(in crate::text_editor) struct ShapedColumn {
     pub x: Pixels,
     pub width: Pixels,
     pub lines: Vec<ShapedLine>,
@@ -58,7 +58,7 @@ pub(in crate::text_editor) struct FloatSpot {
     pub(in crate::text_editor) height: Pixels,
 }
 
-pub(super) struct ShapedRegion {
+pub(in crate::text_editor) struct ShapedRegion {
     pub columns: Vec<ShapedColumn>,
     /// An aside's placed floats (none for columns).
     pub float_spots: Vec<FloatSpot>,
@@ -70,7 +70,7 @@ pub(super) struct ShapedRegion {
 
 /// Shapes every column of `region` at its own width. Cost is the region's
 /// lines, shaped once per call.
-pub(super) fn shape_region(
+pub(in crate::text_editor) fn shape_region(
     text: &str,
     doc: &DocumentCache,
     (region, split): (&Columns, &columns::Split),
@@ -167,7 +167,7 @@ fn flowable(state: &LineState, display_line: &DisplayLine, line_text: &str) -> b
         && !state.callout_is_header
         && !state.column_frame
         && display_line.indent == LineIndent::None
-        && image_block(line_text, state).is_none()
+        && image::embed(line_text, state).is_none()
         && !display_line.segments.iter().any(|s| {
             s.is_replaced() || matches!(s.style, InlineStyle::Heading(_) | InlineStyle::Widget(_))
         })
@@ -654,8 +654,8 @@ pub(super) fn float_grips(spots: &[FloatSpot], split: &columns::Split) -> Vec<(u
         .filter_map(|spot| {
             let divider =
                 (0..split.divider_count()).find(|&d| split.divider_is_right(d) == spot.right)?;
-            let y =
-                f32::from(spot.top) + (f32::from(spot.height) / 2.).min(column_handles::GRIP_LONG);
+            let y = f32::from(spot.top)
+                + (f32::from(spot.height) / 2.).min(columns::handles::GRIP_LONG);
             Some((divider, y))
         })
         .collect()
@@ -685,7 +685,7 @@ fn paint_region_controls(
     };
     let width = f32::from(shaped.total);
     let height = f32::from(env.line_height * shaped.rows as f32);
-    let frame = column_handles::Frame {
+    let frame = columns::handles::Frame {
         dividers: (0..split.divider_count())
             .map(|k| split.divider_x(k))
             .collect(),
@@ -697,7 +697,7 @@ fn paint_region_controls(
     };
     let origin = point(bounds.origin.x + first.x, bounds.origin.y + top);
     let at = |handle| {
-        let (x, y, w, h) = column_handles::rect_of(&frame, handle);
+        let (x, y, w, h) = columns::handles::rect_of(&frame, handle);
         Bounds {
             origin: origin + point(px(x), px(y)),
             size: size(px(w), px(h)),
@@ -715,14 +715,14 @@ fn paint_region_controls(
         let Some(split) = moved_split else {
             return;
         };
-        let moved = column_handles::Frame {
+        let moved = columns::handles::Frame {
             dividers: (0..split.divider_count())
                 .map(|k| split.divider_x(k))
                 .collect(),
             ..frame
         };
-        let handle = column_handles::Handle::Divider(drag.divider);
-        let (x, y, w, h) = column_handles::rect_of(&moved, handle);
+        let handle = columns::handles::Handle::Divider(drag.divider);
+        let (x, y, w, h) = columns::handles::rect_of(&moved, handle);
         let grip = Bounds {
             origin: origin + point(px(x), px(y)),
             size: size(px(w), px(h)),
@@ -741,13 +741,13 @@ fn paint_region_controls(
         );
         return;
     }
-    for handle in column_handles::shown(&frame) {
+    for handle in columns::handles::shown(&frame) {
         let (round, icon) = match handle {
-            column_handles::Handle::Divider(_) => (false, "icons/grip-vertical.svg"),
-            column_handles::Handle::Add => (true, "icons/plus.svg"),
-            column_handles::Handle::Unwrap => (true, "icons/x.svg"),
+            columns::handles::Handle::Divider(_) => (false, "icons/grip-vertical.svg"),
+            columns::handles::Handle::Add => (true, "icons/plus.svg"),
+            columns::handles::Handle::Unwrap => (true, "icons/x.svg"),
         };
-        for (x, y, w, h) in column_handles::rects_of(&frame, handle) {
+        for (x, y, w, h) in columns::handles::rects_of(&frame, handle) {
             let bounds = Bounds {
                 origin: origin + point(px(x), px(y)),
                 size: size(px(w), px(h)),
@@ -1046,4 +1046,142 @@ pub(super) fn trace_geometry(
         height: f32::from(env.line_height * shaped.rows as f32),
         columns,
     }
+}
+
+/// The "back to columns" button of a region shown stacked, with the shares it
+/// would set. It sits in the (empty) row of the region's open marker, at the
+/// right. `None` for a region laid out as columns, shown as source, or too
+/// narrow for its columns even at their default shares.
+pub(super) fn restore_pill(
+    view: &FrameView,
+    doc: &DocumentCache,
+    index: usize,
+) -> Option<(Bounds<Pixels>, Vec<u8>)> {
+    let region = *doc.columns().get(index)?;
+    if region.tail
+        || doc.view.raw_region() == Some(index)
+        || doc.side_by_side(region.start_line).is_some()
+    {
+        return None;
+    }
+    let percent = columns::restored(&region, doc.view.column_width()?)?;
+    let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
+    let (w, h) = (px(24.), px(18.));
+    let origin = point(
+        view.bounds.origin.x + view.bounds.size.width - w - px(4.),
+        top + (view.line_height - h) / 2.,
+    );
+    Some((
+        Bounds {
+            origin,
+            size: size(w, h),
+        },
+        percent,
+    ))
+}
+
+/// What a stacked region shows of its columns: the divider being dragged as a
+/// ghost at the shares it would take (so it can be dragged back), else the
+/// button that brings the columns back.
+pub(super) fn paint_stacked_controls(
+    view: &FrameView,
+    doc: &DocumentCache,
+    colors: &HandleColors,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let Some(total) = doc.view.column_width() else {
+        return;
+    };
+    if let Some(drag) = &view.column_drag {
+        let Some(&region) = doc.columns().get(drag.region) else {
+            return;
+        };
+        if doc.side_by_side(region.start_line).is_some() {
+            return;
+        }
+        let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
+        let bottom = view.bounds.origin.y + view.layout.cumulative_at(region.end_line);
+        let x = view.bounds.origin.x
+            + px(columns::divider_x_unchecked(
+                total,
+                &region,
+                &drag.percent,
+                drag.divider,
+            ));
+        let line = Bounds {
+            origin: point(x - px(1.), top),
+            size: size(px(2.), bottom - top),
+        };
+        window.paint_quad(fill(line, colors.accent));
+        let grip = Bounds {
+            origin: point(
+                x - px(columns::handles::GRIP_SHORT) / 2.,
+                top + (px(columns::handles::GRIP_LONG)).min((bottom - top) / 2.)
+                    - px(columns::handles::GRIP_LONG) / 2.,
+            ),
+            size: size(
+                px(columns::handles::GRIP_SHORT),
+                px(columns::handles::GRIP_LONG),
+            ),
+        };
+        paint_control(
+            grip,
+            "icons/grip-vertical.svg",
+            (false, true),
+            colors,
+            (window, cx),
+        );
+        return;
+    }
+    for index in 0..doc.columns().len() {
+        let Some((bounds, _)) = restore_pill(view, doc, index) else {
+            continue;
+        };
+        if bounds.origin.y + bounds.size.height < view.viewport.origin.y
+            || bounds.origin.y > view.viewport.origin.y + view.viewport.size.height
+        {
+            continue;
+        }
+        paint_control(
+            bounds,
+            "icons/columns-2.svg",
+            (false, false),
+            colors,
+            (window, cx),
+        );
+    }
+}
+
+/// One control: a round accent button (`round`) or a bordered grip, accent
+/// while `active`.
+pub(super) fn paint_control(
+    bounds: Bounds<Pixels>,
+    icon: &'static str,
+    (round, active): (bool, bool),
+    colors: &HandleColors,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let filled = round || active;
+    let (fill, border, glyph) = if filled {
+        (colors.accent, Hsla::transparent_black(), colors.on_accent)
+    } else {
+        (colors.fill, colors.border, colors.icon)
+    };
+    let radius = if round {
+        bounds.size.width / 2.0
+    } else {
+        px(4.)
+    };
+    let edge = if filled { px(0.) } else { px(1.) };
+    window.paint_quad(quad(bounds, radius, fill, edge, border, BorderStyle::Solid));
+    let inner = if round { px(10.) } else { px(8.) };
+    let glyph_bounds = Bounds {
+        origin: bounds.origin
+            + point(
+                (bounds.size.width - inner) / 2.0,
+                (bounds.size.height - inner) / 2.0,
+            ),
+        size: size(inner, inner),
+    };
+    paint_icon(icon, glyph_bounds, glyph, (window, cx));
 }

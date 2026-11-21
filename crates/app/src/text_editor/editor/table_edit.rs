@@ -3,17 +3,19 @@
 //! never cross a cell's border, so a `|` of the source cannot be edited away.
 //! The source stays ragged: only the touched cell's text changes.
 
+use crate::text_editor::table;
 use std::borrow::Cow;
 use std::ops::Range;
 
 use gpui_kit::*;
 
-use super::super::document_cache::TextEdit;
+use super::super::doc::TextEdit;
 use super::super::element::{TableColumns, render_params};
-use super::super::table_box::{self, cell_at, cell_ranges, edit_range};
-use super::super::table_handles::{Handle, TableDrag};
-use super::super::table_ops::{self, Op};
-use super::super::table_preview::{Align, Table, table_index_at};
+use super::super::rows::Invalidate;
+use super::super::table::handles::{Handle, TableDrag};
+use super::super::table::ops::Op;
+use super::super::table::{Align, Table, table_index_at};
+use super::super::table::{cell_at, cell_ranges, edit_range};
 use super::Editor;
 
 /// A cell of the table being edited, in absolute buffer bytes.
@@ -79,7 +81,7 @@ fn empty_row(columns: usize) -> String {
 impl Editor {
     /// The cell under the caret while it is being edited.
     pub(super) fn editing_cell(&self) -> Option<Cell> {
-        let column = self.document_cache.borrow().editing_cell()?;
+        let column = self.document_cache.borrow().view.editing_cell()?;
         self.cell_at_line(column.0, column.1)
     }
 
@@ -160,9 +162,12 @@ impl Editor {
         let changed = self
             .document_cache
             .borrow_mut()
+            .view
             .set_table_view(raw, editing.map(|c| (c.line, c.column)));
         if changed {
-            self.row_height_cache.borrow_mut().invalidate_width();
+            self.row_height_cache
+                .borrow_mut()
+                .invalidate(Invalidate::Width);
         }
     }
 
@@ -181,7 +186,7 @@ impl Editor {
                 .is_delimiter(line)
                 .then(|| row_after(table, table.start_line))
                 .flatten();
-            (index, doc.raw_table() == Some(index), leave)
+            (index, doc.view.raw_table() == Some(index), leave)
         };
         self.raw_pinned = (!raw).then_some(index);
         if let Some(cell) = leave.and_then(|line| self.cell_at_line(line, 0)) {
@@ -446,25 +451,19 @@ impl Editor {
             let text = self.buffer.text();
             let content = &text[cell.line_start..doc.line_end_byte(cell.line)];
             let at = self.buffer.cursor() - cell.line_start;
-            let (row, x) = table_box::caret_at(content, &columns.widths, cell.column, at);
-            let rows = table_box::layout_row_editing(content, &columns.widths, Some(cell.column))
+            let (row, x) = table::caret_at(content, &columns.widths, cell.column, at);
+            let rows = table::layout_row_editing(content, &columns.widths, Some(cell.column))
                 [cell.column]
                 .lines
                 .len();
             let in_cell = if down { row + 1 < rows } else { row > 0 };
             if in_cell {
                 let wanted = if down { row + 1 } else { row - 1 };
-                let lines =
-                    &table_box::layout_row_editing(content, &columns.widths, Some(cell.column))
-                        [cell.column]
-                        .lines;
-                let offset = table_box::offset_in_line(
-                    content,
-                    &columns.widths,
-                    cell.column,
-                    &lines[wanted],
-                    x,
-                );
+                let lines = &table::layout_row_editing(content, &columns.widths, Some(cell.column))
+                    [cell.column]
+                    .lines;
+                let offset =
+                    table::offset_in_line(content, &columns.widths, cell.column, &lines[wanted], x);
                 Some(cell.line_start + offset)
             } else {
                 let neighbour = if down {
@@ -479,7 +478,7 @@ impl Editor {
                         let other = &text[start..doc.line_end_byte(line)];
                         let column = cell.column.min(cell_ranges(other).len().saturating_sub(1));
                         let lines =
-                            &table_box::layout_row_editing(other, &columns.widths, Some(column))
+                            &table::layout_row_editing(other, &columns.widths, Some(column))
                                 [column]
                                 .lines;
                         let range = if down {
@@ -488,7 +487,7 @@ impl Editor {
                             &lines[lines.len() - 1]
                         };
                         let offset =
-                            table_box::offset_in_line(other, &columns.widths, column, range, x);
+                            table::offset_in_line(other, &columns.widths, column, range, x);
                         Some(start + offset)
                     }
                 }
@@ -613,8 +612,8 @@ impl Editor {
             .collect();
         Some(TableMenuState {
             align: columns[column].align,
-            can_edit_row: table_ops::enabled(&lines, row, Op::DeleteRow),
-            can_delete_column: table_ops::enabled(&lines, row, Op::DeleteColumn),
+            can_edit_row: table::ops::enabled(&lines, row, Op::DeleteRow),
+            can_delete_column: table::ops::enabled(&lines, row, Op::DeleteColumn),
         })
     }
 
@@ -651,7 +650,7 @@ impl Editor {
             return false;
         };
         self.edit_table(table, window, cx, |old| {
-            table_ops::apply(old, row, column, op)
+            table::ops::apply(old, row, column, op)
         })
     }
 
@@ -665,13 +664,13 @@ impl Editor {
     ) {
         let columns = self.document_cache.borrow().tables()[table].columns.len();
         self.edit_table(table, window, cx, |old| match handle {
-            Handle::AddColumn(b) if b < columns => table_ops::apply(old, 0, b, Op::ColumnLeft),
-            Handle::AddColumn(_) => table_ops::apply(old, 0, columns - 1, Op::ColumnRight),
+            Handle::AddColumn(b) if b < columns => table::ops::apply(old, 0, b, Op::ColumnLeft),
+            Handle::AddColumn(_) => table::ops::apply(old, 0, columns - 1, Op::ColumnRight),
             // The boundary is the top of row `b`: add below row `b - 1`, whose
             // line is the header's, or one past the delimiter for a body row.
             Handle::AddRow(b) => {
                 let row = if b == 1 { 0 } else { b };
-                table_ops::apply(old, row, 0, Op::RowBelow)
+                table::ops::apply(old, row, 0, Op::RowBelow)
             }
             _ => None,
         });
@@ -687,9 +686,9 @@ impl Editor {
             return;
         };
         self.edit_table(table, window, cx, |old| match grip {
-            Handle::ColumnGrip(from) => table_ops::move_column(old, from, over, 0),
+            Handle::ColumnGrip(from) => table::ops::move_column(old, from, over, 0),
             // Row `r` is line `r + 1`; boundary `over` is the top of row `over`.
-            Handle::RowGrip(from) => table_ops::move_row(old, from + 1, over + 1, 0),
+            Handle::RowGrip(from) => table::ops::move_row(old, from + 1, over + 1, 0),
             _ => None,
         });
         cx.notify();
@@ -702,7 +701,7 @@ impl Editor {
         table: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
-        make: impl FnOnce(&[&str]) -> Option<table_ops::Edited>,
+        make: impl FnOnce(&[&str]) -> Option<table::ops::Edited>,
     ) -> bool {
         let (start_line, change) = {
             let doc = self.document_cache.borrow();

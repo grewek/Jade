@@ -10,28 +10,28 @@
 //! cross-line state, for a narrower reason than either of those: telling a
 //! callout's *header* line apart from a body line that also happens to
 //! start with `>` requires knowing whether the blockquote block just opened
-//! on this line or is continuing from above — `live_preview::classify_
+//! on this line or is continuing from above — `preview::classify_
 //! block_context`'s own `Open::Blockquote` state never needed that
 //! distinction (every `>`-prefixed line is already self-sufficient for
 //! plain blockquote rendering), so this module tracks it itself via
-//! [`classify_callouts`], a sequential pass mirroring `table_preview::
-//! classify_tables`'s shape. Deliberately independent of `live_preview.rs`'s
+//! [`classify_callouts`], a sequential pass mirroring `table::
+//! classify_tables`'s shape. Deliberately independent of `preview/`'s
 //! own blockquote-prefix detection (same "each scanner is self-contained"
-//! precedent `table_preview.rs`/`block_preview.rs` already set) — this
+//! precedent `table/model.rs`/`preview/fence.rs` already set) — this
 //! module has its own tiny `>`-prefix scan rather than reaching into
-//! `live_preview`'s private one.
+//! `preview`'s private one.
 //!
 //! **Top-level only**: a callout header is only ever recognized at
 //! blockquote depth 1. A `>>`-nested `[!note]` is never checked — it falls
 //! through as plain nested-blockquote content of whatever callout (if any)
 //! is already open, same as a callout can't be a list item's content
-//! either (untouched by `live_preview::compound_inner`). Consistent with
+//! either (untouched by `preview::compound_inner`). Consistent with
 //! every other one-level compounding cap already in this editor; revisit
 //! only if asked to.
 //!
 //! Colors and icons are deliberately *not* here — [`CalloutType`] is pure
 //! data, resolved to an actual `Hsla`/glyph only in `element.rs`, same
-//! boundary `table_preview.rs` keeps for its own data.
+//! boundary `table/model.rs` keeps for its own data.
 //!
 //! Render-only for now: the fold marker (`+`/`-`) is parsed and hidden (see
 //! [`callout_header_prefix`]) so it doesn't leak into the title, but this
@@ -185,7 +185,7 @@ pub fn callout_header_prefix(content: &str) -> Option<CalloutHeader> {
 /// background/accent bar across the whole block and pick a color/icon.
 /// Deliberately doesn't carry the parsed header itself (title, fold marker)
 /// — unlike a table's column widths, a header is resolvable from its own
-/// single line alone, so `live_preview::build_callout_header_line`
+/// single line alone, so `preview::build_callout_header_line`
 /// re-parses it fresh via [`callout_header_prefix`] rather than this
 /// struct caching it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -218,7 +218,7 @@ impl Callout {
 }
 
 /// A blockquote `>` prefix's nesting depth and raw byte length — this
-/// module's own tiny copy of `live_preview::blockquote_prefix`'s scan (see
+/// module's own tiny copy of `preview::blockquote_prefix`'s scan (see
 /// this module's own doc comment for why it doesn't just reuse that
 /// private function).
 fn blockquote_depth(line: &str) -> Option<(u8, usize)> {
@@ -237,7 +237,7 @@ fn blockquote_depth(line: &str) -> Option<(u8, usize)> {
 
 /// Whether `line` looks like an ATX heading (`#` through `######`, followed
 /// by a space) — used only to decide whether it closes an open blockquote/
-/// callout block, same CommonMark rule `live_preview::classify_block_
+/// callout block, same CommonMark rule `preview::classify_block_
 /// context` already applies for the same reason.
 fn looks_like_heading(line: &str) -> bool {
     let hashes = line.bytes().take_while(|&b| b == b'#').count();
@@ -245,7 +245,7 @@ fn looks_like_heading(line: &str) -> bool {
 }
 
 /// Resolves, for every line of `source`, which [`Callout`] (if any) it
-/// belongs to — a sequential pass mirroring `table_preview::
+/// belongs to — a sequential pass mirroring `table::
 /// classify_tables`'s shape. Tracks two bits of state: `block_open` (was
 /// the *previous* line part of an open blockquote block at all, callout or
 /// not — this is what lets a line tell "I'm a fresh blockquote start" apart
@@ -262,17 +262,19 @@ fn looks_like_heading(line: &str) -> bool {
 /// module's own top-level-only doc note) or a lazy-continuation line with
 /// no prefix at all — until a blank line, a heading, or a fresh
 /// non-continuing blockquote line closes the block, mirroring
-/// `live_preview::classify_block_context`'s own closing rules for
+/// `preview::classify_block_context`'s own closing rules for
 /// `Open::Blockquote`.
 ///
-/// `document_cache.rs`'s production path calls `classify_callouts_from`
+/// `doc/`'s production path calls `classify_callouts_from`
 /// directly (it needs the per-line states and running callout count too,
 /// to seed its own cache) — this whole-document entry point is only still
 /// reachable from tests now, kept as the oracle every classify_callouts_
 /// from-based test (including the incremental path's own) checks itself
-/// against, same role `block_preview::classify_lines` now plays there.
+/// against, same role `preview::fence::classify_lines` now plays there.
 #[cfg(test)]
-pub(super) fn classify_callouts(source: &str) -> (Vec<Option<usize>>, Vec<Callout>) {
+pub(in crate::text_editor) fn classify_callouts(
+    source: &str,
+) -> (Vec<Option<usize>>, Vec<Callout>) {
     let mut callouts = Vec::new();
     let results = classify_callouts_from(source, CalloutState::default(), 0, &mut callouts);
     let callout_for_line = results.into_iter().map(|(callout, _, _)| callout).collect();
@@ -285,21 +287,21 @@ pub(super) fn classify_callouts(source: &str) -> (Vec<Option<usize>>, Vec<Callou
 /// caller's `callouts`: a new one starts only on a fresh blockquote, which
 /// closes the previous. So the state holds no index, and an edit that adds
 /// or removes a callout leaves every later line's state unchanged; see
-/// `document_cache.rs`'s `patch_callouts`.
+/// `doc/`'s `patch_callouts`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(super) struct CalloutState {
+pub(in crate::text_editor) struct CalloutState {
     block_open: bool,
-    pub(super) callout_open: bool,
+    pub(in crate::text_editor) callout_open: bool,
 }
 
 impl CalloutState {
     /// Lossless one-byte form, for the per-line state array in
-    /// `document_cache.rs`.
-    pub(super) fn pack(self) -> u8 {
+    /// `doc/`.
+    pub(in crate::text_editor) fn pack(self) -> u8 {
         u8::from(self.block_open) | (u8::from(self.callout_open) << 1)
     }
 
-    pub(super) fn unpack(packed: u8) -> Self {
+    pub(in crate::text_editor) fn unpack(packed: u8) -> Self {
         Self {
             block_open: packed & 1 == 1,
             callout_open: packed & 2 == 2,
@@ -310,23 +312,23 @@ impl CalloutState {
 /// The index of the callout containing `line`, if any. Callouts are sorted
 /// and disjoint, so this is a binary search; it replaces a per-line lookup
 /// array that was 16 bytes per document line.
-pub(super) fn callout_index_at(callouts: &[Callout], line: usize) -> Option<usize> {
+pub(in crate::text_editor) fn callout_index_at(callouts: &[Callout], line: usize) -> Option<usize> {
     let i = callouts.partition_point(|c| c.end_line <= line);
     callouts.get(i).filter(|c| c.start_line <= line).map(|_| i)
 }
 
 /// The one per-line transition [`classify_callouts`]/[`classify_callouts_from`]
 /// both fold over — pulled out of the original single sequential loop the
-/// same way `block_preview::step` was, so an incremental caller can resume
+/// same way `preview::fence::step` was, so an incremental caller can resume
 /// from an arbitrary line's cached entering state instead of only ever
 /// starting fresh from line 0. `i` is the line's *absolute* index (needed
-/// for `Callout::start_line`/`end_line`, unlike `block_preview::step`,
+/// for `Callout::start_line`/`end_line`, unlike `preview::fence::step`,
 /// which never needed to know where it was). `callouts` is mutated in
 /// place — a freshly opened callout is pushed with index `callouts.len()`,
 /// and a continuing one has its `end_line` bumped — so a resumed caller
 /// that's already pre-seeded `callouts` with a kept prefix assigns new
 /// indices continuing on from that prefix, not colliding with it.
-pub(super) fn step(
+pub(in crate::text_editor) fn step(
     state: CalloutState,
     line: &str,
     i: usize,
@@ -339,7 +341,7 @@ pub(super) fn step(
     // The open callout is the last one (see `CalloutState`).
     let mut current = callouts.len().checked_sub(1).filter(|_| callout_open);
 
-    if super::live_preview::is_blank(line) || looks_like_heading(line) {
+    if super::is_blank(line) || looks_like_heading(line) {
         if let Some(idx) = current.take() {
             callouts[idx].end_line = i;
         }
@@ -419,10 +421,10 @@ pub(super) fn step(
 /// (if any), the state *after* it, and `callouts.len()` *after* it — the
 /// latter is what an incremental caller needs on top of the state itself
 /// to know a resumed line's freshly assigned index actually lines up with
-/// a previously cached one (see `document_cache.rs`'s own `patch_callouts`
+/// a previously cached one (see `doc/`'s own `patch_callouts`
 /// doc comment for why state equality alone isn't enough here, unlike
-/// `block_preview`'s simpler case).
-pub(super) fn classify_callouts_from(
+/// `preview::fence`'s simpler case).
+pub(in crate::text_editor) fn classify_callouts_from(
     source: &str,
     state: CalloutState,
     start_line: usize,

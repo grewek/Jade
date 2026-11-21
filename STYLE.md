@@ -10,7 +10,7 @@ Several of these overlap with standing rules already in `CLAUDE.md`; where that'
 2. **Explicit upper bounds on loops and recursion** whenever the bound depends on user-controlled input (markdown nesting depth, backlink traversal) — prevents stack overflow or hangs on malicious or malformed input.
 3. **Handle every error explicitly.** No `.unwrap()`/`.expect()` on paths that depend on filesystem or user input; propagate `Result` instead of swallowing it.
 4. **Narrow, clearly named function interfaces.** One function does one thing; don't use parameter lists as a dumping ground for loosely related state.
-5. **Pre-size and reuse buffers in hot paths** instead of reallocating per call. No `Vec::new()` inside a loop that runs every frame — size it once with `with_capacity`/`reserve` and reuse it (this is already the direction of the recent `RowHeightCache` / undo-stack-cap work).
+5. **Pre-size and reuse buffers in hot paths** instead of reallocating per call. No `Vec::new()` inside a loop that runs every frame — size it once with `with_capacity`/`reserve` and reuse it (this is already the direction of the recent `RowCache` / undo-stack-cap work).
 
 ## Performance
 

@@ -1,14 +1,14 @@
 //! Table detection and row-parsing — the other *block*-level construct
-//! besides fenced code (`block_preview.rs`), needing cross-line state the
+//! besides fenced code (`preview/fence.rs`), needing cross-line state the
 //! same way: a line's role (header/delimiter/body row, or not a table at
 //! all) and a table's column count/width/alignment all depend on every row
 //! of that table together, not on any single line alone.
 //!
-//! Deliberately independent of `block_preview.rs`'s fence tracking and
-//! `live_preview.rs`'s `classify_block_context` — neither knows about the
+//! Deliberately independent of `preview/fence.rs`'s fence tracking and
+//! `preview/`'s `classify_block_context` — neither knows about the
 //! other, same as those two don't know about each other either.
 //! `element.rs` only ever consults this module's output for a line already
-//! classified `block_preview::LineRole::Plain`, so a table-like pipe
+//! classified `preview::LineRole::Plain`, so a table-like pipe
 //! sequence inside a fenced code block is never mistaken for a real table
 //! (this module's own scan would still "detect" it, since it has no fence
 //! awareness, but nothing ever looks that detection up for a fenced line).
@@ -17,7 +17,7 @@
 //! compounding limit in this editor.
 //!
 //! Rendering a table as an actually-aligned grid (not just markup hidden in
-//! place, like every other construct) is `live_preview.rs`'s
+//! place, like every other construct) is `preview/`'s
 //! `build_table_row`/`build_table_rule` — made tractable by this editor's
 //! font always being monospace (see `element.rs`'s `render_editor`): a
 //! column's width is a plain character count, with no pixel measurement
@@ -92,7 +92,10 @@ pub fn scan_row(line: &str) -> Row {
 /// Calls `visit` with the byte range of each cell of `line`, in order, and
 /// returns `(has_leading_pipe, has_trailing_pipe)`. The one place the
 /// cell-splitting rules live, shared by [`scan_row`] and [`row_line_count`].
-pub(super) fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>)) -> (bool, bool) {
+pub(in crate::text_editor) fn for_each_cell_range(
+    line: &str,
+    mut visit: impl FnMut(Range<usize>),
+) -> (bool, bool) {
     let bytes = line.as_bytes();
     let has_leading_pipe = bytes.first() == Some(&b'|');
     let start = usize::from(has_leading_pipe);
@@ -125,7 +128,7 @@ pub(super) fn for_each_cell_range(line: &str, mut visit: impl FnMut(Range<usize>
 pub const LINE_BREAK: &str = "<br>";
 
 /// How many lines `line` renders on when each of its cells is wrapped to
-/// `widths` — exactly the number of lines `live_preview::build_table_row`
+/// `widths` — exactly the number of lines `preview::build_table_row`
 /// returns for it, without building them. A cell no longer than its column is
 /// wide always fits one line (wrapping only ever removes whitespace), which is
 /// nearly every cell, so only an over-wide one is counted word by word. A row
@@ -136,15 +139,15 @@ pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
 }
 
 /// [`row_line_count`] for a row whose cell `editing` is being edited: that cell
-/// shows its text verbatim (see `table_box::wrap_raw`), so it wraps differently.
+/// shows its text verbatim (see `table::geometry::wrap_raw`), so it wraps differently.
 pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usize>) -> usize {
     let mut lines = 1;
     let mut column = 0;
     for_each_cell_range(line, |raw| {
         if let Some(&width) = widths.get(column) {
             if editing == Some(column) {
-                let shown = super::table_box::edit_range(line, raw);
-                lines = lines.max(super::table_box::raw_line_count(&line[shown], width));
+                let shown = super::geometry::edit_range(line, raw);
+                lines = lines.max(super::geometry::raw_line_count(&line[shown], width));
             } else {
                 let cell = line[raw].trim();
                 // Bytes are never fewer than characters.
@@ -272,7 +275,7 @@ fn parse_delimiter_row(line: &str, expected_columns: usize) -> Option<Vec<Align>
 /// The index of the table containing `line`, if any. Tables are sorted and
 /// disjoint, so this is a binary search; it replaces a per-line lookup array
 /// that was 16 bytes per document line.
-pub(super) fn table_index_at(tables: &[Table], line: usize) -> Option<usize> {
+pub(in crate::text_editor) fn table_index_at(tables: &[Table], line: usize) -> Option<usize> {
     let i = tables.partition_point(|t| t.end_line <= line);
     tables.get(i).filter(|t| t.start_line <= line).map(|_| i)
 }
@@ -281,7 +284,7 @@ pub(super) fn table_index_at(tables: &[Table], line: usize) -> Option<usize> {
 /// cheapest possible check, same spirit as this module's other
 /// simplifications; the real validation happens via the *next* line having
 /// to be a valid delimiter row for a table to be recognized at all.
-pub(super) fn is_pipe_row(line: &str) -> bool {
+pub(in crate::text_editor) fn is_pipe_row(line: &str) -> bool {
     // The byte search skips `str::contains`'s char-pattern machinery, which
     // costs more than the scan itself on a short line.
     line.as_bytes().contains(&b'|')
@@ -291,12 +294,14 @@ pub(super) fn is_pipe_row(line: &str) -> bool {
 /// [`classify_tables`]' second value, computed in one streaming pass without
 /// materializing the document's lines or a per-line lookup (which cost
 /// ~12MB of transient allocation on the 320K-line stress fixture).
-pub(super) fn classify_table_list(source: &str) -> Vec<Table> {
+pub(in crate::text_editor) fn classify_table_list(source: &str) -> Vec<Table> {
     classify_table_list_from(source.split('\n'))
 }
 
 /// [`classify_table_list`] over lines the caller already split.
-pub(super) fn classify_table_list_from<'a>(lines: impl Iterator<Item = &'a str>) -> Vec<Table> {
+pub(in crate::text_editor) fn classify_table_list_from<'a>(
+    lines: impl Iterator<Item = &'a str>,
+) -> Vec<Table> {
     let mut lines = lines.enumerate().peekable();
     let mut tables = Vec::new();
 
@@ -352,8 +357,8 @@ pub(super) fn classify_table_list_from<'a>(lines: impl Iterator<Item = &'a str>)
 /// Resolves every table in the whole `source` document: for each line, the
 /// index into the returned `Vec<Table>` it belongs to (if any), and each
 /// table's resolved columns. A single sequential pass, mirroring
-/// `block_preview::classify_lines`'s fence-tracking and
-/// `live_preview::classify_block_context`'s list-nesting pass — the same
+/// `preview::fence::classify_lines`'s fence-tracking and
+/// `preview::classify_block_context`'s list-nesting pass — the same
 /// kind of whole-document state this module's own doc comment explains
 /// tables need and single-line detection can't provide.
 #[cfg(test)]
@@ -433,7 +438,7 @@ pub fn fits_unshrunk(columns: &[Column], max_total_chars: impl Into<Option<usize
 /// the table's actual left/right border lines are painted as real vector
 /// quads over them, see `column_divider_char_offsets` below, not drawn as
 /// text), plus a 3-character blank gap between every pair of adjacent
-/// columns — see `live_preview::build_table_row`.
+/// columns — see `preview::build_table_row`.
 pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usize> {
     let natural: Vec<usize> = columns.iter().map(|c| c.width).collect();
     if columns.is_empty() || fits_unshrunk(columns, max_total_chars) {
@@ -479,7 +484,7 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
 
 /// `columns`' widths as actually used for rendering — [`cap_column_widths`]
 /// if `max_total_chars` is given, else each column's own natural width
-/// verbatim. The one place both `live_preview::build_table_row` and
+/// verbatim. The one place both `preview::build_table_row` and
 /// `element.rs`'s border-painting code (which needs the *same* resolved
 /// widths `build_table_row` used, to position its vector lines at exactly
 /// the gaps that row's text actually left blank) make this decision, so
@@ -797,7 +802,7 @@ mod tests {
     /// multi-byte characters, at every width a column can shrink to.
     #[test]
     fn wrapped_line_count_matches_wrap_cell_text() {
-        use super::super::test_support::Rng;
+        use super::super::super::test_support::Rng;
         let pieces = [
             "a",
             "bb",
@@ -880,8 +885,8 @@ mod tests {
             for line in lines {
                 assert_eq!(
                     row_line_count(line, &widths),
-                    crate::text_editor::table_box::row_height(
-                        &crate::text_editor::table_box::layout_row(line, &widths)
+                    crate::text_editor::table::geometry::row_height(
+                        &crate::text_editor::table::geometry::layout_row(line, &widths)
                     ),
                     "line {line:?} budget {budget:?} widths {widths:?}"
                 );

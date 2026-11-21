@@ -4,7 +4,7 @@
 //! thresholds are decided once.
 
 /// Below this a thread per core costs more than it saves.
-pub(super) const PARALLEL_MIN_BYTES: usize = 1 << 20;
+pub(in crate::text_editor) const PARALLEL_MIN_BYTES: usize = 1 << 20;
 const MAX_THREADS: usize = 8;
 
 /// The byte offsets that cut `text` into `threads` runs of whole lines:
@@ -31,7 +31,7 @@ fn cuts(text: &str, threads: usize) -> Vec<usize> {
 /// workers cannot share (pass `|_| 0` when the line number is not needed).
 /// Big notes run the runs on one thread each; small ones on the calling
 /// thread.
-pub(super) fn map_line_chunks<T: Send>(
+pub(in crate::text_editor) fn map_line_chunks<T: Send>(
     text: &str,
     line_at: impl Fn(usize) -> usize,
     scan: impl Fn(usize, &str, bool) -> T + Sync,

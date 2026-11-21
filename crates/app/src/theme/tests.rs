@@ -709,14 +709,44 @@ mod engine_setup {
 #[test]
 fn ui_code_has_no_color_literals() {
     const THEMED: &[(&str, &str)] = &[
-        ("app.rs", include_str!("../app.rs")),
+        ("app/mod.rs", include_str!("../app/mod.rs")),
+        ("app/chrome.rs", include_str!("../app/chrome.rs")),
+        ("app/dialogs.rs", include_str!("../app/dialogs.rs")),
+        ("app/notes.rs", include_str!("../app/notes.rs")),
+        ("app/search.rs", include_str!("../app/search.rs")),
+        ("app/sidebar.rs", include_str!("../app/sidebar.rs")),
+        ("app/tabs.rs", include_str!("../app/tabs.rs")),
         ("element.rs", include_str!("../text_editor/element.rs")),
+        (
+            "element/input.rs",
+            include_str!("../text_editor/element/input.rs"),
+        ),
+        (
+            "element/paint.rs",
+            include_str!("../text_editor/element/paint.rs"),
+        ),
+        (
+            "element/region.rs",
+            include_str!("../text_editor/element/region.rs"),
+        ),
+        (
+            "element/render.rs",
+            include_str!("../text_editor/element/render.rs"),
+        ),
+        (
+            "element/table_paint.rs",
+            include_str!("../text_editor/element/table_paint.rs"),
+        ),
+        (
+            "element/widgets.rs",
+            include_str!("../text_editor/element/widgets.rs"),
+        ),
     ];
     const FORBIDDEN: &[&str] = &[
         "rgb(", "rgba(", "hsla(", "Hsla {", "white()", "black()", "0x",
     ];
     for (file, src) in THEMED {
-        let ui = src.split("#[cfg(test)]").next().unwrap_or_default();
+        let ui = src.split("\n#[cfg(test)]\nmod ").next().unwrap_or_default();
         for (n, line) in ui.lines().enumerate() {
             let code = line
                 .split("//")
