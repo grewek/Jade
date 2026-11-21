@@ -197,6 +197,10 @@ impl Editor {
         let line = doc.line_at(self.buffer.cursor());
         if let Some(i) = doc.region_index_at(line) {
             let region = doc.columns()[i];
+            // A float block has no menu yet (render only).
+            if region.tail {
+                return None;
+            }
             if region.is_aside() {
                 return Some(ColumnMenu::Aside);
             }

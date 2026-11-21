@@ -33,6 +33,7 @@ pub const MAX_COLUMNS: usize = 4;
 
 const OPEN: &str = "::: columns";
 const OPEN_ASIDE: &str = "::: aside";
+const OPEN_FLOAT: &str = "::: float";
 /// An aside's float share, in percent of the line (without the gap).
 pub const ASIDE_MIN: u8 = 10;
 pub const ASIDE_MAX: u8 = 90;
@@ -84,7 +85,21 @@ pub struct Columns {
     separators: [usize; MAX_COLUMNS - 1],
     /// An aside's floats; the first `count - 1` are used.
     floats: [FloatSpec; MAX_FLOATS],
+    /// A float block (`::: float`, the float, `:::`) with no close marker for
+    /// its text: the text is the lines after the `:::` up to `end_line`, which
+    /// [`Self::cap_tail`] sets. `end_line` is then no marker line.
+    pub tail: bool,
+    /// Where a tail's text would end with no cap: the next region's open marker
+    /// or the document's end. Unused (0) otherwise.
+    tail_bound: usize,
 }
+
+/// A float's text reaches this many lines past it, plus [`TAIL_PER_LINE`] for
+/// each line of the float, so that it covers the rows the float takes (a line
+/// has at least one row). The unit ends at the next blank line after that, so
+/// no block is cut. A float taller than its text leaves a gap below the text.
+pub const TAIL_BASE: usize = 16;
+pub const TAIL_PER_LINE: usize = 4;
 
 impl Columns {
     /// Whether this is floated blocks with text around them.
@@ -119,9 +134,28 @@ impl Columns {
         &self.separators[..self.count - 1]
     }
 
-    /// The close marker's line.
+    /// The close marker's line; for a tail region the `:::` that ends the float,
+    /// the region itself having none.
     pub fn close_line(&self) -> usize {
-        self.end_line - 1
+        if self.tail {
+            self.separators[0]
+        } else {
+            self.end_line - 1
+        }
+    }
+
+    /// Sets a tail region's `end_line`: its text takes the lines after the float
+    /// block up to the first line `ends_text` accepts at or after the budget,
+    /// else up to the bound. A region that is no tail is left alone.
+    pub fn cap_tail(&mut self, ends_text: impl Fn(usize) -> bool) {
+        if !self.tail {
+            return;
+        }
+        let float_lines = self.separators[0] - self.start_line;
+        let want = self.separators[0] + 1 + TAIL_BASE + TAIL_PER_LINE * float_lines;
+        self.end_line = (want..self.tail_bound)
+            .find(|&line| ends_text(line))
+            .unwrap_or(self.tail_bound);
     }
 
     /// The column whose content lines include `line`; `None` for a marker or
@@ -155,7 +189,9 @@ impl Columns {
         } else {
             self.separators[k]
         };
-        let (start, end) = (first + 2, next - 1);
+        // A tail's text has no marker, and so no blank line, at its end.
+        let tail_text = self.tail && k + 1 == self.count;
+        let (start, end) = (first + 2, if tail_text { self.end_line } else { next - 1 });
         if start < end {
             start..end
         } else {
@@ -170,6 +206,9 @@ pub enum Marker {
     Open(Option<Ratio>),
     /// `::: aside [left|right] [N%]`.
     OpenAside(FloatSpec),
+    /// `::: float [left|right] [N%]`: a float whose text is what follows its
+    /// closing `:::`.
+    OpenFloat(FloatSpec),
     Separator,
     /// `--- [left|right] [N%]`: starts a further float of an aside.
     FloatSeparator(FloatSpec),
@@ -187,6 +226,8 @@ struct Pending {
     start: usize,
     ratio: Option<Ratio>,
     aside: bool,
+    /// A float block: closed by its `:::`, its text is the lines after.
+    float: bool,
     floats: [FloatSpec; MAX_FLOATS],
     /// The floats so far (an aside's open marker is the first).
     float_count: usize,
@@ -218,6 +259,8 @@ impl Pending {
                 percent,
                 separators: self.separators,
                 floats: self.floats,
+                tail: false,
+                tail_bound: 0,
             });
         }
         let percent = match self.ratio {
@@ -233,7 +276,28 @@ impl Pending {
             percent,
             separators: self.separators,
             floats: [NO_FLOAT; MAX_FLOATS],
+            tail: false,
+            tail_bound: 0,
         })
+    }
+
+    /// The region a float block makes, its text running to `bound`.
+    fn close_float(self, line: usize, bound: usize) -> Columns {
+        let mut separators = [0; MAX_COLUMNS - 1];
+        separators[0] = line;
+        let mut percent = [0; MAX_COLUMNS];
+        percent[0] = self.floats[0].share;
+        Columns {
+            kind: Kind::Aside,
+            start_line: self.start,
+            end_line: bound,
+            count: 2,
+            percent,
+            separators,
+            floats: self.floats,
+            tail: true,
+            tail_bound: bound,
+        }
     }
 }
 
@@ -262,6 +326,9 @@ fn marker_of(line: &str) -> Option<Marker> {
     }
     if let Some(rest) = line.strip_prefix(OPEN_ASIDE) {
         return parse_aside(rest).map(Marker::OpenAside);
+    }
+    if let Some(rest) = line.strip_prefix(OPEN_FLOAT) {
+        return parse_aside(rest).map(Marker::OpenFloat);
     }
     let rest = line.strip_prefix(OPEN)?;
     if rest.is_empty() {
@@ -367,18 +434,28 @@ pub fn place_markers<'a>(
     placed
 }
 
+/// Whether `marker` opens a region.
+fn opens(marker: Marker) -> bool {
+    matches!(
+        marker,
+        Marker::Open(_) | Marker::OpenAside(_) | Marker::OpenFloat(_)
+    )
+}
+
 /// The regions the markers form, in order (see the module comment for the
-/// rules). `markers` must be sorted by line.
-pub fn derive(markers: &[Placed]) -> Vec<Columns> {
+/// rules). `markers` must be sorted by line; `line_count` is the document's,
+/// where the text of a last float ends.
+pub fn derive(markers: &[Placed], line_count: usize) -> Vec<Columns> {
     let mut regions = Vec::new();
     let mut pending: Option<Pending> = None;
-    for &Placed { line, marker } in markers {
+    for (index, &Placed { line, marker }) in markers.iter().enumerate() {
         match marker {
             Marker::Open(ratio) => {
                 pending = Some(Pending {
                     start: line,
                     ratio,
                     aside: false,
+                    float: false,
                     floats: [NO_FLOAT; MAX_FLOATS],
                     float_count: 0,
                     text_seen: false,
@@ -393,6 +470,7 @@ pub fn derive(markers: &[Placed]) -> Vec<Columns> {
                     start: line,
                     ratio: None,
                     aside: true,
+                    float: false,
                     floats,
                     float_count: 1,
                     text_seen: false,
@@ -400,8 +478,24 @@ pub fn derive(markers: &[Placed]) -> Vec<Columns> {
                     seen: 0,
                 });
             }
+            Marker::OpenFloat(spec) => {
+                let mut floats = [NO_FLOAT; MAX_FLOATS];
+                floats[0] = spec;
+                pending = Some(Pending {
+                    start: line,
+                    ratio: None,
+                    aside: false,
+                    float: true,
+                    floats,
+                    float_count: 1,
+                    text_seen: false,
+                    separators: [0; MAX_COLUMNS - 1],
+                    seen: 0,
+                });
+            }
+            // A rule inside a float block is part of the float.
             Marker::Separator => {
-                if let Some(p) = pending.as_mut() {
+                if let Some(p) = pending.as_mut().filter(|p| !p.float) {
                     // A second plain separator in an aside: its text is over.
                     if p.seen == MAX_COLUMNS - 1 || (p.aside && p.text_seen) {
                         pending = None;
@@ -426,8 +520,15 @@ pub fn derive(markers: &[Placed]) -> Vec<Columns> {
                 }
             }
             Marker::Close => {
+                if pending.as_ref().is_some_and(|p| p.float) {
+                    // The text runs to the next region's open marker.
+                    let bound = markers[index + 1..]
+                        .iter()
+                        .find(|m| opens(m.marker))
+                        .map_or(line_count, |m| m.line);
+                    regions.extend(pending.take().map(|p| p.close_float(line, bound)));
                 // A region needs a separator: one column is not columns.
-                if let Some(p) = pending.take().filter(|p| p.seen >= 1) {
+                } else if let Some(p) = pending.take().filter(|p| p.seen >= 1) {
                     regions.extend(p.close(line));
                 }
             }
@@ -439,7 +540,17 @@ pub fn derive(markers: &[Placed]) -> Vec<Columns> {
 /// Every region of a document, `lines` being as for [`place_markers`]. The
 /// oracle the cache's incremental markers are tested against.
 pub fn scan<'a>(lines: impl Iterator<Item = (&'a str, bool)>) -> Vec<Columns> {
-    derive(&place_markers(0, lines, true, true))
+    let lines: Vec<_> = lines.collect();
+    let count = lines.len();
+    let mut regions = derive(&place_markers(0, lines.iter().copied(), true, true), count);
+    for region in &mut regions {
+        region.cap_tail(|line| {
+            lines
+                .get(line)
+                .is_some_and(|&(text, code)| !code && is_blank(text))
+        });
+    }
+    regions
 }
 
 /// Space between two columns, in pixels; the divider is drawn in its middle.
@@ -1098,5 +1209,66 @@ mod tests {
         assert_eq!(restored(&region, 300.), None, "too narrow even when equal");
         let aside = scan_text("::: aside left 90%\n\na\n\n---\n\nb\n\n:::\n")[0];
         assert_eq!(restored(&aside, 1000.), Some(vec![ASIDE_DEFAULT, 0]));
+    }
+
+    /// A float block: the float, its closing `:::`, and the lines after it as
+    /// the text, up to the next region's open marker.
+    #[test]
+    fn a_float_block_takes_the_lines_after_it_as_its_text() {
+        let text = "::: float left 30%\n\nfloat\n\n:::\n\ntext one\n\ntext two\n\n::: columns\n\na\n\n---\n\nb\n\n:::\n";
+        let regions = scan_text(text);
+        assert_eq!(regions.len(), 2);
+        let r = regions[0];
+        assert!(r.tail && r.is_aside());
+        assert_eq!((r.start_line, r.end_line, r.count), (0, 10, 2));
+        assert_eq!(
+            r.floats(),
+            &[FloatSpec {
+                right: false,
+                share: 30
+            }]
+        );
+        assert_eq!(r.column_lines(0), 2..3);
+        assert_eq!(r.column_lines(1), 6..10);
+        assert!(r.is_frame(0) && r.is_frame(4));
+        assert!(!r.is_frame(9));
+        assert_eq!(regions[1].start_line, 10);
+    }
+
+    #[test]
+    fn a_float_blocks_text_runs_to_the_end_of_the_document() {
+        let regions = scan_text("::: float\n\nf\n\n:::\n\nafter");
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].end_line, 7);
+        assert_eq!(regions[0].column_lines(1), 6..7);
+    }
+
+    /// The text is capped at the first blank line past the budget, so a long
+    /// document is not one region and no paragraph is cut.
+    #[test]
+    fn a_float_blocks_text_is_capped_at_a_blank_line() {
+        let mut text = String::from("::: float\n\nf\n\n:::\n\n");
+        for i in 0..200 {
+            text.push_str(&format!("line {i}\n\n"));
+        }
+        let r = scan_text(&text)[0];
+        let want = 4 + 1 + TAIL_BASE + TAIL_PER_LINE * 4;
+        assert!(
+            r.end_line >= want && r.end_line <= want + 2,
+            "{}",
+            r.end_line
+        );
+        // The line the text ends before is blank: a paragraph is whole.
+        assert!(text.lines().nth(r.end_line).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_float_block_is_not_one_without_its_close_or_when_the_marker_is_bad() {
+        assert!(scan_text("::: float\n\nf\n").is_empty());
+        assert!(scan_text("::: float middle\n\nf\n\n:::\n").is_empty());
+        // A rule inside is part of the float.
+        let r = scan_text("::: float\n\nf\n\n---\n\ng\n\n:::\n\ntext")[0];
+        assert_eq!(r.column_lines(0), 2..7);
+        assert_eq!(r.column_lines(1), 10..11);
     }
 }

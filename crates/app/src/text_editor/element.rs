@@ -3162,6 +3162,10 @@ fn column_frame_at(
         .partition_point(|r| view.layout.cumulative_at(r.start_line) - margin <= y)
         .checked_sub(1)?;
     let region = regions[index];
+    // A float block has no controls yet (render only).
+    if region.tail {
+        return None;
+    }
     let (_, split) = doc.side_by_side(region.start_line)?;
     let top = view.layout.cumulative_at(region.start_line);
     let height = view.layout.height(region.start_line);
@@ -3565,7 +3569,10 @@ fn restore_pill(
     index: usize,
 ) -> Option<(Bounds<Pixels>, Vec<u8>)> {
     let region = *doc.columns().get(index)?;
-    if doc.raw_region() == Some(index) || doc.side_by_side(region.start_line).is_some() {
+    if region.tail
+        || doc.raw_region() == Some(index)
+        || doc.side_by_side(region.start_line).is_some()
+    {
         return None;
     }
     let percent = columns::restored(&region, doc.column_width()?)?;
@@ -5874,6 +5881,71 @@ mod tests {
             let (one, two) = (right_one.unwrap(), right_two.unwrap());
             assert_eq!(two.y, one.y + one.height + lh, "a row of air between");
             assert_eq!(one.x, two.x);
+        })
+        .unwrap();
+    }
+
+    /// A float block has no wrapper: the paragraphs after it flow beside it
+    /// and, once it ends, run at the whole width, all inside its one region.
+    #[gpui_kit::test]
+    fn a_float_block_flows_the_paragraphs_after_it(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        let para = "flowing words ".repeat(80);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: float right 25%\n\nfloat one\n\nfloat two\n\n:::\n\n{para}\n\nsecond\n\nthird"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("a float block lays out");
+            assert!(region.tail);
+            assert_eq!(
+                region.end_line,
+                doc.line_count(),
+                "the text runs to the end"
+            );
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let lines = |line: usize| {
+                shaped
+                    .columns
+                    .iter()
+                    .flat_map(|c| &c.lines)
+                    .filter(|sl| sl.line == line)
+                    .collect::<Vec<_>>()
+            };
+            let first = region.column_lines(1).start;
+            let beside = lines(first);
+            // The paragraph starts in the channel beside the float, and where the
+            // float ends it is cut and goes on at the whole width.
+            assert_eq!(beside[0].x, px(0.));
+            assert!(beside[0].width < px(1400.));
+            assert!(beside.len() >= 2, "cut where the float ends");
+            assert_eq!(beside.last().unwrap().width, px(1400.));
+            // The pieces tile the raw line, and the paragraphs after it follow
+            // at the whole width, in this region.
+            assert_eq!(beside.last().unwrap().raw.end, para.len());
+            let last = region.column_lines(1).end - 1;
+            assert_eq!(lines(last)[0].width, px(1400.));
+            assert!(lines(last)[0].y > beside.last().unwrap().y);
+            assert_eq!(doc.region_index_at(last), Some(0));
         })
         .unwrap();
     }
