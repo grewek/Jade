@@ -58,7 +58,7 @@ pub(in crate::text_editor) struct FloatSpot {
     pub(in crate::text_editor) height: Pixels,
 }
 
-pub(super) struct ShapedRegion {
+pub(in crate::text_editor) struct ShapedRegion {
     pub columns: Vec<ShapedColumn>,
     /// An aside's placed floats (none for columns).
     pub float_spots: Vec<FloatSpot>,
@@ -70,7 +70,7 @@ pub(super) struct ShapedRegion {
 
 /// Shapes every column of `region` at its own width. Cost is the region's
 /// lines, shaped once per call.
-pub(super) fn shape_region(
+pub(in crate::text_editor) fn shape_region(
     text: &str,
     doc: &DocumentCache,
     (region, split): (&Columns, &columns::Split),

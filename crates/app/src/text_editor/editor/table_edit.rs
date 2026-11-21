@@ -10,6 +10,7 @@ use gpui_kit::*;
 
 use super::super::document_cache::TextEdit;
 use super::super::element::{TableColumns, render_params};
+use super::super::rows::Invalidate;
 use super::super::table_box::{self, cell_at, cell_ranges, edit_range};
 use super::super::table_handles::{Handle, TableDrag};
 use super::super::table_ops::{self, Op};
@@ -162,7 +163,9 @@ impl Editor {
             .borrow_mut()
             .set_table_view(raw, editing.map(|c| (c.line, c.column)));
         if changed {
-            self.row_height_cache.borrow_mut().invalidate_width();
+            self.row_height_cache
+                .borrow_mut()
+                .invalidate(Invalidate::Width);
         }
     }
 

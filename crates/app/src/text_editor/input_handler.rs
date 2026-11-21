@@ -4,6 +4,7 @@ use gpui_kit::*;
 
 use super::document_cache::TextEdit;
 use super::element::{analyze_line_layout, caret_rect};
+use super::rows::Inputs;
 use super::{Editor, EditorBuffer};
 
 /// The byte offset in `text` after `utf16_offset` UTF-16 code units.
@@ -177,16 +178,18 @@ impl EntityInputHandler for Editor {
         // Viewport-bounded like `paint_lines`: the IME target is near the
         // cursor, which is already scrolled into view.
         let layout = analyze_line_layout(
-            text,
             &self.document_cache,
             &self.row_height_cache,
-            cursor,
-            focused,
-            element_bounds.size.width,
+            &Inputs {
+                text,
+                cursor,
+                focused,
+                width: element_bounds.size.width,
+                font: &font,
+                font_size,
+                text_color,
+            },
             line_height,
-            &font,
-            font_size,
-            text_color,
             window,
         );
         // Reuses the incrementally maintained classification cache instead

@@ -9,5 +9,7 @@ mod embed;
 mod info;
 
 pub(super) use cache::{Cache, decode};
-pub(super) use embed::{PLACEHOLDER_ROWS, embed, embed_line, may_be_image, rows, unknown_targets};
+#[cfg(test)]
+pub(super) use embed::PLACEHOLDER_ROWS;
+pub(super) use embed::{embed, embed_line, may_be_image, rows, unknown_targets};
 pub(super) use info::{Info, Sizes, display_size, read_info, requested_width};

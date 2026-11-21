@@ -11,6 +11,8 @@ pub(super) use shape::{
     shape_display_line, shape_entry, wrapped_row_count,
 };
 pub(super) use state::{
-    LineState, TableLineKind, callout_at_line, indent_px, is_active_line, is_table_active,
-    table_line_kind,
+    LineState, TableLineKind, callout_at_line, indent_px, is_table_active, table_line_kind,
 };
+
+#[cfg(test)]
+pub(super) use state::is_active_line;

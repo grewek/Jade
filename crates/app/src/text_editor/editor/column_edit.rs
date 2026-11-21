@@ -12,7 +12,7 @@ use super::super::columns::Columns;
 use super::super::columns::Kind;
 use super::super::document_cache::DocumentCache;
 use super::super::element::render_params;
-use super::super::layout::mono_char_width;
+use super::super::rows::{Change, Inputs};
 use super::Editor;
 
 /// What the right-click menu offers about the structure around the caret.
@@ -147,33 +147,22 @@ impl Editor {
         cx: &mut Context<Self>,
     ) {
         let params = render_params(self, window, cx);
-        let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
-        let cursor = self.buffer.cursor();
-        let focused = self.focus_handle.is_focused(window);
-        let doc = self.document_cache.borrow();
+        let inp = Inputs {
+            text: self.buffer.text(),
+            cursor: self.buffer.cursor(),
+            focused: self.focus_handle.is_focused(window),
+            width: params.available_width,
+            font: &params.font,
+            font_size: params.font_size,
+            text_color: params.text_color,
+        };
         let mut rows = self.row_height_cache.borrow_mut();
-        if rows.needs_full_rebuild(&doc, params.available_width, char_width) {
-            // Not built for this width yet: the next paint rebuilds anyway.
-            rows.invalidate_width();
-            return;
-        }
-        let text = self.buffer.text();
         for &index in regions {
-            let Some(region) = doc.columns().get(index) else {
+            let Some(region) = self.document_cache.borrow().columns().get(index).copied() else {
                 continue;
             };
-            rows.patch_lines(
-                text,
-                &doc,
-                region.start_line..region.end_line,
-                cursor,
-                focused,
-                char_width,
-                &params.font,
-                params.font_size,
-                params.text_color,
-                window,
-            );
+            let lines = region.start_line..region.end_line;
+            rows.update(&self.document_cache, Change::Lines(lines), &inp, window);
         }
     }
 

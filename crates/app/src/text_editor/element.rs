@@ -16,21 +16,19 @@ use super::colors::{InlineColors, callout_role};
 use super::column_handles::{self, ColumnDrag};
 use super::column_ops;
 use super::columns::{self, Columns};
-use super::document_cache::{DocumentCache, EditPatch};
+use super::document_cache::DocumentCache;
 use super::editor::ColumnMenu;
-use super::fenwick::Fenwick;
-use super::image::{self, Cache as ImageCache, Info as ImageInfo, Sizes as ImageSizes};
+use super::image::{self, Cache as ImageCache, Info as ImageInfo};
 use super::layout::{
-    LineState, TableLineKind, build_display_lines, callout_at_line, char_budget, fit_with_indent,
-    indent_px, is_table_active, line_runs, mono_char_width, shape_display_line, shape_entry,
-    table_line_kind, wrapped_row_count,
+    LineState, TableLineKind, char_budget, indent_px, is_table_active, line_runs, mono_char_width,
+    shape_display_line, shape_entry, table_line_kind,
 };
 use super::link_table::LinkTable;
 use super::live_preview::{
-    DisplayLine, InlineStyle, LineContext, LineIndent, Widget, build_cell_line, is_thematic_break,
-    line_indent, raw_cell_line,
+    DisplayLine, InlineStyle, LineIndent, Widget, build_cell_line, is_thematic_break, raw_cell_line,
 };
 use super::paint_trace::{FrameInfo, PaintTrace};
+use super::rows::{self, Change, Inputs, RowCache};
 use super::table_box::{self, layout_row_editing};
 use super::table_handles::{self, Grid, Handle, TableDrag};
 use super::table_ops::Op;
@@ -109,870 +107,13 @@ fn autoscroll_to_cursor(
 /// regardless).
 const OVERSCAN_LINES: usize = 20;
 
-/// A persistent, edit-patched cache of every line's *row count* (how many
-/// wrapped visual rows a line occupies, per [`wrapped_row_count`]) — the
-/// per-paint piece `analyze_line_layout` used to re-derive from scratch for
-/// every line in the document, every paint, by calling `build_display_lines`
-/// (the real per-line Live Preview dispatch/inline-scan, not just
-/// arithmetic) even though `document_cache::DocumentCache` had already made
-/// *classification itself* incremental. Confirmed by direct measurement to
-/// be the dominant remaining per-keystroke cost on the 320K-line stress
-/// fixture (~140-155ms) once classification dropped to sub-1ms — this cache
-/// is what closes that gap, mirroring `DocumentCache`'s own "whole-document
-/// pass once, patch per edit after that" shape.
-///
-/// Stores row counts in a [`Fenwick`] tree (not a flat `Vec`) for the same
-/// reason `DocumentCache::line_index` does: a point update to one line's row
-/// count shifts every *subsequent* line's cumulative offset, which a flat
-/// array would need an O(suffix length) walk to keep in sync — the whole
-/// cost this cache exists to avoid. `line_height` is deliberately *not*
-/// baked into the stored values (unlike the old flat `cumulative: Vec<Pixels>`
-/// this replaces) — row counts are a property of wrapping alone, so a
-/// `line_height`-only change (a font-size bump that doesn't change character
-/// width) wouldn't need to invalidate anything if this cache tracked pixels
-/// directly; in practice `font_size` changing also changes `char_width`
-/// (this editor's font is always monospace), so the [`Self::available_width`]/
-/// [`Self::char_width`] fingerprint below still catches it, but the
-/// separation keeps the *reason* for each invalidation trigger distinct.
-///
-/// Three invalidation triggers, matching exactly what a line's row count
-/// can actually depend on:
-/// - **An edit** — patched eagerly, at the same call site `DocumentCache`
-///   itself is patched (`Editor::record_edit`), using the
-///   touched-line range `DocumentCache::record_edit` returns. Needs
-///   `window`/font/width at that point, which weren't previously computed
-///   outside of paint — see [`RenderParams`].
-/// - **The active line changing with no edit** (arrow keys, a mouse click
-///   elsewhere) — nothing above fires for this, since cursor-only movement
-///   is scattered across many call sites in `editor.rs`/mouse handling, none
-///   of which report a `TextEdit`. Deliberately *not* hooked at each of
-///   those call sites — instead handled lazily, the same way
-///   `last_autoscrolled_cursor` already catches "the cursor moved" without
-///   being wired into every mover: [`Self::sync_active_line`] is called from
-///   `analyze_line_layout` (so every paint, cheaply) and just compares the
-///   current active line against what was cached, patching at most the old
-///   and new active line if they differ.
-/// - **A rendering-context change** (window resize, font/size change) —
-///   caught by the same `analyze_line_layout` call via
-///   [`Self::needs_full_rebuild`]'s `available_width`/`char_width`
-///   fingerprint comparison; a mismatch forces a full [`Self::rebuild`]
-///   (the same O(document) cost `analyze_line_layout` used to pay on
-///   *every* paint, now paid only on an actual resize/font change, or the
-///   very first paint after opening a note).
-pub(super) struct RowHeightCache {
-    rows: Fenwick,
-    /// Which line (if any) was rendered raw/unstyled — [`is_active_line`] —
-    /// the last time this cache was built or patched. Compared against the
-    /// current cursor's line on every [`Self::sync_active_line`] call so a
-    /// pure cursor move (no edit) patches just the lines whose active
-    /// status actually changed.
-    active_line: Option<usize>,
-    /// The table cell that was being edited when this cache was last built or
-    /// patched: moving the caret between cells changes row counts like moving
-    /// it between lines does.
-    editing: Option<(usize, usize)>,
-    /// The `available_width` [`Self::rebuild`] last ran with — part of the
-    /// render-context fingerprint `needs_full_rebuild` checks.
-    available_width: Pixels,
-    /// This editor's monospace advance width (see [`mono_char_width`]) the
-    /// last time [`Self::rebuild`] ran — captures both font family/weight
-    /// and font size changes in one comparable value, rather than needing
-    /// `Font: PartialEq` (which this type deliberately avoids depending on).
-    char_width: Pixels,
-    /// Lines (one contiguous window, the last painted) whose row counts are
-    /// known exact, not [`estimate_row_count`] over-estimates. Reset by a
-    /// rebuild or a line-count change; see [`LineLayout::verify_rows`].
-    verified: std::ops::Range<usize>,
-    /// Corrections `paint_lines`' own per-line loop still had to make: after
-    /// [`LineLayout::verify_rows`] there should be none.
-    pub(super) late_corrections: usize,
-    /// Lines whose row counts changed without an edit (a callout folded or
-    /// opened), patched at the next layout instead of rebuilding every count
-    /// from estimates, which moved the content height under the view.
-    pending: Option<std::ops::Range<usize>>,
-}
-
-impl RowHeightCache {
-    /// Before the first real paint has ever populated this — `available_
-    /// width`/`char_width` are left at `0`, a sentinel no real font/width
-    /// ever produces, so [`Self::needs_full_rebuild`] is unconditionally
-    /// true until the first [`Self::rebuild`] call.
-    pub(super) fn empty() -> Self {
-        Self {
-            rows: Fenwick::new(&[]),
-            active_line: None,
-            editing: None,
-            available_width: px(0.),
-            char_width: px(0.),
-            verified: 0..0,
-            late_corrections: 0,
-            pending: None,
-        }
-    }
-
-    /// Marks `lines` to be recounted at the next layout.
-    pub(super) fn mark_changed(&mut self, lines: std::ops::Range<usize>) {
-        self.pending = Some(match self.pending.take() {
-            Some(old) => old.start.min(lines.start)..old.end.max(lines.end),
-            None => lines,
-        });
-    }
-
-    pub(super) fn line_count(&self) -> usize {
-        self.rows.len()
-    }
-
-    /// Makes the next paint rebuild every row count, as a change to what the
-    /// counts depend on besides the text (an image's size) requires.
-    pub(super) fn invalidate_width(&mut self) {
-        self.available_width = px(0.);
-    }
-
-    /// The cumulative row count of lines `0..i` — `i == line_count()` (one
-    /// past the last line) is valid too, giving the document's total row
-    /// count.
-    pub(super) fn prefix_sum(&self, i: usize) -> i64 {
-        self.rows.prefix_sum(i)
-    }
-
-    /// Whether [`Self::rebuild`] needs to run again before this cache's row
-    /// counts can be trusted at all: either the document's line count has
-    /// drifted out of sync with `doc` (a line-count-changing edit, or this
-    /// cache never having been built at all), or the render context this
-    /// cache's existing row counts were computed against has changed.
-    pub(super) fn needs_full_rebuild(
-        &self,
-        doc: &DocumentCache,
-        available_width: Pixels,
-        char_width: Pixels,
-    ) -> bool {
-        self.line_count() != doc.line_count()
-            || self.available_width != available_width
-            || self.char_width != char_width
-    }
-
-    /// Full O(document) rebuild — paid only when [`Self::needs_full_
-    /// rebuild`] says so (first paint after opening a note, a resize, or a
-    /// font/size change). Unlike the very first version of this cache,
-    /// this no longer pays `build_display_lines`'s real Live-Preview
-    /// inline-scan cost for every line: [`estimate_row_count`] gives a
-    /// cheap, allocation-free over-estimate for ordinary lines (confirmed
-    /// by direct measurement to cut cold-open allocation count from ~4
-    /// million to a small fraction of that on the 320K-line stress
-    /// fixture — see HISTORY.md), falling back to the exact computation
-    /// only for table rows/delimiters, where an estimate based on raw
-    /// source length isn't safely guaranteed to be an over-estimate (a
-    /// padded cell can display *wider* than its trimmed source). Any
-    /// line seeded with an estimate gets corrected to the exact value the
-    /// first time it's actually painted — see `paint_lines`'s own call to
-    /// `LineLayout::correct_row_count`.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn rebuild(
-        &mut self,
-        text: &str,
-        doc: &DocumentCache,
-        cursor: usize,
-        focused: bool,
-        available_width: Pixels,
-        char_width: Pixels,
-        font: &Font,
-        font_size: Pixels,
-        text_color: Hsla,
-        window: &mut Window,
-    ) {
-        let line_count = doc.line_count();
-        let starts = doc.line_start_offsets();
-        let view = DocView {
-            roles: doc.line_roles(),
-            contexts: doc.block_contexts(),
-            tables: doc.tables(),
-            callouts: doc.callouts(),
-            images: doc.images(),
-            columns: doc.columns(),
-            raw_region: doc.raw_region(),
-            column_width: doc.column_width(),
-            starts: &starts,
-        };
-        let rows = RowParams {
-            active_table: active_table(doc, cursor, focused),
-            available_width,
-            char_width,
-            line_height: window.line_height(),
-        };
-        let (mut counts, shaped) = pure_row_counts(text, &view, &rows);
-        // Lines that need the window (an active or irregular table row) are the
-        // few the threads left out.
-        for i in shaped {
-            let count = row_count_for_line(
-                text,
-                doc,
-                i,
-                cursor,
-                focused,
-                char_width,
-                font,
-                font_size,
-                text_color,
-                available_width,
-                window,
-            );
-            counts[i] = count as i64;
-        }
-        assert_eq!(counts.len(), line_count);
-        self.rows = Fenwick::from_vec(counts);
-        self.editing = doc.editing_cell();
-        self.active_line = if focused {
-            Some(doc.line_at(cursor))
-        } else {
-            None
-        };
-        self.available_width = available_width;
-        self.char_width = char_width;
-        self.verified = 0..0;
-        self.pending = None;
-    }
-
-    /// Mirrors `patch`'s line-count change in the row counts, so
-    /// [`Self::patch_lines`] can then re-derive just the touched lines.
-    /// A no-op when this cache wasn't in sync with the document before the
-    /// edit (never built, say): [`Self::needs_full_rebuild`] then sees the
-    /// line-count mismatch and forces a full rebuild.
-    pub(super) fn resize_for(&mut self, patch: &EditPatch, doc: &DocumentCache) {
-        let old_count = doc.line_count() as isize - patch.line_delta;
-        if patch.line_delta != 0 && self.line_count() as isize == old_count {
-            self.rows.resize(patch.splice_at, patch.line_delta);
-            self.verified = 0..0;
-        }
-    }
-
-    /// Recomputes every line in `touched`, patching the Fenwick tree in
-    /// place — the real incremental path for a text edit, called with the
-    /// touched-line range `DocumentCache::record_edit` already returned for
-    /// this same edit. Assumes [`Self::needs_full_rebuild`] is already
-    /// false (checked by the caller) — a render-context change is handled
-    /// by a full [`Self::rebuild`] instead, never this.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn patch_lines(
-        &mut self,
-        text: &str,
-        doc: &DocumentCache,
-        touched: std::ops::Range<usize>,
-        cursor: usize,
-        focused: bool,
-        char_width: Pixels,
-        font: &Font,
-        font_size: Pixels,
-        text_color: Hsla,
-        window: &mut Window,
-    ) {
-        let mut last = usize::MAX;
-        for i in touched {
-            // A line in a side-by-side region changes its region's height.
-            let i = row_owner(doc, i);
-            if i == last {
-                continue;
-            }
-            last = i;
-            let old = self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i);
-            let new = patched_row_count(
-                text,
-                doc,
-                i,
-                cursor,
-                focused,
-                char_width,
-                font,
-                font_size,
-                text_color,
-                self.available_width,
-                window,
-            );
-            self.rows.add_at(i, new as i64 - old);
-        }
-        self.editing = doc.editing_cell();
-        self.active_line = if focused {
-            Some(doc.line_at(cursor))
-        } else {
-            None
-        };
-    }
-
-    /// Patches whichever of the previously-active and newly-active line (at
-    /// most two lines) actually changed status since this cache was last
-    /// built or patched — the lazy, render-time-only trigger for "the
-    /// cursor moved with no accompanying edit" (see this struct's own doc
-    /// comment for why that case isn't hooked at every cursor-moving call
-    /// site instead). A no-op (not even a `Fenwick` touch) when the active
-    /// line hasn't actually changed.
-    #[allow(clippy::too_many_arguments)]
-    pub(super) fn sync_active_line(
-        &mut self,
-        text: &str,
-        doc: &DocumentCache,
-        cursor: usize,
-        focused: bool,
-        char_width: Pixels,
-        font: &Font,
-        font_size: Pixels,
-        text_color: Hsla,
-        window: &mut Window,
-    ) {
-        let new_active = if focused {
-            Some(doc.line_at(cursor))
-        } else {
-            None
-        };
-        let new_editing = doc.editing_cell();
-        if new_active == self.active_line && new_editing == self.editing {
-            return;
-        }
-        let editing_lines = [self.editing, new_editing].map(|e| e.map(|(line, _)| line));
-        let lines = [self.active_line, new_active]
-            .into_iter()
-            .chain(editing_lines);
-        let mut seen = Vec::with_capacity(4);
-        for line in lines.flatten() {
-            let line = row_owner(doc, line);
-            if seen.contains(&line) {
-                continue;
-            }
-            seen.push(line);
-            if line < self.line_count() {
-                let old = self.rows.prefix_sum(line + 1) - self.rows.prefix_sum(line);
-                let new = patched_row_count(
-                    text,
-                    doc,
-                    line,
-                    cursor,
-                    focused,
-                    char_width,
-                    font,
-                    font_size,
-                    text_color,
-                    self.available_width,
-                    window,
-                );
-                self.rows.add_at(line, new as i64 - old);
-            }
-        }
-        self.active_line = new_active;
-        self.editing = new_editing;
-    }
-
-    /// Upgrades line `i`'s row count to `real_rows` if it differs from
-    /// what's currently cached — the third invalidation trigger, used by
-    /// `paint_lines` to correct a cold-rebuild estimate (see
-    /// [`Self::rebuild`]) to the truth using a value it already computed
-    /// for real painting, at zero extra cost. Idempotent: a no-op once a
-    /// line has already been corrected, or for any line `rebuild` already
-    /// computed exactly (table rows/delimiters).
-    fn row_count(&self, i: usize) -> i64 {
-        self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i)
-    }
-
-    pub(super) fn correct(&mut self, i: usize, real_rows: usize) {
-        if i >= self.line_count() {
-            return;
-        }
-        let old = self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i);
-        let delta = real_rows as i64 - old;
-        if delta != 0 {
-            self.rows.add_at(i, delta);
-        }
-    }
-}
-
-/// The parts of a [`DocumentCache`] a row count reads, as plain slices (the
-/// cache itself holds `Rc`s, so it cannot cross to worker threads).
-struct DocView<'a> {
-    roles: &'a [LineRole],
-    contexts: &'a [LineContext],
-    tables: &'a [Table],
-    callouts: &'a [Callout],
-    images: &'a ImageSizes,
-    columns: &'a [Columns],
-    /// The region shown as source, laid out like plain text.
-    raw_region: Option<usize>,
-    /// Set when regions are laid out side by side (see `DocumentCache::side_by_side`).
-    column_width: Option<f32>,
-    /// Byte offset of each line, plus the text length.
-    starts: &'a [usize],
-}
-
-/// What a row count depends on besides the document.
-struct RowParams {
-    /// The table the cursor is in while focused: it renders as raw text.
-    active_table: Option<usize>,
-    available_width: Pixels,
-    char_width: Pixels,
-    /// An image block's height is a whole number of these.
-    line_height: Pixels,
-}
-
-/// The index of the table [`is_table_active`] would call active, found once so
-/// workers need not ask per line.
-fn active_table(doc: &DocumentCache, cursor: usize, focused: bool) -> Option<usize> {
-    if !focused {
-        return None;
-    }
-    let tables = doc.tables();
-    let idx = tables.partition_point(|t| doc.table_byte_range(t).end < cursor);
-    let table = tables.get(idx)?;
-    (doc.table_byte_range(table).start <= cursor).then_some(idx)
-}
-
-/// Below this many lines a thread per core costs more than it saves.
-const PARALLEL_MIN_LINES: usize = 20_000;
-
-/// Every line's row count that needs no `Window`, split over threads on big
-/// notes, plus the lines that do need one (their entry is a placeholder `0`).
-fn pure_row_counts(text: &str, view: &DocView, rows: &RowParams) -> (Vec<i64>, Vec<usize>) {
-    let line_count = view.roles.len();
-    let threads = if line_count < PARALLEL_MIN_LINES {
-        1
-    } else {
-        std::thread::available_parallelism().map_or(1, |n| n.get().min(8))
-    };
-    let step = line_count.div_ceil(threads).max(1);
-    let parts: Vec<(Vec<i64>, Vec<usize>)> = if threads == 1 {
-        vec![pure_row_counts_in(text, view, rows, 0..line_count)]
-    } else {
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..threads)
-                .map(|k| (k * step).min(line_count)..((k + 1) * step).min(line_count))
-                .map(|range| scope.spawn(move || pure_row_counts_in(text, view, rows, range)))
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                .collect()
-        })
-    };
-    let mut counts = Vec::with_capacity(line_count);
-    let mut shaped = Vec::new();
-    for (part, part_shaped) in parts {
-        counts.extend(part);
-        shaped.extend(part_shaped);
-    }
-    (counts, shaped)
-}
-
-/// [`pure_row_counts`] for the lines in `range`.
-fn pure_row_counts_in(
-    text: &str,
-    view: &DocView,
-    rows: &RowParams,
-    range: std::ops::Range<usize>,
-) -> (Vec<i64>, Vec<usize>) {
-    let RowParams {
-        active_table,
-        available_width,
-        char_width,
-        line_height,
-    } = *rows;
-    let line_count = view.roles.len();
-    let mut counts = Vec::with_capacity(range.len());
-    let mut shaped = Vec::new();
-    // One sequential pass: `tables` are sorted, so table membership comes from
-    // a cursor instead of a binary search per line. What is the same for every
-    // row of a table (column widths) is worked out once per table.
-    let budget = char_budget(available_width, char_width);
-    let one_level_fit = fit_with_indent(available_width, char_width, 1);
-    let mut next_table = view.tables.partition_point(|t| t.end_line <= range.start);
-    let mut next_callout = view.callouts.partition_point(|c| c.end_line <= range.start);
-    let mut next_region = view.columns.partition_point(|r| r.end_line <= range.start);
-    let mut table_state: Option<(usize, Option<Vec<usize>>)> = None;
-    for i in range {
-        // A side-by-side region is one block: its first line holds the height
-        // of its tallest column (which needs shaping, so it goes to `shaped`)
-        // and the rest have no rows.
-        if let Some(width) = view.column_width {
-            while view
-                .columns
-                .get(next_region)
-                .is_some_and(|r| r.end_line <= i)
-            {
-                next_region += 1;
-            }
-            let region = view.columns.get(next_region).filter(|r| r.start_line <= i);
-            let shown = region.filter(|_| Some(next_region) != view.raw_region);
-            if let Some(r) = shown.filter(|r| match r.kind {
-                columns::Kind::Aside => columns::aside_split(width, r.floats()).is_some(),
-                columns::Kind::Columns => columns::split(width, &r.percent[..r.count]).is_some(),
-            }) {
-                if i == r.start_line {
-                    shaped.push(i);
-                }
-                counts.push(0);
-                continue;
-            }
-        }
-        while view
-            .callouts
-            .get(next_callout)
-            .is_some_and(|c| c.end_line <= i)
-        {
-            next_callout += 1;
-        }
-        if view.callouts.get(next_callout).is_some_and(|c| c.hides(i)) {
-            counts.push(0);
-            continue;
-        }
-        let end = if i + 1 < line_count {
-            view.starts[i + 1] - 1
-        } else {
-            view.starts[i + 1]
-        };
-        let line = &text[view.starts[i]..end];
-        while view.tables.get(next_table).is_some_and(|t| t.end_line <= i) {
-            next_table += 1;
-        }
-        let table = view.tables.get(next_table).filter(|t| t.start_line <= i);
-        let count = match table {
-            None => estimate_row_count(
-                line,
-                view,
-                i,
-                (char_width, line_height),
-                available_width,
-                one_level_fit,
-            ),
-            Some(table) => {
-                let is_header = callout_at_line(view.callouts, i).is_some_and(|c| c.is_header(i));
-                let plain = matches!(view.roles[i], LineRole::Plain) && !is_header;
-                if table_state.as_ref().is_none_or(|(n, ..)| *n != next_table) {
-                    // A table that fits its width has no wrapped cell in any row,
-                    // so its widths (and its rows' text) are never looked at.
-                    let widths = if table_preview::fits_unshrunk(&table.columns, budget) {
-                        None
-                    } else {
-                        Some(table_preview::resolve_widths(&table.columns, budget))
-                    };
-                    table_state = Some((next_table, widths));
-                }
-                match &table_state {
-                    // An inactive, plainly rendered table: a delimiter is one hidden
-                    // row, a row is as tall as its tallest wrapped cell.
-                    Some((n, widths)) if plain && active_table != Some(*n) => match widths {
-                        Some(widths) if !table.is_delimiter(i) => {
-                            table_preview::row_line_count(line, widths)
-                        }
-                        _ => 1,
-                    },
-                    _ => {
-                        shaped.push(i);
-                        0
-                    }
-                }
-            }
-        };
-        counts.push(count as i64);
-    }
-    (counts, shaped)
-}
-
-/// A cheap, allocation-free over-estimate of `line`'s (line `i`'s) row count
-/// — the cold-`rebuild` fast path for an *ordinary* line; the caller must
-/// not pass a table row or delimiter, which get the exact computation
-/// instead (see [`RowHeightCache::rebuild`]'s own doc comment for why). Uses the line's
-/// *raw* length rather than running `build_display_lines`'s real Live-
-/// Preview inline scan at all: always safe (an over-estimate, never
-/// fewer rows than the truth) because every hiding/replacement transform
-/// this editor's Live Preview does — markup removal, a bullet/checkbox
-/// glyph, a callout's icon + capitalized type name — only ever shrinks
-/// what's displayed relative to the raw source, never grows it. Also
-/// exact, not just a safe over-estimate, for the active line and for
-/// fenced code content, both of which always render their raw text
-/// verbatim anyway.
-///
-/// Still needs the indent level right (a wider wrap width than the real
-/// one would *under*-estimate, the one way this could go unsafe) — reuses
-/// `live_preview::line_indent` (the same cheap prefix-only check `build_
-/// display_line` itself uses, not the expensive scan) combined with the
-/// line's already-known `LineContext` (from `DocumentCache`, itself
-/// already computed — not rederived here) the same way `build_display_
-/// line_in_context` resolves it for real, except for fenced code content,
-/// whose indent is always forced to `None` regardless (see
-/// `build_display_lines`'s own fence-content override).
-fn estimate_row_count(
-    line: &str,
-    doc: &DocView,
-    i: usize,
-    (char_width, line_height): (Pixels, Pixels),
-    available_width: Pixels,
-    one_level_fit: usize,
-) -> usize {
-    // A block's height does not depend on the width or the line's length, and is
-    // more than the one row the fast path below would give it.
-    if image::may_be_image(line)
-        && matches!(doc.roles[i], LineRole::Plain)
-        && matches!(doc.contexts[i], LineContext::Plain)
-        && callout_at_line(doc.callouts, i).is_none()
-        && let Some(embed) = image::embed_line(line)
-    {
-        return image::rows(line, &embed, Some(doc.images), available_width, line_height);
-    }
-    // A line with no context of its own that doesn't start with `>` is
-    // indented at most one level (a list marker; blockquotes need a `>`), so
-    // if even that narrower width holds its bytes it is a single row — most
-    // lines, decided without looking at its indent at all.
-    if matches!(doc.contexts[i], LineContext::Plain)
-        && !matches!(doc.roles[i], LineRole::FenceContent)
-        && line.as_bytes().first() != Some(&b'>')
-        && line.len() <= one_level_fit
-    {
-        return 1;
-    }
-    let indent_level = if matches!(doc.roles[i], LineRole::FenceContent) {
-        0
-    } else {
-        match doc.contexts[i] {
-            LineContext::Plain => line_indent(line).level(),
-            LineContext::ListMarkerLine(depth) => depth,
-            LineContext::LazyContinuation(indent) => indent.level(),
-        }
-    };
-    let wrap_width = Some((available_width - indent_px(indent_level)).max(px(1.)));
-    wrapped_row_count(line, wrap_width, char_width).max(1)
-}
-
-/// The line whose row count line `i` is part of: the first line of its
-/// side-by-side region, else itself.
-fn row_owner(doc: &DocumentCache, i: usize) -> usize {
-    doc.side_by_side(i)
-        .map_or(i, |(region, _)| region.start_line)
-}
-
-/// The row count for line `i` alone — the same per-line computation
-/// `analyze_line_layout`'s old whole-document loop ran unconditionally for
-/// every line; now only ever called for a line [`RowHeightCache`] actually
-/// needs to (re)compute. The first line of a side-by-side region gets the
-/// region's height and its other lines none (see [`region_rows`]).
-#[allow(clippy::too_many_arguments)]
-fn row_count_for_line(
-    text: &str,
-    doc: &DocumentCache,
-    i: usize,
-    cursor: usize,
-    focused: bool,
-    char_width: Pixels,
-    font: &Font,
-    font_size: Pixels,
-    text_color: Hsla,
-    available_width: Pixels,
-    window: &mut Window,
-) -> usize {
-    if let Some((region, split)) = doc.side_by_side(i) {
-        if i != region.start_line {
-            return 0;
-        }
-        if region.is_aside() {
-            return aside_row_estimate(
-                text,
-                doc,
-                (&region, &split),
-                (cursor, focused),
-                char_width,
-                (font, font_size),
-                text_color,
-                window,
-            );
-        }
-        let widths = (0..region.count).map(|k| px(split.width(k)));
-        let mut height = 1;
-        for (k, width) in widths.enumerate() {
-            let rows: usize = region
-                .column_lines(k)
-                .map(|line| {
-                    let state = LineState::in_column(doc, line, cursor, focused);
-                    state_row_count(
-                        text, doc, line, &state, char_width, font, font_size, text_color, width,
-                        window,
-                    )
-                })
-                .sum();
-            height = height.max(rows);
-        }
-        return height;
-    }
-    let state = LineState::of(doc, i, cursor, focused);
-    state_row_count(
-        text,
-        doc,
-        i,
-        &state,
-        char_width,
-        font,
-        font_size,
-        text_color,
-        available_width,
-        window,
-    )
-}
-
-/// An aside's rows without shaping it: the taller float stack, or that plus
-/// what the text needs past the stacks (it wraps at the narrow channel beside
-/// them and at the full width below). Summing every column's rows, as a
-/// side-by-side region does, counts the text as if it stayed in the channel,
-/// far too tall for a float block, and the scrollbar shifted as paint
-/// corrected it.
-#[allow(clippy::too_many_arguments)]
-fn aside_row_estimate(
-    text: &str,
-    doc: &DocumentCache,
-    (region, split): (&Columns, &columns::Split),
-    (cursor, focused): (usize, bool),
-    char_width: Pixels,
-    (font, font_size): (&Font, Pixels),
-    text_color: Hsla,
-    window: &mut Window,
-) -> usize {
-    let rows_of = |lines: &mut dyn Iterator<Item = usize>, width: Pixels, window: &mut Window| {
-        lines
-            .map(|line| {
-                let state = LineState::in_column(doc, line, cursor, focused);
-                state_row_count(
-                    text, doc, line, &state, char_width, font, font_size, text_color, width, window,
-                )
-            })
-            .sum::<usize>()
-    };
-    let text_part = region.count - 1;
-    let mut stacks = [0usize; 2];
-    for (k, spec) in region.floats().iter().enumerate() {
-        let rows = rows_of(&mut region.column_lines(k), px(split.width(k)), window);
-        // A row of air between floats on one side.
-        stacks[usize::from(spec.right)] += rows + 1;
-    }
-    let stack = stacks[0].max(stacks[1]);
-    let narrow = split.width(text_part);
-    let channel_rows = rows_of(&mut region.text_lines(), px(narrow), window);
-    let beyond = channel_rows.saturating_sub(stack);
-    let full = split.total.max(narrow);
-    let below = (beyond as f32 * narrow / full).ceil() as usize;
-    (stack + below).max(1)
-}
-
-/// [`row_count_for_line`] for a patch of one or two lines: a side-by-side
-/// region's height is its shaped one, not the monospace estimate. A patch
-/// leaves the line in the verified window, so an estimate put there would stay
-/// until paint corrects it, after anything positioned from the rows (scrolling
-/// to the caret) has used it; a region as tall as a float's text is far off.
-#[allow(clippy::too_many_arguments)]
-fn patched_row_count(
-    text: &str,
-    doc: &DocumentCache,
-    i: usize,
-    cursor: usize,
-    focused: bool,
-    char_width: Pixels,
-    font: &Font,
-    font_size: Pixels,
-    text_color: Hsla,
-    available_width: Pixels,
-    window: &mut Window,
-) -> usize {
-    if let Some((region, split)) = doc.side_by_side(i)
-        && i == region.start_line
-    {
-        return region::shape_region(
-            text,
-            doc,
-            (&region, &split),
-            (cursor, focused),
-            (font, font_size, window.line_height()),
-            (text_color.into(), None),
-            window,
-        )
-        .rows;
-    }
-    row_count_for_line(
-        text,
-        doc,
-        i,
-        cursor,
-        focused,
-        char_width,
-        font,
-        font_size,
-        text_color,
-        available_width,
-        window,
-    )
-}
-
-/// Line `i`'s rows when shown as `state` says, wrapped at `available_width`.
-#[allow(clippy::too_many_arguments)]
-fn state_row_count(
-    text: &str,
-    doc: &DocumentCache,
-    i: usize,
-    state: &LineState,
-    char_width: Pixels,
-    font: &Font,
-    font_size: Pixels,
-    text_color: Hsla,
-    available_width: Pixels,
-    window: &mut Window,
-) -> usize {
-    let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
-    let (display_lines, wrap_width) = build_display_lines(
-        line_text,
-        state,
-        font,
-        font_size,
-        text_color,
-        available_width,
-        window,
-    );
-    display_lines
-        .iter()
-        .map(|dl| wrapped_row_count(&dl.display_text, wrap_width, char_width))
-        .sum::<usize>()
-        .max(usize::from(!state.hidden))
-}
-
-/// The row count painting will see for line `i`: real shaping, so word
-/// wrapping is included. [`row_count_for_line`]'s monospace estimate can come
-/// out one row short of that, which `verify_rows` must not inherit.
-#[allow(clippy::too_many_arguments)]
-fn shaped_row_count_for_line(
-    text: &str,
-    doc: &DocumentCache,
-    i: usize,
-    cursor: usize,
-    focused: bool,
-    line_height: Pixels,
-    font: &Font,
-    font_size: Pixels,
-    text_color: Hsla,
-    available_width: Pixels,
-    window: &mut Window,
-) -> usize {
-    let state = LineState::of(doc, i, cursor, focused);
-    let shaped = shape_display_line(
-        &text[doc.line_start_byte(i)..doc.line_end_byte(i)],
-        &state,
-        font,
-        font_size,
-        text_color,
-        available_width,
-        window,
-    );
-    let height: Pixels = shaped
-        .iter()
-        .map(|(wrapped, _)| wrapped.size(line_height).height)
-        .sum();
-    ((height / line_height).round() as usize).max(usize::from(!state.hidden))
-}
-
 /// Per-document, per-paint layout data that lets `measure_document`/
 /// `paint_lines`/`offset_for_position`/`input_handler::bounds_for_range`
 /// each touch only the lines they actually need, instead of every line in
 /// the document — see this module's own notes on viewport-bounded
 /// rendering. Built once per paint by `analyze_line_layout`, which first
 /// makes sure the two caches below are up to date (cheaply, in the common
-/// case — see [`RowHeightCache`]'s own doc comment) and then just wraps
+/// case — see [`RowCache`]'s own doc comment) and then just wraps
 /// clones of them (`Rc`, so cheap) alongside `line_height`; every query
 /// method below is an O(log n) lookup into one of them, not an array index,
 /// but that's still a tiny cost against what re-deriving them would be.
@@ -986,7 +127,7 @@ fn shaped_row_count_for_line(
 #[derive(Clone)]
 pub(super) struct LineLayout {
     doc_cache: Rc<RefCell<DocumentCache>>,
-    row_cache: Rc<RefCell<RowHeightCache>>,
+    row_cache: Rc<RefCell<RowCache>>,
     line_height: Pixels,
 }
 
@@ -1012,116 +153,29 @@ impl LineLayout {
         self.line_height * self.row_cache.borrow().prefix_sum(i) as f32
     }
 
-    /// For the paint trace: the wrap width the cached heights were computed
-    /// for (`None` while still unknown), the exact window, and how many
-    /// corrections painting has had to make so far.
+    /// For the paint trace; see [`RowCache::trace_state`].
     pub(super) fn trace_state(&self) -> (Option<Pixels>, std::ops::Range<usize>, usize) {
-        let rows = self.row_cache.borrow();
-        let width = (rows.available_width < Pixels::MAX).then_some(rows.available_width);
-        (width, rows.verified.clone(), rows.late_corrections)
+        self.row_cache.borrow().trace_state()
     }
 
-    /// Makes the row counts of `range` exact. A cold rebuild seeds ordinary
-    /// lines with an over-estimate that painting only corrects line by line,
-    /// *after* anything positioned from the estimates (a callout's
-    /// background) has been drawn, so those backgrounds sat at the wrong
-    /// height until the next repaint. Once the real width is known a one-row
-    /// estimate is already exact (it never undercounts and a line has at
-    /// least one row), so only multi-row lines are shaped, once per window.
-    /// Before that (the first frame wraps at `Pixels::MAX`, so every line
-    /// estimates as one row) every line in the window is shaped.
-    #[allow(clippy::too_many_arguments)]
+    /// Brings the row counts up to date for `inp` (see [`Change::Layout`]);
+    /// whether they were rebuilt.
+    pub(super) fn update_rows(&self, inp: &Inputs, window: &mut Window) -> bool {
+        self.row_cache
+            .borrow_mut()
+            .update(&self.doc_cache, Change::Layout, inp, window)
+    }
+
+    /// Makes the row counts of `range` exact; see [`RowCache::verify`].
     pub(super) fn verify_rows(
         &self,
         range: std::ops::Range<usize>,
-        text: &str,
-        cursor: usize,
-        focused: bool,
-        paint_width: Pixels,
-        font: &Font,
-        font_size: Pixels,
-        text_color: Hsla,
+        inp: &Inputs,
         window: &mut Window,
     ) {
-        let (verified, cached_width) = {
-            let rows = self.row_cache.borrow();
-            (rows.verified.clone(), rows.available_width)
-        };
-        if range.start >= verified.start && range.end <= verified.end {
-            return;
-        }
-        let width_unknown = cached_width >= Pixels::MAX;
-        let doc = self.doc_cache.borrow();
-        let mut corrections = Vec::new();
-        for i in range.clone().filter(|i| !verified.contains(i)) {
-            // A side-by-side region's rows come from shaping its columns, not
-            // its first line.
-            if let Some((region, split)) = doc.side_by_side(i) {
-                if i == region.start_line {
-                    let shaped = region::shape_region(
-                        text,
-                        &doc,
-                        (&region, &split),
-                        (cursor, focused),
-                        (font, font_size, self.line_height),
-                        (text_color.into(), None),
-                        window,
-                    );
-                    corrections.push((i, shaped.rows));
-                }
-                continue;
-            }
-            if width_unknown || self.row_cache.borrow().row_count(i) > 1 {
-                let rows = shaped_row_count_for_line(
-                    text,
-                    &doc,
-                    i,
-                    cursor,
-                    focused,
-                    self.line_height,
-                    font,
-                    font_size,
-                    text_color,
-                    paint_width,
-                    window,
-                );
-                corrections.push((i, rows));
-            }
-        }
-        let mut rows = self.row_cache.borrow_mut();
-        for (i, count) in corrections {
-            rows.correct(i, count);
-        }
-        let touching = range.start <= verified.end && verified.start <= range.end;
-        rows.verified = if touching && !verified.is_empty() {
-            range.start.min(verified.start)..range.end.max(verified.end)
-        } else {
-            range
-        };
-    }
-
-    /// The width the cached row counts were built for.
-    pub(super) fn rows_built_for(&self) -> Pixels {
-        self.row_cache.borrow().available_width
-    }
-
-    /// Rebuilds every row count for `width`; see the call in `render_editor`.
-    pub(super) fn rebuild_rows_for(
-        &self,
-        text: &str,
-        (cursor, focused): (usize, bool),
-        width: Pixels,
-        char_width: Pixels,
-        (font, font_size, text_color): (&Font, Pixels, Hsla),
-        window: &mut Window,
-    ) {
-        self.doc_cache
+        self.row_cache
             .borrow_mut()
-            .set_column_width(column_width_for(width));
-        let doc = self.doc_cache.borrow();
-        self.row_cache.borrow_mut().rebuild(
-            text, &doc, cursor, focused, width, char_width, font, font_size, text_color, window,
-        );
+            .verify(&self.doc_cache.borrow(), range, inp, window);
     }
 
     /// The line containing buffer byte offset `cursor`.
@@ -1129,16 +183,11 @@ impl LineLayout {
         self.doc_cache.borrow().line_at(cursor)
     }
 
-    /// Upgrades line `i`'s cached row count to `real_rows` — see
-    /// `RowHeightCache::correct`'s own doc comment. `&self`, not `&mut
-    /// self`: mutates through `row_cache`'s `RefCell`, the same interior-
-    /// mutability pattern [`Self::cumulative_at`] already relies on.
+    /// Upgrades line `i`'s cached row count to `real_rows`; see
+    /// [`RowCache::correct_late`]. `&self`: mutates through `row_cache`'s
+    /// `RefCell`, like [`Self::cumulative_at`] reads through it.
     pub(super) fn correct_row_count(&self, i: usize, real_rows: usize) {
-        let mut rows = self.row_cache.borrow_mut();
-        if i < rows.line_count() && rows.row_count(i) != real_rows as i64 {
-            rows.late_corrections += 1;
-        }
-        rows.correct(i, real_rows);
+        self.row_cache.borrow_mut().correct_late(i, real_rows);
     }
 
     /// Binary search over [`Self::cumulative_at`], matching `[Pixels]::
@@ -1146,7 +195,7 @@ impl LineLayout {
     /// for which `pred` is false) exactly — reimplemented here rather than
     /// materializing the cumulative sequence into a slice (which would
     /// reintroduce the O(document) cost incremental caching exists to
-    /// remove), since `RowHeightCache`'s own `Fenwick` tree only supports
+    /// remove), since `RowCache`'s own `Fenwick` tree only supports
     /// O(log n) *point* queries directly, not slice-style binary search.
     fn partition_point_cumulative(&self, pred: impl Fn(Pixels) -> bool) -> usize {
         let mut lo = 0usize;
@@ -1165,7 +214,7 @@ impl LineLayout {
 
 /// The render parameters [`analyze_line_layout`] needs, computed the same
 /// way both `render_editor` (every paint) and `Editor::record_edit`
-/// (every edit, so [`RowHeightCache`] can be patched
+/// (every edit, so [`RowCache`] can be patched
 /// synchronously right there rather than deferred to the next paint) need
 /// them — pulled out into one function once a second call site needed the
 /// exact same computation `render_editor` already did inline.
@@ -1374,74 +423,18 @@ pub(super) fn caret_in_column(
     )
 }
 
-pub(super) fn column_width_for(available_width: Pixels) -> Option<f32> {
-    (available_width > px(0.) && available_width < Pixels::MAX).then(|| f32::from(available_width))
-}
-
-/// Makes sure `row_cache` is up to date (a cheap active-line sync in the
-/// common case, a full rebuild only on the first call or an actual
-/// render-context change — see [`RowHeightCache`]'s own doc comment) and
-/// returns a [`LineLayout`] wrapping it alongside `doc_cache`. Replaces what
-/// used to be an unconditional O(document) pass here on every single paint.
-#[allow(clippy::too_many_arguments)]
+/// Makes sure `row_cache` is up to date (see [`Change::Layout`]) and returns a
+/// [`LineLayout`] wrapping it alongside `doc_cache`.
 pub(super) fn analyze_line_layout(
-    text: &str,
     doc_cache: &Rc<RefCell<DocumentCache>>,
-    row_cache: &Rc<RefCell<RowHeightCache>>,
-    cursor: usize,
-    focused: bool,
-    available_width: Pixels,
+    row_cache: &Rc<RefCell<RowCache>>,
+    inp: &Inputs,
     line_height: Pixels,
-    font: &Font,
-    font_size: Pixels,
-    text_color: Hsla,
     window: &mut Window,
 ) -> LineLayout {
-    let char_width = mono_char_width(font, font_size, text_color, window);
-    let rebuild = {
-        let doc = doc_cache.borrow();
-        row_cache
-            .borrow()
-            .needs_full_rebuild(&doc, available_width, char_width)
-    };
-    if rebuild {
-        // The width regions are laid out across is set only here and where
-        // else the rows are rebuilt, so it is always the width they were built for.
-        doc_cache
-            .borrow_mut()
-            .set_column_width(column_width_for(available_width));
-    }
-    {
-        let doc = doc_cache.borrow();
-        let mut rows = row_cache.borrow_mut();
-        if rebuild {
-            rows.rebuild(
-                text,
-                &doc,
-                cursor,
-                focused,
-                available_width,
-                char_width,
-                font,
-                font_size,
-                text_color,
-                window,
-            );
-        } else {
-            if let Some(lines) = rows.pending.take() {
-                rows.patch_lines(
-                    text, &doc, lines, cursor, focused, char_width, font, font_size, text_color,
-                    window,
-                );
-                // Patched counts are estimates for plain lines: paint verifies
-                // the visible ones again.
-                rows.verified = 0..0;
-            }
-            rows.sync_active_line(
-                text, &doc, cursor, focused, char_width, font, font_size, text_color, window,
-            );
-        }
-    }
+    row_cache
+        .borrow_mut()
+        .update(doc_cache, Change::Layout, inp, window);
     LineLayout {
         doc_cache: doc_cache.clone(),
         row_cache: row_cache.clone(),
@@ -1574,23 +567,25 @@ pub(super) fn render_editor(
     } = params;
 
     // Makes sure `row_height_cache` is up to date (almost always a cheap
-    // active-line check — see `RowHeightCache`'s own doc comment, and
+    // active-line check — see `RowCache`'s own doc comment, and
     // `Editor::record_edit` for the edit-triggered half of
     // keeping it that way) and wraps it alongside `document_cache` into a
     // `LineLayout`, feeding `measure_document`'s sizing and `paint_lines`/
     // `offset_for_position`/`register_mouse_handling`'s viewport-bounded
     // windowing below.
     let layout = analyze_line_layout(
-        text,
         &document_cache,
         &row_height_cache,
-        cursor,
-        focused,
-        available_width,
+        &Inputs {
+            text,
+            cursor,
+            focused,
+            width: available_width,
+            font: &font,
+            font_size,
+            text_color,
+        },
         line_height,
-        &font,
-        font_size,
-        text_color,
         window,
     );
     let (total_height, cursor_top, cursor_height) = measure_document(&layout, cursor, line_height);
@@ -1668,21 +663,26 @@ pub(super) fn render_editor(
                     // rebuild for the real width before anything is placed from the
                     // rows, and `notify` so the next render sizes the scroll extent.
                     let real_width = viewport.size.width;
-                    if real_width > px(0.) && layout.rows_built_for() != real_width {
-                        editor_entity.update(cx, |editor, _| {
-                            let char_width = mono_char_width(&font, font_size, text_color, window);
-                            layout.rebuild_rows_for(
-                                editor.buffer().text(),
-                                (cursor, focused),
-                                real_width,
-                                char_width,
-                                (&font, font_size, text_color),
+                    if real_width > px(0.) {
+                        let rebuilt = editor_entity.update(cx, |editor, _| {
+                            layout.update_rows(
+                                &Inputs {
+                                    text: editor.buffer().text(),
+                                    cursor,
+                                    focused,
+                                    width: real_width,
+                                    font: &font,
+                                    font_size,
+                                    text_color,
+                                },
                                 window,
-                            );
+                            )
                         });
-                        // A `notify` made while painting is dropped; defer it.
-                        let entity = editor_entity.clone();
-                        window.defer(cx, move |_, cx| entity.update(cx, |_, cx| cx.notify()));
+                        if rebuilt {
+                            // A `notify` made while painting is dropped; defer it.
+                            let entity = editor_entity.clone();
+                            window.defer(cx, move |_, cx| entity.update(cx, |_, cx| cx.notify()));
+                        }
                     }
                     let view = Rc::new(FrameView {
                         layout: layout.clone(),
@@ -3569,13 +2569,15 @@ fn paint_lines(
     // even for a document with a huge number of callouts).
     layout.verify_rows(
         range.clone(),
-        text,
-        cursor,
-        show_cursor,
-        bounds.size.width,
-        font,
-        font_size,
-        text_color,
+        &Inputs {
+            text,
+            cursor,
+            focused: show_cursor,
+            width: bounds.size.width,
+            font,
+            font_size,
+            text_color,
+        },
         window,
     );
     // Callouts never overlap and are ordered, so the visible ones are a
@@ -3693,7 +2695,7 @@ fn paint_lines(
             .iter()
             .map(|(wrapped, _)| wrapped.size(line_height).height)
             .sum();
-        // Upgrades a cold-rebuild estimate (see `RowHeightCache::rebuild`)
+        // Upgrades a cold-rebuild estimate (see `RowCache::rebuild`)
         // to the truth using the real shaping this line's painting already
         // needed — zero extra cost, and idempotent (a no-op once this line
         // has already been corrected, e.g. by an earlier viewing or an
@@ -4160,8 +3162,9 @@ mod tests {
     use super::super::table_preview::classify_tables;
     use super::super::test_support::apply_edit;
     use super::LineState;
-    use super::{TableLineKind, row_count_for_line, shape_display_line};
+    use super::{TableLineKind, shape_display_line};
     use crate::text_editor::layout::is_active_line;
+    use crate::text_editor::rows::{self as rowcache, Change, Inputs, Invalidate};
     use gpui_kit::test::TestWindowExt;
     use gpui_kit::{
         AnyWindowHandle, AppContext, Entity, EntityInputHandler, Pixels, Point, TestAppContext,
@@ -5318,7 +4321,7 @@ mod tests {
     #[gpui_kit::test]
     fn table_controls_work_on_a_table_in_a_column(cx: &mut TestAppContext) {
         use super::super::table_handles::Handle;
-        use super::{FrameView, LineLayout, RowHeightCache, handle_for_pointer, hover_for_pointer};
+        use super::{FrameView, LineLayout, RowCache, handle_for_pointer, hover_for_pointer};
         use super::{mono_char_width, px};
         use gpui::{Bounds, size};
         use std::{cell::RefCell, rc::Rc};
@@ -5336,17 +4339,14 @@ mod tests {
             let char_width = mono_char_width(&font, font_size, text_color, window);
             let doc_cache = editor.read(cx).document_cache.clone();
             doc_cache.borrow_mut().set_column_width(Some(800.));
-            let mut rows = RowHeightCache::empty();
-            rows.rebuild(
+            let mut rows = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut rows,
                 text,
                 &doc_cache.borrow(),
-                0,
-                true,
+                (0, true),
                 width,
-                char_width,
-                &font,
-                font_size,
-                text_color,
+                (&font, font_size, text_color),
                 window,
             );
             let layout = LineLayout {
@@ -5493,7 +4493,7 @@ mod tests {
     fn a_cold_rebuild_estimates_a_float_block_near_its_shaped_height(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
         use super::region::shape_region;
-        use super::{RowHeightCache, mono_char_width};
+        use super::{RowCache, mono_char_width};
         let para = "flowing words ".repeat(40);
         let text: &'static str = Box::leak(
             format!(
@@ -5511,17 +4511,14 @@ mod tests {
             let char_width = mono_char_width(&font, size, style.color, window);
             let mut doc = DocumentCache::new(text);
             doc.set_column_width(Some(1000.));
-            let mut rows = RowHeightCache::empty();
-            rows.rebuild(
+            let mut rows = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut rows,
                 text,
                 &doc,
-                0,
-                false,
+                (0, false),
                 px(1000.),
-                char_width,
-                &font,
-                size,
-                style.color,
+                (&font, size, style.color),
                 window,
             );
             let (region, split) = doc.side_by_side(0).unwrap();
@@ -5542,16 +4539,6 @@ mod tests {
             );
         })
         .unwrap();
-    }
-
-    /// Lines marked changed are patched together (a fold then a second one
-    /// before a layout covers both).
-    #[test]
-    fn marked_lines_merge_into_one_range() {
-        let mut rows = super::RowHeightCache::empty();
-        rows.mark_changed(10..14);
-        rows.mark_changed(3..5);
-        assert_eq!(rows.pending, Some(3..14));
     }
 
     /// A table that had to shrink to its room fills it, so its edge lines up
@@ -5883,7 +4870,7 @@ mod tests {
     fn region_controls_hover_press_and_drag(cx: &mut TestAppContext) {
         use super::super::column_handles::{self, ColumnDrag};
         use super::super::table_handles::Handle;
-        use super::{FrameView, LineLayout, RowHeightCache};
+        use super::{FrameView, LineLayout, RowCache};
         use super::{column_drag_percent, column_handle_for_pointer, column_hover_for_pointer};
         use super::{mono_char_width, px};
         use gpui::{Bounds, size};
@@ -5902,17 +4889,14 @@ mod tests {
             let char_width = mono_char_width(&font, font_size, text_color, window);
             let doc_cache = editor.read(cx).document_cache.clone();
             doc_cache.borrow_mut().set_column_width(Some(800.));
-            let mut rows = RowHeightCache::empty();
-            rows.rebuild(
+            let mut rows = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut rows,
                 text,
                 &doc_cache.borrow(),
-                0,
-                true,
+                (0, true),
                 width,
-                char_width,
-                &font,
-                font_size,
-                text_color,
+                (&font, font_size, text_color),
                 window,
             );
             let layout = LineLayout {
@@ -6373,56 +5357,46 @@ mod tests {
     /// Every line's current row count, read out of `rows` via its own
     /// Fenwick-backed prefix sums — what every assertion below compares
     /// between an incrementally-patched cache and an exact oracle.
-    fn row_counts(rows: &super::RowHeightCache) -> Vec<i64> {
+    fn row_counts(rows: &super::RowCache) -> Vec<i64> {
         (0..rows.line_count())
             .map(|i| rows.prefix_sum(i + 1) - rows.prefix_sum(i))
             .collect()
     }
 
     /// The true, never-estimated row count for every line, computed
-    /// directly via `row_count_for_line` (the same function `RowHeightCache
+    /// directly via `row_count_for_line` (the same function `RowCache
     /// ::patch_lines`/`sync_active_line` already always use) — the oracle
     /// every property test below compares an incrementally-maintained
-    /// cache against. Deliberately *not* `RowHeightCache::rebuild`'s own
+    /// cache against. Deliberately *not* `RowCache::rebuild`'s own
     /// output: `rebuild` itself now estimates for non-table lines (see its
     /// own doc comment) and is only guaranteed exact for whichever single
     /// line is currently active, so it stopped being a valid full-document
     /// "ground truth" the moment that landed — this helper is what still
     /// is one.
-    #[allow(clippy::too_many_arguments)]
     fn exact_row_counts(
         text: &str,
         doc: &super::super::document_cache::DocumentCache,
-        cursor: usize,
-        focused: bool,
-        char_width: Pixels,
-        font: &gpui_kit::Font,
-        font_size: Pixels,
-        text_color: gpui_kit::Hsla,
-        available_width: Pixels,
+        (cursor, focused): (usize, bool),
+        width: Pixels,
+        (font, font_size, text_color): (&gpui_kit::Font, Pixels, gpui_kit::Hsla),
         window: &mut gpui_kit::Window,
     ) -> Vec<i64> {
+        let inp = super::rows::Inputs {
+            text,
+            cursor,
+            focused,
+            width,
+            font,
+            font_size,
+            text_color,
+        };
         (0..doc.line_count())
-            .map(|i| {
-                super::row_count_for_line(
-                    text,
-                    doc,
-                    i,
-                    cursor,
-                    focused,
-                    char_width,
-                    font,
-                    font_size,
-                    text_color,
-                    available_width,
-                    window,
-                ) as i64
-            })
+            .map(|i| rowcache::exact_row_count(&inp, doc, i, window) as i64)
             .collect()
     }
 
-    /// The property [`super::RowHeightCache::patch_lines`]/[`super::
-    /// RowHeightCache::rebuild`] actually rely on: after any sequence of
+    /// The property [`super::RowCache::patch_lines`]/[`super::
+    /// RowCache::rebuild`] actually rely on: after any sequence of
     /// edits (including line-count-changing ones, which force a fallback
     /// full rebuild — see `needs_full_rebuild`), a cache kept incrementally
     /// in sync edit-by-edit must have exactly the same per-line row counts
@@ -6431,7 +5405,7 @@ mod tests {
     /// cache.rs`'s own property tests already use, which is what actually
     /// caught every real bug in *that* module; this is the matching test
     /// for the row-height cache this module adds on top of it. Compared
-    /// against `exact_row_counts` specifically, not a second `RowHeightCache
+    /// against `exact_row_counts` specifically, not a second `RowCache
     /// ::rebuild` call — `rebuild` itself now also estimates for non-table
     /// lines (see its own doc comment), so it stopped being usable as this
     /// test's oracle the moment that landed; an earlier version of this
@@ -6447,7 +5421,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use super::super::document_cache::DocumentCache;
-        use super::{RowHeightCache, mono_char_width};
+        use super::{RowCache, mono_char_width};
 
         let mut text = String::from(
             "intro\n```\ncode line one\ncode line two\n```\nplain\n> quote\n- item\n  - nested\nmore plain text here\n\
@@ -6463,18 +5437,15 @@ mod tests {
             let available_width = px(400.);
             let char_width = mono_char_width(&font, font_size, text_color, window);
 
-            let mut doc_cache = DocumentCache::new(&text);
-            let mut row_cache = RowHeightCache::empty();
-            row_cache.rebuild(
+            let doc_cache = std::cell::RefCell::new(DocumentCache::new(&text));
+            let mut row_cache = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut row_cache,
                 &text,
-                &doc_cache,
-                0,
-                false,
+                &doc_cache.borrow(),
+                (0, false),
                 available_width,
-                char_width,
-                &font,
-                font_size,
-                text_color,
+                (&font, font_size, text_color),
                 window,
             );
 
@@ -6494,36 +5465,23 @@ mod tests {
             for &(start, delete_len, insert) in edits {
                 let old_end = start + delete_len;
                 let (new_text, edit) = apply_edit(&text, start, old_end, insert);
-                let patch = doc_cache.record_edit(&new_text, edit);
-                if let Some(patch) = &patch {
-                    row_cache.resize_for(patch, &doc_cache);
-                }
-                match patch.map(|p| p.touched) {
-                    Some(range)
-                        if !row_cache.needs_full_rebuild(
-                            &doc_cache,
-                            available_width,
-                            char_width,
-                        ) =>
-                    {
-                        row_cache.patch_lines(
-                            &new_text, &doc_cache, range, 0, false, char_width, &font, font_size,
-                            text_color, window,
-                        );
+                let patch = doc_cache.borrow_mut().record_edit(&new_text, edit);
+                let inp = Inputs {
+                    text: &new_text,
+                    cursor: 0,
+                    focused: false,
+                    width: available_width,
+                    font: &font,
+                    font_size,
+                    text_color,
+                };
+                match &patch {
+                    Some(patch) => {
+                        row_cache.update(&doc_cache, Change::Edit(patch), &inp, window);
                     }
-                    _ => {
-                        row_cache.rebuild(
-                            &new_text,
-                            &doc_cache,
-                            0,
-                            false,
-                            available_width,
-                            char_width,
-                            &font,
-                            font_size,
-                            text_color,
-                            window,
-                        );
+                    None => {
+                        row_cache.invalidate(Invalidate::Width);
+                        row_cache.update(&doc_cache, Change::Layout, &inp, window);
                     }
                 }
 
@@ -6531,13 +5489,9 @@ mod tests {
                 let expected = exact_row_counts(
                     &new_text,
                     &oracle_doc,
-                    0,
-                    false,
-                    char_width,
-                    &font,
-                    font_size,
-                    text_color,
+                    (0, false),
                     available_width,
+                    (&font, font_size, text_color),
                     window,
                 );
 
@@ -6561,7 +5515,8 @@ mod tests {
     #[gpui_kit::test]
     fn a_side_by_side_region_takes_its_tallest_columns_rows(cx: &mut TestAppContext) {
         use super::super::{columns, document_cache::DocumentCache};
-        use super::{RowHeightCache, mono_char_width, wrapped_row_count};
+        use super::{RowCache, mono_char_width};
+        use crate::text_editor::layout::wrapped_row_count;
         use gpui::Window;
 
         let long = "word ".repeat(30);
@@ -6576,9 +5531,15 @@ mod tests {
             let char_width = mono_char_width(&font, font_size, text_color, window);
             let width = px(600.);
             let build = |doc: &DocumentCache, width: Pixels, window: &mut Window| {
-                let mut rows = RowHeightCache::empty();
-                rows.rebuild(
-                    &text, doc, 0, false, width, char_width, &font, font_size, text_color, window,
+                let mut rows = RowCache::empty();
+                rowcache::rebuild_for_test(
+                    &mut rows,
+                    &text,
+                    doc,
+                    (0, false),
+                    width,
+                    (&font, font_size, text_color),
+                    window,
                 );
                 rows
             };
@@ -6592,15 +5553,18 @@ mod tests {
             let tall = wrapped_row_count(long.trim_end(), Some(column), char_width);
             assert!(tall > 2, "the long column must wrap, got {tall} rows");
             // Region lines 2..=10: the first holds the height, the rest none.
-            assert_eq!(rows.row_count(2), tall as i64);
-            assert!((3..=10).all(|i| rows.row_count(i) == 0));
-            assert_eq!((rows.row_count(0), rows.row_count(12)), (1, 1));
+            assert_eq!(rowcache::count_at(&rows, 2), tall as i64);
+            assert!((3..=10).all(|i| rowcache::count_at(&rows, i) == 0));
+            assert_eq!(
+                (rowcache::count_at(&rows, 0), rowcache::count_at(&rows, 12)),
+                (1, 1)
+            );
 
             // Too narrow for 160px columns: stacked, nothing is hidden.
             let narrow = px(300.);
             doc.set_column_width(Some(f32::from(narrow)));
             let stacked = build(&doc, narrow, window);
-            assert!((0..13).all(|i| stacked.row_count(i) >= 1));
+            assert!((0..13).all(|i| rowcache::count_at(&stacked, i) >= 1));
 
             // An edit in the short column makes it the taller one.
             doc.set_column_width(Some(f32::from(width)));
@@ -6609,26 +5573,33 @@ mod tests {
             let longer = "longer ".repeat(60);
             let (new_text, edit) = apply_edit(&text, at, at + 5, &longer);
             let patch = doc.record_edit(&new_text, edit).unwrap();
-            rows.patch_lines(
+            rowcache::patch_for_test(
+                &mut rows,
                 &new_text,
                 &doc,
                 patch.touched,
-                0,
-                false,
-                char_width,
-                &font,
-                font_size,
-                text_color,
+                (0, false),
+                (&font, font_size, text_color),
                 window,
             );
-            let mut fresh = RowHeightCache::empty();
-            fresh.rebuild(
-                &new_text, &doc, 0, false, width, char_width, &font, font_size, text_color, window,
+            let mut fresh = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut fresh,
+                &new_text,
+                &doc,
+                (0, false),
+                width,
+                (&font, font_size, text_color),
+                window,
             );
-            let counts = |r: &RowHeightCache| (0..13).map(|i| r.row_count(i)).collect::<Vec<_>>();
+            let counts = |r: &RowCache| {
+                (0..13)
+                    .map(|i| rowcache::count_at(&r, i))
+                    .collect::<Vec<_>>()
+            };
             assert_eq!(counts(&rows), counts(&fresh));
             assert!(
-                rows.row_count(2) > tall as i64,
+                rowcache::count_at(&rows, 2) > tall as i64,
                 "the edited column is now taller"
             );
         })
@@ -6640,7 +5611,7 @@ mod tests {
     #[gpui_kit::test]
     fn moving_a_divider_relays_out_a_table_and_a_callout(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
-        use super::{RowHeightCache, mono_char_width};
+        use super::{RowCache, mono_char_width};
         use gpui::Window;
 
         let note = "> [!note] Title\n> a callout with plenty of words in it that will \
@@ -6661,17 +5632,14 @@ mod tests {
             let char_width = mono_char_width(&font, size, style.color, window);
             let width = px(700.);
             let build = |text: &str, doc: &DocumentCache, window: &mut Window| {
-                let mut rows = RowHeightCache::empty();
-                rows.rebuild(
+                let mut rows = RowCache::empty();
+                rowcache::rebuild_for_test(
+                    &mut rows,
                     text,
                     doc,
-                    0,
-                    false,
+                    (0, false),
                     width,
-                    char_width,
-                    &font,
-                    size,
-                    style.color,
+                    (&font, size, style.color),
                     window,
                 );
                 rows
@@ -6688,21 +5656,22 @@ mod tests {
             );
             assert_eq!(new_text, after);
             let patch = doc.record_edit(&new_text, edit).unwrap();
-            rows.patch_lines(
+            rowcache::patch_for_test(
+                &mut rows,
                 &new_text,
                 &doc,
                 patch.touched,
-                0,
-                false,
-                char_width,
-                &font,
-                size,
-                style.color,
+                (0, false),
+                (&font, size, style.color),
                 window,
             );
             let fresh = build(&new_text, &doc, window);
             let n = new_text.lines().count();
-            let counts = |r: &RowHeightCache| (0..n).map(|i| r.row_count(i)).collect::<Vec<_>>();
+            let counts = |r: &RowCache| {
+                (0..n)
+                    .map(|i| rowcache::count_at(&r, i))
+                    .collect::<Vec<_>>()
+            };
             assert_eq!(counts(&rows), counts(&fresh));
         })
         .unwrap();
@@ -6773,7 +5742,7 @@ mod tests {
     #[gpui_kit::test]
     fn moving_a_table_column_in_a_region_relays_out(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
-        use super::{RowHeightCache, mono_char_width};
+        use super::{RowCache, mono_char_width};
         use gpui::Window;
 
         let list = "- a list\n- with three\n  - and a nested\n- items";
@@ -6798,17 +5767,14 @@ mod tests {
             let char_width = mono_char_width(&font, size, style.color, window);
             let width = px(900.);
             let build = |text: &str, doc: &DocumentCache, window: &mut Window| {
-                let mut rows = RowHeightCache::empty();
-                rows.rebuild(
+                let mut rows = RowCache::empty();
+                rowcache::rebuild_for_test(
+                    &mut rows,
                     text,
                     doc,
-                    0,
-                    false,
+                    (0, false),
                     width,
-                    char_width,
-                    &font,
-                    size,
-                    style.color,
+                    (&font, size, style.color),
                     window,
                 );
                 rows
@@ -6825,21 +5791,22 @@ mod tests {
             );
             assert_eq!(new_text, after);
             let patch = doc.record_edit(&new_text, edit).unwrap();
-            rows.patch_lines(
+            rowcache::patch_for_test(
+                &mut rows,
                 &new_text,
                 &doc,
                 patch.touched,
-                0,
-                false,
-                char_width,
-                &font,
-                size,
-                style.color,
+                (0, false),
+                (&font, size, style.color),
                 window,
             );
             let fresh = build(&new_text, &doc, window);
             let n = new_text.lines().count();
-            let counts = |r: &RowHeightCache| (0..n).map(|i| r.row_count(i)).collect::<Vec<_>>();
+            let counts = |r: &RowCache| {
+                (0..n)
+                    .map(|i| rowcache::count_at(&r, i))
+                    .collect::<Vec<_>>()
+            };
             assert_eq!(counts(&rows), counts(&fresh));
         })
         .unwrap();
@@ -6910,11 +5877,12 @@ mod tests {
                 let doc = e.document_cache.borrow();
                 let region = doc.columns()[0];
                 let rows = e.row_height_cache.borrow();
+                let (width, verified, _) = rows.trace_state();
                 (
                     rows.prefix_sum(region.start_line),
                     rows.prefix_sum(doc.line_count()) - rows.prefix_sum(region.end_line),
-                    rows.available_width,
-                    rows.verified.clone(),
+                    width.unwrap_or(Pixels::MAX),
+                    verified,
                 )
             })
         };
@@ -6940,7 +5908,7 @@ mod tests {
         assert_eq!(after.3, before.3, "the verified rows are kept");
     }
 
-    /// The other half of [`super::RowHeightCache`]'s invalidation story:
+    /// The other half of [`super::RowCache`]'s invalidation story:
     /// moving the cursor with *no* accompanying edit still needs the old
     /// and new active lines patched (`sync_active_line`), since the active
     /// line always renders raw/unstyled regardless of what the (identical)
@@ -6956,7 +5924,7 @@ mod tests {
     #[gpui_kit::test]
     fn row_height_cache_sync_active_line_matches_the_exact_row_counts(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
-        use super::{RowHeightCache, mono_char_width};
+        use super::{RowCache, mono_char_width};
 
         // A line long enough that hiding/showing its `**bold**` markup
         // while active/inactive actually changes its row count at a narrow
@@ -6975,17 +5943,14 @@ mod tests {
             let char_width = mono_char_width(&font, font_size, text_color, window);
 
             let doc_cache = DocumentCache::new(&text);
-            let mut row_cache = RowHeightCache::empty();
-            row_cache.rebuild(
+            let mut row_cache = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut row_cache,
                 &text,
                 &doc_cache,
-                0,
-                true,
+                (0, true),
                 available_width,
-                char_width,
-                &font,
-                font_size,
-                text_color,
+                (&font, font_size, text_color),
                 window,
             );
 
@@ -6996,21 +5961,21 @@ mod tests {
                 text.rfind("another").unwrap(),
                 0,
             ] {
-                row_cache.sync_active_line(
-                    &text, &doc_cache, cursor, true, char_width, &font, font_size, text_color,
+                rowcache::sync_for_test(
+                    &mut row_cache,
+                    &text,
+                    &doc_cache,
+                    (cursor, true),
+                    (&font, font_size, text_color),
                     window,
                 );
 
                 let expected = exact_row_counts(
                     &text,
                     &doc_cache,
-                    cursor,
-                    true,
-                    char_width,
-                    &font,
-                    font_size,
-                    text_color,
+                    (cursor, true),
                     available_width,
+                    (&font, font_size, text_color),
                     window,
                 );
 
@@ -7028,7 +5993,7 @@ mod tests {
     fn moving_the_caret_in_a_region_keeps_its_exact_height(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
         use super::region::shape_region;
-        use super::{RowHeightCache, Window, mono_char_width};
+        use super::{RowCache, Window, mono_char_width};
 
         let para = "flowing words ".repeat(50);
         let text = format!(
@@ -7047,17 +6012,14 @@ mod tests {
 
             let mut doc = DocumentCache::new(&text);
             doc.set_column_width(Some(1100.));
-            let mut rows = RowHeightCache::empty();
-            rows.rebuild(
+            let mut rows = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut rows,
                 &text,
                 &doc,
-                0,
-                false,
+                (0, false),
                 available_width,
-                char_width,
-                &font,
-                font_size,
-                text_color,
+                (&font, font_size, text_color),
                 window,
             );
             let region = doc.columns()[0];
@@ -7078,8 +6040,13 @@ mod tests {
                 text.find("flowing").unwrap() + 5,
                 text.rfind("flowing").unwrap(),
             ] {
-                rows.sync_active_line(
-                    &text, &doc, cursor, true, char_width, &font, font_size, text_color, window,
+                rowcache::sync_for_test(
+                    &mut rows,
+                    &text,
+                    &doc,
+                    (cursor, true),
+                    (&font, font_size, text_color),
+                    window,
                 );
                 let cached = (rows.prefix_sum(region.start_line + 1)
                     - rows.prefix_sum(region.start_line)) as usize;
@@ -7089,9 +6056,9 @@ mod tests {
         .unwrap();
     }
 
-    /// Proves the estimate-then-correct scheme (`RowHeightCache::rebuild`'s
+    /// Proves the estimate-then-correct scheme (`RowCache::rebuild`'s
     /// cheap seed, upgraded to the truth line-by-line as `paint_lines`
-    /// actually corrects each one — see `RowHeightCache::correct`'s own
+    /// actually corrects each one — see `RowCache::correct`'s own
     /// doc comment) converges to exactly the same state the old always-
     /// exact path guaranteed, once *every* line has been "viewed": builds
     /// a cold `rebuild` (cheap estimates for every non-table line), then
@@ -7107,7 +6074,7 @@ mod tests {
         cx: &mut TestAppContext,
     ) {
         use super::super::document_cache::DocumentCache;
-        use super::{RowHeightCache, mono_char_width};
+        use super::{RowCache, mono_char_width};
 
         let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
         let Ok(text) = std::fs::read_to_string(fixture_path) else {
@@ -7125,47 +6092,41 @@ mod tests {
             let char_width = mono_char_width(&font, font_size, text_color, window);
 
             let doc_cache = DocumentCache::new(&text);
-            let mut row_cache = RowHeightCache::empty();
-            row_cache.rebuild(
+            let mut row_cache = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut row_cache,
                 &text,
                 &doc_cache,
-                0,
-                false,
+                (0, false),
                 available_width,
-                char_width,
-                &font,
-                font_size,
-                text_color,
+                (&font, font_size, text_color),
                 window,
             );
 
             for i in 0..doc_cache.line_count() {
-                let real = row_count_for_line(
-                    &text,
+                let real = rowcache::exact_row_count(
+                    &Inputs {
+                        text: &text,
+                        cursor: 0,
+                        focused: false,
+                        width: available_width,
+                        font: &font,
+                        font_size,
+                        text_color,
+                    },
                     &doc_cache,
                     i,
-                    0,
-                    false,
-                    char_width,
-                    &font,
-                    font_size,
-                    text_color,
-                    available_width,
                     window,
                 );
-                row_cache.correct(i, real);
+                rowcache::correct_for_test(&mut row_cache, i, real);
             }
 
             let expected = exact_row_counts(
                 &text,
                 &doc_cache,
-                0,
-                false,
-                char_width,
-                &font,
-                font_size,
-                text_color,
+                (0, false),
                 available_width,
+                (&font, font_size, text_color),
                 window,
             );
             assert_eq!(row_counts(&row_cache), expected);
@@ -7181,7 +6142,7 @@ mod tests {
     fn an_image_embed_line_is_a_block_with_the_placeholder_height(cx: &mut TestAppContext) {
         use super::super::document_cache::DocumentCache;
         use super::super::image::PLACEHOLDER_ROWS;
-        use super::{RowHeightCache, mono_char_width};
+        use super::{RowCache, mono_char_width};
 
         let text = "intro\n![a](a.png)\n![[b.png|200]]\n![x](https://e.com/x.png)\n```\n![c](c.png)\n```\n\
                     > ![d](d.png)\n- ![e](e.png)\nend";
@@ -7195,20 +6156,41 @@ mod tests {
             let width = px(800.);
             let char_width = mono_char_width(&font, font_size, text_color, window);
             let doc = DocumentCache::new(text);
-            let mut rows = RowHeightCache::empty();
-            rows.rebuild(
-                text, &doc, 0, false, width, char_width, &font, font_size, text_color, window,
+            let mut rows = RowCache::empty();
+            rowcache::rebuild_for_test(
+                &mut rows,
+                text,
+                &doc,
+                (0, false),
+                width,
+                (&font, font_size, text_color),
+                window,
             );
             let exact = exact_row_counts(
-                text, &doc, 0, false, char_width, &font, font_size, text_color, width, window,
+                text,
+                &doc,
+                (0, false),
+                width,
+                (&font, font_size, text_color),
+                window,
             );
             let block = PLACEHOLDER_ROWS as i64;
             assert_eq!(exact, [1, block, block, 1, 1, 1, 1, 1, 1, 1]);
             assert_eq!(row_counts(&rows), exact, "the estimate must match");
             // The cursor on the embed shows its source.
             let on_embed = doc.line_start_byte(1);
-            let active = super::row_count_for_line(
-                text, &doc, 1, on_embed, true, char_width, &font, font_size, text_color, width,
+            let active = rowcache::exact_row_count(
+                &super::rows::Inputs {
+                    text,
+                    cursor: on_embed,
+                    focused: true,
+                    width,
+                    font: &font,
+                    font_size,
+                    text_color,
+                },
+                &doc,
+                1,
                 window,
             );
             assert_eq!(active, 1);
@@ -7483,7 +6465,9 @@ mod tests {
                         .collect()
                 });
                 editor.update(cx, |e, _| {
-                    e.row_height_cache.borrow_mut().invalidate_width()
+                    e.row_height_cache
+                        .borrow_mut()
+                        .invalidate(Invalidate::Width)
                 });
                 window.render_frame(cx);
                 let fresh: Vec<i64> = editor.read_with(cx, |e, _| {
