@@ -271,15 +271,18 @@ impl DocumentCache {
             .as_ref()
             .filter(|(i, s)| *i == index && s.len() == region.count)
         {
-            region.percent[..region.count].copy_from_slice(shares);
+            region = region.with_shares(shares);
         }
         let split = match region.kind {
-            columns::Kind::Aside { right } => {
-                columns::aside_split(width, right, region.percent[0])?
-            }
+            columns::Kind::Aside => columns::aside_split(width, region.floats())?,
             columns::Kind::Columns => columns::split(width, &region.percent[..region.count])?,
         };
         Some((region, split))
+    }
+
+    /// The region whose shares a divider drag is previewing.
+    pub(super) fn column_preview_region(&self) -> Option<usize> {
+        self.column_preview.as_ref().map(|(index, _)| *index)
     }
 
     /// Sets the shares a divider drag previews; `true` when that changed what
@@ -368,6 +371,8 @@ impl DocumentCache {
         self.recompute_tables(text, &strides);
         self.recompute_columns(text, &strides);
         self.line_index = Fenwick::from_vec(strides);
+        // Reads lines through the index, so only now.
+        self.cap_tails(text);
         // Spare room for Enter to grow into without reallocating.
         reserve_line_slack(self);
     }
@@ -500,7 +505,21 @@ impl DocumentCache {
             .zip(&self.line_roles)
             .map(|(line, role)| (line, !matches!(role, LineRole::Plain)));
         self.column_markers = columns::place_markers(0, lines, true, true);
-        self.columns = columns::derive(&self.column_markers);
+        self.columns = columns::derive(&self.column_markers, self.line_roles.len());
+    }
+
+    /// Sets where each float's text ends (see `Columns::cap_tail`): at the first
+    /// blank line outside code past its budget, so no block is cut. Depends on
+    /// the lines' content, not just the markers, so it runs after every edit.
+    fn cap_tails(&mut self, text: &str) {
+        let mut columns = std::mem::take(&mut self.columns);
+        for region in columns.iter_mut().filter(|r| r.tail) {
+            region.cap_tail(|line| {
+                matches!(self.line_roles[line], LineRole::Plain)
+                    && columns_blank(self.line_text_at(text, line))
+            });
+        }
+        self.columns = columns;
     }
 
     pub(super) fn recompute_tables(&mut self, text: &str, strides: &[i64]) {
@@ -737,8 +756,9 @@ impl DocumentCache {
             for m in &mut self.column_markers[first + fresh_len..] {
                 m.line = shift_line(m.line, delta);
             }
-            self.columns = columns::derive(&self.column_markers);
+            self.columns = columns::derive(&self.column_markers, line_count);
         }
+        self.cap_tails(text);
 
         let new_extent = extent_touching(&self.columns, lo, hi);
         // The neighbours are only dirty when a marker came or went (their
@@ -1089,7 +1109,8 @@ fn lines_of<'a>(text: &'a str, strides: &'a [i64]) -> impl Iterator<Item = &'a s
 
 /// `line` moved by `delta` lines.
 /// A callout the user folded or unfolded keeps that state when an edit
-/// re-derives it, matched by its header line (the walk restarts every callout
+/// re-derives it, matched by its header line and its marker (a `-` rewritten
+/// to `+` starts over) (the walk restarts every callout
 /// it touches from the marker's own state). `old_last` is the last touched
 /// line in the old numbering; lines after it moved by `delta`.
 fn carry_fold_state(fresh: &mut [Callout], old: &[Callout], old_last: usize, delta: isize) {
@@ -1101,9 +1122,12 @@ fn carry_fold_state(fresh: &mut [Callout], old: &[Callout], old_last: usize, del
         }
     };
     for c in fresh {
-        let kept = old
-            .iter()
-            .find(|old| old.foldable && c.foldable && moved(old.start_line) == c.start_line);
+        let kept = old.iter().find(|old| {
+            old.foldable
+                && c.foldable
+                && old.marker_folded == c.marker_folded
+                && moved(old.start_line) == c.start_line
+        });
         if let Some(old) = kept {
             c.folded = old.folded;
         }
@@ -1394,6 +1418,22 @@ mod tests {
         assert!(!cache.callouts()[1].folded);
     }
 
+    /// Rewriting the header's marker drops the fold the user made: the file now
+    /// says something else. (Found by the randomized edit test.)
+    #[test]
+    fn a_rewritten_fold_marker_starts_over() {
+        let text = "> [!note]- Title\n> body\n";
+        let mut cache = DocumentCache::new(text);
+        cache.set_folded(0, false);
+        let at = text.find('-').unwrap();
+        let (edited, edit) = apply_edit(text, at, at + 1, "+");
+        cache.record_edit(&edited, edit).unwrap();
+        assert!(!cache.callouts()[0].folded);
+        let (back, edit) = apply_edit(&edited, at, at + 1, "-");
+        cache.record_edit(&back, edit).unwrap();
+        assert!(cache.callouts()[0].folded, "`-` says folded");
+    }
+
     /// A character that removes or creates a callout used to shift every
     /// later callout count, so the walk never reconverged and ran to the end
     /// of the document (14ms on the 320K-line stress fixture).
@@ -1428,6 +1468,60 @@ mod tests {
         assert_matches_fresh_cache(&cache, &entered, "after Enter at the top");
     }
 
+    /// Float blocks: whatever the edits do to the markers, the blank lines and
+    /// the line count, the incrementally kept regions (their capped text
+    /// included) are the ones a fresh scan finds.
+    #[test]
+    fn float_blocks_stay_as_a_fresh_scan_finds_them_across_random_edits() {
+        let mut seed = 0x5eed_f10a7_u64;
+        let mut next = move || {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            seed >> 33
+        };
+        let mut text = String::from(
+            "intro\n\n::: float left 30%\n\nfloat\n\n:::\n\npara one\n\npara two\n\n\
+             ::: columns\n\na\n\n---\n\nb\n\n:::\n\n::: float\n\nf\n\n:::\n\nlast\n",
+        );
+        let mut tail = String::new();
+        for i in 0..40 {
+            tail.push_str(&format!("filler {i}\n\n"));
+        }
+        text.push_str(&tail);
+        let mut cache = DocumentCache::new(&text);
+        let fragments = [
+            "",
+            "x",
+            "\n",
+            "\n\n",
+            "```\n",
+            "text\n\n",
+            ":::\n",
+            "\n:::\n\n",
+            "---\n",
+            "::: float\n",
+            "\n::: float right 20%\n\nf\n\n:::\n\n",
+            "::: columns\n",
+            "> [!note]\n> a\n\n",
+            "::: clear\n",
+            "\n::: clear\n\n",
+        ];
+        for step in 0..600 {
+            let start = (next() as usize) % (text.len() + 1);
+            let delete_len = (next() as usize) % (text.len() - start).min(12).max(1);
+            let fragment = fragments[(next() as usize) % fragments.len()];
+            let (new_text, edit) = apply_edit(&text, start, start + delete_len, fragment);
+            cache.record_edit(&new_text, edit);
+            let fresh = DocumentCache::new(&new_text);
+            assert_eq!(
+                cache.columns, fresh.columns,
+                "step={step} edit=({start},{delete_len},{fragment:?}) text={new_text:?}"
+            );
+            text = new_text;
+        }
+    }
+
     fn run_randomized_edits(mut seed: u64) {
         let mut next = move || {
             seed = seed
@@ -1440,7 +1534,8 @@ mod tests {
             "intro\n```\ncode\n```\nplain\n> q\n- item\n  - nested\n    - deeper\nmore plain text here\n~~~\ntilde\n~~~\nend\n\
              > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter\n\
              | a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\nafter table\n\n\
-             ::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n",
+             ::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n\n\
+             ::: float left 30%\n\nfloat\n\n:::\n\npara one\n\npara two\n\npara three\n",
         );
         let mut cache = DocumentCache::new(&text);
 
@@ -1478,6 +1573,9 @@ mod tests {
             ":::\n",
             "\n:::\n\n",
             "::: columns\n\na\n\n---\n\nb\n\n:::\n",
+            "::: float\n",
+            "\n::: float right 20%\n\nf\n\n:::\n\n",
+            "text\n\n",
         ];
 
         for step in 0..400 {

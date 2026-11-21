@@ -29,6 +29,25 @@ pub fn aside_marker(right: bool, share: u8) -> String {
     )
 }
 
+/// The open marker of a float block: always explicit, side and share.
+pub fn float_marker(right: bool, share: u8) -> String {
+    format!(
+        "::: float {} {share}%",
+        if right { "right" } else { "left" }
+    )
+}
+
+/// The float block region with every float's open marker rewritten, shares from
+/// `shares` (one per float, then the text's unused one).
+pub fn float_markers(lines: &[&str], region: &Columns, shares: &[u8]) -> Vec<String> {
+    assert!(region.tail && shares.len() > region.floats().len());
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    for (k, f) in region.floats().iter().enumerate() {
+        out[region.open_of(k) - region.start_line] = float_marker(f.right, shares[k]);
+    }
+    out
+}
+
 /// `block` as a float on one side, `text` (already without markers) flowing
 /// around it.
 pub fn floated(block: &[&str], text: &[&str], right: bool) -> Vec<String> {
@@ -42,14 +61,49 @@ pub fn floated(block: &[&str], text: &[&str], right: bool) -> Vec<String> {
     out
 }
 
-/// The aside with its float on the other side, the share kept.
-pub fn flipped(lines: &[&str], region: &Columns) -> Vec<String> {
-    let Kind::Aside { right } = region.kind else {
-        unreachable!("flipped is for an aside");
-    };
+/// A further float's separator line.
+pub fn float_separator(right: bool, share: u8) -> String {
+    format!("--- {} {share}%", if right { "right" } else { "left" })
+}
+
+/// The aside with every float's marker line rewritten: sides mirrored when
+/// `flip`, shares from `shares` (one per float).
+pub fn aside_markers(lines: &[&str], region: &Columns, shares: &[u8], flip: bool) -> Vec<String> {
+    assert!(region.is_aside() && shares.len() >= region.floats().len());
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
-    out[0] = aside_marker(!right, region.percent[0]);
+    for (k, f) in region.floats().iter().enumerate() {
+        let right = f.right != flip;
+        if k == 0 {
+            out[0] = aside_marker(right, shares[0]);
+        } else {
+            let at = region.separators()[k - 1] - region.start_line;
+            out[at] = float_separator(right, shares[k]);
+        }
+    }
     out
+}
+
+/// The aside with its floats' sides mirrored.
+pub fn flipped(lines: &[&str], region: &Columns) -> Vec<String> {
+    let shares: Vec<u8> = region.floats().iter().map(|f| f.share).collect();
+    aside_markers(lines, region, &shares, true)
+}
+
+/// The aside with an empty float added before its text, on the side the last
+/// one is not. `None` at the float limit.
+pub fn with_added_float(lines: &[&str], region: &Columns) -> Option<Vec<String>> {
+    assert!(region.is_aside());
+    if region.floats().len() >= columns::MAX_FLOATS {
+        return None;
+    }
+    let last = region.floats().last()?;
+    let text_separator = region.separators().last()? - region.start_line;
+    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
+    out.splice(
+        text_separator..text_separator,
+        [float_separator(!last.right, 30), String::new()],
+    );
+    Some(out)
 }
 
 /// The region with its shares set to `percent`.
@@ -57,14 +111,6 @@ pub fn with_ratio(lines: &[&str], percent: &[u8]) -> Vec<String> {
     assert!(lines.len() >= 3);
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
     out[0] = open_marker(percent);
-    out
-}
-
-/// The aside with its float's share set to `share`.
-pub fn with_aside_share(lines: &[&str], right: bool, share: u8) -> Vec<String> {
-    assert!(lines.len() >= 3);
-    let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
-    out[0] = aside_marker(right, share);
     out
 }
 

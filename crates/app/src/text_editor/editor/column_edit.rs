@@ -11,6 +11,7 @@ use super::super::column_ops;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
 use super::super::document_cache::DocumentCache;
+use super::super::element::{mono_char_width, render_params};
 use super::Editor;
 
 /// What the right-click menu offers about the structure around the caret.
@@ -100,7 +101,11 @@ impl Editor {
 
     /// Works out which region is shown as source from where the caret is. Called
     /// before every render.
-    pub(in crate::text_editor) fn sync_column_view(&mut self, window: &Window) {
+    pub(in crate::text_editor) fn sync_column_view(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let focused = self.focus_handle.is_focused(window);
         let raw = {
             let doc = self.document_cache.borrow();
@@ -114,10 +119,57 @@ impl Editor {
             .as_ref()
             .map(|d| (d.region, d.percent.clone()));
         let mut doc = self.document_cache.borrow_mut();
+        let before = (doc.raw_region(), doc.column_preview_region());
         let changed = doc.set_raw_region(raw) | doc.set_column_preview(preview);
+        let after = (doc.raw_region(), doc.column_preview_region());
+        let regions: Vec<usize> = [before.0, before.1, after.0, after.1]
+            .into_iter()
+            .flatten()
+            .collect();
         drop(doc);
         if changed {
-            self.row_height_cache.borrow_mut().invalidate_width();
+            self.remeasure_regions(&regions, window, cx);
+        }
+    }
+
+    /// Re-measures the rows of `regions` alone. Only those regions' heights
+    /// changed, so a full rebuild would re-seed every line outside the
+    /// viewport with estimates and move the document under the scroll
+    /// position (a divider drag then jumped elsewhere).
+    fn remeasure_regions(
+        &mut self,
+        regions: &[usize],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let params = render_params(self, window, cx);
+        let char_width = mono_char_width(&params.font, params.font_size, params.text_color, window);
+        let cursor = self.buffer.cursor();
+        let focused = self.focus_handle.is_focused(window);
+        let doc = self.document_cache.borrow();
+        let mut rows = self.row_height_cache.borrow_mut();
+        if rows.needs_full_rebuild(&doc, params.available_width, char_width) {
+            // Not built for this width yet: the next paint rebuilds anyway.
+            rows.invalidate_width();
+            return;
+        }
+        let text = self.buffer.text();
+        for &index in regions {
+            let Some(region) = doc.columns().get(index) else {
+                continue;
+            };
+            rows.patch_lines(
+                text,
+                &doc,
+                region.start_line..region.end_line,
+                cursor,
+                focused,
+                char_width,
+                &params.font,
+                params.font_size,
+                params.text_color,
+                window,
+            );
         }
     }
 
@@ -145,6 +197,10 @@ impl Editor {
         let line = doc.line_at(self.buffer.cursor());
         if let Some(i) = doc.region_index_at(line) {
             let region = doc.columns()[i];
+            // A float block has no menu yet (render only).
+            if region.tail {
+                return None;
+            }
             if region.is_aside() {
                 return Some(ColumnMenu::Aside);
             }
@@ -207,9 +263,27 @@ impl Editor {
             let Some(new) = make(&old, &region) else {
                 return false;
             };
-            let range =
-                doc.line_start_byte(region.start_line)..doc.line_end_byte(region.end_line - 1);
-            (range, new.join("\n"))
+            // The same lines but a few (a share changed): replace just those,
+            // not a float block's whole text.
+            let same = |i: usize| new.get(i).is_some_and(|n| *n == old[i]);
+            let (first, last) = if new.len() == old.len() {
+                let first = (0..old.len()).find(|&i| !same(i));
+                let last = (0..old.len()).rev().find(|&i| !same(i));
+                match first.zip(last) {
+                    Some(span) => span,
+                    None => return false,
+                }
+            } else {
+                (0, old.len() - 1)
+            };
+            let range = doc.line_start_byte(region.start_line + first)
+                ..doc.line_end_byte(region.start_line + last);
+            let new_span = if new.len() == old.len() {
+                first..=last
+            } else {
+                0..=new.len() - 1
+            };
+            (range, new[new_span].join("\n"))
         };
         // A move first, so this edit never merges into the typing before it.
         self.buffer.set_cursor(range.start, false);
@@ -233,7 +307,8 @@ impl Editor {
                 return None;
             }
             Some(match region.kind {
-                Kind::Aside { right } => column_ops::with_aside_share(lines, right, percent[0]),
+                Kind::Aside if region.tail => column_ops::float_markers(lines, region, &percent),
+                Kind::Aside => column_ops::aside_markers(lines, region, &percent, false),
                 Kind::Columns => column_ops::with_ratio(lines, &percent),
             })
         })
@@ -247,7 +322,11 @@ impl Editor {
         cx: &mut Context<Self>,
     ) -> bool {
         self.edit_region(index, window, cx, |lines, region| {
-            column_ops::with_added_column(lines, region)
+            if region.is_aside() {
+                column_ops::with_added_float(lines, region)
+            } else {
+                column_ops::with_added_column(lines, region)
+            }
         })
     }
 

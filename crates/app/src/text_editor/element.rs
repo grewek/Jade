@@ -7,7 +7,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
 pub(super) mod justify;
-mod region;
+pub(in crate::text_editor) mod region;
 
 use super::Editor;
 use super::block::{self, image_block};
@@ -346,6 +346,10 @@ pub(super) struct RowHeightCache {
     /// Corrections `paint_lines`' own per-line loop still had to make: after
     /// [`LineLayout::verify_rows`] there should be none.
     pub(super) late_corrections: usize,
+    /// Lines whose row counts changed without an edit (a callout folded or
+    /// opened), patched at the next layout instead of rebuilding every count
+    /// from estimates, which moved the content height under the view.
+    pending: Option<std::ops::Range<usize>>,
 }
 
 impl RowHeightCache {
@@ -362,7 +366,16 @@ impl RowHeightCache {
             char_width: px(0.),
             verified: 0..0,
             late_corrections: 0,
+            pending: None,
         }
+    }
+
+    /// Marks `lines` to be recounted at the next layout.
+    pub(super) fn mark_changed(&mut self, lines: std::ops::Range<usize>) {
+        self.pending = Some(match self.pending.take() {
+            Some(old) => old.start.min(lines.start)..old.end.max(lines.end),
+            None => lines,
+        });
     }
 
     pub(super) fn line_count(&self) -> usize {
@@ -476,6 +489,7 @@ impl RowHeightCache {
         self.available_width = available_width;
         self.char_width = char_width;
         self.verified = 0..0;
+        self.pending = None;
     }
 
     /// Mirrors `patch`'s line-count change in the row counts, so
@@ -520,7 +534,7 @@ impl RowHeightCache {
             }
             last = i;
             let old = self.rows.prefix_sum(i + 1) - self.rows.prefix_sum(i);
-            let new = row_count_for_line(
+            let new = patched_row_count(
                 text,
                 doc,
                 i,
@@ -585,7 +599,7 @@ impl RowHeightCache {
             seen.push(line);
             if line < self.line_count() {
                 let old = self.rows.prefix_sum(line + 1) - self.rows.prefix_sum(line);
-                let new = row_count_for_line(
+                let new = patched_row_count(
                     text,
                     doc,
                     line,
@@ -742,9 +756,10 @@ fn pure_row_counts_in(
             }
             let region = view.columns.get(next_region).filter(|r| r.start_line <= i);
             let shown = region.filter(|_| Some(next_region) != view.raw_region);
-            if let Some(r) =
-                shown.filter(|r| columns::split(width, &r.percent[..r.count]).is_some())
-            {
+            if let Some(r) = shown.filter(|r| match r.kind {
+                columns::Kind::Aside => columns::aside_split(width, r.floats()).is_some(),
+                columns::Kind::Columns => columns::split(width, &r.percent[..r.count]).is_some(),
+            }) {
                 if i == r.start_line {
                     shaped.push(i);
                 }
@@ -911,6 +926,18 @@ fn row_count_for_line(
         if i != region.start_line {
             return 0;
         }
+        if region.is_aside() {
+            return aside_row_estimate(
+                text,
+                doc,
+                (&region, &split),
+                (cursor, focused),
+                char_width,
+                (font, font_size),
+                text_color,
+                window,
+            );
+        }
         let widths = (0..region.count).map(|k| px(split.width(k)));
         let mut height = 1;
         for (k, width) in widths.enumerate() {
@@ -934,6 +961,97 @@ fn row_count_for_line(
         doc,
         i,
         &state,
+        char_width,
+        font,
+        font_size,
+        text_color,
+        available_width,
+        window,
+    )
+}
+
+/// An aside's rows without shaping it: the taller float stack, or that plus
+/// what the text needs past the stacks (it wraps at the narrow channel beside
+/// them and at the full width below). Summing every column's rows, as a
+/// side-by-side region does, counts the text as if it stayed in the channel,
+/// far too tall for a float block, and the scrollbar shifted as paint
+/// corrected it.
+#[allow(clippy::too_many_arguments)]
+fn aside_row_estimate(
+    text: &str,
+    doc: &DocumentCache,
+    (region, split): (&Columns, &columns::Split),
+    (cursor, focused): (usize, bool),
+    char_width: Pixels,
+    (font, font_size): (&Font, Pixels),
+    text_color: Hsla,
+    window: &mut Window,
+) -> usize {
+    let rows_of = |lines: &mut dyn Iterator<Item = usize>, width: Pixels, window: &mut Window| {
+        lines
+            .map(|line| {
+                let state = LineState::in_column(doc, line, cursor, focused);
+                state_row_count(
+                    text, doc, line, &state, char_width, font, font_size, text_color, width, window,
+                )
+            })
+            .sum::<usize>()
+    };
+    let text_part = region.count - 1;
+    let mut stacks = [0usize; 2];
+    for (k, spec) in region.floats().iter().enumerate() {
+        let rows = rows_of(&mut region.column_lines(k), px(split.width(k)), window);
+        // A row of air between floats on one side.
+        stacks[usize::from(spec.right)] += rows + 1;
+    }
+    let stack = stacks[0].max(stacks[1]);
+    let narrow = split.width(text_part);
+    let channel_rows = rows_of(&mut region.text_lines(), px(narrow), window);
+    let beyond = channel_rows.saturating_sub(stack);
+    let full = split.total.max(narrow);
+    let below = (beyond as f32 * narrow / full).ceil() as usize;
+    (stack + below).max(1)
+}
+
+/// [`row_count_for_line`] for a patch of one or two lines: a side-by-side
+/// region's height is its shaped one, not the monospace estimate. A patch
+/// leaves the line in the verified window, so an estimate put there would stay
+/// until paint corrects it, after anything positioned from the rows (scrolling
+/// to the caret) has used it; a region as tall as a float's text is far off.
+#[allow(clippy::too_many_arguments)]
+fn patched_row_count(
+    text: &str,
+    doc: &DocumentCache,
+    i: usize,
+    cursor: usize,
+    focused: bool,
+    char_width: Pixels,
+    font: &Font,
+    font_size: Pixels,
+    text_color: Hsla,
+    available_width: Pixels,
+    window: &mut Window,
+) -> usize {
+    if let Some((region, split)) = doc.side_by_side(i)
+        && i == region.start_line
+    {
+        return region::shape_region(
+            text,
+            doc,
+            (&region, &split),
+            (cursor, focused),
+            (font, font_size, window.line_height()),
+            (text_color.into(), None),
+            window,
+        )
+        .rows;
+    }
+    row_count_for_line(
+        text,
+        doc,
+        i,
+        cursor,
+        focused,
         char_width,
         font,
         font_size,
@@ -1470,6 +1588,15 @@ pub(super) fn analyze_line_layout(
                 window,
             );
         } else {
+            if let Some(lines) = rows.pending.take() {
+                rows.patch_lines(
+                    text, &doc, lines, cursor, focused, char_width, font, font_size, text_color,
+                    window,
+                );
+                // Patched counts are estimates for plain lines: paint verifies
+                // the visible ones again.
+                rows.verified = 0..0;
+            }
             rows.sync_active_line(
                 text, &doc, cursor, focused, char_width, font, font_size, text_color, window,
             );
@@ -2114,7 +2241,26 @@ pub(super) fn render_editor(
                     // cursor's line the moment that line scrolled out of
                     // view. See `last_autoscrolled_cursor`'s own doc comment.
                     if focused && last_autoscrolled_cursor.get() != Some(cursor) {
-                        autoscroll_to_cursor(&scroll_handle, bounds, cursor_top, cursor_height);
+                        // A caret in a region is scrolled to by where it is
+                        // drawn: the region's own top may be screens away (a
+                        // float's text makes a region as tall as the text).
+                        let in_region = {
+                            let editor = editor_entity.read(cx);
+                            let doc = editor.document_cache.borrow();
+                            caret_in_column(
+                                editor.buffer().text(),
+                                &doc,
+                                &layout,
+                                (cursor, cursor, focused),
+                                (&font, font_size, line_height),
+                                (text_color.into(), bounds),
+                                window,
+                            )
+                        };
+                        let (top, height) = in_region.map_or((cursor_top, cursor_height), |r| {
+                            (r.origin.y - bounds.origin.y, r.size.height)
+                        });
+                        autoscroll_to_cursor(&scroll_handle, bounds, top, height);
                         last_autoscrolled_cursor.set(Some(cursor));
                     }
                     let viewport = scroll_handle.bounds();
@@ -2153,6 +2299,7 @@ pub(super) fn render_editor(
                         table_drag: editor_entity.read(cx).table_drag,
                         column_hover: editor_entity.read(cx).column_hover,
                         column_drag: editor_entity.read(cx).column_drag.clone(),
+                        float_spots: editor_entity.read(cx).float_spots.clone(),
                     });
                     editor_entity.update(cx, |editor, cx| {
                         editor.last_view = Some(view.clone());
@@ -2610,6 +2757,8 @@ pub(super) struct FrameView {
     /// The columns region whose controls show, and the divider being dragged.
     column_hover: Option<usize>,
     column_drag: Option<ColumnDrag>,
+    /// See `Editor::float_spots`.
+    float_spots: Rc<RefCell<Vec<(usize, Vec<region::FloatSpot>)>>>,
 }
 
 /// The byte offset closest to `position` (window coordinates): the line
@@ -3059,6 +3208,10 @@ pub(super) struct TableColumns {
     pub(super) widths: Vec<usize>,
     pub(super) aligns: Vec<table_preview::Align>,
     pub(super) char_width: Pixels,
+    /// The width the box is stretched to: the whole of its room when the table
+    /// had to shrink to fit (so its edge lines up with a callout above or below
+    /// it), else 0 for the natural width.
+    fill: Pixels,
 }
 
 impl TableColumns {
@@ -3074,11 +3227,21 @@ impl TableColumns {
             widths: table_preview::resolve_widths(&table.columns, max_chars),
             aligns: table.columns.iter().map(|c| c.align).collect(),
             char_width,
+            fill: if max_chars.is_some_and(|m| !table_preview::fits_unshrunk(&table.columns, m)) {
+                width
+            } else {
+                px(0.)
+            },
         }
     }
 
     fn x(&self, chars: f32) -> Pixels {
         self.char_width * chars
+    }
+
+    /// The box's width: its columns', or its room where the table shrank.
+    pub(super) fn box_px(&self) -> Pixels {
+        self.x(table_box::box_width(&self.widths)).max(self.fill)
     }
 }
 
@@ -3141,9 +3304,12 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
         .into_iter()
         .chain((table.start_line + 3..=table.end_line).map(boundary))
         .collect();
-    let col_x = (0..=columns.widths.len())
+    let mut col_x: Vec<f32> = (0..=columns.widths.len())
         .map(|c| f32::from(columns.x(table_box::column_left(&columns.widths, c))))
         .collect();
+    if let Some(last) = col_x.last_mut() {
+        *last = f32::from(columns.box_px());
+    }
     (Grid { col_x, row_y }, top)
 }
 
@@ -3165,12 +3331,20 @@ fn column_frame_at(
     let (_, split) = doc.side_by_side(region.start_line)?;
     let top = view.layout.cumulative_at(region.start_line);
     let height = view.layout.height(region.start_line);
-    let last = region.count - 1;
     let frame = column_handles::Frame {
-        dividers: (0..last).map(|k| split.divider_x(k)).collect(),
+        dividers: (0..split.divider_count())
+            .map(|k| split.divider_x(k))
+            .collect(),
         width: split.total,
         height: f32::from(height),
-        can_add: region.count < columns::MAX_COLUMNS && !region.is_aside(),
+        can_add: region.count < columns::MAX_COLUMNS,
+        buttons: !region.tail,
+        grips: editor
+            .float_spots
+            .borrow()
+            .iter()
+            .find(|(line, _)| *line == region.start_line)
+            .map_or_else(Vec::new, |(_, spots)| region::float_grips(spots, &split)),
     };
     let p = (
         f32::from(position.x - view.bounds.origin.x),
@@ -3215,11 +3389,17 @@ fn column_drag_percent(
     let total = doc.column_width()?;
     let k = drag.divider;
     let x = f32::from(position.x - view.bounds.origin.x);
-    if let columns::Kind::Aside { right } = region.kind {
-        // The float's edge is half a gap from the pointer; its share of the
-        // line without the gap, snapped and kept within bounds.
-        let usable = total - columns::GAP;
-        let float = if right {
+    if region.kind == columns::Kind::Aside {
+        // Divider `k` is the inner edge of a side's floats: the pointer is half
+        // a gap from it. Every float on that side takes the share, snapped and
+        // kept within bounds.
+        let floats = region.floats();
+        let sides = usize::from(floats.iter().any(|f| !f.right))
+            + usize::from(floats.iter().any(|f| f.right));
+        let usable = total - columns::GAP * sides as f32;
+        let right_side =
+            floats.iter().any(|f| !f.right) as usize <= k && floats.iter().any(|f| f.right);
+        let float = if right_side {
             total - x - columns::GAP / 2.
         } else {
             x - columns::GAP / 2.
@@ -3227,11 +3407,16 @@ fn column_drag_percent(
         let step = f32::from(column_ops::SNAP);
         let share = (float / usable * 100. / step).round() * step;
         let share = share.clamp(f32::from(columns::ASIDE_MIN), f32::from(columns::ASIDE_MAX)) as u8;
-        return Some(vec![share, 100 - share]);
+        let mut shares = region.percent[..region.count].to_vec();
+        for (f, s) in floats.iter().zip(shares.iter_mut()) {
+            if f.right == right_side {
+                *s = share;
+            }
+        }
+        return Some(shares);
     }
     // Column `k`'s right edge is half a gap left of the pointer.
-    let (left, usable) =
-        columns::column_left_unchecked(total, region.kind, &region.percent[..region.count], k);
+    let (left, usable) = columns::column_left_unchecked(total, &region.percent[..region.count], k);
     let width = x - columns::GAP / 2. - left;
     let char_width = f32::from(mono_char_width(
         &view.font,
@@ -3472,7 +3657,7 @@ fn paint_table_box(
     let strong = palette.color(Role::BorderStrong);
     let light = palette.color(Role::Border);
     let (top, bottom) = (at(table.start_line), at(table.end_line));
-    let width = columns.x(table_box::box_width(&columns.widths));
+    let width = columns.box_px();
     let header_bottom = at(table.start_line + 2).min(bottom);
     let line = |x: Pixels, y: Pixels, w: Pixels, h: Pixels, color: Hsla| {
         fill(
@@ -3553,7 +3738,10 @@ fn restore_pill(
     index: usize,
 ) -> Option<(Bounds<Pixels>, Vec<u8>)> {
     let region = *doc.columns().get(index)?;
-    if doc.raw_region() == Some(index) || doc.side_by_side(region.start_line).is_some() {
+    if region.tail
+        || doc.raw_region() == Some(index)
+        || doc.side_by_side(region.start_line).is_some()
+    {
         return None;
     }
     let percent = columns::restored(&region, doc.column_width()?)?;
@@ -3612,7 +3800,7 @@ fn paint_stacked_controls(
         let x = view.bounds.origin.x
             + px(columns::divider_x_unchecked(
                 total,
-                region.kind,
+                &region,
                 &drag.percent,
                 drag.divider,
             ));
@@ -3894,6 +4082,7 @@ fn paint_lines(
     cx: &mut App,
 ) {
     let (line_roles, tables, callouts) = (doc.line_roles(), doc.tables(), doc.callouts());
+    view.float_spots.borrow_mut().clear();
     let &FrameView {
         ref layout,
         cursor,
@@ -4033,6 +4222,9 @@ fn paint_lines(
                 (inline, Some(links)),
                 window,
             );
+            view.float_spots
+                .borrow_mut()
+                .push((i, shaped.float_spots.clone()));
             region::paint_region(&env, &shaped, &region, (bounds, y_offset), (window, cx));
             // Exact rows from shaping, as the row cache does for any line.
             layout.correct_row_count(i, shaped.rows);
@@ -5754,6 +5946,7 @@ mod tests {
                 table_drag: None,
                 column_hover: None,
                 column_drag: None,
+                float_spots: Default::default(),
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;
             // The table is the right column's first block, at the region's top
@@ -5790,6 +5983,401 @@ mod tests {
                 handle_for_pointer(editor, &view, centre, window),
                 Some((0, grip))
             );
+        })
+        .unwrap();
+    }
+
+    /// Floats on both sides leave the text between them; where a side's floats
+    /// end the text widens, cutting the paragraph at that row, and floats stacked
+    /// down one side keep a row between them.
+    #[gpui_kit::test]
+    fn text_flows_between_floats_and_widens_as_each_side_ends(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+
+        let para = "flowing words ".repeat(60);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: aside left 25%\n\nshort left\n\n--- right 25%\n\nright one\n\nright one b\n\n--- right 25%\n\nright two\n\n---\n\n{para}\n\n:::\n"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("an aside lays out");
+            assert_eq!(region.floats().len(), 3);
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let text_line = region.column_lines(3).start;
+            let flow: Vec<_> = shaped
+                .columns
+                .iter()
+                .flat_map(|c| &c.lines)
+                .filter(|sl| sl.line == text_line)
+                .collect();
+            assert!(flow.len() >= 3, "cut where each side ends: {}", flow.len());
+            // Narrow between both floats, then only the right one, then all.
+            assert_eq!(flow[0].x, px(split.x(3)));
+            assert_eq!(flow[0].width, px(split.width(3)));
+            assert_eq!(flow[1].x, px(0.));
+            assert!(flow[1].width > flow[0].width && flow[1].width < px(1400.));
+            assert_eq!(flow.last().unwrap().width, px(1400.));
+            // The pieces tile the raw line.
+            for pair in flow.windows(2) {
+                assert_eq!(pair[0].raw.end, pair[1].raw.start);
+            }
+            assert_eq!(flow.last().unwrap().raw.end, para.len());
+            // Two floats on the right are stacked, a row between them.
+            let right_one = shaped
+                .columns
+                .iter()
+                .flat_map(|c| &c.lines)
+                .find(|sl| text[doc.line_start_byte(sl.line)..].starts_with("right one b"));
+            let right_two = shaped
+                .columns
+                .iter()
+                .flat_map(|c| &c.lines)
+                .find(|sl| text[doc.line_start_byte(sl.line)..].starts_with("right two"));
+            let (one, two) = (right_one.unwrap(), right_two.unwrap());
+            assert_eq!(two.y, one.y + one.height + lh, "a row of air between");
+            assert_eq!(one.x, two.x);
+        })
+        .unwrap();
+    }
+
+    /// A cold rebuild counts a float block's region as a region (floats' stacks
+    /// plus text past them), close to its shaped height, so the content height
+    /// (and the scrollbar) hardly moves as paint verifies it; counted as plain
+    /// lines at full width it was half again too tall.
+    #[gpui_kit::test]
+    fn a_cold_rebuild_estimates_a_float_block_near_its_shaped_height(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        use super::{RowHeightCache, mono_char_width};
+        let para = "flowing words ".repeat(40);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: float right 30%\n\nfloat words here\n\n:::\n\n{para}\n\n{para}\n\n{para}\n\nafter"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let char_width = mono_char_width(&font, size, style.color, window);
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1000.));
+            let mut rows = RowHeightCache::empty();
+            rows.rebuild(
+                text,
+                &doc,
+                0,
+                false,
+                px(1000.),
+                char_width,
+                &font,
+                size,
+                style.color,
+                window,
+            );
+            let (region, split) = doc.side_by_side(0).unwrap();
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            )
+            .rows as f32;
+            let estimate = rows.prefix_sum(1) as f32;
+            assert!(
+                (estimate - shaped).abs() <= shaped * 0.25,
+                "estimated {estimate} rows, shaped {shaped}"
+            );
+        })
+        .unwrap();
+    }
+
+    /// Lines marked changed are patched together (a fold then a second one
+    /// before a layout covers both).
+    #[test]
+    fn marked_lines_merge_into_one_range() {
+        let mut rows = super::RowHeightCache::empty();
+        rows.mark_changed(10..14);
+        rows.mark_changed(3..5);
+        assert_eq!(rows.pending, Some(3..14));
+    }
+
+    /// A table that had to shrink to its room fills it, so its edge lines up
+    /// with a callout in the same column; one that fits keeps its natural width.
+    #[gpui_kit::test]
+    fn a_shrunk_table_fills_its_room(cx: &mut TestAppContext) {
+        use super::super::table_preview::classify_tables;
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let text = "| a very long heading | another long heading |\n| - | - |\n| x | y |\n";
+            let table = classify_tables(text).1.remove(0);
+            let narrow =
+                super::TableColumns::of(&table, px(170.), (&font, size, style.color), window);
+            assert_eq!(narrow.box_px(), px(170.));
+            let wide =
+                super::TableColumns::of(&table, px(2000.), (&font, size, style.color), window);
+            assert!(wide.box_px() < px(2000.));
+        })
+        .unwrap();
+    }
+
+    /// A float block keeps a row of air below its lowest float, so what follows
+    /// the region (another float block, a table) never touches it.
+    #[gpui_kit::test]
+    fn a_float_block_taller_than_its_text_keeps_a_row_of_air(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        let tall = "float line\n\n".repeat(8);
+        let text: &'static str =
+            Box::leak(format!("::: float right 30%\n\n{tall}:::\n\nshort").into_boxed_str());
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("a float block lays out");
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let spot = shaped.float_spots[0];
+            let bottom = spot.top + spot.height;
+            assert!(
+                lh * shaped.rows as f32 >= bottom + lh,
+                "{} rows, the float ends at {bottom:?}",
+                shaped.rows
+            );
+        })
+        .unwrap();
+    }
+
+    /// A float block has no wrapper: the paragraphs after it flow beside it
+    /// and, once it ends, run at the whole width, all inside its one region.
+    #[gpui_kit::test]
+    fn a_float_block_flows_the_paragraphs_after_it(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        let para = "flowing words ".repeat(80);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: float right 25%\n\nfloat one\n\nfloat two\n\n:::\n\n{para}\n\nsecond\n\nthird"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("a float block lays out");
+            assert!(region.tail);
+            assert_eq!(
+                region.end_line,
+                doc.line_count(),
+                "the text runs to the end"
+            );
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let lines = |line: usize| {
+                shaped
+                    .columns
+                    .iter()
+                    .flat_map(|c| &c.lines)
+                    .filter(|sl| sl.line == line)
+                    .collect::<Vec<_>>()
+            };
+            let first = region.column_lines(1).start;
+            let beside = lines(first);
+            // The paragraph starts in the channel beside the float, and where the
+            // float ends it is cut and goes on at the whole width.
+            assert_eq!(beside[0].x, px(0.));
+            assert!(beside[0].width < px(1400.));
+            assert!(beside.len() >= 2, "cut where the float ends");
+            assert_eq!(beside.last().unwrap().width, px(1400.));
+            // The pieces tile the raw line, and the paragraphs after it follow
+            // at the whole width, in this region.
+            assert_eq!(beside.last().unwrap().raw.end, para.len());
+            let last = region.column_lines(1).end - 1;
+            assert_eq!(lines(last)[0].width, px(1400.));
+            assert!(lines(last)[0].y > beside.last().unwrap().y);
+            assert_eq!(doc.region_index_at(last), Some(0));
+        })
+        .unwrap();
+    }
+
+    /// A second float block joins the first's region: written after some text it
+    /// is put down below that text, on the other side beside it, and the text
+    /// flows between the two. On the same side it waits below the first.
+    #[gpui_kit::test]
+    fn a_later_float_is_placed_where_the_text_reaches_it(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        let para = "flowing words ".repeat(60);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: float left 20%\n\nA one\n\nA two\n\n:::\n\n{para}\n\n::: float right 20%\n\nB one\n\nB two\n\n:::\n\n::: float left 20%\n\nC\n\n:::\n\n{para}\n"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("the floats lay out");
+            assert_eq!(region.count, 4, "three floats share one region");
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let first_y = |prefix: &str| {
+                shaped
+                    .columns
+                    .iter()
+                    .flat_map(|c| &c.lines)
+                    .find(|sl| text[doc.line_start_byte(sl.line)..].starts_with(prefix))
+                    .map(|sl| (sl.x, sl.y))
+                    .unwrap_or_else(|| panic!("{prefix} is laid out"))
+            };
+            let (a_x, a_y) = first_y("A one");
+            let (b_x, b_y) = first_y("B one");
+            let (c_x, c_y) = first_y("C");
+            assert_eq!(a_y, px(0.), "the first float is at the top");
+            assert!(a_x < b_x, "B is on the right");
+            // B is down below the paragraph's first rows, not at the top.
+            assert!(b_y > px(0.), "B waits for the text that precedes it");
+            // C is on A's side and waits for A to end.
+            assert_eq!(c_x, a_x);
+            assert!(c_y >= a_y + lh * 3., "C is below A");
+            // The text goes on beside whichever floats are down.
+            let widths: Vec<_> = shaped
+                .columns
+                .iter()
+                .flat_map(|c| &c.lines)
+                .filter(|sl| text[doc.line_start_byte(sl.line)..].starts_with("flowing"))
+                .map(|sl| sl.width)
+                .collect();
+            assert!(widths.iter().any(|&w| w < px(1400.)));
+            assert!(widths.iter().any(|&w| w == px(1400.)));
+        })
+        .unwrap();
+    }
+
+    /// `::: clear` starts the text below it under every float above it.
+    #[gpui_kit::test]
+    fn a_clear_marker_moves_the_text_below_the_floats(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        let tall = "float line\n\n".repeat(6);
+        let text: &'static str = Box::leak(
+            format!(
+                "::: float right 30%\n\n{tall}:::\n\nbefore the clear\n\n::: clear\n\nafter the clear\n\nlast"
+            )
+            .into_boxed_str(),
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let lh = window.line_height();
+            let mut doc = DocumentCache::new(text);
+            doc.set_column_width(Some(1400.));
+            let (region, split) = doc.side_by_side(0).expect("a float block lays out");
+            assert_eq!(region.clears().len(), 1);
+            let shaped = shape_region(
+                text,
+                &doc,
+                (&region, &split),
+                (0, false),
+                (&font, size, lh),
+                (style.color.into(), None),
+                window,
+            );
+            let at = |prefix: &str| {
+                shaped
+                    .columns
+                    .iter()
+                    .flat_map(|c| &c.lines)
+                    .find(|sl| text[doc.line_start_byte(sl.line)..].starts_with(prefix))
+                    .map(|sl| (sl.y, sl.width))
+                    .unwrap_or_else(|| panic!("{prefix} is laid out"))
+            };
+            let (before_y, before_w) = at("before the clear");
+            let (after_y, after_w) = at("after the clear");
+            let float_bottom = shaped
+                .columns
+                .iter()
+                .find(|c| c.x > px(700.))
+                .map(|c| c.lines.last().map(|l| l.y + l.height).unwrap());
+            assert!(before_w < px(1400.), "beside the float");
+            assert!(before_y < float_bottom.unwrap());
+            assert!(
+                after_y >= float_bottom.unwrap(),
+                "below the float: {after_y:?}"
+            );
+            assert_eq!(after_w, px(1400.));
+            assert_eq!(doc.region_index_at(region.clears()[0]), Some(0));
         })
         .unwrap();
     }
@@ -5924,6 +6512,7 @@ mod tests {
                 table_drag: None,
                 column_hover: None,
                 column_drag: None,
+                float_spots: Default::default(),
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;
             // The table is the right column's first block, at the region's top
@@ -5949,6 +6538,8 @@ mod tests {
                 width: split.x(1) + split.width(1),
                 height: f32::from(view.layout.height(region.start_line)),
                 can_add: true,
+                buttons: true,
+                grips: Vec::new(),
             };
             let (x, y, w, h) = column_handles::rect_of(&frame, column_handles::Handle::Divider(0));
             let grip = at(x + w / 2., px(y + h / 2.));
@@ -6102,6 +6693,48 @@ mod tests {
             .unwrap();
         }
         assert_eq!(text_of(cx), text);
+    }
+
+    /// Resizing a float block rewrites only its open markers (not the text that
+    /// flows around it) and is one undo step; it keeps each float's side.
+    #[gpui_kit::test]
+    fn resizing_a_float_block_rewrites_just_its_markers(cx: &mut TestAppContext) {
+        let text = "::: float right 30%\n\nA\n\n:::\n\none\n\n::: float left 20%\n\nB\n\n:::\n\ntwo\n\n::: float right 30%\n\nC\n\n:::\n\nthree";
+        let (window, editor) = open_editor(cx, text);
+        let text_of =
+            |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().text().to_owned());
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            editor.update(cx, |e, cx| {
+                let region = e.document_cache.borrow().columns()[0];
+                assert_eq!(region.floats().len(), 3, "one region");
+                // The right floats take 25%, the left one is kept.
+                assert!(e.set_region_ratio(0, vec![25, 20, 25, 0], window, cx));
+            })
+        })
+        .unwrap();
+        assert_eq!(
+            text_of(cx),
+            text.replace("right 30%", "right 25%"),
+            "only the markers change"
+        );
+        // Nothing to do when the shares are as they are.
+        let same = cx
+            .update_window(window, |_, window, cx| {
+                editor.update(cx, |e, cx| {
+                    e.set_region_ratio(0, vec![25, 20, 25, 0], window, cx)
+                })
+            })
+            .unwrap();
+        assert!(!same);
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                let edit = e.buffer_mut().undo().expect("an edit to undo");
+                e.record_edit(edit, window, cx);
+            })
+        })
+        .unwrap();
+        assert_eq!(text_of(cx), text, "one undo step");
     }
 
     #[gpui_kit::test]
@@ -6795,6 +7428,51 @@ mod tests {
         );
     }
 
+    /// A divider drag re-measures only its own region. A full rebuild would
+    /// re-seed every line outside the viewport with estimates, growing the
+    /// document under an unchanged scroll offset (the view jumped).
+    #[gpui_kit::test]
+    fn a_divider_drag_leaves_the_rows_outside_its_region_alone(cx: &mut TestAppContext) {
+        use super::super::column_handles::ColumnDrag;
+        let text = "a **bold** line\n\nb [[link]] line\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nc **bold** after\n\nd";
+        let (window, editor) = open_editor(cx, text);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let sums = |cx: &mut TestAppContext| {
+            editor.read_with(cx, |e, _| {
+                let doc = e.document_cache.borrow();
+                let region = doc.columns()[0];
+                let rows = e.row_height_cache.borrow();
+                (
+                    rows.prefix_sum(region.start_line),
+                    rows.prefix_sum(doc.line_count()) - rows.prefix_sum(region.end_line),
+                    rows.available_width,
+                    rows.verified.clone(),
+                )
+            })
+        };
+        let before = sums(cx);
+        assert_ne!(before.2, px(0.), "the first frame built the cache");
+        editor.update(cx, |e, _| {
+            e.column_drag = Some(ColumnDrag {
+                region: 0,
+                divider: 0,
+                percent: vec![70, 30],
+            });
+        });
+        // Only the sync, no paint: a paint would verify the rows again and hide
+        // a cache that had been thrown away.
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| e.sync_column_view(window, cx));
+        })
+        .unwrap();
+        let after = sums(cx);
+        assert_eq!(after.0, before.0, "rows above the region are kept");
+        assert_eq!(after.1, before.1, "rows below the region are kept");
+        assert_eq!(after.2, before.2, "the cache is not marked for a rebuild");
+        assert_eq!(after.3, before.3, "the verified rows are kept");
+    }
+
     /// The other half of [`super::RowHeightCache`]'s invalidation story:
     /// moving the cursor with *no* accompanying edit still needs the old
     /// and new active lines patched (`sync_active_line`), since the active
@@ -6870,6 +7548,75 @@ mod tests {
                 );
 
                 assert_eq!(row_counts(&row_cache), expected, "cursor at {cursor}");
+            }
+        })
+        .unwrap();
+    }
+
+    /// Moving the caret within a region re-counts the region's rows from its
+    /// shaped layout, not the monospace estimate: the estimate sat in the
+    /// verified window until paint, so scrolling to the caret used a region
+    /// height far off a float's tall text and the view jumped.
+    #[gpui_kit::test]
+    fn moving_the_caret_in_a_region_keeps_its_exact_height(cx: &mut TestAppContext) {
+        use super::super::document_cache::DocumentCache;
+        use super::region::shape_region;
+        use super::{RowHeightCache, Window, mono_char_width};
+
+        let para = "flowing words ".repeat(50);
+        let text = format!(
+            "intro\n\n::: float right 30%\n\nfloat\n\n:::\n\n{para}\n\n{para}\n\n{para}\n\nafter"
+        );
+        let (window, _editor) = open_editor(cx, "");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let text_style = window.text_style();
+            let font = text_style.font();
+            let font_size = text_style.font_size.to_pixels(window.rem_size());
+            let text_color = text_style.color;
+            let lh = window.line_height();
+            let available_width = px(1100.);
+            let char_width = mono_char_width(&font, font_size, text_color, window);
+
+            let mut doc = DocumentCache::new(&text);
+            doc.set_column_width(Some(1100.));
+            let mut rows = RowHeightCache::empty();
+            rows.rebuild(
+                &text,
+                &doc,
+                0,
+                false,
+                available_width,
+                char_width,
+                &font,
+                font_size,
+                text_color,
+                window,
+            );
+            let region = doc.columns()[0];
+            let exact = |cursor: usize, window: &mut Window| {
+                let (region, split) = doc.side_by_side(region.start_line).unwrap();
+                shape_region(
+                    &text,
+                    &doc,
+                    (&region, &split),
+                    (cursor, true),
+                    (&font, font_size, lh),
+                    (text_color.into(), None),
+                    window,
+                )
+                .rows
+            };
+            for cursor in [
+                text.find("flowing").unwrap() + 5,
+                text.rfind("flowing").unwrap(),
+            ] {
+                rows.sync_active_line(
+                    &text, &doc, cursor, true, char_width, &font, font_size, text_color, window,
+                );
+                let cached = (rows.prefix_sum(region.start_line + 1)
+                    - rows.prefix_sum(region.start_line)) as usize;
+                assert_eq!(cached, exact(cursor, window), "caret at {cursor}");
             }
         })
         .unwrap();

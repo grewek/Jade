@@ -198,6 +198,10 @@ pub struct Callout {
     /// The body is hidden. Starts as the marker says (`-`); a click changes
     /// it for this session only, the file is not touched.
     pub folded: bool,
+    /// What the header's marker says `folded` starts as (`-`). A fold the user
+    /// made is carried over an edit only while this is unchanged: a rewritten
+    /// marker starts over.
+    pub marker_folded: bool,
 }
 
 impl Callout {
@@ -361,6 +365,7 @@ pub(super) fn step(
                     end_line: i + 1,
                     foldable: header.fold.is_some(),
                     folded: header.fold == Some(true),
+                    marker_folded: header.fold == Some(true),
                 });
                 callout_for_this_line = Some(idx);
                 current = Some(idx);

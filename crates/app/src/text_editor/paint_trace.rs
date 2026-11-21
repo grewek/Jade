@@ -312,12 +312,19 @@ fn region_problems(r: &RegionGeom, problems: &mut Vec<String>) {
             }
         }
     }
-    for pair in r.columns.windows(2) {
-        if pair[0].x + pair[0].width > pair[1].x + TOLERANCE {
-            problems.push(format!(
-                "region at line {}: columns overlap sideways",
-                r.start_line
-            ));
+    // Floats stacked down one side share an x range; they only collide if their
+    // rows do too.
+    let top = |c: &ColumnGeom| c.lines.iter().map(|l| l.1).fold(f32::INFINITY, f32::min);
+    for (i, a) in r.columns.iter().enumerate() {
+        for b in &r.columns[i + 1..] {
+            let sideways = a.x < b.x + b.width - TOLERANCE && b.x < a.x + a.width - TOLERANCE;
+            let down = top(a) < b.bottom - TOLERANCE && top(b) < a.bottom - TOLERANCE;
+            if sideways && down {
+                problems.push(format!(
+                    "region at line {}: columns overlap sideways",
+                    r.start_line
+                ));
+            }
         }
     }
 }

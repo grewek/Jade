@@ -149,6 +149,9 @@ pub struct Editor {
     pub(super) table_drag: Option<TableDrag>,
     /// The columns region whose controls are shown for the pointer.
     pub(super) column_hover: Option<usize>,
+    /// Where the last frame put each aside's floats, by region's first line
+    /// (for placing a region's grips beside them).
+    pub(super) float_spots: Rc<RefCell<Vec<(usize, Vec<super::element::region::FloatSpot>)>>>,
     /// A divider being dragged.
     pub(super) column_drag: Option<ColumnDrag>,
     /// The vault root and this note's id, for finding image embeds' files.
@@ -185,6 +188,7 @@ impl Editor {
             table_hover: None,
             table_drag: None,
             column_hover: None,
+            float_spots: Rc::new(RefCell::new(Vec::new())),
             column_drag: None,
             image_context: None,
         }
@@ -248,8 +252,20 @@ impl Editor {
                     self.buffer.set_cursor(start, false);
                 }
             }
-            self.document_cache.borrow_mut().set_folded(index, !folded);
-            self.row_height_cache.borrow_mut().invalidate_width();
+            let lines = {
+                let mut doc = self.document_cache.borrow_mut();
+                doc.set_folded(index, !folded);
+                let callout = &doc.callouts()[index];
+                callout.start_line..callout.end_line
+            };
+            self.row_height_cache.borrow_mut().mark_changed(lines);
+            // The caret stays put, wherever it is: folding must not scroll back
+            // to it (a first click on a fold marker in a note not yet focused
+            // would send the view to a caret at the top).
+            if self.last_autoscrolled_cursor.get().is_none() {
+                self.last_autoscrolled_cursor
+                    .set(Some(self.buffer.cursor()));
+            }
             cx.notify();
         }
     }
@@ -860,7 +876,7 @@ impl Render for Editor {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.unfold_at_cursor();
         self.sync_table_view(window);
-        self.sync_column_view(window);
+        self.sync_column_view(window, cx);
         self.document_cache
             .borrow_mut()
             .set_justify(super::TextSettings::justify(cx));

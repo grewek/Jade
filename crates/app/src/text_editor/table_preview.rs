@@ -425,7 +425,7 @@ pub fn fits_unshrunk(columns: &[Column], max_total_chars: impl Into<Option<usize
 }
 
 /// Shrinks `columns`' natural widths — the widest ones to an equal share, the
-/// narrow ones untouched, floored at [`MIN_COLUMN_WIDTH`] — so their total
+/// narrow ones untouched, floored at [`MIN_COLUMN_WIDTH`] unless even that cannot fit — so their total
 /// (plus border/padding overhead) fits within `max_total_chars`, if it
 /// doesn't already. A no-op (returns the natural widths unchanged) when it
 /// already fits. Border overhead is `3 * columns.len() + 1` characters: a
@@ -443,7 +443,14 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
 
     let floor_total = MIN_COLUMN_WIDTH * columns.len();
     if content_budget <= floor_total {
-        return vec![MIN_COLUMN_WIDTH; columns.len()];
+        // Too narrow even for the floor: share what there is (a table in a
+        // narrow float would otherwise run out of its column), a character
+        // each at the least.
+        let each = (content_budget / columns.len()).max(1);
+        let extra = content_budget.saturating_sub(each * columns.len());
+        return (0..columns.len())
+            .map(|i| each + usize::from(i < extra))
+            .collect();
     }
 
     // Water-filling: a column narrower than an equal share of what is left
@@ -711,10 +718,26 @@ mod tests {
     }
 
     #[test]
-    fn cap_column_widths_never_shrinks_below_the_minimum() {
+    fn cap_column_widths_keeps_the_minimum_while_it_fits() {
         let columns = vec![col(20), col(20), col(20), col(20)];
-        let widths = cap_column_widths(&columns, 5); // far too narrow for anything
+        let widths = cap_column_widths(&columns, 3 * 4 + 1 + MIN_COLUMN_WIDTH * 4);
         assert_eq!(widths, vec![MIN_COLUMN_WIDTH; 4]);
+    }
+
+    /// Below the minimum only when the box could not fit its room otherwise: a
+    /// table in a narrow float stays inside it instead of running out.
+    #[test]
+    fn cap_column_widths_gives_way_below_the_minimum_to_fit() {
+        let columns = vec![col(20), col(20), col(20)];
+        // Room for 7 characters of text beside the 10 of borders and padding.
+        let widths = cap_column_widths(&columns, 17);
+        assert_eq!(widths.iter().sum::<usize>(), 7);
+        assert!(widths.iter().all(|&w| w >= 1));
+        assert_eq!(
+            cap_column_widths(&columns, 5),
+            vec![1; 3],
+            "a character each at least"
+        );
     }
 
     #[test]
@@ -726,7 +749,7 @@ mod tests {
     #[test]
     fn resolve_widths_caps_when_a_budget_is_given() {
         let columns = vec![col(20), col(20), col(20), col(20)];
-        assert_eq!(resolve_widths(&columns, Some(5)), vec![MIN_COLUMN_WIDTH; 4]);
+        assert_eq!(resolve_widths(&columns, Some(5)), vec![1; 4]);
     }
 
     #[test]
