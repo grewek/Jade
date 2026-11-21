@@ -78,6 +78,14 @@ Lets a tool (Claude) drive and observe the live app. Code: `crates/debug-protoco
   1. **Several floats around one text**: done on `feature/multi-float-aside` (see the Aside entry). Open: a bug the user found on 2026-11-21 and will describe; how sections 15a/15b of the float stress note look; the row-height estimate for text beside floats is only corrected after first paint.
   2. **Floats that flow on their own**: first cut built on `feature/multi-float-aside` (render only; see the Float block entry). Original goal: a float placed before a paragraph, the following paragraphs wrapping around it until it ends, with no wrapper around the text. Fixes the gap under short text beside a tall float and lets a float be moved by dragging it to another paragraph. The hard part: a float then changes the height of lines that belong to no region, and `RowHeightCache` assumes each line's height is independent. Likely shape: a float opens a unit reaching over the lines it affects (like a region's first line holding the height), with its extent worked out from the layout. Measure against the 16.66ms budget before calling it done.
   3. **Paper-style handling**: drag a float to another paragraph, resize it by its edges, a "clear" marker that forces text below a float.
+  **Open after the merge into `develop` (2026-11-21), none started; check in before picking one up:**
+  - Drag a float to another paragraph (step 3's last part). The interaction is undecided: a grab handle versus a "move float up/down" command.
+  - The flip/unwrap menu for float blocks is still off (`column_menu_state` returns `None` for tail regions).
+  - Whether a float's grip should follow the drawn width in a narrow window, where `MIN_CHANNEL` scales floats down (asked, unanswered).
+  - A float-heavy benchmark in `benches/layout.rs` (floats are only covered by tests and the live harness).
+  - Estimate drift: the cold content height of the tutorial still moves ~10% (about 700px) as paint verifies it, from the monospace estimate of plain paragraphs; the scrollbar is steadier but not exact.
+  - Tables stretch to their column only when they had to shrink; a table that fits stays natural width, so its right edge may not line up with a callout in the same column (decided to leave as is).
+  - Review the `Database Normalization` tutorial note's prose (it lives in the gitignored `vault/`) and how its foldable answers callout looks.
   Deferred and not a priority: hyphenation and optimal (Knuth-Plass) line breaking, which would even out narrow measures (rows beside a float are 70-90% full below about 55 characters) but need per-language support; `MIN_CHANNEL` (560px) is the interim fix.
 Deliberately deferred — don't pick up without checking in (see `CLAUDE.md`).
 
