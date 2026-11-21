@@ -6,7 +6,7 @@
 //! so list markers, `---` rules and table pipes do not count. Characters are
 //! Unicode scalar values, spaces included, line breaks excluded.
 
-use super::document_cache::{DocumentCache, EditPatch};
+use super::doc::{DocumentCache, EditPatch};
 use super::lines::LINE_GROWTH_SLACK;
 use super::lines::chunks::map_line_chunks;
 

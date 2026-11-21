@@ -580,7 +580,7 @@ fn opening_a_huge_file_does_not_take_several_seconds_to_render(cx: &mut TestAppC
 fn typing_in_a_huge_file_after_it_is_open_is_fast(cx: &mut TestAppContext) {
     // Diagnostic/regression test for the per-keystroke performance work
     // (incremental classification caching plus row-height caching, see
-    // ARCHITECTURE.md's own `document_cache.rs`/`element.rs` bullets and
+    // ARCHITECTURE.md's own `doc/`/`element.rs` bullets and
     // HISTORY.md for the measurement journey): once the file is open
     // (Part 1's viewport-bounded rendering already covers that cost), a
     // single keystroke's cost is what this measures — the actual
@@ -648,7 +648,7 @@ fn typing_in_a_huge_file_after_it_is_open_is_fast(cx: &mut TestAppContext) {
 fn opening_and_repainting_a_huge_file_does_not_leak_per_paint_clones(cx: &mut TestAppContext) {
     // Diagnostic, not a correctness test — a real user reported ~189MB
     // RSS at startup vs. ~3xxMB with the 320K-line stress fixture open
-    // (no edits made, just opened and looked at). `document_cache.rs`'s
+    // (no edits made, just opened and looked at). `doc/`'s
     // own `block_context_list_tracking_allocation_cost_on_the_stress_
     // fixture` test accounts for part of the gap (`OpenBlock::List`'s
     // per-line clone, ~18MB/98K allocations) via a pure-Rust allocation

@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
-use super::document_cache::TextEdit;
+use super::doc::TextEdit;
 use super::element::{analyze_line_layout, caret_rect};
 use super::rows::Inputs;
 use super::{Editor, EditorBuffer};

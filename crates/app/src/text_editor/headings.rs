@@ -2,7 +2,7 @@
 //! points at. Runs once per followed link and walks the note's lines, so it
 //! keeps nothing between calls.
 
-use super::document_cache::DocumentCache;
+use super::doc::DocumentCache;
 use super::preview::LineRole;
 
 /// The heading text of `line` (`## Title ##` gives `Title`), if it is an ATX

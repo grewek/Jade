@@ -16,7 +16,7 @@ use std::ops::Range;
 
 use jade_core::link_scan::{LinkKind, scan_line};
 
-use super::document_cache::{DocumentCache, EditPatch};
+use super::doc::{DocumentCache, EditPatch};
 use super::lines::chunks::map_line_chunks;
 use super::preview::LineRole;
 
@@ -251,7 +251,7 @@ impl LinkTable {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_editor::document_cache::TextEdit;
+    use crate::text_editor::doc::TextEdit;
     use crate::text_editor::lines::chunks::PARALLEL_MIN_BYTES;
     use crate::text_editor::test_support::{Rng, random_edit};
 

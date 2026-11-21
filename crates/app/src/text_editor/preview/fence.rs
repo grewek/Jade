@@ -37,7 +37,7 @@ pub enum LineRole {
 pub(in crate::text_editor) type FenceState = jade_core::fence::FenceState;
 
 /// Lossless 8-byte form of a [`FenceState`] (24 bytes as an `Option`), for
-/// the per-line state array in `document_cache.rs`.
+/// the per-line state array in `doc/`.
 pub(in crate::text_editor) fn pack_fence(state: FenceState) -> u64 {
     match state {
         None => 0,
@@ -59,7 +59,7 @@ pub(in crate::text_editor) fn unpack_fence(packed: u64) -> FenceState {
 /// both fold over: given the fence state entering `line`, returns its
 /// [`LineRole`] and the fence state *after* it (i.e. entering the next
 /// line). Pulled out as its own function so an incremental caller
-/// (`document_cache.rs`) can resume classification from an arbitrary line's
+/// (`doc/`) can resume classification from an arbitrary line's
 /// cached entering state instead of only ever starting fresh from the
 /// document's first line.
 pub(in crate::text_editor) fn step(state: FenceState, line: &str) -> (LineRole, FenceState) {
@@ -81,7 +81,7 @@ pub(in crate::text_editor) fn step(state: FenceState, line: &str) -> (LineRole, 
 /// starting from the empty state — see [`classify_lines_from`] for the
 /// incremental counterpart that can start anywhere else.
 ///
-/// `document_cache.rs`'s production path calls `classify_lines_from`
+/// `doc/`'s production path calls `classify_lines_from`
 /// directly (it needs the per-line states too, to seed `fence_states`), so
 /// this whole-document, roles-only entry point is only still reachable from
 /// tests now — kept as the oracle every classify_lines_from-based test
@@ -104,7 +104,7 @@ pub(in crate::text_editor) fn classify_lines(source: &str) -> Vec<LineRole> {
 /// previously cached entering state for the corresponding later line to
 /// know the moment it's safe to stop and reuse the old cached suffix
 /// unchanged, rather than re-walking the rest of the document — see
-/// `document_cache.rs`.
+/// `doc/`.
 pub(in crate::text_editor) fn classify_lines_from(
     source: &str,
     state: FenceState,
@@ -249,7 +249,7 @@ mod tests {
 
     /// `classify_lines_from` resuming from an arbitrary line's real entering
     /// state must match `classify_lines`'s own whole-document answer for
-    /// that same suffix — the property `document_cache.rs`'s incremental
+    /// that same suffix — the property `doc/`'s incremental
     /// path actually relies on. Checked for every possible split point
     /// across several documents that exercise open/closed fences, not just
     /// one hand-picked line.

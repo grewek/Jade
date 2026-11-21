@@ -12,7 +12,7 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
-use crate::text_editor::document_cache::{DocumentCache, EditPatch};
+use crate::text_editor::doc::{DocumentCache, EditPatch};
 use crate::text_editor::element::region;
 use crate::text_editor::layout::mono_char_width;
 use crate::text_editor::lines::Fenwick;

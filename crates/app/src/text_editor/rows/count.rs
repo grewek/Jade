@@ -7,7 +7,7 @@ use gpui_kit::*;
 
 use super::Env;
 use crate::text_editor::columns::{self, Columns};
-use crate::text_editor::document_cache::DocumentCache;
+use crate::text_editor::doc::DocumentCache;
 use crate::text_editor::element::region;
 use crate::text_editor::image::{self, Sizes as ImageSizes};
 use crate::text_editor::layout::{

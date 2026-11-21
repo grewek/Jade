@@ -726,7 +726,7 @@ fn classify_block_context_a_marker_at_the_same_column_is_a_sibling_not_a_dedent(
 fn list_node_chains_with_the_same_indents_compare_equal_even_when_separately_allocated() {
     // Two independently-built chains representing the same logical
     // nesting (0, then 2) must compare equal regardless of being
-    // different `Rc` allocations — `document_cache.rs`'s reconvergence
+    // different `Rc` allocations — `doc/`'s reconvergence
     // check relies on exactly this (see `ListNode`'s own doc comment):
     // a freshly-walked chain reconverging with a cached one needs
     // value equality, not pointer identity, the same way two

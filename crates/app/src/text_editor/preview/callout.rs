@@ -265,7 +265,7 @@ fn looks_like_heading(line: &str) -> bool {
 /// `preview::classify_block_context`'s own closing rules for
 /// `Open::Blockquote`.
 ///
-/// `document_cache.rs`'s production path calls `classify_callouts_from`
+/// `doc/`'s production path calls `classify_callouts_from`
 /// directly (it needs the per-line states and running callout count too,
 /// to seed its own cache) — this whole-document entry point is only still
 /// reachable from tests now, kept as the oracle every classify_callouts_
@@ -287,7 +287,7 @@ pub(in crate::text_editor) fn classify_callouts(
 /// caller's `callouts`: a new one starts only on a fresh blockquote, which
 /// closes the previous. So the state holds no index, and an edit that adds
 /// or removes a callout leaves every later line's state unchanged; see
-/// `document_cache.rs`'s `patch_callouts`.
+/// `doc/`'s `patch_callouts`.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(in crate::text_editor) struct CalloutState {
     block_open: bool,
@@ -296,7 +296,7 @@ pub(in crate::text_editor) struct CalloutState {
 
 impl CalloutState {
     /// Lossless one-byte form, for the per-line state array in
-    /// `document_cache.rs`.
+    /// `doc/`.
     pub(in crate::text_editor) fn pack(self) -> u8 {
         u8::from(self.block_open) | (u8::from(self.callout_open) << 1)
     }
@@ -421,7 +421,7 @@ pub(in crate::text_editor) fn step(
 /// (if any), the state *after* it, and `callouts.len()` *after* it — the
 /// latter is what an incremental caller needs on top of the state itself
 /// to know a resumed line's freshly assigned index actually lines up with
-/// a previously cached one (see `document_cache.rs`'s own `patch_callouts`
+/// a previously cached one (see `doc/`'s own `patch_callouts`
 /// doc comment for why state equality alone isn't enough here, unlike
 /// `preview::fence`'s simpler case).
 pub(in crate::text_editor) fn classify_callouts_from(

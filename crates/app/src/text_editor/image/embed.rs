@@ -7,7 +7,7 @@ use gpui_kit::gpui::Pixels;
 use jade_core::link_scan::{ImageEmbed, parse_image_embed_line};
 
 use super::info::{self, Sizes};
-use crate::text_editor::document_cache::DocumentCache;
+use crate::text_editor::doc::DocumentCache;
 use crate::text_editor::layout::{LineState, TableLineKind};
 use crate::text_editor::preview::LineContext;
 use crate::text_editor::preview::LineRole;

@@ -13,7 +13,7 @@
 //! would fix this but needs its own dependency approval, deferred until it's
 //! actually needed.
 
-use super::document_cache::TextEdit;
+use super::doc::TextEdit;
 use std::ops::Range;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

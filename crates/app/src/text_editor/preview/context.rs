@@ -60,7 +60,7 @@ pub enum LineContext {
 ///   content-column alignment rule, since this module doesn't track each
 ///   level's content-start column, only where its marker began.
 ///
-/// `document_cache.rs`'s production path calls `classify_block_context_from`
+/// `doc/`'s production path calls `classify_block_context_from`
 /// directly (it needs the per-line states too, to seed its own cache) — this
 /// whole-document entry point is only still reachable from tests now, kept
 /// as the oracle every classify_block_context_from-based test (including
@@ -79,7 +79,7 @@ pub(in crate::text_editor) fn classify_block_context(source: &str) -> Vec<LineCo
 /// [`classify_block_context`]'s own doc comment for what each variant
 /// means. Pulled out to module scope (rather than kept as a function-local
 /// `enum`, which is what it originally was) so an incremental caller
-/// (`document_cache.rs`) can store and compare it across paints.
+/// (`doc/`) can store and compare it across paints.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::text_editor) enum OpenBlock {
     None,
@@ -111,7 +111,7 @@ pub(in crate::text_editor) enum OpenBlock {
 /// structure this replaced.
 ///
 /// `PartialEq`/`Eq` are derived, not hand-written, and still do the right
-/// thing for `document_cache.rs`'s reconvergence check (which needs two
+/// thing for `doc/`'s reconvergence check (which needs two
 /// *separately allocated* chains representing the same sequence of
 /// indents to compare equal, the same as two `Vec<usize>`s with identical
 /// contents always did): `Rc<T>`'s own `PartialEq` impl already compares
@@ -219,7 +219,7 @@ pub(in crate::text_editor) fn block_context_step(
 /// incremental caller can compare that against a previously cached
 /// entering state for the corresponding later line to know the moment it's
 /// safe to stop and reuse the old cached suffix unchanged — see
-/// `document_cache.rs`.
+/// `doc/`.
 pub(in crate::text_editor) fn classify_block_context_from(
     source: &str,
     open: OpenBlock,

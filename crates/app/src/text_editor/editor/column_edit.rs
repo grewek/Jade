@@ -9,7 +9,7 @@ use gpui_kit::*;
 use super::super::columns;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
-use super::super::document_cache::DocumentCache;
+use super::super::doc::DocumentCache;
 use super::super::element::render_params;
 use super::super::preview::LineRole;
 use super::super::rows::{Change, Inputs};

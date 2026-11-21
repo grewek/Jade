@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
-use crate::text_editor::document_cache::DocumentCache;
+use crate::text_editor::doc::DocumentCache;
 use crate::text_editor::image::Sizes as ImageSizes;
 use crate::text_editor::preview::LineContext;
 use crate::text_editor::preview::LineRole;

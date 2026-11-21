@@ -19,7 +19,7 @@ use super::Editor;
 use super::colors::{InlineColors, callout_role};
 use super::columns::handles::ColumnDrag;
 use super::columns::{self, Columns};
-use super::document_cache::DocumentCache;
+use super::doc::DocumentCache;
 use super::editor::ColumnMenu;
 use super::image::{self, Cache as ImageCache, Info as ImageInfo};
 use super::layout::{
@@ -1794,7 +1794,7 @@ mod tests {
     /// down one side keep a row between them.
     #[gpui_kit::test]
     fn text_flows_between_floats_and_widens_as_each_side_ends(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::region::shape_region;
 
         let para = "flowing words ".repeat(60);
@@ -1867,7 +1867,7 @@ mod tests {
     /// lines at full width it was half again too tall.
     #[gpui_kit::test]
     fn a_cold_rebuild_estimates_a_float_block_near_its_shaped_height(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::RowCache;
         use super::region::shape_region;
         let para = "flowing words ".repeat(40);
@@ -1943,7 +1943,7 @@ mod tests {
     /// the region (another float block, a table) never touches it.
     #[gpui_kit::test]
     fn a_float_block_taller_than_its_text_keeps_a_row_of_air(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::region::shape_region;
         let tall = "float line\n\n".repeat(8);
         let text: &'static str =
@@ -1982,7 +1982,7 @@ mod tests {
     /// and, once it ends, run at the whole width, all inside its one region.
     #[gpui_kit::test]
     fn a_float_block_flows_the_paragraphs_after_it(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::region::shape_region;
         let para = "flowing words ".repeat(80);
         let text: &'static str = Box::leak(
@@ -2048,7 +2048,7 @@ mod tests {
     /// flows between the two. On the same side it waits below the first.
     #[gpui_kit::test]
     fn a_later_float_is_placed_where_the_text_reaches_it(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::region::shape_region;
         let para = "flowing words ".repeat(60);
         let text: &'static str = Box::leak(
@@ -2113,7 +2113,7 @@ mod tests {
     /// `::: clear` starts the text below it under every float above it.
     #[gpui_kit::test]
     fn a_clear_marker_moves_the_text_below_the_floats(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::region::shape_region;
         let tall = "float line\n\n".repeat(6);
         let text: &'static str = Box::leak(
@@ -2566,7 +2566,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn a_click_in_a_region_lands_in_the_nearest_columns_line(cx: &mut TestAppContext) {
-        use super::super::{columns, document_cache::DocumentCache};
+        use super::super::{columns, doc::DocumentCache};
         use super::region::{HitFrame, hit, shape_region};
         use gpui::{Bounds, Window, size};
 
@@ -2751,7 +2751,7 @@ mod tests {
     /// is one.
     fn exact_row_counts(
         text: &str,
-        doc: &super::super::document_cache::DocumentCache,
+        doc: &super::super::doc::DocumentCache,
         (cursor, focused): (usize, bool),
         width: Pixels,
         (font, font_size, text_color): (&gpui_kit::Font, Pixels, gpui_kit::Hsla),
@@ -2796,7 +2796,7 @@ mod tests {
     fn row_height_cache_patch_lines_matches_the_exact_row_counts_after_a_sequence_of_edits(
         cx: &mut TestAppContext,
     ) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::RowCache;
 
         let mut text = String::from(
@@ -2889,7 +2889,7 @@ mod tests {
     /// fresh build.
     #[gpui_kit::test]
     fn a_side_by_side_region_takes_its_tallest_columns_rows(cx: &mut TestAppContext) {
-        use super::super::{columns, document_cache::DocumentCache};
+        use super::super::{columns, doc::DocumentCache};
         use super::RowCache;
         use crate::text_editor::layout::mono_char_width;
         use crate::text_editor::layout::wrapped_row_count;
@@ -2986,7 +2986,7 @@ mod tests {
     /// callout in its columns must come out as a cold rebuild would have them.
     #[gpui_kit::test]
     fn moving_a_divider_relays_out_a_table_and_a_callout(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::RowCache;
         use gpui::Window;
 
@@ -3057,7 +3057,7 @@ mod tests {
     /// whole width, and the two pieces tile the raw line.
     #[gpui_kit::test]
     fn text_flows_around_a_float_and_widens_below_it(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::region::shape_region;
 
         let para = "flowing words ".repeat(40);
@@ -3116,7 +3116,7 @@ mod tests {
     /// shape of `Columns Test.md` section 5).
     #[gpui_kit::test]
     fn moving_a_table_column_in_a_region_relays_out(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::RowCache;
         use gpui::Window;
 
@@ -3190,7 +3190,7 @@ mod tests {
     /// minimum box, so the box never paints into the next column.
     #[test]
     fn a_columns_minimum_is_its_widest_tables_minimum_box() {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         let text = "::: columns\n\ntext\n\n---\n\n| a | b | c | d | e |\n| - | - | - | - | - |\n| 1 | 2 | 3 | 4 | 5 |\n\n:::\n";
         let doc = DocumentCache::new(text);
         let region = doc.columns()[0];
@@ -3297,7 +3297,7 @@ mod tests {
     /// over-estimate for it.
     #[gpui_kit::test]
     fn row_height_cache_sync_active_line_matches_the_exact_row_counts(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::RowCache;
 
         // A line long enough that hiding/showing its `**bold**` markup
@@ -3364,7 +3364,7 @@ mod tests {
     /// height far off a float's tall text and the view jumped.
     #[gpui_kit::test]
     fn moving_the_caret_in_a_region_keeps_its_exact_height(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::region::shape_region;
         use super::{RowCache, Window, mono_char_width};
 
@@ -3445,7 +3445,7 @@ mod tests {
     fn row_height_cache_converges_to_the_exact_row_counts_once_every_line_has_been_corrected(
         cx: &mut TestAppContext,
     ) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::RowCache;
 
         let fixture_path = "benches/fixtures/large_markdown_stress_test.md";
@@ -3511,7 +3511,7 @@ mod tests {
     /// agree with the exact count, or callout bands would sit at stale heights.
     #[gpui_kit::test]
     fn an_image_embed_line_is_a_block_with_the_placeholder_height(cx: &mut TestAppContext) {
-        use super::super::document_cache::DocumentCache;
+        use super::super::doc::DocumentCache;
         use super::super::image::PLACEHOLDER_ROWS;
         use super::RowCache;
 

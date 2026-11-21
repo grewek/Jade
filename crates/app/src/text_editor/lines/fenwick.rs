@@ -1,7 +1,7 @@
 //! A Fenwick tree (binary indexed tree) over a sequence of `i64` values,
 //! supporting O(log n) point-update and O(log n) prefix-sum query. This is
 //! the shared structure behind the incremental per-line byte-offset index
-//! in `document_cache.rs` (mapping an edit's byte offset to a line index
+//! in `doc/` (mapping an edit's byte offset to a line index
 //! without an O(document) scan) — see that module's own doc comment, and
 //! CLAUDE.md's Backlog entry on incremental classification for why this
 //! exists at all: resuming a classifier from the *edited* line still needs

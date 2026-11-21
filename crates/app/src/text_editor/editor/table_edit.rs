@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
-use super::super::document_cache::TextEdit;
+use super::super::doc::TextEdit;
 use super::super::element::{TableColumns, render_params};
 use super::super::rows::Invalidate;
 use super::super::table::handles::{Handle, TableDrag};

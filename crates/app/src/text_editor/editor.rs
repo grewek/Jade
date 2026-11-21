@@ -12,8 +12,8 @@ mod table_edit;
 
 use super::EditorBuffer;
 use super::columns::handles::ColumnDrag;
+use super::doc::{DocumentCache, TextEdit};
 use super::doc_stats::DocStats;
-use super::document_cache::{DocumentCache, TextEdit};
 use super::element::{render_editor, render_params};
 use super::headings::find_heading_line;
 use super::image;

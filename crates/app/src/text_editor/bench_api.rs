@@ -2,8 +2,8 @@
 //! else in `text_editor` stays crate-private. Wrappers return small summaries
 //! so the optimizer cannot discard the work being timed.
 
+use super::doc::{DocumentCache, EditPatch, TextEdit};
 use super::doc_stats::DocStats;
-use super::document_cache::{DocumentCache, EditPatch, TextEdit};
 use super::lines::Fenwick;
 use super::lines::line_strides as strides_of;
 use super::link_table::LinkTable;
