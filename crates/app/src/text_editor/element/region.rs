@@ -223,16 +223,6 @@ impl Bands {
             .min()
             .unwrap_or(usize::MAX)
     }
-
-    /// The row from which a float on `side` has the side to itself.
-    fn side_end(&self, side: usize) -> usize {
-        self.placed
-            .iter()
-            .filter(|p| p.side == side)
-            .map(|p| p.rows.end)
-            .max()
-            .unwrap_or(0)
-    }
 }
 
 /// One float of an aside, shaped at its own width, waiting to be put down.
