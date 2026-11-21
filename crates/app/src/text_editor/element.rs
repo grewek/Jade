@@ -6879,6 +6879,51 @@ mod tests {
         );
     }
 
+    /// A divider drag re-measures only its own region. A full rebuild would
+    /// re-seed every line outside the viewport with estimates, growing the
+    /// document under an unchanged scroll offset (the view jumped).
+    #[gpui_kit::test]
+    fn a_divider_drag_leaves_the_rows_outside_its_region_alone(cx: &mut TestAppContext) {
+        use super::super::column_handles::ColumnDrag;
+        let text = "a **bold** line\n\nb [[link]] line\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nc **bold** after\n\nd";
+        let (window, editor) = open_editor(cx, text);
+        cx.update_window(window, |_, window, cx| window.render_frame(cx))
+            .unwrap();
+        let sums = |cx: &mut TestAppContext| {
+            editor.read_with(cx, |e, _| {
+                let doc = e.document_cache.borrow();
+                let region = doc.columns()[0];
+                let rows = e.row_height_cache.borrow();
+                (
+                    rows.prefix_sum(region.start_line),
+                    rows.prefix_sum(doc.line_count()) - rows.prefix_sum(region.end_line),
+                    rows.available_width,
+                    rows.verified.clone(),
+                )
+            })
+        };
+        let before = sums(cx);
+        assert_ne!(before.2, px(0.), "the first frame built the cache");
+        editor.update(cx, |e, _| {
+            e.column_drag = Some(ColumnDrag {
+                region: 0,
+                divider: 0,
+                percent: vec![70, 30],
+            });
+        });
+        // Only the sync, no paint: a paint would verify the rows again and hide
+        // a cache that had been thrown away.
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| e.sync_column_view(window, cx));
+        })
+        .unwrap();
+        let after = sums(cx);
+        assert_eq!(after.0, before.0, "rows above the region are kept");
+        assert_eq!(after.1, before.1, "rows below the region are kept");
+        assert_eq!(after.2, before.2, "the cache is not marked for a rebuild");
+        assert_eq!(after.3, before.3, "the verified rows are kept");
+    }
+
     /// The other half of [`super::RowHeightCache`]'s invalidation story:
     /// moving the cursor with *no* accompanying edit still needs the old
     /// and new active lines patched (`sync_active_line`), since the active
