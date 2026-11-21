@@ -12,10 +12,10 @@ use gpui_kit::*;
 use super::super::document_cache::TextEdit;
 use super::super::element::{TableColumns, render_params};
 use super::super::rows::Invalidate;
-use super::super::table::geometry::{cell_at, cell_ranges, edit_range};
 use super::super::table::handles::{Handle, TableDrag};
-use super::super::table::model::{Align, Table, table_index_at};
 use super::super::table::ops::Op;
+use super::super::table::{Align, Table, table_index_at};
+use super::super::table::{cell_at, cell_ranges, edit_range};
 use super::Editor;
 
 /// A cell of the table being edited, in absolute buffer bytes.
@@ -450,28 +450,19 @@ impl Editor {
             let text = self.buffer.text();
             let content = &text[cell.line_start..doc.line_end_byte(cell.line)];
             let at = self.buffer.cursor() - cell.line_start;
-            let (row, x) = table::geometry::caret_at(content, &columns.widths, cell.column, at);
-            let rows =
-                table::geometry::layout_row_editing(content, &columns.widths, Some(cell.column))
-                    [cell.column]
-                    .lines
-                    .len();
+            let (row, x) = table::caret_at(content, &columns.widths, cell.column, at);
+            let rows = table::layout_row_editing(content, &columns.widths, Some(cell.column))
+                [cell.column]
+                .lines
+                .len();
             let in_cell = if down { row + 1 < rows } else { row > 0 };
             if in_cell {
                 let wanted = if down { row + 1 } else { row - 1 };
-                let lines = &table::geometry::layout_row_editing(
-                    content,
-                    &columns.widths,
-                    Some(cell.column),
-                )[cell.column]
+                let lines = &table::layout_row_editing(content, &columns.widths, Some(cell.column))
+                    [cell.column]
                     .lines;
-                let offset = table::geometry::offset_in_line(
-                    content,
-                    &columns.widths,
-                    cell.column,
-                    &lines[wanted],
-                    x,
-                );
+                let offset =
+                    table::offset_in_line(content, &columns.widths, cell.column, &lines[wanted], x);
                 Some(cell.line_start + offset)
             } else {
                 let neighbour = if down {
@@ -485,24 +476,17 @@ impl Editor {
                         let start = doc.line_start_byte(line);
                         let other = &text[start..doc.line_end_byte(line)];
                         let column = cell.column.min(cell_ranges(other).len().saturating_sub(1));
-                        let lines = &table::geometry::layout_row_editing(
-                            other,
-                            &columns.widths,
-                            Some(column),
-                        )[column]
-                            .lines;
+                        let lines =
+                            &table::layout_row_editing(other, &columns.widths, Some(column))
+                                [column]
+                                .lines;
                         let range = if down {
                             &lines[0]
                         } else {
                             &lines[lines.len() - 1]
                         };
-                        let offset = table::geometry::offset_in_line(
-                            other,
-                            &columns.widths,
-                            column,
-                            range,
-                            x,
-                        );
+                        let offset =
+                            table::offset_in_line(other, &columns.widths, column, range, x);
                         Some(start + offset)
                     }
                 }

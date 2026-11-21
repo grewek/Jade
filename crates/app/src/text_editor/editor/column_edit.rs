@@ -217,7 +217,7 @@ impl Editor {
         };
         let plain = |l: usize| {
             doc.line_roles().get(l) == Some(&LineRole::Plain)
-                && crate::text_editor::table::model::table_index_at(doc.tables(), l).is_none()
+                && crate::text_editor::table::table_index_at(doc.tables(), l).is_none()
                 && crate::text_editor::callout::callout_index_at(doc.callouts(), l).is_none()
         };
         if blank(line) || !plain(line) {

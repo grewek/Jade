@@ -17,7 +17,7 @@ use crate::text_editor::layout::{
     shape_display_line, wrapped_row_count,
 };
 use crate::text_editor::live_preview::{LineContext, line_indent};
-use crate::text_editor::table::model::Table;
+use crate::text_editor::table::Table;
 
 /// The parts of a [`DocumentCache`] a row count reads, as plain slices (the
 /// cache itself holds `Rc`s, so it cannot cross to worker threads).
@@ -184,10 +184,10 @@ fn pure_row_counts_in(
                 if table_state.as_ref().is_none_or(|(n, ..)| *n != next_table) {
                     // A table that fits its width has no wrapped cell in any row,
                     // so its widths (and its rows' text) are never looked at.
-                    let widths = if table::model::fits_unshrunk(&table.columns, budget) {
+                    let widths = if table::fits_unshrunk(&table.columns, budget) {
                         None
                     } else {
-                        Some(table::model::resolve_widths(&table.columns, budget))
+                        Some(table::resolve_widths(&table.columns, budget))
                     };
                     table_state = Some((next_table, widths));
                 }
@@ -196,7 +196,7 @@ fn pure_row_counts_in(
                     // row, a row is as tall as its tallest wrapped cell.
                     Some((n, widths)) if plain && active_table != Some(*n) => match widths {
                         Some(widths) if !table.is_delimiter(i) => {
-                            table::model::row_line_count(line, widths)
+                            table::row_line_count(line, widths)
                         }
                         _ => 1,
                     },

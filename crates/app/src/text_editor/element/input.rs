@@ -466,7 +466,7 @@ pub(super) fn hit_in_line(
         );
         let row = ((relative_y - y_offset) / line_height) as usize;
         let x = (position.x - bounds.origin.x) / columns.char_width;
-        let offset = table::geometry::offset_at_editing(
+        let offset = table::offset_at_editing(
             line_text,
             &columns.widths,
             &columns.aligns,
@@ -685,8 +685,8 @@ pub(super) fn min_column_px(
         .iter()
         .take_while(|t| t.start_line < lines.end)
         .map(|t| {
-            let widths = vec![table::model::MIN_COLUMN_WIDTH; t.columns.len()];
-            table::geometry::box_width(&widths) * char_width
+            let widths = vec![table::MIN_COLUMN_WIDTH; t.columns.len()];
+            table::box_width(&widths) * char_width
         })
         .fold(0., f32::max)
 }

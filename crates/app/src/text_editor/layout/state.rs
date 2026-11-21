@@ -7,7 +7,7 @@ use crate::text_editor::callout::{Callout, callout_index_at};
 use crate::text_editor::document_cache::DocumentCache;
 use crate::text_editor::image::Sizes as ImageSizes;
 use crate::text_editor::live_preview::LineContext;
-use crate::text_editor::table::model::{Table, table_index_at};
+use crate::text_editor::table::{Table, table_index_at};
 
 /// Resolves `line_index`'s [`Callout`] (if it belongs to one at all) from
 /// the resolved `callouts` — same shape as `table_line_kind`.

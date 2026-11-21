@@ -14,7 +14,7 @@
 //! block_context`'s own `Open::Blockquote` state never needed that
 //! distinction (every `>`-prefixed line is already self-sufficient for
 //! plain blockquote rendering), so this module tracks it itself via
-//! [`classify_callouts`], a sequential pass mirroring `table::model::
+//! [`classify_callouts`], a sequential pass mirroring `table::
 //! classify_tables`'s shape. Deliberately independent of `live_preview.rs`'s
 //! own blockquote-prefix detection (same "each scanner is self-contained"
 //! precedent `table::model.rs`/`block_preview.rs` already set) — this
@@ -245,7 +245,7 @@ fn looks_like_heading(line: &str) -> bool {
 }
 
 /// Resolves, for every line of `source`, which [`Callout`] (if any) it
-/// belongs to — a sequential pass mirroring `table::model::
+/// belongs to — a sequential pass mirroring `table::
 /// classify_tables`'s shape. Tracks two bits of state: `block_open` (was
 /// the *previous* line part of an open blockquote block at all, callout or
 /// not — this is what lets a line tell "I'm a fresh blockquote start" apart
