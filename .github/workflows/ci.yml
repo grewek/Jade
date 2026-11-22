@@ -32,9 +32,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
-      # Library targets only: tests and benches still carry unwrap/too_many_lines
-      # warnings, and jade-debug-cli has one over-long function.
-      - run: cargo clippy -p jade-core -p jade-debug-protocol --lib -- -D warnings
+      # Production targets only (libs and bins): the rules are for shipped
+      # code, not tests or criterion benches.
+      - run: cargo clippy -p jade-core -p jade-debug-protocol -p jade-debug-cli --lib --bins -- -D warnings
 
   test:
     runs-on: ubuntu-latest
@@ -42,3 +42,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p jade-core -p jade-debug-protocol -p jade-debug-cli -- --test-threads=1
+
+  docs:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps -p jade-core -p jade-debug-protocol -p jade-debug-cli

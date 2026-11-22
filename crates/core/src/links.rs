@@ -9,7 +9,7 @@ pub struct WikiLink {
 }
 
 /// All wikilinks in `content`. A link never spans a line break, so this is
-/// [`extract_wikilinks_in_line`] applied per line.
+/// `extract_wikilinks_in_line` applied per line.
 pub fn extract_wikilinks(content: &str) -> Vec<WikiLink> {
     let mut links = Vec::new();
     for line in content.lines() {
