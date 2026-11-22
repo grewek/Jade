@@ -22,8 +22,10 @@ pub struct Rendered {
     pub columns: usize,
 }
 
+type Formulas = HashMap<String, Option<Arc<Rendered>>>;
+
 /// Index 0 holds inline formulas, 1 display ones.
-static CACHE: Mutex<[Option<HashMap<String, Option<Arc<Rendered>>>>; 2]> = Mutex::new([None, None]);
+static CACHE: Mutex<[Option<Formulas>; 2]> = Mutex::new([None, None]);
 
 /// The formula between the delimiters of `span` (`$x$` or `$$x$$`), or `None`
 /// if the font is missing or the source does not parse cleanly; the caller then
