@@ -251,6 +251,8 @@ const MOUSE_FLAGS: &[&str] = &[
     "--right", "--middle", "--double", "--triple", "--shift", "--ctrl", "--alt", "--meta", "--held",
 ];
 
+// One flat mapping from the mouse subcommand names to their actions.
+#[allow(clippy::too_many_lines)]
 fn mouse_command(name: &str, flags: &[&str], pos: &[&str]) -> Result<Action, String> {
     reject_unknown(flags, MOUSE_FLAGS)?;
     let has = |f| flags.contains(&f);
