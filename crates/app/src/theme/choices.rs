@@ -75,6 +75,14 @@ pub fn remember_justify(dirs: &ConfigDirs, on: bool) -> Result<(), String> {
     remember_value(dirs, "justify", Value::Boolean(on))
 }
 
+/// Writes `vault = "<path>"` into `config.toml`, as [`remember`] does.
+pub fn remember_vault(dirs: &ConfigDirs, vault: &Path) -> Result<(), String> {
+    let text = vault
+        .to_str()
+        .ok_or_else(|| format!("{}: path is not valid UTF-8", vault.display()))?;
+    remember_value(dirs, "vault", Value::String(text.to_owned()))
+}
+
 fn remember_value(dirs: &ConfigDirs, key: &str, value: Value) -> Result<(), String> {
     let path = dirs.config_file();
     let mut table = if path.is_file() {

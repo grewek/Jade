@@ -19,6 +19,7 @@ mod memory_probe;
 mod test_alloc;
 mod text_editor;
 pub mod theme;
+mod vault_path;
 
 /// Test-build-only — see `test_alloc`'s own module doc for why. No effect
 /// on release/`cargo run` (this whole item is `#[cfg(test)]`-gated).

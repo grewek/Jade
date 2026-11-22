@@ -3,7 +3,7 @@
 
 use std::fs::File;
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -27,6 +27,7 @@ pub struct Loaded {
 struct ConfigFile {
     theme: Option<String>,
     justify: Option<bool>,
+    vault: Option<String>,
 }
 
 /// Ids become file names, so anything that could leave the theme folder is out.
@@ -105,6 +106,14 @@ pub fn configured_justify(dirs: Option<&ConfigDirs>) -> bool {
             ..
         }))
     )
+}
+
+/// The vault folder `config.toml` names; `None` when absent, empty or the
+/// file does not parse (the theme load already reports that), so a first
+/// start is told apart from a configured one.
+pub fn configured_vault(dirs: Option<&ConfigDirs>) -> Option<PathBuf> {
+    let vault = read_config(dirs)?.ok()?.vault?;
+    (!vault.trim().is_empty()).then(|| PathBuf::from(vault))
 }
 
 fn wanted_id(dirs: Option<&ConfigDirs>, notices: &mut Vec<String>) -> Option<String> {
