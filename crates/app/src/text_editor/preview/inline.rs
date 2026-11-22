@@ -25,6 +25,9 @@ pub(super) enum ConstructKind {
     /// extended autolinks) — a one-shot match, resolved directly in
     /// `scan_inline` since there's no closer to search for.
     BareUrl,
+    /// `$x$` / `$$x$$`: opaque, its LaTeX is not Markdown. Drawn as the plain
+    /// source until math layout exists (#13).
+    Math,
 }
 
 pub(super) struct Construct {
@@ -120,6 +123,13 @@ pub(super) fn find_construct(rest: &str) -> Option<Construct> {
                     offset: i,
                     opener_len: 0,
                     kind: ConstructKind::BareUrl,
+                });
+            }
+            b'$' => {
+                return Some(Construct {
+                    offset: i,
+                    opener_len: opener_len(rest, i, rest.len()),
+                    kind: ConstructKind::Math,
                 });
             }
             _ => i += 1,
@@ -344,6 +354,16 @@ pub(super) fn scan_inline(
                     link.span.end
                 })
             }
+            ConstructKind::Math => parse_math(line, construct_start, end).map(|math| {
+                push_visible(
+                    line,
+                    segments,
+                    display_text,
+                    math.span.clone(),
+                    default_style,
+                );
+                math.span.end
+            }),
             ConstructKind::BareUrl => {
                 let url_end = parse_bare_url(line, construct_start, end).span.end;
                 push_visible(

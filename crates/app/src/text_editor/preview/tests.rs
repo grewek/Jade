@@ -63,6 +63,9 @@ fn link_scan_agrees_with_rendering_on_hand_written_lines() {
         "[[ ]] [[]] [[a|]] [[#h]]",
         "[x](y)(z) [[a]](b)",
         "é [[Ünï|ä]] ✓ [日本](ü.md)",
+        "$[[a]]$ [[b]] $x$ $5 [[c]] $10",
+        "$a [b](c) d$ [e](f)",
+        "$$[[a]]$$ and `$` [[b]] $",
     ] {
         assert_scanner_matches_rendering(line);
     }
@@ -97,6 +100,10 @@ fn link_scan_agrees_with_rendering_on_random_inline_soup() {
         "[[a]]",
         "[t](u)",
         "<https://z>",
+        "$",
+        "$$",
+        "$x$",
+        "\\$",
     ];
     let mut state = 0x9e37_79b9_u32;
     let mut next = || {
@@ -125,6 +132,34 @@ fn link_scan_agrees_with_rendering_on_the_stress_fixture() {
     for line in text.lines().take(20_000) {
         assert_scanner_matches_rendering(line);
     }
+}
+
+#[test]
+fn math_is_opaque_to_emphasis_and_links() {
+    // The LaTeX stays plain source: no italic from `*`, no link from `[[`.
+    let line = "a $x*y*z$ b $[[n]]$ c";
+    let dl = build_display_line(line, false);
+    assert_eq!(dl.display_text, line);
+    assert!(
+        visible_styles(&dl)
+            .iter()
+            .all(|(_, style)| *style == InlineStyle::Plain)
+    );
+    // Currency is not math: the emphasis after it still renders.
+    let dl = build_display_line("$5 and *x*", false);
+    assert_eq!(dl.display_text, "$5 and x");
+}
+
+#[test]
+fn a_failed_double_dollar_does_not_open_a_span_with_its_second_dollar() {
+    // `$$ x$` would be inline math `x` if the second `$` could open one; it
+    // must read as text so rendering and the link scan agree.
+    let dl = build_display_line("$$ *x*$ [[a]]", false);
+    assert!(
+        visible_styles(&dl)
+            .iter()
+            .any(|(_, style)| *style == InlineStyle::WikiLink)
+    );
 }
 
 fn visible_styles(dl: &DisplayLine) -> Vec<(String, InlineStyle)> {

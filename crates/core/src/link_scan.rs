@@ -10,9 +10,12 @@
 //!
 //! Recognized: `[[target#heading|alias]]`, `[text](dest "title")`, `<url>` and
 //! `<email>`, and a bare `http(s)://` URL. Not links (as in rendering): an
-//! image `![t](u)`, anything inside an inline code span, an escaped opener.
+//! image `![t](u)`, anything inside an inline code span or inline math, an
+//! escaped opener.
 
 use std::ops::Range;
+
+use crate::math_scan::{opener_len, parse_inline};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LinkKind {
@@ -63,7 +66,7 @@ pub fn scheme(dest: &str) -> Option<&str> {
 /// The bytes that can start something `scan_range` reacts to.
 static OPENS: [bool; 256] = {
     let mut table = [false; 256];
-    let opens = *b"\\`*_~[<h";
+    let opens = *b"\\`*_~[<h$";
     let mut i = 0;
     while i < opens.len() {
         table[opens[i] as usize] = true;
@@ -173,6 +176,9 @@ fn scan_range(line: &str, start: usize, end: usize, depth: usize, f: &mut impl F
                 matched = parse_autolink(line, i, end);
                 1
             }
+            // Math is opaque: a `[[` or `*` inside it is LaTeX, not Markdown.
+            b'$' => parse_inline(line, i, end)
+                .map_or_else(|| opener_len(line, i, end), |math| math.span.end - i),
             b'h' if line[i..end].starts_with("http://") || line[i..end].starts_with("https://") => {
                 matched = Some(parse_bare_url(line, i, end));
                 1
