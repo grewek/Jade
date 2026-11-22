@@ -62,7 +62,7 @@ pub fn float_flipped(lines: &[&str], region: &Columns, k: usize) -> Vec<String> 
 /// a line to rest on there.
 pub fn floated(block: &[&str], text: &[&str], right: bool) -> Vec<String> {
     assert!(!block.is_empty());
-    let text = if text.is_empty() { &[""][..] } else { text };
+    let text: &[&str] = if text.is_empty() { &[""] } else { text };
     let mut out = Vec::with_capacity(block.len() + text.len() + 7);
     out.extend([aside_marker(right, columns::ASIDE_DEFAULT), String::new()]);
     out.extend(block.iter().map(|l| (*l).to_owned()));
