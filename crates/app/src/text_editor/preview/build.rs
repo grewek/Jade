@@ -153,11 +153,12 @@ pub fn raw_cell_line(text: &str) -> DisplayLine {
 pub fn build_cell_line(text: &str) -> DisplayLine {
     let mut segments = Vec::new();
     let mut display_text = String::new();
-    scan_inline(
+    scan_inline_in(
         text,
         0,
         text.len(),
         InlineStyle::Plain,
+        false,
         &mut segments,
         &mut display_text,
     );

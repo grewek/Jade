@@ -136,18 +136,59 @@ fn link_scan_agrees_with_rendering_on_the_stress_fixture() {
 
 #[test]
 fn math_is_opaque_to_emphasis_and_links() {
-    // The LaTeX stays plain source: no italic from `*`, no link from `[[`.
+    // The LaTeX is one drawn segment: no italic from `*`, no link from `[[`.
     let line = "a $x*y*z$ b $[[n]]$ c";
     let dl = build_display_line(line, false);
-    assert_eq!(dl.display_text, line);
+    let math: Vec<_> = dl
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .collect();
+    assert_eq!(math.len(), 2);
+    assert!(math.iter().all(|s| s.is_replaced() && !s.is_hidden()));
     assert!(
-        visible_styles(&dl)
+        dl.segments
             .iter()
-            .all(|(_, style)| *style == InlineStyle::Plain)
+            .all(|s| !matches!(s.style, InlineStyle::Italic | InlineStyle::WikiLink))
     );
     // Currency is not math: the emphasis after it still renders.
     let dl = build_display_line("$5 and *x*", false);
     assert_eq!(dl.display_text, "$5 and x");
+}
+
+#[test]
+fn a_formula_reserves_blank_columns_and_the_active_line_shows_source() {
+    let line = "see $x^2$ now";
+    let dl = build_display_line(line, false);
+    let seg = dl
+        .segments
+        .iter()
+        .find(|s| s.style == InlineStyle::Math)
+        .expect("a math segment");
+    assert_eq!(&line[seg.raw.clone()], "$x^2$");
+    assert!(
+        dl.display_text[seg.display.clone()]
+            .chars()
+            .all(|c| c == ' ')
+    );
+    assert!(!seg.display.is_empty());
+    // The caret line renders raw, like every construct.
+    let active = build_display_line(line, true);
+    assert_eq!(active.display_text, line);
+}
+
+#[test]
+fn a_formula_that_does_not_parse_stays_source() {
+    let line = "a $\\frac{a$ b";
+    let dl = build_display_line(line, false);
+    assert_eq!(dl.display_text, line);
+    assert!(dl.segments.iter().all(|s| s.style != InlineStyle::Math));
+}
+
+#[test]
+fn a_table_cell_never_gets_a_drawn_formula() {
+    let dl = build_cell_line("$x^2$");
+    assert_eq!(dl.display_text, "$x^2$");
 }
 
 #[test]

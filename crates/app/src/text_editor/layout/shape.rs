@@ -30,7 +30,8 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
         | InlineStyle::WikiLink
         | InlineStyle::Link
         | InlineStyle::ListMarker
-        | InlineStyle::Widget(_) => {}
+        | InlineStyle::Widget(_)
+        | InlineStyle::Math => {}
     }
     font
 }
@@ -64,7 +65,8 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
         | InlineStyle::Italic
         | InlineStyle::Heading(_)
         | InlineStyle::Strikethrough
-        | InlineStyle::Widget(_) => base,
+        | InlineStyle::Widget(_)
+        | InlineStyle::Math => base,
     }
 }
 

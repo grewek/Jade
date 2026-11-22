@@ -217,9 +217,23 @@ pub(super) fn parse_entity(line: &str, start: usize, end: usize) -> Option<(Rang
 /// its non-bold text at heading size/color.
 pub(super) fn scan_inline(
     line: &str,
+    pos: usize,
+    end: usize,
+    default_style: InlineStyle,
+    segments: &mut Vec<DisplaySegment>,
+    display_text: &mut String,
+) {
+    scan_inline_in(line, pos, end, default_style, true, segments, display_text);
+}
+
+/// [`scan_inline`], where `math` says whether a formula may become a drawn
+/// [`InlineStyle::Math`] segment: a table cell paints its own text and cannot.
+pub(super) fn scan_inline_in(
+    line: &str,
     mut pos: usize,
     end: usize,
     default_style: InlineStyle,
+    math: bool,
     segments: &mut Vec<DisplaySegment>,
     display_text: &mut String,
 ) {
@@ -354,15 +368,29 @@ pub(super) fn scan_inline(
                     link.span.end
                 })
             }
-            ConstructKind::Math => parse_math(line, construct_start, end).map(|math| {
-                push_visible(
-                    line,
-                    segments,
-                    display_text,
-                    math.span.clone(),
-                    default_style,
-                );
-                math.span.end
+            ConstructKind::Math => parse_math(line, construct_start, end).map(|found| {
+                let drawn = math
+                    .then(|| rendered_span(&line[found.span.clone()]))
+                    .flatten();
+                if let Some(drawn) = drawn {
+                    let blank = " ".repeat(drawn.columns);
+                    push_replaced(
+                        segments,
+                        display_text,
+                        found.span.clone(),
+                        &blank,
+                        InlineStyle::Math,
+                    );
+                } else {
+                    push_visible(
+                        line,
+                        segments,
+                        display_text,
+                        found.span.clone(),
+                        default_style,
+                    );
+                }
+                found.span.end
             }),
             ConstructKind::BareUrl => {
                 let url_end = parse_bare_url(line, construct_start, end).span.end;

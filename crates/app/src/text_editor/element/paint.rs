@@ -636,6 +636,7 @@ pub(super) fn paint_line(
             inline: &inline,
             font_size,
             line_height,
+            line_text,
         };
         paint_widgets(display_line, wrapped, line_origin, &widgets, (window, cx));
 

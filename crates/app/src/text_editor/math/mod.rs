@@ -7,6 +7,7 @@
 
 mod alphabet;
 mod ast;
+mod cache;
 mod font;
 mod layout;
 #[cfg(test)]
@@ -18,6 +19,7 @@ mod symbols;
 mod tests;
 
 pub use ast::*;
+pub use cache::{Rendered, rendered_span};
 pub use font::MathFont;
 pub use layout::{Item, Layout, layout};
 pub use parse::{Formula, MAX_DEPTH, MAX_SOURCE, parse};

@@ -58,6 +58,7 @@
 use std::ops::Range;
 use std::rc::Rc;
 
+use super::math::rendered_span;
 use callout::{CalloutType, callout_header_prefix};
 use jade_core::link_scan::{
     find_closing, parse_autolink, parse_bare_url, parse_inline_link, parse_wikilink,

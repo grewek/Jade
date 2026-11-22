@@ -3,6 +3,8 @@
 
 #[allow(unused_imports)]
 use super::*;
+use crate::text_editor::math;
+use crate::text_editor::preview::DisplaySegment;
 
 /// Colors of the controls drawn over a line's widget columns.
 pub(super) struct WidgetColors {
@@ -19,6 +21,8 @@ pub(super) struct WidgetPaint<'a> {
     pub(super) inline: &'a InlineColors,
     pub(super) font_size: Pixels,
     pub(super) line_height: Pixels,
+    /// The raw text `display_line`'s segments index into.
+    pub(super) line_text: &'a str,
 }
 
 /// Paints a bundled Lucide icon (`path`) filling `bounds`.
@@ -53,8 +57,13 @@ pub(super) fn paint_widgets(
         inline,
         font_size,
         line_height,
+        ..
     } = *paint;
     for seg in &display_line.segments {
+        if seg.style == InlineStyle::Math {
+            paint_math(display_line, seg, wrapped, origin, paint, (window, cx));
+            continue;
+        }
         let InlineStyle::Widget(widget) = seg.style else {
             continue;
         };
@@ -128,6 +137,80 @@ pub(super) fn paint_widgets(
                     inline.callout(kind),
                     (window, cx),
                 );
+            }
+        }
+    }
+}
+
+/// The family name the bundled math font registers under.
+const MATH_FONT_FAMILY: &str = "Latin Modern Math";
+
+/// Draws a formula's glyphs and rules over the blank columns `seg` reserved,
+/// left aligned on the text's baseline. A formula the wrap split across rows
+/// is left blank: there is no one place to draw it.
+fn paint_math(
+    display_line: &DisplayLine,
+    seg: &DisplaySegment,
+    wrapped: &WrappedLine,
+    origin: Point<Pixels>,
+    paint: &WidgetPaint,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let _ = (display_line, cx);
+    let Some(raw) = paint.line_text.get(seg.raw.clone()) else {
+        return;
+    };
+    let Some(rendered) = math::rendered_span(raw) else {
+        return;
+    };
+    let line_height = paint.line_height;
+    let (Some(from), Some(to)) = (
+        wrapped.position_for_index(seg.display.start, line_height),
+        wrapped.position_for_index(seg.display.end, line_height),
+    ) else {
+        return;
+    };
+    if from.y != to.y {
+        return;
+    }
+    let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));
+    // GPUI centres a row's text in the line height; the baseline follows.
+    let pad = (line_height - (wrapped.ascent() + wrapped.descent())) / 2.;
+    let baseline = origin + from + point(px(0.), pad + wrapped.ascent());
+    let em = paint.font_size;
+    let (ink, error) = (paint.inline.text, paint.inline.broken);
+    for item in &rendered.layout.items {
+        match *item {
+            math::Item::Glyph {
+                id,
+                x,
+                y,
+                size,
+                error: failed,
+            } => {
+                let _ = window.paint_glyph(
+                    baseline + point(em * x, em * y),
+                    font_id,
+                    GlyphId(u32::from(id)),
+                    em * size,
+                    if failed { error } else { ink },
+                );
+            }
+            math::Item::Rule {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                // At least a device pixel, or a thin bar can vanish.
+                let thick = (em * height).max(px(1.));
+                window.paint_quad(fill(
+                    Bounds {
+                        origin: baseline + point(em * x, em * y),
+                        size: size(em * width, thick),
+                    },
+                    ink,
+                ));
             }
         }
     }
