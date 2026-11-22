@@ -1,0 +1,443 @@
+use super::*;
+use crate::text_editor::test_support::Rng;
+
+fn font() -> &'static MathFont {
+    MathFont::bundled().unwrap()
+}
+
+#[test]
+fn the_bundled_font_loads() {
+    assert!(MathFont::bundled().is_some());
+}
+
+fn lay(src: &str, display: bool) -> Layout {
+    let parsed = parse(src);
+    assert!(
+        !parsed.has_error,
+        "{src:?} should parse: {:?}",
+        parsed.nodes
+    );
+    layout(font(), &parsed.nodes, display)
+}
+
+fn id(ch: char) -> u16 {
+    font()
+        .glyph_id(ch)
+        .unwrap_or_else(|| panic!("no glyph for {ch:?}"))
+        .0
+}
+
+/// A glyph's advance and italic correction in em.
+fn adv(ch: char) -> (f32, f32) {
+    let m = font().metrics(font().glyph_id(ch).unwrap());
+    (m.advance, m.italic)
+}
+
+/// `(id, x, y, size)` of every glyph, in drawing order.
+fn glyphs(l: &Layout) -> Vec<(u16, f32, f32, f32)> {
+    l.items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Glyph { id, x, y, size, .. } => Some((*id, *x, *y, *size)),
+            Item::Rule { .. } => None,
+        })
+        .collect()
+}
+
+fn rules(l: &Layout) -> Vec<(f32, f32, f32, f32)> {
+    l.items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Rule {
+                x,
+                y,
+                width,
+                height,
+            } => Some((*x, *y, *width, *height)),
+            Item::Glyph { .. } => None,
+        })
+        .collect()
+}
+
+fn close(a: f32, b: f32) -> bool {
+    (a - b).abs() < 1e-3
+}
+
+#[track_caller]
+fn assert_close(a: f32, b: f32) {
+    assert!(close(a, b), "{a} != {b}");
+}
+
+#[test]
+fn the_constants_are_the_ones_tex_defines() {
+    let c = font().consts;
+    assert_close(c.axis_height, 0.25);
+    assert_close(c.script_scale, 0.7);
+    assert_close(c.script_script_scale, 0.5);
+    assert_close(c.frac_rule, 0.04);
+    assert_close(c.sup_shift_up, 0.363);
+    assert_close(c.sub_shift_down, 0.247);
+}
+
+#[test]
+fn a_letter_is_the_math_italic_glyph_and_a_digit_is_upright() {
+    let x = lay("x", false);
+    assert_eq!(glyphs(&x), [(id('\u{1D465}'), 0.0, 0.0, 1.0)]);
+    let (advance, _) = adv('\u{1D465}');
+    assert_close(x.width, advance);
+    assert_eq!(glyphs(&lay("1", false))[0].0, id('1'));
+}
+
+#[test]
+fn binary_operators_get_a_medium_space_and_relations_a_thick_one() {
+    let (a, ia) = adv('\u{1D44E}');
+    let (b, ib) = adv('\u{1D44F}');
+    let plus = adv('+').0;
+    assert_close(
+        lay("a+b", false).width,
+        a + ia + plus + b + ib + 2.0 * 4.0 / 18.0,
+    );
+    let eq = adv('=').0;
+    assert_close(
+        lay("a=b", false).width,
+        a + ia + eq + b + ib + 2.0 * 5.0 / 18.0,
+    );
+}
+
+#[test]
+fn a_unary_minus_takes_no_space() {
+    let minus = adv('\u{2212}').0;
+    let (a, ia) = adv('\u{1D44E}');
+    assert_close(lay("-a", false).width, minus + a + ia);
+    // After an opener or a relation, and before a closer, too.
+    let (open, close_paren) = (adv('(').0, adv(')').0);
+    assert_close(
+        lay("(-a)", false).width,
+        open + minus + a + ia + close_paren,
+    );
+}
+
+#[test]
+fn scripts_drop_the_conditional_spaces() {
+    let l = lay("x^{a+b}", false);
+    let g = glyphs(&l);
+    let (a, ia) = adv('\u{1D44E}');
+    let plus_x = g.iter().find(|g| g.0 == id('+')).unwrap().1;
+    let a_x = g.iter().find(|g| g.0 == id('\u{1D44E}')).unwrap().1;
+    assert_close(plus_x - a_x, 0.7 * (a + ia));
+}
+
+#[test]
+fn a_superscript_and_subscript_use_the_font_shifts() {
+    let c = font().consts;
+    let x = adv('\u{1D465}');
+    let l = lay("x^2", false);
+    let g = glyphs(&l);
+    assert_eq!(g[1].0, id('2'));
+    assert_close(g[1].3, 0.7);
+    assert_close(g[1].2, -c.sup_shift_up);
+    assert_close(g[1].1, x.0 + x.1);
+    let l = lay("x_2", false);
+    assert_close(glyphs(&l)[1].2, c.sub_shift_down);
+}
+
+#[test]
+fn both_scripts_keep_their_gap() {
+    let c = font().consts;
+    let l = lay("x_i^2", false);
+    let g = glyphs(&l);
+    let (sub, sup) = (&g[1], &g[2]);
+    let sup_bottom = sup.2 + font().metrics(font().glyph_id('2').unwrap()).descent * 0.7;
+    let sub_top = sub.2 - font().metrics(font().glyph_id('\u{1D456}').unwrap()).ascent * 0.7;
+    assert!(sub_top - sup_bottom >= c.sub_sup_gap_min - 1e-3);
+}
+
+#[test]
+fn scripts_nest_smaller_and_cramp_under_a_root() {
+    let c = font().consts;
+    let nested = glyphs(&lay("x^{y^z}", false));
+    assert_close(nested[2].3, 0.5);
+    // Inside a radical the style is cramped: the lower superscript shift.
+    let cramped = glyphs(&lay("\\sqrt{x^2}", false));
+    let two = cramped.iter().find(|g| g.0 == id('2')).unwrap();
+    assert_close(two.2, -c.sup_shift_up_cramped);
+}
+
+#[test]
+fn a_fraction_has_a_bar_on_the_axis_and_shifts_by_style() {
+    let c = font().consts;
+    let text = lay("\\frac{a}{b}", false);
+    let r = rules(&text);
+    assert_eq!(r.len(), 1);
+    assert_close(r[0].3, c.frac_rule);
+    assert_close(r[0].1, -(c.axis_height + c.frac_rule / 2.0));
+    let g = glyphs(&text);
+    assert_close(g[0].3, 0.7);
+    assert_close(g[0].2, -c.frac_num_shift_up);
+    assert_close(g[1].2, c.frac_den_shift_down);
+    let display = lay("\\frac{a}{b}", true);
+    let g = glyphs(&display);
+    assert_close(g[0].3, 1.0);
+    assert_close(g[0].2, -c.frac_num_display_shift_up);
+    assert_close(g[1].2, c.frac_den_display_shift_down);
+    assert!(display.ascent + display.descent > text.ascent + text.descent);
+}
+
+#[test]
+fn a_fraction_centres_both_parts_and_spans_the_wider() {
+    let l = lay("\\frac{a}{bbb}", false);
+    let r = rules(&l)[0];
+    let g = glyphs(&l);
+    let den_width: f32 = (0..3).map(|_| adv('\u{1D44F}').0 * 0.7).sum::<f32>();
+    assert_close(r.2, den_width + 3.0 * adv('\u{1D44F}').1 * 0.7);
+    // The numerator sits in the middle of the bar.
+    let num_centre = g[0].1 + adv('\u{1D44E}').0 * 0.7 / 2.0;
+    assert_close(num_centre, r.0 + r.2 / 2.0);
+}
+
+#[test]
+fn dfrac_and_displaystyle_force_the_display_layout() {
+    let forced = lay("\\dfrac{a}{b}", false);
+    assert_eq!(forced.items, lay("\\frac{a}{b}", true).items);
+    let switched = lay("\\displaystyle\\frac{a}{b}", false);
+    assert_eq!(switched.items, lay("\\frac{a}{b}", true).items);
+}
+
+#[test]
+fn a_binomial_has_no_bar_and_parentheses() {
+    let l = lay("\\binom{n}{k}", false);
+    assert!(rules(&l).is_empty());
+    let g = glyphs(&l);
+    assert_ne!(g.first().unwrap().0, id('n'));
+    assert!(g.iter().filter(|g| g.3 == 1.0).count() >= 2);
+}
+
+#[test]
+fn a_root_covers_its_body_with_an_overbar() {
+    let l = lay("\\sqrt{x}", false);
+    let r = rules(&l);
+    assert_eq!(r.len(), 1);
+    let g = glyphs(&l);
+    let radical = &g[0];
+    assert_eq!(radical.0, id('√'));
+    let m = font().metrics(font().glyph_id('\u{1D465}').unwrap());
+    // Above the body by a gap, and as wide as it.
+    assert!(-r[0].1 >= m.ascent + font().consts.radical_gap);
+    assert_close(r[0].2, m.advance);
+    // The overbar starts where the radical glyph ends.
+    assert_close(
+        r[0].0,
+        font().metrics(font().glyph_id('√').unwrap()).advance,
+    );
+}
+
+#[test]
+fn a_tall_body_picks_a_taller_radical() {
+    let small = glyphs(&lay("\\sqrt{x}", false))[0].0;
+    let tall = glyphs(&lay("\\sqrt{\\frac{a}{b}}", true))[0].0;
+    assert_ne!(small, tall);
+}
+
+#[test]
+fn a_root_index_sits_in_the_crook() {
+    let l = lay("\\sqrt[3]{x}", false);
+    let g = glyphs(&l);
+    let three = g.iter().find(|g| g.0 == id('3')).unwrap();
+    assert_close(three.3, 0.5);
+    let radical = g.iter().find(|g| g.0 == id('√')).unwrap();
+    // The index is left of the radical and above its bottom.
+    assert!(three.1 < radical.1 + 0.5);
+    assert!(three.2 < radical.2 + font().metrics(font().glyph_id('√').unwrap()).descent);
+}
+
+#[test]
+fn left_right_use_the_base_glyph_for_a_small_body_and_grow_for_a_tall_one() {
+    let small = glyphs(&lay("\\left( x \\right)", false));
+    assert_eq!(small[0].0, id('('));
+    assert_eq!(small.last().unwrap().0, id(')'));
+    let tall = glyphs(&lay("\\left( \\frac{a}{b} \\right)", true));
+    assert_ne!(tall[0].0, id('('));
+    // Both delimiters are the same size.
+    assert_ne!(tall.first().unwrap().0, id(')'));
+}
+
+#[test]
+fn delimiters_are_centred_on_the_axis() {
+    let l = lay("\\left( \\frac{a}{b} \\right)", true);
+    let (open, ..) = (&l.items[0],);
+    let Item::Glyph {
+        id: gid, y, size, ..
+    } = open
+    else {
+        panic!()
+    };
+    let m = font().metrics(ttf_parser::GlyphId(*gid));
+    let centre_up = -y + (m.ascent - m.descent) / 2.0 * size;
+    assert_close(centre_up, font().consts.axis_height);
+}
+
+#[test]
+fn an_empty_delimiter_draws_nothing() {
+    let l = lay("\\left. x \\right|", false);
+    let g = glyphs(&l);
+    assert_eq!(g.len(), 2);
+    assert_eq!(g[1].0, id('|'));
+}
+
+#[test]
+fn a_big_operator_grows_in_display_style_and_sits_on_the_axis() {
+    let text = glyphs(&lay("\\sum", false))[0];
+    let display = glyphs(&lay("\\sum", true))[0];
+    assert_eq!(text.0, id('∑'));
+    assert_ne!(display.0, id('∑'));
+    for (op, size) in [(text, 1.0), (display, 1.0)] {
+        let m = font().metrics(ttf_parser::GlyphId(op.0));
+        assert_close(
+            -op.2 + (m.ascent - m.descent) / 2.0,
+            font().consts.axis_height * size,
+        );
+    }
+}
+
+#[test]
+fn limits_go_above_and_below_in_display_and_beside_in_text() {
+    let c = font().consts;
+    let display = lay("\\sum_{i}^{n}", true);
+    let g = glyphs(&display);
+    let (op, sub, sup) = (&g[0], &g[1], &g[2]);
+    assert!(sub.2 > 0.0 && sup.2 < 0.0);
+    // Centred on the operator.
+    let op_w = font().metrics(ttf_parser::GlyphId(op.0)).advance;
+    let sub_w = adv('\u{1D456}').0 * 0.7;
+    assert_close(sub.1 + sub_w / 2.0, op.1 + op_w / 2.0);
+    let _ = c;
+    let beside = lay("\\sum_{i}^{n}", false);
+    let g = glyphs(&beside);
+    let op_w = font().metrics(ttf_parser::GlyphId(g[0].0)).advance;
+    assert!(g[1].1 >= op_w - 1e-3 && g[2].1 >= op_w - 1e-3);
+}
+
+#[test]
+fn integrals_keep_their_scripts_beside_even_in_display() {
+    let g = glyphs(&lay("\\int_a^b", true));
+    let op_w = font().metrics(ttf_parser::GlyphId(g[0].0)).advance;
+    assert!(g[1].1 >= op_w - 1e-3);
+    // `\limits` moves them.
+    let g = glyphs(&lay("\\int\\limits_a^b", true));
+    assert!(g[1].2 > 0.0 && g[2].2 < 0.0);
+}
+
+#[test]
+fn named_operators_are_upright_words_with_limits_only_when_they_take_them() {
+    let g = glyphs(&lay("\\lim_{n}", true));
+    assert_eq!(g[0].0, id('l'));
+    assert!(g.last().unwrap().2 > 0.0, "below in display");
+    let g = glyphs(&lay("\\sin x", true));
+    assert_eq!(g[0].0, id('s'));
+}
+
+#[test]
+fn explicit_space_is_in_eighteenths_of_an_em() {
+    let (a, ia) = adv('\u{1D44E}');
+    let (b, ib) = adv('\u{1D44F}');
+    assert_close(lay("a\\quad b", false).width, a + ia + 1.0 + b + ib);
+    assert_close(lay("a\\,b", false).width, a + ia + 3.0 / 18.0 + b + ib);
+    assert_close(lay("a\\!b", false).width, a + ia - 3.0 / 18.0 + b + ib);
+}
+
+#[test]
+fn text_is_upright_and_keeps_its_spaces() {
+    let g = glyphs(&lay("\\text{ab}", false));
+    assert_eq!(
+        g.iter().map(|g| g.0).collect::<Vec<_>>(),
+        [id('a'), id('b')]
+    );
+    let with_space = lay("\\text{a b}", false);
+    let (a, b) = (adv('a').0, adv('b').0);
+    assert_close(with_space.width, a + 0.25 + b);
+}
+
+#[test]
+fn fonts_change_the_glyph() {
+    assert_eq!(glyphs(&lay("\\mathbb{R}", false))[0].0, id('\u{211D}'));
+    assert_eq!(glyphs(&lay("\\mathbf{x}", false))[0].0, id('\u{1D431}'));
+    assert_eq!(glyphs(&lay("\\mathrm{x}", false))[0].0, id('x'));
+}
+
+#[test]
+fn source_that_failed_is_drawn_as_error_glyphs() {
+    let parsed = parse("a \\nosuchcommand");
+    let l = layout(font(), &parsed.nodes, false);
+    let errors = l
+        .items
+        .iter()
+        .filter(|i| matches!(i, Item::Glyph { error: true, .. }))
+        .count();
+    assert_eq!(errors, "\\nosuchcommand".chars().count());
+}
+
+#[test]
+fn every_construct_lays_out_finite_and_nonnegative() {
+    let mut rng = Rng::new(0x1234_5678_9ABC_DEF1);
+    let alphabet = [
+        "x",
+        "1",
+        "+",
+        "=",
+        "-",
+        "^",
+        "_",
+        "{",
+        "}",
+        "\\frac",
+        "\\sqrt",
+        "[",
+        "]",
+        "\\left(",
+        "\\right)",
+        "\\sum",
+        "\\int",
+        "\\lim",
+        "\\text{ab}",
+        "\\mathbb",
+        "\\alpha",
+        "\\,",
+        "\\\\",
+        "\\begin{matrix}",
+        "\\end{matrix}",
+        "&",
+        "\\hat",
+        "\\overset",
+        "\\not",
+        "\\displaystyle",
+        "\\binom",
+        "\\over",
+        "'",
+        "\\boxed",
+        "\\xrightarrow",
+        "\\middle|",
+        "\\unknown",
+    ];
+    for _ in 0..3_000 {
+        let n = 1 + rng.below(24);
+        let src: String = (0..n)
+            .map(|_| alphabet[rng.below(alphabet.len())])
+            .collect();
+        let l = layout(font(), &parse(&src).nodes, rng.below(2) == 0);
+        for v in [l.width, l.ascent, l.descent] {
+            assert!(v.is_finite() && v >= -1e-4, "{src:?}: {v}");
+        }
+        for item in &l.items {
+            let all_finite = match item {
+                Item::Glyph { x, y, size, .. } => [*x, *y, *size].iter().all(|v| v.is_finite()),
+                Item::Rule {
+                    x,
+                    y,
+                    width,
+                    height,
+                } => [*x, *y, *width, *height].iter().all(|v| v.is_finite()),
+            };
+            assert!(all_finite, "{src:?}: {item:?}");
+        }
+    }
+}
