@@ -39,6 +39,118 @@ fn open_app(cx: &mut TestAppContext, vault_path: PathBuf) -> (AnyWindowHandle, E
     })
 }
 
+/// A first-start app: no vault yet, the welcome dialog open on a config dir
+/// inside `config_root`.
+fn open_first_start(
+    cx: &mut TestAppContext,
+    config_root: &std::path::Path,
+) -> (AnyWindowHandle, Entity<JadeApp>, crate::theme::ConfigDirs) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        ThemeEngine::install(None, cx);
+        cx.set_reduce_motion(true);
+    });
+    let config = crate::theme::ConfigDirs::new(config_root.join("config").join("jade"));
+    let (window, app) = cx.update(|cx| {
+        gpui_kit::open_window(WindowOptions::default(), cx, |window, cx| {
+            cx.new(|cx| JadeApp::new_unconfigured(window, cx))
+        })
+        .expect("open test window")
+    });
+    cx.update_window(window, |_, window, cx| {
+        JadeApp::open_welcome_dialog(app.clone(), Some(config.clone()), window, cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    (window, app, config)
+}
+
+fn type_vault_path(cx: &mut TestAppContext, window: AnyWindowHandle, path: &std::path::Path) {
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("vault-path-input", cx);
+        window.press("ctrl-a", cx);
+        window.input(&path.display().to_string(), cx);
+        window.click("confirm-vault", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+}
+
+#[gpui_kit::test]
+fn first_start_creates_the_vault_and_remembers_it_in_config_toml(cx: &mut TestAppContext) {
+    let tmp = temp_vault();
+    let (window, app, config) = open_first_start(cx, tmp.path());
+    let vault = tmp.path().join("my notes");
+
+    type_vault_path(cx, window, &vault);
+
+    assert!(vault.is_dir(), "a missing vault folder is created");
+    assert_eq!(
+        crate::theme::configured_vault(Some(&config)),
+        Some(vault.clone()),
+        "the path is saved so the next start skips the dialog"
+    );
+    let has_error = app.read_with(cx, |app, _| app.error.is_some());
+    assert!(!has_error);
+    let dialog_open = cx
+        .update_window(window, |_, window, cx| window.has_active_dialog(cx))
+        .unwrap();
+    assert!(!dialog_open, "a good path closes the dialog");
+}
+
+#[gpui_kit::test]
+fn first_start_lists_the_notes_of_an_existing_vault(cx: &mut TestAppContext) {
+    let tmp = temp_vault();
+    let vault = tmp.path().join("existing");
+    std::fs::create_dir_all(&vault).unwrap();
+    std::fs::write(vault.join("Note A.md"), "hello").unwrap();
+    let (window, app, _config) = open_first_start(cx, tmp.path());
+
+    type_vault_path(cx, window, &vault);
+
+    let found = app.read_with(cx, |app, _| app.vault.note("Note A").is_some());
+    assert!(found, "the chosen folder's notes show up");
+}
+
+#[gpui_kit::test]
+fn first_start_refuses_a_relative_path_and_keeps_asking(cx: &mut TestAppContext) {
+    let tmp = temp_vault();
+    let (window, _app, config) = open_first_start(cx, tmp.path());
+
+    type_vault_path(cx, window, std::path::Path::new("relative/notes"));
+
+    let dialog_open = cx
+        .update_window(window, |_, window, cx| window.has_active_dialog(cx))
+        .unwrap();
+    assert!(dialog_open, "a bad path leaves the dialog open");
+    assert!(
+        !config.config_file().exists(),
+        "nothing is saved for a refused path"
+    );
+}
+
+#[gpui_kit::test]
+fn the_first_start_dialog_ignores_escape(cx: &mut TestAppContext) {
+    let tmp = temp_vault();
+    let (window, _app, _config) = open_first_start(cx, tmp.path());
+
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.press("escape", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+
+    let dialog_open = cx
+        .update_window(window, |_, window, cx| window.has_active_dialog(cx))
+        .unwrap();
+    assert!(
+        dialog_open,
+        "without a vault there is nothing to fall back to"
+    );
+}
+
 #[gpui_kit::test]
 fn clicking_sidebar_note_opens_it(cx: &mut TestAppContext) {
     let dir = temp_vault();

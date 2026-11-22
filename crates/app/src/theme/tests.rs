@@ -587,6 +587,52 @@ mod engine_setup {
     }
 
     #[test]
+    fn the_vault_path_round_trips_and_keeps_other_keys() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        assert_eq!(
+            crate::theme::configured_vault(Some(&dirs)),
+            None,
+            "no file yet"
+        );
+
+        write(&dirs.config_file(), "theme = \"a\"\n");
+        assert_eq!(
+            crate::theme::configured_vault(Some(&dirs)),
+            None,
+            "no vault key"
+        );
+
+        let vault = tmp.path().join("notes");
+        choices::remember_vault(&dirs, &vault).expect("writes");
+        assert_eq!(crate::theme::configured_vault(Some(&dirs)), Some(vault));
+        let table: toml::Table = fs::read_to_string(dirs.config_file())
+            .expect("read")
+            .parse()
+            .expect("toml");
+        assert_eq!(table["theme"].as_str(), Some("a"));
+    }
+
+    #[test]
+    fn an_empty_or_unreadable_vault_setting_counts_as_unset() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        write(&dirs.config_file(), "vault = \"  \"\n");
+        assert_eq!(crate::theme::configured_vault(Some(&dirs)), None);
+        write(&dirs.config_file(), "vault = [");
+        assert_eq!(crate::theme::configured_vault(Some(&dirs)), None);
+        assert_eq!(crate::theme::configured_vault(None), None);
+    }
+
+    #[test]
+    fn remembering_the_vault_creates_a_missing_config_dir() {
+        let tmp = tempdir().expect("tmp");
+        let dirs = ConfigDirs::new(tmp.path().join("fresh").join("jade"));
+        choices::remember_vault(&dirs, &tmp.path().join("notes")).expect("creates dirs");
+        assert!(dirs.config_file().is_file());
+    }
+
+    #[test]
     fn remember_keeps_other_keys_and_never_clobbers_a_broken_file() {
         let tmp = tempdir().expect("tmp");
         let dirs = dirs_in(&tmp);
@@ -716,6 +762,7 @@ fn ui_code_has_no_color_literals() {
         ("app/search.rs", include_str!("../app/search.rs")),
         ("app/sidebar.rs", include_str!("../app/sidebar.rs")),
         ("app/tabs.rs", include_str!("../app/tabs.rs")),
+        ("app/welcome.rs", include_str!("../app/welcome.rs")),
         ("element.rs", include_str!("../text_editor/element.rs")),
         (
             "element/input.rs",
