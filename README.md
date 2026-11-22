@@ -9,6 +9,8 @@ Jade is an Obsidian-like note-taking app written in Rust. Notes are plain Markdo
 - **Layouts:** flexible arrangement of your notes and panels.
 - **Performance first:** built natively on [GPUI](https://www.gpui.rs/), with no web technology, and measured against a 60fps frame budget.
 
+https://github.com/user-attachments/assets/307b841b-6840-4fad-a0ac-c7da5e733fd8
+
 Jade is in early development.
 
 ## Disclaimer
