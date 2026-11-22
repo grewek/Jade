@@ -12,9 +12,10 @@
 //!
 //! A display block opens with `$$` at the start of a line (after indentation)
 //! and closes at the first unescaped `$$` in the next [`MAX_BLOCK_LINES`] lines.
-//! An opener with no closer in that reach is plain text, so typing `$$` never
-//! turns the rest of the note into math. Blank lines are allowed inside, a code
-//! fence is not. Openers behind a blockquote or list marker are not found.
+//! Line breaks inside are whitespace to LaTeX, but a blank line ends the
+//! formula: an opener that reaches one, a code fence or the limit without a
+//! closer is plain text, so typing `$$` never turns the rest of the note into
+//! math. Openers behind a blockquote or list marker are not found.
 
 use std::ops::Range;
 
@@ -206,7 +207,7 @@ fn block_at(text: &str, start: usize, end: usize, line_no: usize) -> Option<Math
         }
         let next_end = text[next..].find('\n').map_or(text.len(), |i| next + i);
         let line = &text[next..next_end];
-        if fence::step(None, line).0 == FenceRole::Delimiter {
+        if line.trim().is_empty() || fence::step(None, line).0 == FenceRole::Delimiter {
             return None;
         }
         if let Some(close) = find_double(text, next, next_end) {
@@ -359,10 +360,13 @@ mod tests {
     }
 
     #[test]
-    fn blank_lines_inside_are_allowed_and_an_empty_block_is_not() {
-        assert_eq!(blocks("$$\na\n\nb\n$$").len(), 1);
+    fn a_blank_line_ends_the_formula_and_an_empty_block_is_not_one() {
+        assert_eq!(blocks("$$\na\nb\n$$").len(), 1);
+        assert!(blocks("$$\na\n\nb\n$$").is_empty());
+        assert!(blocks("$$\na\n  \t\nb\n$$").is_empty());
         assert!(blocks("$$\n$$").is_empty());
-        assert!(blocks("$$\n\n$$").is_empty());
+        // The unclosed opener does not hide a block that follows it.
+        assert_eq!(blocks("$$\na\n\n$$\nb\n$$").len(), 1);
     }
 
     #[test]
