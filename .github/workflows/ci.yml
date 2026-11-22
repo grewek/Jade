@@ -1,0 +1,44 @@
+name: CI
+
+# Scope: only crates that build without GPUI's system libraries (jade-core,
+# jade-debug-protocol, jade-debug-cli). jade-app and its headless UI tests
+# are deliberately not covered yet.
+
+on:
+  pull_request:
+    branches: [develop, main, "release/**", "hotfix/**"]
+  push:
+    branches: [develop, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml selects nightly + rustfmt/clippy; rustup installs
+      # it on first use.
+      - run: cargo fmt --all --check
+
+  clippy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      # Library targets only: tests and benches still carry unwrap/too_many_lines
+      # warnings, and jade-debug-cli has one over-long function.
+      - run: cargo clippy -p jade-core -p jade-debug-protocol --lib -- -D warnings
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -p jade-core -p jade-debug-protocol -p jade-debug-cli -- --test-threads=1
