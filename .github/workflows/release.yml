@@ -1,0 +1,94 @@
+name: Release
+
+# Builds the Linux binary on GitHub (not on a developer machine) and attaches
+# it to the GitHub release for a `v*` tag. `workflow_dispatch` rebuilds an
+# existing tag and replaces its assets. A pull request touching this file runs
+# the build only, so the workflow can be tested without tagging.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to rebuild, e.g. v0.2.0"
+        required: true
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  build:
+    # An older glibc than `ubuntu-latest`, so the binary runs on more systems.
+    runs-on: ubuntu-22.04
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Check the tag name
+        if: github.event_name != 'pull_request'
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "bad tag: $TAG"; exit 1; }
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libvulkan-dev
+      - uses: Swatinem/rust-cache@v2
+      # Default features only: the debug-socket feature must never ship.
+      - run: cargo build --release --locked -p jade-app
+      - name: The binary has no debug socket
+        run: "! strings target/release/jade-app | grep -q JADE_DEBUG_SOCKET"
+      - name: Package
+        run: |
+          if [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then version="${TAG#v}"; else version=dev; fi
+          name="jade-${version}-linux-x86_64"
+          mkdir -p "dist/$name"
+          cp target/release/jade-app packaging/jade.desktop packaging/jade.png README.md CHANGELOG.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+          rm -r "dist/$name"
+          ls -la dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: jade-linux-x86_64
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: jade-linux-x86_64
+          path: dist
+      - name: Publish
+        run: |
+          version="${TAG#v}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # Replaces assets built elsewhere; the notes stay as written.
+            gh release upload "$TAG" dist/* --clobber
+          else
+            awk -v v="[$version]" '/^## /{p = index($0, v) > 0; next} p' CHANGELOG.md > notes.md
+            printf '\n## Download\n`jade-%s-linux-x86_64.tar.gz` holds the `jade-app` binary, desktop entry and icon; verify it with the `.sha256` file. Built on GitHub Actions (Ubuntu 22.04) without the `debug-socket` feature. Linux x86_64 only.\n' "$version" >> notes.md
+            gh release create "$TAG" dist/* --verify-tag --title "Jade $version" --notes-file notes.md
+          fi
