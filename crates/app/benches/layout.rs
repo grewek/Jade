@@ -43,6 +43,23 @@ fn with_image_blocks(text: &str) -> String {
     out
 }
 
+/// A note made only of float blocks, alternating sides, each followed by a
+/// few paragraphs that wrap around it, so the whole viewport is float layout.
+fn float_heavy_note() -> String {
+    let words = "the quick brown fox jumps over the lazy dog while a float holds its place ";
+    let mut out = String::new();
+    for i in 0..1500 {
+        let side = if i % 2 == 0 { "right" } else { "left" };
+        out.push_str(&format!("::: float {side} 35%\n\n"));
+        out.push_str(&format!("**Float {i}**\n\n{}\n\n:::\n\n", words.repeat(3)));
+        for _ in 0..3 {
+            out.push_str(&words.repeat(6));
+            out.push_str("\n\n");
+        }
+    }
+    out
+}
+
 fn bench_open_note(c: &mut Criterion, name: &str, text: &str) {
     let mut group = c.benchmark_group("open_note");
     group.sample_size(10);
@@ -191,6 +208,9 @@ fn bench_layout(c: &mut Criterion) {
     bench_justified(c, "typical", typical);
     bench_justified(c, "stress", &stress);
     bench_table_typing(c, &with_trailing_table(typical));
+    let floats = float_heavy_note();
+    bench_open_note(c, "floats", &floats);
+    bench_steady_state(c, "floats", &floats);
 }
 
 criterion_group!(benches, bench_layout);

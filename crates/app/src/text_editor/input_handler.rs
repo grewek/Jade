@@ -2,11 +2,9 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
-use super::document_cache::TextEdit;
-use super::element::{
-    LineState, analyze_line_layout, caret_in_column, indent_px, justify, shape_display_line,
-    visible_line_range,
-};
+use super::doc::TextEdit;
+use super::element::{analyze_line_layout, caret_rect};
+use super::rows::Inputs;
 use super::{Editor, EditorBuffer};
 
 /// The byte offset in `text` after `utf16_offset` UTF-16 code units.
@@ -180,77 +178,33 @@ impl EntityInputHandler for Editor {
         // Viewport-bounded like `paint_lines`: the IME target is near the
         // cursor, which is already scrolled into view.
         let layout = analyze_line_layout(
-            text,
             &self.document_cache,
             &self.row_height_cache,
-            cursor,
-            focused,
-            element_bounds.size.width,
+            &Inputs {
+                text,
+                cursor,
+                focused,
+                width: element_bounds.size.width,
+                font: &font,
+                font_size,
+                text_color,
+            },
             line_height,
-            &font,
-            font_size,
-            text_color,
             window,
         );
         // Reuses the incrementally maintained classification cache instead
         // of reclassifying the document.
         let cache_ref = self.document_cache.borrow();
         let viewport = self.scroll_handle.bounds();
-        let range = visible_line_range(&layout, element_bounds, viewport);
-        if range.is_empty() {
-            return None;
-        }
-
-        if let Some(found) = caret_in_column(
+        caret_rect(
             text,
             &cache_ref,
             &layout,
             (byte_offset, cursor, focused),
-            (&font, font_size, line_height),
-            (text_color.into(), element_bounds),
+            (&font, font_size, text_color, line_height),
+            (element_bounds, viewport),
             window,
-        ) {
-            return Some(found);
-        }
-
-        let mut y_offset = layout.cumulative_at(range.start);
-        for i in range {
-            let line_range = layout.line_range(i);
-            let line_text = &text[line_range.clone()];
-            let state = LineState::of(&cache_ref, i, cursor, focused);
-            let results = shape_display_line(
-                line_text,
-                &state,
-                &font,
-                font_size,
-                text_color,
-                element_bounds.size.width,
-                window,
-            );
-            // More than one entry only for a table row whose cells wrapped.
-            for (wrapped, display_line) in &results {
-                let height = wrapped.size(line_height).height;
-                if byte_offset <= line_range.end {
-                    let display_offset =
-                        display_line.display_offset_for_raw(byte_offset - line_range.start);
-                    let pos = justify::position_for_index(
-                        (&state, wrapped, display_line),
-                        results.len(),
-                        display_offset,
-                        line_height,
-                    )
-                    .unwrap_or(point(px(0.), px(0.)));
-                    let x = pos.x + indent_px(display_line.indent.level());
-                    let origin = element_bounds.origin + point(x, y_offset + pos.y);
-                    return Some(Bounds {
-                        origin,
-                        size: size(px(1.), line_height),
-                    });
-                }
-                y_offset += height;
-            }
-        }
-        None
+        )
     }
 
     fn character_index_for_point(

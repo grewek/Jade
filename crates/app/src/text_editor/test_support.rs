@@ -1,7 +1,7 @@
 //! Helpers the editor's randomized tests share: a seeded generator and edits
 //! built the way the real mutation sites build them.
 
-use super::document_cache::TextEdit;
+use super::doc::TextEdit;
 
 /// xorshift64: deterministic, so a failing seed reproduces.
 pub(super) struct Rng(u64);
