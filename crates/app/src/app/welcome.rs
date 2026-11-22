@@ -2,6 +2,10 @@
 
 #[allow(unused_imports)]
 use super::*;
+use std::rc::Rc;
+
+/// Validates and saves the typed path; true when the dialog may close.
+type Commit = Rc<dyn Fn(&mut Window, &mut App) -> bool>;
 
 impl JadeApp {
     /// Cannot be dismissed: without a vault there is nothing to show, and the
@@ -17,17 +21,18 @@ impl JadeApp {
             .unwrap_or_default();
         let input = cx.new(|cx| InputState::new(window, cx).default_value(suggestion));
         let problem: Entity<Option<SharedString>> = cx.new(|_| None);
+        // Built once: the dialog's builder below runs every render, so it only
+        // clones this `Rc`, never the config path or the handles inside.
+        let commit: Commit = {
+            let (input, problem) = (input.clone(), problem.clone());
+            Rc::new(move |window, cx| {
+                Self::commit_vault(&input, &problem, &app, config_dirs.as_ref(), window, cx)
+            })
+        };
         window.open_dialog(cx, move |dialog, _window, cx| {
             let muted = ThemeEngine::color(cx, Role::TextMuted);
             let error = ThemeEngine::color(cx, Role::Error);
             let message = problem.read(cx).clone();
-            let commit = {
-                let (input, problem, app) = (input.clone(), problem.clone(), app.clone());
-                let config_dirs = config_dirs.clone();
-                move |window: &mut Window, cx: &mut App| {
-                    Self::commit_vault(&input, &problem, &app, config_dirs.as_ref(), window, cx)
-                }
-            };
             dialog
                 .title("Welcome to Jade")
                 .close_button(false)
@@ -57,16 +62,19 @@ impl JadeApp {
                 )
                 // Enter confirms through `on_ok`; see the rename dialog.
                 .on_ok({
-                    let commit = commit.clone();
+                    let commit = Rc::clone(&commit);
                     move |_, window, cx| commit(window, cx)
                 })
                 .footer(
                     DialogFooter::new().child(
                         Button::new("confirm-vault")
                             .label("OK")
-                            .on_click(move |_, window, cx| {
-                                if commit(window, cx) {
-                                    window.close_dialog(cx);
+                            .on_click({
+                                let commit = Rc::clone(&commit);
+                                move |_, window, cx| {
+                                    if commit(window, cx) {
+                                        window.close_dialog(cx);
+                                    }
                                 }
                             })
                             .debug_name("confirm-vault"),

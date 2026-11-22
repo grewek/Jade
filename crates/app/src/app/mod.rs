@@ -447,13 +447,13 @@ pub fn run() {
                 ..WindowOptions::default()
             };
             let vault_path = crate::vault_path::resolve(
-                cli_vault.clone(),
+                cli_vault,
                 crate::theme::configured_vault(config_dirs.as_ref()),
             );
             let first_start = vault_path.is_none();
             let (window_handle, app) =
-                gpui_kit::open_window(options, cx, move |window, cx| match &vault_path {
-                    Some(path) => cx.new(|cx| JadeApp::new(path.clone(), window, cx)),
+                gpui_kit::open_window(options, cx, move |window, cx| match vault_path {
+                    Some(path) => cx.new(|cx| JadeApp::new(path, window, cx)),
                     None => cx.new(|cx| JadeApp::new_unconfigured(window, cx)),
                 })
                 .expect("failed to open window");
