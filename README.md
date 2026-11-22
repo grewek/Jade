@@ -1,7 +1,3 @@
-<p align="center">
-  <img src="assets/jade.png" alt="Jade logo" width="320">
-</p>
-
 # Jade
 
 Jade is an Obsidian-like note-taking app written in Rust. Notes are plain Markdown files in a vault on disk, with wikilinks and backlinks between them.
