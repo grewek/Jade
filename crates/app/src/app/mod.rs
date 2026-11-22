@@ -25,6 +25,7 @@ mod notes;
 mod search;
 mod sidebar;
 mod tabs;
+mod welcome;
 
 pub(crate) use sidebar::SidebarSide;
 #[allow(unused_imports)]
@@ -110,6 +111,15 @@ pub(crate) struct JadeApp {
     pub(crate) search: Search,
 }
 
+/// The vault at `path`; when it cannot be read, an empty one at that path and
+/// the reason, which the main pane shows.
+fn load_vault(path: PathBuf) -> (Vault, Option<String>) {
+    match Vault::open(&path) {
+        Ok(vault) => (vault, None),
+        Err(err) => (Vault::empty(path), Some(err.to_string())),
+    }
+}
+
 /// The direct parent folder id of a note/folder id, or `None` at the vault root.
 fn parent_of(id: &str) -> Option<&str> {
     id.rsplit_once('/').map(|(parent, _)| parent)
@@ -117,12 +127,38 @@ fn parent_of(id: &str) -> Option<&str> {
 
 impl JadeApp {
     pub(crate) fn new(vault_path: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let sidebar_focus = cx.focus_handle();
+        let (vault, error) = load_vault(vault_path);
+        Self::with_vault(vault, error, window, cx)
+    }
 
-        let (vault, error) = match Vault::open(&vault_path) {
-            Ok(vault) => (vault, None),
-            Err(err) => (Vault::empty(vault_path), Some(err.to_string())),
-        };
+    /// First start: no vault yet. The welcome dialog fills it in through
+    /// [`Self::open_vault`]; until then nothing can write, because the empty
+    /// vault's root is the empty path and the dialog blocks the UI.
+    pub(crate) fn new_unconfigured(window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::with_vault(Vault::empty(PathBuf::new()), None, window, cx)
+    }
+
+    /// Switches to the vault at `path`. Only called while no note is open
+    /// (first start), so there are no tabs or pending saves to carry over.
+    pub(crate) fn open_vault(&mut self, path: PathBuf, cx: &mut Context<Self>) {
+        assert!(
+            self.tabs.active_index().is_none(),
+            "open_vault needs no open notes"
+        );
+        (self.vault, self.error) = load_vault(path);
+        self.collapsed_folders.clear();
+        self.content_generation += 1;
+        self.search.mark_stale();
+        cx.notify();
+    }
+
+    fn with_vault(
+        vault: Vault,
+        error: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let sidebar_focus = cx.focus_handle();
 
         Self {
             vault,
@@ -374,10 +410,7 @@ impl Render for JadeApp {
 /// Opens the window and runs the app until it is closed; the `jade-app` binary
 /// is just this call.
 pub fn run() {
-    let vault_path = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("vault"));
+    let cli_vault = std::env::args().nth(1).map(PathBuf::from);
 
     debug_server::start_if_enabled();
 
@@ -393,7 +426,7 @@ pub fn run() {
             let config_dirs = ConfigDirs::from_environment();
             let mut notices = ThemeEngine::install(config_dirs.clone(), cx);
             crate::text_editor::TextSettings::install(config_dirs.as_ref(), cx);
-            if let Some(dirs) = config_dirs {
+            if let Some(dirs) = config_dirs.clone() {
                 notices.extend(crate::theme::watch(dirs, cx));
             }
             for notice in notices {
@@ -413,10 +446,25 @@ pub fn run() {
                 app_id: Some(APP_ID.to_owned()),
                 ..WindowOptions::default()
             };
-            let (_, app) = gpui_kit::open_window(options, cx, move |window, cx| {
-                cx.new(|cx| JadeApp::new(vault_path.clone(), window, cx))
-            })
-            .expect("failed to open window");
+            let vault_path = crate::vault_path::resolve(
+                cli_vault,
+                crate::theme::configured_vault(config_dirs.as_ref()),
+            );
+            let first_start = vault_path.is_none();
+            let (window_handle, app) =
+                gpui_kit::open_window(options, cx, move |window, cx| match vault_path {
+                    Some(path) => cx.new(|cx| JadeApp::new(path, window, cx)),
+                    None => cx.new(|cx| JadeApp::new_unconfigured(window, cx)),
+                })
+                .expect("failed to open window");
+            if first_start {
+                let app = app.clone();
+                cx.defer(move |cx| {
+                    _ = window_handle.update(cx, |_, window, cx| {
+                        JadeApp::open_welcome_dialog(app, config_dirs, window, cx);
+                    });
+                });
+            }
             debug_server::install(&app, cx);
         });
 }
