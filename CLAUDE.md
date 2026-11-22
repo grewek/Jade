@@ -25,6 +25,7 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 - **Work** happens on `feature/<issue#>-<slug>` cut from `develop` and ends in a PR into `develop`. Don't start a `release/*` or `hotfix/*` branch or create a tag unless asked.
 - **Release / hotfix** (when asked): `release/x.y.z` from `develop`, `hotfix/x.y.z` from `main`; each goes by PR into `main` (then tag `vX.Y.Z`) and by a second PR back into `develop`.
 - **Issues:** read the whole issue and its comments first, then do only what it asks. A `Backlog` item or a new dependency needs a comment asking the user, not a guess. Reference the issue in commits (`refs #n`); the PR targets `develop`, and its body says `Closes #n`.
+- **`CHANGELOG.md`** is edited only when preparing a release, on the `release/*` branch (newest version first, one entry per user-visible change). Never touch it in feature or hotfix work.
 - **Before opening the PR**, run what CI runs: `cargo fmt --check`, `cargo clippy`, `cargo test`, and `cargo doc --no-deps`. Opening the PR ends the task; merging is the user's call.
 
 ## Performance
