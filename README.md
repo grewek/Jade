@@ -7,6 +7,10 @@ Jade is an Obsidian-like note-taking app written in Rust. Notes are plain Markdo
 
 Jade is in early development.
 
+## Disclaimer
+
+Jade is also a learning project. It is developed entirely with AI: I take the active role of the software engineer (designing, deciding, reviewing and verifying), while the AI writes the code.
+
 ## Building
 
 Jade needs a nightly Rust toolchain, which `rust-toolchain.toml` selects automatically.
