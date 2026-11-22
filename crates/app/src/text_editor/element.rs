@@ -2456,7 +2456,7 @@ mod tests {
         assert!(run(cx, &|e, w, c| e.make_columns(w, c)));
         assert_eq!(
             text_of(cx),
-            "intro\n\n::: columns\n\nfirst block\nsecond line\n\n---\n\n:::\n\nafter"
+            "intro\n\n::: columns\n\nfirst block\nsecond line\n\n---\n\n\n\n:::\n\nafter"
         );
         assert!(editor.read_with(cx, |e, _| matches!(
             e.column_menu_state(),
@@ -2471,7 +2471,8 @@ mod tests {
         assert!(text_of(cx).contains("::: columns 60/40\n"));
         assert!(run(cx, &|e, w, c| e.add_region_column(0, w, c)));
         assert!(
-            text_of(cx).contains("::: columns\n\nfirst block\nsecond line\n\n---\n\n---\n\n:::")
+            text_of(cx)
+                .contains("::: columns\n\nfirst block\nsecond line\n\n---\n\n\n\n---\n\n\n\n:::")
         );
         assert!(run(cx, &|e, w, c| e.unwrap_region(0, w, c)));
         assert_eq!(text_of(cx), "intro\n\nfirst block\nsecond line\n\nafter");
@@ -2486,6 +2487,45 @@ mod tests {
             .unwrap();
         }
         assert_eq!(text_of(cx), text);
+    }
+
+    /// Regression for issue #10: the second column "Make columns" (and the
+    /// float menu) creates was unreachable, a click there landed in the first
+    /// column's padding. A click on it must put the caret on a line of that
+    /// column, where typing goes.
+    #[gpui_kit::test]
+    fn a_click_reaches_the_empty_column_a_menu_made(cx: &mut TestAppContext) {
+        let wrapped = crate::text_editor::columns::ops::wrapped(&["some text"]).join("\n");
+        let floated = crate::text_editor::columns::ops::floated(&["f"], &[], true).join("\n");
+        // The float is on the right, so its text is on the left.
+        for (source, x, column) in [(wrapped, 0.8, 1), (floated, 0.2, 1)] {
+            let text: &'static str = Box::leak(source.into_boxed_str());
+            let (window, editor) = open_editor(cx, text);
+            editor.update(cx, |e, _| {
+                e.document_cache
+                    .borrow_mut()
+                    .view
+                    .set_column_width(Some(800.));
+            });
+            let width = cx
+                .update_window(window, |_, window, cx| {
+                    window.render_frame(cx);
+                    window.find("editor").bounds().size.width
+                })
+                .unwrap();
+            // Level with the region's first row.
+            cx.update_window(window, |_, window, cx| {
+                window.click_at("editor", point(width * x, px(4.)), cx);
+            })
+            .unwrap();
+            let on_column = editor.read_with(cx, |e, _| {
+                let doc = e.document_cache.borrow();
+                let line = doc.line_at(e.buffer().cursor());
+                doc.side_by_side(line)
+                    .and_then(|(region, _)| region.column_of(line))
+            });
+            assert_eq!(on_column, Some(column), "in {text:?}");
+        }
     }
 
     /// A float block's menu actions: flip rewrites one marker, move swaps the

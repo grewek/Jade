@@ -58,9 +58,11 @@ pub fn float_flipped(lines: &[&str], region: &Columns, k: usize) -> Vec<String> 
 }
 
 /// `block` as a float on one side, `text` (already without markers) flowing
-/// around it.
+/// around it. With no text, the text part is one blank line, so the caret has
+/// a line to rest on there.
 pub fn floated(block: &[&str], text: &[&str], right: bool) -> Vec<String> {
     assert!(!block.is_empty());
+    let text = if text.is_empty() { &[""][..] } else { text };
     let mut out = Vec::with_capacity(block.len() + text.len() + 7);
     out.extend([aside_marker(right, columns::ASIDE_DEFAULT), String::new()]);
     out.extend(block.iter().map(|l| (*l).to_owned()));
@@ -110,7 +112,12 @@ pub fn with_added_float(lines: &[&str], region: &Columns) -> Option<Vec<String>>
     let mut out: Vec<String> = lines.iter().map(|l| (*l).to_owned()).collect();
     out.splice(
         text_separator..text_separator,
-        [float_separator(!last.right, 30), String::new()],
+        [
+            float_separator(!last.right, 30),
+            String::new(),
+            String::new(),
+            String::new(),
+        ],
     );
     Some(out)
 }
@@ -132,40 +139,44 @@ pub fn with_added_column(lines: &[&str], region: &Columns) -> Option<Vec<String>
     }
     let equal = equal_shares(region.count + 1);
     let mut out = with_ratio(lines, &equal[..=region.count]);
-    // The close marker's padding blank line already ends the last column, and
-    // the new separator is padded by it and by one more.
+    // The close marker's padding blank line already ends the last column; the
+    // new separator is padded after, then comes one blank content line (a
+    // click needs a line to put the caret on) and the padding before the
+    // close marker.
     let close = out.len() - 1;
-    out.splice(close..close, ["---".to_owned(), String::new()]);
+    out.splice(close..close, ["---", "", "", ""].map(str::to_owned));
     Some(out)
 }
 
-/// The region's columns one after another, without markers; empty columns drop.
+/// The region's columns one after another, without markers; empty (or blank-only) columns drop.
 pub fn unwrapped(lines: &[&str], region: &Columns) -> Vec<String> {
     let mut out: Vec<String> = Vec::with_capacity(lines.len());
     for k in 0..region.count {
         let range = region.column_lines(k);
-        if range.is_empty() {
+        let (a, b) = (
+            range.start - region.start_line,
+            range.end - region.start_line,
+        );
+        if lines[a..b].iter().all(|l| l.trim().is_empty()) {
             continue;
         }
         if !out.is_empty() {
             out.push(String::new());
         }
-        let (a, b) = (
-            range.start - region.start_line,
-            range.end - region.start_line,
-        );
         out.extend(lines[a..b].iter().map(|l| (*l).to_owned()));
     }
     out
 }
 
-/// `block` as the first of two columns, the second empty.
+/// `block` as the first of two columns, the second one blank line: a column
+/// with no line at all has nothing for the caret to rest on, so a click could
+/// never reach it.
 pub fn wrapped(block: &[&str]) -> Vec<String> {
     assert!(!block.is_empty());
     let mut out = Vec::with_capacity(block.len() + 6);
     out.extend(["::: columns".to_owned(), String::new()]);
     out.extend(block.iter().map(|l| (*l).to_owned()));
-    out.extend(["", "---", "", ":::"].map(str::to_owned));
+    out.extend(["", "---", "", "", "", ":::"].map(str::to_owned));
     out
 }
 
@@ -222,7 +233,7 @@ mod tests {
         let grown = scan_one(&out);
         assert_eq!(grown.count, 3);
         assert_eq!(grown.percent[..3], [33, 33, 34]);
-        assert!(grown.column_lines(2).is_empty());
+        assert_eq!(grown.column_lines(2).len(), 1);
         assert_eq!(out[2], "a");
         assert_eq!(out[6], "b");
     }
@@ -241,12 +252,26 @@ mod tests {
     }
 
     #[test]
-    fn a_wrapped_block_is_a_region_with_an_empty_second_column() {
+    fn a_wrapped_block_is_a_region_with_a_blank_second_column() {
         let out = wrapped(&["a", "b"]);
         let r = scan_one(&out);
         assert_eq!(r.count, 2);
         assert_eq!(r.column_lines(0), 2..4);
-        assert!(r.column_lines(1).is_empty());
+        assert_eq!(r.column_lines(1).len(), 1);
+    }
+
+    #[test]
+    fn a_float_with_no_text_has_a_blank_text_line() {
+        let out = floated(&["f"], &[], true);
+        let r = scan_one(&out);
+        assert_eq!(r.text_lines().count(), 1);
+    }
+
+    #[test]
+    fn a_blank_column_drops_on_unwrap() {
+        let out = wrapped(&["a"]);
+        let lines: Vec<&str> = out.iter().map(String::as_str).collect();
+        assert_eq!(unwrapped(&lines, &scan_one(&out)), ["a"]);
     }
 
     #[test]
