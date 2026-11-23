@@ -12,6 +12,11 @@ use super::{Layout, MathFont, layout, parse};
 /// formula drawn over it agree on width.
 pub const MONO_ADVANCE_EM: f32 = 0.6;
 
+/// How much larger a formula is drawn than the surrounding text. The math font
+/// is lighter and has a smaller x-height than the editor font, so at 1.0 it
+/// reads small next to the text. Reserved columns and painting both use it.
+pub const MATH_SCALE: f32 = 1.2;
+
 /// Most formulas kept; the cache is dropped whole when it grows past this.
 const MAX_ENTRIES: usize = 2048;
 
@@ -60,6 +65,8 @@ fn build(source: &str, display: bool) -> Option<Arc<Rendered>> {
         return None;
     }
     let layout = layout(font, &formula.nodes, display);
-    let columns = (layout.width / MONO_ADVANCE_EM).ceil().max(1.0) as usize;
+    let columns = (layout.width * MATH_SCALE / MONO_ADVANCE_EM)
+        .ceil()
+        .max(1.0) as usize;
     Some(Arc::new(Rendered { layout, columns }))
 }

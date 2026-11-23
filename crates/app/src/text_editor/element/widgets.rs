@@ -177,7 +177,7 @@ fn paint_math(
     // GPUI centres a row's text in the line height; the baseline follows.
     let pad = (line_height - (wrapped.ascent() + wrapped.descent())) / 2.;
     let baseline = origin + from + point(px(0.), pad + wrapped.ascent());
-    let em = paint.font_size;
+    let em = paint.font_size * math::MATH_SCALE;
     let (ink, error) = (paint.inline.text, paint.inline.broken);
     for item in &rendered.layout.items {
         match *item {
