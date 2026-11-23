@@ -175,61 +175,10 @@ impl DocumentCache {
             return minimal;
         }
 
-        let mut ws = span.start_line.saturating_sub(MAX_BLOCK_LINES);
-        if let Some((start, _)) = pre.extent {
-            ws = ws.min(start);
-        }
-        ws = ws.min(touched_roles.start);
-        // The scan needs a start outside any code fence.
-        let is_open = |s: &Self, i: usize| s.fence_states[i] != preview::fence::pack_fence(None);
-        if is_open(self, span.start_line.min(line_count - 1)) {
-            // The edit is inside what is (now) a fence: back to its start.
-            while ws > 0 && is_open(self, ws) {
-                ws -= 1;
-            }
-        }
-        while ws < span.start_line && is_open(self, ws) {
-            ws += 1;
-        }
-        // A block that began above the window and still covers its start.
-        if let Some(b) = self.math_block_at(ws) {
-            ws = b.first_line;
-        }
-
+        let ws = self.math_window_start(span, pre, touched_roles);
         // A fence opened or closed changes what is code (so not math) far below.
         let edited_end = (last_new + 1).max(touched_roles.end).min(line_count);
-        let mut we = (edited_end + MAX_BLOCK_LINES).min(line_count);
-        let (mut local, mut cut);
-        loop {
-            let from = self.line_start_byte(ws);
-            let to = self.line_end_byte(we - 1);
-            local = scan_blocks(&text[from..to]);
-            // Everything before `cut` is re-derived; blocks from `cut` on
-            // are the untouched old ones.
-            cut = edited_end.max(pre.extent.map_or(0, |(_, end)| end));
-            loop {
-                let before = cut;
-                for b in &local {
-                    if ws + b.first_line < cut {
-                        cut = cut.max(ws + b.last_line + 1);
-                    }
-                }
-                let i = self.math_blocks.partition_point(|b| b.last_line < ws);
-                for b in &self.math_blocks[i..] {
-                    if b.first_line >= cut {
-                        break;
-                    }
-                    cut = cut.max(b.last_line + 1);
-                }
-                if cut == before {
-                    break;
-                }
-            }
-            if we == line_count || cut + MAX_BLOCK_LINES <= we {
-                break;
-            }
-            we = (cut + MAX_BLOCK_LINES).min(line_count);
-        }
+        let (local, cut) = self.rescan_math(text, ws, edited_end, pre);
         let first = self.math_blocks.partition_point(|b| b.first_line < ws);
         let end = self
             .math_blocks
@@ -255,11 +204,89 @@ impl DocumentCache {
             cover(b.first_line, b.last_line);
         }
         for b in &fresh {
-            if !old.contains(b) || (b.first_line < last_new + 1 && b.last_line >= span.start_line) {
+            match old.iter().find(|o| *o == b) {
+                // Unchanged: keeps its measured height.
+                Some(same) => b.set_rows(same.rows().unwrap_or(0)),
+                None => cover(b.first_line, b.last_line),
+            }
+            if b.first_line < last_new + 1 && b.last_line >= span.start_line {
                 cover(b.first_line, b.last_line);
             }
         }
         self.math_blocks.splice(first..end, fresh);
         touched
+    }
+
+    /// The line the rescan window starts at: far enough above the edit for any
+    /// block it can change (a block closes within [`MAX_BLOCK_LINES`] lines),
+    /// outside code and not inside a block that began above it.
+    fn math_window_start(
+        &self,
+        span: &EditSpan,
+        pre: &MathPre,
+        touched_roles: &Range<usize>,
+    ) -> usize {
+        let line_count = self.line_roles.len();
+        let mut ws = span.start_line.saturating_sub(MAX_BLOCK_LINES);
+        if let Some((start, _)) = pre.extent {
+            ws = ws.min(start);
+        }
+        ws = ws.min(touched_roles.start);
+        // The scan needs a start outside any code fence.
+        let is_open = |i: usize| self.fence_states[i] != preview::fence::pack_fence(None);
+        if is_open(span.start_line.min(line_count - 1)) {
+            // The edit is inside what is (now) a fence: back to its start.
+            while ws > 0 && is_open(ws) {
+                ws -= 1;
+            }
+        }
+        while ws < span.start_line && is_open(ws) {
+            ws += 1;
+        }
+        self.math_block_at(ws).map_or(ws, |b| b.first_line)
+    }
+
+    /// Scans the window from `ws`, widened until it holds every block that
+    /// starts before the returned `cut`: the line from which the old blocks
+    /// are still right. `edited_end` is the end of the lines known changed.
+    fn rescan_math(
+        &self,
+        text: &str,
+        ws: usize,
+        edited_end: usize,
+        pre: &MathPre,
+    ) -> (Vec<jade_core::math_scan::MathBlock>, usize) {
+        let line_count = self.line_roles.len();
+        let mut we = (edited_end + MAX_BLOCK_LINES).min(line_count);
+        loop {
+            let from = self.line_start_byte(ws);
+            let to = self.line_end_byte(we - 1);
+            let local = scan_blocks(&text[from..to]);
+            // Everything before `cut` is re-derived; blocks from `cut` on
+            // are the untouched old ones.
+            let mut cut = edited_end.max(pre.extent.map_or(0, |(_, end)| end));
+            loop {
+                let before = cut;
+                for b in &local {
+                    if ws + b.first_line < cut {
+                        cut = cut.max(ws + b.last_line + 1);
+                    }
+                }
+                let i = self.math_blocks.partition_point(|b| b.last_line < ws);
+                for b in &self.math_blocks[i..] {
+                    if b.first_line >= cut {
+                        break;
+                    }
+                    cut = cut.max(b.last_line + 1);
+                }
+                if cut == before {
+                    break;
+                }
+            }
+            if we == line_count || cut + MAX_BLOCK_LINES <= we {
+                return (local, cut);
+            }
+            we = (cut + MAX_BLOCK_LINES).min(line_count);
+        }
     }
 }

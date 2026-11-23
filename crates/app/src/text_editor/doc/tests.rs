@@ -599,3 +599,18 @@ fn math_blocks_follow_edits_that_reach_them_from_a_distance() {
     assert!(cache.math_blocks().is_empty());
     assert!(!cache.in_math_block(2));
 }
+
+#[test]
+fn a_block_keeps_its_measured_rows_through_an_edit_that_does_not_touch_it() {
+    let text = "top\n\n$$\nx\n$$\n\nbottom\n";
+    let mut cache = DocumentCache::new(text);
+    cache.math_blocks()[0].set_rows(4);
+    let (new_text, edit) = apply_edit(text, 3, 3, "!");
+    cache.record_edit(&new_text, edit);
+    assert_eq!(cache.math_blocks()[0].rows(), Some(4));
+    // An edit inside it drops the measure: the row cache takes it again.
+    let (inside, edit) = apply_edit(&new_text, 9, 9, "y");
+    let patch = cache.record_edit(&inside, edit).unwrap();
+    assert_eq!(cache.math_blocks()[0].rows(), None);
+    assert!(patch.touched.contains(&2) && patch.touched.contains(&4));
+}
