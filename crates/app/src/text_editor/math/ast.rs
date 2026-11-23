@@ -227,6 +227,19 @@ pub enum Node {
     },
     /// `\displaystyle` and friends, for the siblings after it.
     Style(MathStyle),
+    /// `\tag{n}` (`starred`: `\tag*{n}`, with no parentheses): the equation's
+    /// number, shown at the right edge of a display formula.
+    Tag {
+        text: String,
+        starred: bool,
+    },
+    /// `\color{c}`: `0xRRGGBB` for the siblings after it.
+    ColorSwitch(u32),
+    /// `\textcolor{c}{body}`.
+    Color {
+        color: u32,
+        body: Box<Node>,
+    },
     /// A horizontal space in 1/18 em (TeX's mu); negative pulls back.
     Space(i16),
     /// `\\` outside an environment.

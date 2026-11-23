@@ -53,6 +53,7 @@ fn rules(l: &Layout) -> Vec<(f32, f32, f32, f32)> {
                 y,
                 width,
                 height,
+                ..
             } => Some((*x, *y, *width, *height)),
             Item::Glyph { .. } => None,
         })
@@ -441,6 +442,7 @@ fn every_construct_lays_out_finite_and_nonnegative() {
                     y,
                     width,
                     height,
+                    ..
                 } => [*x, *y, *width, *height].iter().all(|v| v.is_finite()),
             };
             assert!(all_finite, "{src:?}: {item:?}");
@@ -757,4 +759,65 @@ fn mod_and_pod_and_the_marks_that_number_an_equation() {
     }
     assert_eq!(lay("x \\label{a}", true), lay("x", true));
     assert!(lay("a \\mod n", true).width > lay("a n", true).width);
+}
+
+/// The colour of each glyph and rule, in drawing order.
+fn colors(l: &Layout) -> Vec<Option<u32>> {
+    l.items
+        .iter()
+        .map(|i| match i {
+            Item::Glyph { color, .. } | Item::Rule { color, .. } => *color,
+        })
+        .collect()
+}
+
+#[test]
+fn textcolor_colours_its_body_and_nothing_else() {
+    let l = lay("a\\textcolor{red}{b\\frac{c}{d}}e", false);
+    let c = colors(&l);
+    // a, b, c, d, the bar, e
+    assert_eq!(c.len(), 6);
+    assert_eq!(c[0], None);
+    assert!(c[1..5].iter().all(|&x| x == Some(0xff0000)), "{c:?}");
+    assert_eq!(c[5], None);
+    // Colour changes no size.
+    let plain = lay("a{b\\frac{c}{d}}e", false);
+    assert!((plain.width - l.width).abs() < 1e-4);
+}
+
+#[test]
+fn color_switches_for_the_rest_of_its_group() {
+    let l = lay("a{\\color{#0f0} b}c\\color{blue}d e", false);
+    assert_eq!(
+        colors(&l),
+        [None, Some(0x00ff00), None, Some(0x0000ff), Some(0x0000ff)]
+    );
+}
+
+#[test]
+fn an_inner_color_wins_and_an_unknown_one_is_source() {
+    let l = lay("\\textcolor{red}{a\\textcolor{#123456}{b}}", false);
+    assert_eq!(colors(&l), [Some(0xff0000), Some(0x123456)]);
+    assert!(parse("\\textcolor{nosuchcolor}{x}").has_error);
+    assert!(parse("\\color{#12}x").has_error);
+}
+
+#[test]
+fn a_tag_numbers_a_display_formula_and_changes_nothing_else() {
+    let plain = lay("x=1", true);
+    let tagged = lay("x=1\\tag{2.1}", true);
+    assert_eq!(glyphs(&plain), glyphs(&tagged));
+    assert_eq!(plain.width, tagged.width);
+    let tag = tagged.tag.expect("the number");
+    // "(2.1)": five glyphs.
+    assert_eq!(glyphs(&tag).len(), 5);
+    let starred = lay("x\\tag*{A}", true).tag.unwrap();
+    assert_eq!(glyphs(&starred).len(), 1);
+    // Inline, a tag shows nothing.
+    assert!(lay("x\\tag{1}", false).tag.is_none());
+    // The last one counts.
+    assert_eq!(
+        glyphs(&lay("x\\tag{1}\\tag{22}", true).tag.unwrap()).len(),
+        4
+    );
 }

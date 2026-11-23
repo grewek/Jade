@@ -208,13 +208,14 @@ fn paint_layout(
                 y,
                 size,
                 error: failed,
+                color,
             } => {
                 let _ = window.paint_glyph(
                     baseline + point(em * x, em * y),
                     font_id,
                     GlyphId(u32::from(id)),
                     em * size,
-                    if failed { error } else { ink },
+                    if failed { error } else { tint(color, ink) },
                 );
             }
             math::Item::Rule {
@@ -222,6 +223,7 @@ fn paint_layout(
                 y,
                 width,
                 height,
+                color,
             } => {
                 // At least a device pixel, or a thin bar can vanish.
                 let thick = (em * height).max(px(1.));
@@ -230,11 +232,19 @@ fn paint_layout(
                         origin: baseline + point(em * x, em * y),
                         size: size(em * width, thick),
                     },
-                    ink,
+                    tint(color, ink),
                 ));
             }
         }
     }
+}
+
+/// `color` (`0xRRGGBB`) from a `\color`, or the text colour.
+fn tint(color: Option<u32>, ink: Hsla) -> Hsla {
+    color.map_or(ink, |rgb| {
+        let [r, g, b] = math::channels(rgb);
+        gpui_kit::Rgba { r, g, b, a: 1.0 }.into()
+    })
 }
 
 /// Paints the display formula `body` of a `$$` block centred in `area`.
@@ -251,8 +261,18 @@ pub(super) fn paint_math_block(
     let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));
     let em = font_size * math::MATH_SCALE;
     let layout = &rendered.layout;
-    let left = ((area.size.width - em * layout.width) / 2.).max(px(0.));
+    let mut left = ((area.size.width - em * layout.width) / 2.).max(px(0.));
     let top = (area.size.height - em * (layout.ascent + layout.descent)) / 2.;
+    if let Some(tag) = &layout.tag {
+        // The number sits at the right edge, centred vertically like the
+        // formula; a formula wide enough to reach it moves left.
+        let gap = em * 0.5;
+        let tag_left = (area.size.width - em * tag.width).max(px(0.));
+        let tag_top = (area.size.height - em * (tag.ascent + tag.descent)) / 2.;
+        let tag_base = area.origin + point(tag_left, tag_top + em * tag.ascent);
+        paint_layout(tag, tag_base, (em, font_id), colors, window);
+        left = left.min((tag_left - gap - em * layout.width).max(px(0.)));
+    }
     let baseline = area.origin + point(left, top + em * layout.ascent);
     paint_layout(layout, baseline, (em, font_id), colors, window);
 }

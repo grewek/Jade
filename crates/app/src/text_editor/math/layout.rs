@@ -27,6 +27,8 @@ pub enum Item {
         size: f32,
         /// Source that did not parse or lay out, drawn in the error colour.
         error: bool,
+        /// `0xRRGGBB` from `\color`; `None` is the text colour.
+        color: Option<u32>,
     },
     /// A filled rectangle: fraction bars, root overbars. `y` is its top edge.
     Rule {
@@ -34,10 +36,18 @@ pub enum Item {
         y: f32,
         width: f32,
         height: f32,
+        color: Option<u32>,
     },
 }
 
 impl Item {
+    /// Colours the item unless an inner `\color` already did.
+    fn tinted(mut self, rgb: u32) -> Item {
+        let (Item::Glyph { color, .. } | Item::Rule { color, .. }) = &mut self;
+        color.get_or_insert(rgb);
+        self
+    }
+
     fn shifted(self, dx: f32, dy: f32) -> Item {
         match self {
             Item::Glyph {
@@ -46,23 +56,27 @@ impl Item {
                 y,
                 size,
                 error,
+                color,
             } => Item::Glyph {
                 id,
                 x: x + dx,
                 y: y + dy,
                 size,
                 error,
+                color,
             },
             Item::Rule {
                 x,
                 y,
                 width,
                 height,
+                color,
             } => Item::Rule {
                 x: x + dx,
                 y: y + dy,
                 width,
                 height,
+                color,
             },
         }
     }
@@ -77,6 +91,9 @@ pub struct Layout {
     /// Below the baseline.
     pub descent: f32,
     pub items: Vec<Item>,
+    /// A display formula's `\tag`, laid out as the number to show at the right
+    /// edge (its own origin, on its own baseline).
+    pub tag: Option<Box<Layout>>,
     /// The italic correction of a lone glyph: room a superscript or the next
     /// atom wants after it, not in `width`.
     italic: f32,
@@ -111,7 +128,14 @@ impl Layout {
             y: top,
             width,
             height,
+            color: None,
         });
+    }
+
+    /// Colours everything in the layout that has no colour of its own.
+    fn tint(&mut self, rgb: u32) {
+        let items = std::mem::take(&mut self.items);
+        self.items = items.into_iter().map(|i| i.tinted(rgb)).collect();
     }
 }
 
@@ -243,6 +267,29 @@ fn class_index(class: Class) -> usize {
 pub fn layout(font: &MathFont, nodes: &[Node], display: bool) -> Layout {
     let level = if display { Level::Display } else { Level::Text };
     let typesetter = Typesetter { font };
+    // The last `\tag` numbers a display formula; elsewhere it shows nothing.
+    let tag = nodes.iter().rev().find_map(|n| match n {
+        Node::Tag { text, starred } if display => Some((text, *starred)),
+        _ => None,
+    });
+    let mut out = layout_body(&typesetter, nodes, level);
+    out.tag = tag.map(|(text, starred)| {
+        let shown = if starred {
+            text.clone()
+        } else {
+            format!("({text})")
+        };
+        Box::new(typesetter.run(
+            &shown,
+            Some(Font::Roman),
+            Style::new(level).scale(typesetter.c()),
+            false,
+        ))
+    });
+    out
+}
+
+fn layout_body(typesetter: &Typesetter, nodes: &[Node], level: Level) -> Layout {
     // A `\\` ending the formula starts no line.
     let end = nodes.iter().rposition(|n| !matches!(n, Node::Break));
     let nodes = &nodes[..end.map_or(0, |e| e + 1)];
@@ -287,14 +334,19 @@ impl Typesetter<'_> {
     /// Atoms side by side with TeX's inter-atom spacing.
     fn list(&self, nodes: &[Node], mut style: Style, alpha: Option<Font>) -> Layout {
         let mut entries: Vec<Entry> = Vec::with_capacity(nodes.len());
+        let mut color: Option<u32> = None;
         for node in nodes {
             match node {
                 Node::Style(m) => style = Style::new(level_of(*m)),
+                Node::ColorSwitch(rgb) => color = Some(*rgb),
                 Node::Space(mu) => {
                     entries.push(Entry::Space(f32::from(*mu) / 18.0 * style.scale(self.c())))
                 }
                 other => {
-                    let (class, boxed) = self.atom(other, style, alpha);
+                    let (class, mut boxed) = self.atom(other, style, alpha);
+                    if let Some(rgb) = color {
+                        boxed.tint(rgb);
+                    }
                     entries.push(Entry::Atom(class, boxed));
                 }
             }
@@ -387,7 +439,13 @@ impl Typesetter<'_> {
             ),
             Node::Negated(body) => self.negated(body, style, alpha),
             Node::Env(env) => (Class::Ord, self.environment(env, style, alpha)),
+            Node::Tag { .. } => (Class::Ord, Layout::default()),
             Node::Boxed(body) => (Class::Ord, self.boxed(body, style, alpha)),
+            Node::Color { color, body } => {
+                let (class, mut laid) = self.atom(body, style, alpha);
+                laid.tint(*color);
+                (class, laid)
+            }
             Node::Phantom { kind, body } => {
                 let drawn = self.list(std::slice::from_ref(body), style, alpha);
                 (Class::Ord, phantom(drawn, *kind))
@@ -421,7 +479,9 @@ impl Typesetter<'_> {
                 y: 0.0,
                 size,
                 error,
+                color: None,
             }],
+            tag: None,
             italic: m.italic * size,
         }
     }
