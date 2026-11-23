@@ -8,13 +8,15 @@ use crate::text_editor::table;
 /// Corner radius of a table's box.
 pub(super) const TABLE_RADIUS: Pixels = px(6.);
 
+/// `trace` gets each box's extent, to check it against the lines it frames.
 pub(super) fn paint_table_boxes(
     range: &Range<usize>,
     view: &FrameView,
     doc: &DocumentCache,
     palette: &crate::theme::Palette,
-    (window, cx): (&mut Window, &mut App),
+    (window, cx, trace): (&mut Window, &mut App, Option<&mut PaintTrace>),
 ) {
+    let mut trace = trace;
     let tables = doc.tables();
     let FrameView {
         layout,
@@ -44,7 +46,14 @@ pub(super) fn paint_table_boxes(
             (font, *font_size, *text_color),
             window,
         );
-        let at = |line: usize| bounds.origin.y + layout.cumulative_at(line);
+        let at = |line: usize| layout.screen_y(bounds.origin.y, line);
+        if let Some(trace) = trace.as_deref_mut() {
+            let (top, bottom) = (at(table.start_line), at(table.end_line));
+            trace.table_band(
+                table.start_line..table.end_line,
+                (f32::from(top), f32::from(bottom)),
+            );
+        }
         let visible_rows = range.start.saturating_sub(1)..range.end;
         paint_table_box(
             table,
