@@ -188,3 +188,97 @@ fn a_block_that_does_not_parse_stays_source(cx: &mut TestAppContext) {
         assert_eq!(layout.height(line), lh, "line {line}");
     }
 }
+
+/// A formula that grows its row must already be counted when a note is first
+/// laid out: left to paint, it corrects the height one stretch at a time as
+/// the note scrolls, and the scrollbar creeps (#20).
+#[gpui_kit::test]
+fn the_cold_estimate_counts_the_rows_a_tall_formula_adds(cx: &mut TestAppContext) {
+    use crate::text_editor::doc::DocumentCache;
+    use crate::text_editor::rows::{self as rowcache, Inputs, RowCache};
+
+    let text = format!(
+        "intro\nsee {TALL} here\nplain\n> quote {TALL}\nsmall {SMALL} end\n{TALL} {TALL}\nlast"
+    );
+    let (window, _editor) = open(cx, Box::leak(String::new().into_boxed_str()));
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let style = window.text_style();
+        let font = style.font();
+        let font_size = style.font_size.to_pixels(window.rem_size());
+        let width = px(800.);
+        let doc = DocumentCache::new(&text);
+        let mut rows = RowCache::empty();
+        rowcache::rebuild_for_test(
+            &mut rows,
+            &text,
+            &doc,
+            (0, false),
+            width,
+            (&font, font_size, style.color),
+            window,
+        );
+        let inp = Inputs {
+            text: &text,
+            cursor: 0,
+            focused: false,
+            width,
+            font: &font,
+            font_size,
+            text_color: style.color,
+        };
+        for i in 0..doc.line_count() {
+            let exact = rowcache::exact_row_count(&inp, &doc, i, window) as i64;
+            assert_eq!(rowcache::count_at(&rows, i), exact, "line {i}");
+        }
+        assert!(rowcache::count_at(&rows, 1) >= 2, "the matrix line is tall");
+        assert_eq!(rowcache::count_at(&rows, 4), 1, "a small formula is not");
+    })
+    .unwrap();
+}
+
+#[gpui_kit::test]
+fn a_note_with_tall_formulas_is_painted_without_late_corrections(cx: &mut TestAppContext) {
+    let text = (0..40)
+        .map(|i| format!("line {i} {TALL} end"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let (window, editor) = open(cx, Box::leak(text.into_boxed_str()));
+    // Frames after the width is known: counts come from the estimate and the
+    // verified window, so painting has nothing left to fix.
+    let (layout, _) = settle(cx, window, &editor);
+    cx.update_window(window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    assert_eq!(layout.trace_state().2, 0, "late corrections");
+}
+
+/// The estimate reads the font's metrics; a shaped line must report the same
+/// or the estimate and the painted rows would round differently.
+#[gpui_kit::test]
+fn font_metrics_match_what_a_shaped_line_reports(cx: &mut TestAppContext) {
+    use crate::text_editor::layout::mono_ascent_descent;
+    use gpui_kit::TextRun;
+
+    let (window, _editor) = open(cx, "");
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let style = window.text_style();
+        let font = style.font();
+        let size = style.font_size.to_pixels(window.rem_size());
+        let run = TextRun {
+            len: 1,
+            font: font.clone(),
+            color: style.color,
+            background_color: None,
+            underline: None,
+            strikethrough: None,
+        };
+        let shaped = window
+            .text_system()
+            .shape_line("0".into(), size, &[run], None);
+        let (ascent, descent) = mono_ascent_descent(&font, size, window);
+        assert_eq!(ascent, f32::from(shaped.ascent));
+        assert_eq!(descent, f32::from(shaped.descent));
+    })
+    .unwrap();
+}

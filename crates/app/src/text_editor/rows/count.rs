@@ -11,14 +11,16 @@ use crate::text_editor::doc::{DocumentCache, MathLines};
 use crate::text_editor::element::region;
 use crate::text_editor::image::{self, Sizes as ImageSizes};
 use crate::text_editor::layout::{
-    LineState, build_display_lines, callout_at_line, char_budget, fit_with_indent, indent_px,
-    shape_display_line, tall_row_height, wrapped_row_count,
+    LineState, build_display_lines, callout_at_line, char_budget, fit_with_indent, formula_reach,
+    indent_px, mono_ascent_descent, shape_display_line, tall_row_height, tall_rows,
+    wrapped_row_count,
 };
 use crate::text_editor::math;
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
-use crate::text_editor::preview::{LineContext, line_indent};
+use crate::text_editor::preview::{DisplayLine, LineContext, line_indent};
 use crate::text_editor::table::Table;
+use jade_core::math_scan;
 
 /// The parts of a [`DocumentCache`] a row count reads, as plain slices (the
 /// cache itself holds `Rc`s, so it cannot cross to worker threads).
@@ -46,6 +48,10 @@ pub(super) struct RowParams {
     pub(super) char_width: Pixels,
     /// An image block's height is a whole number of these.
     pub(super) line_height: Pixels,
+    /// For the rows a tall formula adds: the editor font size and its
+    /// (ascent, descent) in px.
+    pub(super) font_size: Pixels,
+    pub(super) ascent_descent: (f32, f32),
 }
 
 /// The index of the table [`is_table_active`] would call active, found once so
@@ -112,6 +118,8 @@ fn pure_row_counts_in(
         available_width,
         char_width,
         line_height,
+        font_size,
+        ascent_descent,
     } = *rows;
     let line_count = view.roles.len();
     let mut counts = Vec::with_capacity(range.len());
@@ -126,7 +134,13 @@ fn pure_row_counts_in(
     let mut next_region = view.columns.partition_point(|r| r.end_line <= range.start);
     let mut next_math = view.math.partition_point(|b| b.last_line < range.start);
     let mut table_state: Option<(usize, Option<Vec<usize>>)> = None;
+    let dollar_lines = lines_with_dollar(text, view.starts, &range);
+    let mut next_dollar = 0;
     for i in range {
+        while dollar_lines.get(next_dollar).is_some_and(|&l| l < i) {
+            next_dollar += 1;
+        }
+        let has_dollar = dollar_lines.get(next_dollar) == Some(&i);
         // A side-by-side region is one block: its first line holds the height
         // of its tallest column (which needs shaping, so it goes to `shaped`)
         // and the rest have no rows.
@@ -189,7 +203,7 @@ fn pure_row_counts_in(
                 i,
                 (char_width, line_height),
                 available_width,
-                one_level_fit,
+                (one_level_fit, has_dollar, font_size, ascent_descent),
             ),
             Some(table) => {
                 let is_header = callout_at_line(view.callouts, i).is_some_and(|c| c.is_header(i));
@@ -225,6 +239,21 @@ fn pure_row_counts_in(
     (counts, shaped)
 }
 
+/// The lines in `range` that hold a `$`, found in one pass over their bytes: a
+/// check on every line cost more than the rest of the estimate on a big note.
+fn lines_with_dollar(text: &str, starts: &[usize], range: &std::ops::Range<usize>) -> Vec<usize> {
+    let (base, end) = (starts[range.start], starts[range.end].min(text.len()));
+    let hay = &text[base..end];
+    let mut lines = Vec::new();
+    let mut at = 0;
+    while let Some(found) = hay[at..].find('$') {
+        let line = starts.partition_point(|&s| s <= base + at + found) - 1;
+        lines.push(line);
+        at = starts[line + 1].min(end) - base;
+    }
+    lines
+}
+
 /// A cheap, allocation-free over-estimate of `line`'s (line `i`'s) row count
 /// — the cold-`rebuild` fast path for an *ordinary* line; the caller must
 /// not pass a table row or delimiter, which get the exact computation
@@ -254,7 +283,7 @@ fn estimate_row_count(
     i: usize,
     (char_width, line_height): (Pixels, Pixels),
     available_width: Pixels,
-    one_level_fit: usize,
+    (one_level_fit, has_dollar, font_size, text): (usize, bool, Pixels, (f32, f32)),
 ) -> usize {
     // A block's height does not depend on the width or the line's length, and is
     // more than the one row the fast path below would give it.
@@ -273,6 +302,7 @@ fn estimate_row_count(
     if matches!(doc.contexts[i], LineContext::Plain)
         && !matches!(doc.roles[i], LineRole::FenceContent)
         && line.as_bytes().first() != Some(&b'>')
+        && !has_dollar
         && line.len() <= one_level_fit
     {
         return 1;
@@ -287,7 +317,41 @@ fn estimate_row_count(
         }
     };
     let wrap_width = Some((available_width - indent_px(indent_level)).max(px(1.)));
+    // A formula is a few blank columns that may be taller than a row (#20): the
+    // rows are counted on what is left of the text, each as many as it needs.
+    if has_dollar
+        && matches!(doc.roles[i], LineRole::Plain)
+        && let Some((reach, chars)) = inline_math_extent(line)
+    {
+        let per_row = tall_rows(reach, (font_size, line_height), text);
+        return rows_for_chars(chars, wrap_width, char_width) * per_row;
+    }
     wrapped_row_count(line, wrap_width, char_width).max(1)
+}
+
+/// How far the drawn inline formulas of `line` reach above and below the
+/// baseline (em), and how many display characters the line has with each
+/// formula as its blank columns; `None` when it draws none.
+fn inline_math_extent(line: &str) -> Option<((f32, f32), usize)> {
+    let (mut reach, mut chars, mut last) = ((0.0f32, 0.0f32), 0, 0);
+    math_scan::scan_inline(line, 0, line.len(), |found| {
+        if let Some(drawn) = math::rendered_span(&line[found.span.clone()]) {
+            reach.0 = reach.0.max(drawn.layout.ascent);
+            reach.1 = reach.1.max(drawn.layout.descent);
+            chars += line[last..found.span.start].chars().count() + drawn.columns;
+            last = found.span.end;
+        }
+    });
+    (last > 0).then(|| (reach, chars + line[last..].chars().count()))
+}
+
+/// [`wrapped_row_count`] for text of `chars` characters.
+fn rows_for_chars(chars: usize, wrap_width: Option<Pixels>, char_width: Pixels) -> usize {
+    let Some(wrap_width) = wrap_width.filter(|_| char_width > px(0.)) else {
+        return 1;
+    };
+    let per_row = ((wrap_width / char_width) as usize).max(1);
+    chars.max(1).div_ceil(per_row)
 }
 
 /// The line whose row count line `i` is part of: the first line of its
@@ -315,7 +379,7 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
                 .column_lines(k)
                 .map(|line| {
                     let state = LineState::in_column(env.doc, line, env.cursor, env.focused);
-                    state_row_count(env, line, &state, width, window)
+                    state_row_count(env, line, (&state, width, false), window)
                 })
                 .sum();
             height = height.max(rows);
@@ -324,7 +388,7 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
     }
     measure_math_block(env, i, window.line_height());
     let state = LineState::of(env.doc, i, env.cursor, env.focused);
-    state_row_count(env, i, &state, env.width, window)
+    state_row_count(env, i, (&state, env.width, true), window)
 }
 
 /// If line `i` opens a `$$` block, sets how many rows its formula takes (none
@@ -359,7 +423,7 @@ fn aside_row_estimate(
         lines
             .map(|line| {
                 let state = LineState::in_column(env.doc, line, env.cursor, env.focused);
-                state_row_count(env, line, &state, width, window)
+                state_row_count(env, line, (&state, width, false), window)
             })
             .sum::<usize>()
     };
@@ -402,12 +466,13 @@ pub(super) fn patched_row_count(env: &Env, i: usize, window: &mut Window) -> usi
     row_count_for_line(env, i, window)
 }
 
-/// Line `i`'s rows when shown as `state` says, wrapped at `width`.
+/// Line `i`'s rows when shown as `state` says, wrapped at `width`. `grow` is
+/// whether a tall formula grows its rows: not in a column, where painting
+/// does not (#23).
 fn state_row_count(
     env: &Env,
     i: usize,
-    state: &LineState,
-    width: Pixels,
+    (state, width, grow): (&LineState, Pixels, bool),
     window: &mut Window,
 ) -> usize {
     let line_text = &env.text[env.doc.line_start_byte(i)..env.doc.line_end_byte(i)];
@@ -420,9 +485,23 @@ fn state_row_count(
         width,
         window,
     );
+    let per_row = |dl: &DisplayLine, window: &mut Window| {
+        let reach = if grow {
+            formula_reach(dl, line_text)
+        } else {
+            (0.0, 0.0)
+        };
+        if reach == (0.0, 0.0) {
+            return 1;
+        }
+        let text = mono_ascent_descent(env.font, env.font_size, window);
+        tall_rows(reach, (env.font_size, window.line_height()), text)
+    };
     display_lines
         .iter()
-        .map(|dl| wrapped_row_count(&dl.display_text, wrap_width, env.char_width))
+        .map(|dl| {
+            wrapped_row_count(&dl.display_text, wrap_width, env.char_width) * per_row(dl, window)
+        })
         .sum::<usize>()
         .max(usize::from(!state.hidden))
 }
