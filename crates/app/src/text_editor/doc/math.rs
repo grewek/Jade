@@ -178,6 +178,13 @@ impl DocumentCache {
         let ws = self.math_window_start(span, pre, touched_roles);
         // A fence opened or closed changes what is code (so not math) far below.
         let edited_end = (last_new + 1).max(touched_roles.end).min(line_count);
+        // No `$$` anywhere near, and no block lost: nothing to derive. One
+        // memchr-fast search instead of a line walk, for the common edit.
+        let reach = (edited_end + MAX_BLOCK_LINES).min(line_count);
+        let near = &text[self.line_start_byte(ws)..self.line_end_byte(reach - 1)];
+        if pre.extent.is_none() && !covered && !near.contains("$$") {
+            return minimal;
+        }
         let (local, cut) = self.rescan_math(text, ws, edited_end, pre);
         let first = self.math_blocks.partition_point(|b| b.first_line < ws);
         let end = self

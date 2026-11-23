@@ -43,6 +43,25 @@ fn with_image_blocks(text: &str) -> String {
     out
 }
 
+/// `text` with a `$$` block and a one-line display formula after every 40th
+/// blank line, so formulas are always near the viewport and the row cache and
+/// document cache hold thousands of them.
+fn with_math_blocks(text: &str) -> String {
+    let mut out = String::with_capacity(text.len() + text.len() / 40);
+    let mut blanks = 0;
+    for line in text.lines() {
+        out.push_str(line);
+        out.push('\n');
+        if line.is_empty() {
+            blanks += 1;
+            if blanks % 40 == 0 {
+                out.push_str("$$\n\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}\n\\sum_{i=1}^{n} \\frac{1}{i}\n$$\n\n$$\\frac{x}{y}$$\n\n");
+            }
+        }
+    }
+    out
+}
+
 /// A note made only of float blocks, alternating sides, each followed by a
 /// few paragraphs that wrap around it, so the whole viewport is float layout.
 fn float_heavy_note() -> String {
@@ -205,6 +224,9 @@ fn bench_layout(c: &mut Criterion) {
     bench_steady_state(c, "typical", typical);
     bench_steady_state(c, "stress", &stress);
     bench_steady_state(c, "stress_blocks", &with_image_blocks(&stress));
+    let math = with_math_blocks(&stress);
+    bench_open_note(c, "stress_math", &math);
+    bench_steady_state(c, "stress_math", &math);
     bench_justified(c, "typical", typical);
     bench_justified(c, "stress", &stress);
     bench_table_typing(c, &with_trailing_table(typical));
