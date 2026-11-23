@@ -10,6 +10,7 @@ use super::alphabet;
 use super::ast::{Accent, Class, Font, FracKind, Limits, MathStyle, Node, OpName};
 use super::font::{Consts, MathFont};
 
+mod env;
 mod marks;
 mod stretch;
 
@@ -349,6 +350,7 @@ impl Typesetter<'_> {
                 self.arrow(*right, over, under.as_deref(), style, alpha),
             ),
             Node::Negated(body) => self.negated(body, style, alpha),
+            Node::Env(env) => (Class::Ord, self.environment(env, style, alpha)),
             Node::Boxed(body) => (Class::Ord, self.boxed(body, style, alpha)),
             Node::Error(source) => (Class::Ord, self.error_run(source, style)),
             // Not laid out yet: shown as source so it is not silently lost.
@@ -867,7 +869,6 @@ fn effective_classes(entries: &[Entry]) -> Vec<Class> {
 /// What shows for a construct the layout does not handle yet.
 fn placeholder(node: &Node) -> String {
     match node {
-        Node::Env(_) => "matrix",
         Node::Break => "\\\\",
         Node::Middle(_) => "\\middle",
         _ => "?",

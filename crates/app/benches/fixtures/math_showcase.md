@@ -1,6 +1,6 @@
 # Math showcase
 
-A hand-checked note for looking at LaTeX rendering (#13): open it in Jade and compare each formula with what you expect. Sections marked **(not yet)** use constructs the layout does not draw yet; they should show an error glyph or stay source until phase 2 lands.
+A hand-checked note for looking at LaTeX rendering (#13): open it in Jade and compare each formula with what you expect. Tall formulas (matrices, fractions in a matrix) overlap the neighbouring lines until rows grow to fit them (#15).
 
 ## 1. Plain prose around inline math
 
@@ -67,15 +67,19 @@ Text inside math: $x = 5 \text{ if } y > 0$, $\text{speed} = \frac{\text{distanc
 
 Spacing: $a\,b$, $a\;b$, $a\quad b$, $a\qquad b$, $a\!b$, $a\ b$.
 
-## 7. Accents and decorations **(not yet)**
+## 7. Accents and decorations
 
 $\hat{x}$, $\bar{x}$, $\vec{v}$, $\tilde{n}$, $\dot{x}$, $\ddot{x}$, $\widehat{xyz}$, $\overline{AB}$, $\underline{x}$, $\overbrace{a + b}^{n}$, $\underbrace{a + b}_{m}$, $\overset{!}{=}$, $\xrightarrow{f}$, $\not\in$, $\boxed{x = 1}$.
 
-## 8. Environments **(not yet)**
+## 8. Environments
 
 Matrices inline: $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ and $\begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}$ and $\begin{vmatrix} a & b \\ c & d \end{vmatrix}$.
 
 Cases: $f(x) = \begin{cases} x & x \ge 0 \\ -x & x < 0 \end{cases}$
+
+Arrays, small matrices and stacked limits: $\begin{array}{c|c} a & b \\ \hline c & d \end{array}$, $\begin{smallmatrix} a & b \\ c & d \end{smallmatrix}$, $\sum_{\substack{i < n \\ j > m}} x_{ij}$, $\begin{aligned} a &= b \\ cc &= d \end{aligned}$.
+
+Wide marks: $\widehat{abcdef}$, $\widetilde{abcdef}$, $\overrightarrow{ABCDEFGH}$, $\xrightarrow[g]{abcdefgh}$, $\overbrace{a + b + c + d + e}^{n}$.
 
 Display blocks (single line):
 

@@ -573,6 +573,99 @@ fn a_very_tall_delimiter_is_assembled_from_parts() {
 }
 
 #[test]
+fn a_table_is_centred_on_the_math_axis() {
+    for src in [
+        "\\begin{matrix} a & b \\\\ c & d \\end{matrix}",
+        "\\begin{cases} a & b \\\\ c & d \\\\ e & f \\end{cases}",
+        "\\begin{array}{cc} a & b \\end{array}",
+    ] {
+        let l = lay(src, false);
+        assert_close(l.ascent - l.descent, 2.0 * font().consts.axis_height);
+    }
+}
+
+#[test]
+fn each_row_is_at_least_a_strut_tall() {
+    let two = lay("\\begin{matrix} a \\\\ b \\end{matrix}", false);
+    assert_close(two.ascent + two.descent, 2.4);
+    let tall = lay("\\begin{matrix} \\dfrac{a}{b} \\\\ c \\end{matrix}", false);
+    assert!(tall.ascent + tall.descent > 2.4);
+}
+
+#[test]
+fn matrices_are_fenced_and_a_plain_matrix_is_not() {
+    let plain = lay("\\begin{matrix} a & b \\end{matrix}", false);
+    let paren = lay("\\begin{pmatrix} a & b \\end{pmatrix}", false);
+    let (open, close) = (id('('), id(')'));
+    let count = |l: &Layout, g: u16| glyphs(l).iter().filter(|x| x.0 == g).count();
+    assert_eq!((count(&plain, open), count(&plain, close)), (0, 0));
+    assert!(paren.width > plain.width);
+    assert!(glyphs(&paren).first().unwrap().1 < glyphs(&paren).last().unwrap().1);
+}
+
+#[test]
+fn cases_has_a_brace_on_the_left_only() {
+    let cases = lay("\\begin{cases} a & b \\end{cases}", false);
+    let bare = lay("\\begin{matrix} a & b \\end{matrix}", false);
+    assert!(cases.width > bare.width);
+    let first = glyphs(&cases)[0];
+    assert!(first.1 < 0.1, "the brace comes first: {first:?}");
+}
+
+#[test]
+fn array_rules_come_from_hline_and_the_column_spec() {
+    let l = lay(
+        "\\begin{array}{c|c} a & b \\\\ \\hline c & d \\end{array}",
+        false,
+    );
+    let r = rules(&l);
+    assert_eq!(r.len(), 2, "{r:?}");
+    let (wide, tall): (Vec<(f32, f32, f32, f32)>, Vec<(f32, f32, f32, f32)>) =
+        r.iter().partition(|x| x.2 > x.3);
+    assert_eq!((wide.len(), tall.len()), (1, 1));
+    assert_close(wide[0].2, l.width);
+}
+
+#[test]
+fn columns_align_as_the_spec_says() {
+    let x_of = |src: &str, ch: char| {
+        let l = lay(src, false);
+        glyphs(&l).iter().find(|g| g.0 == id(ch)).unwrap().1
+    };
+    let (left, right, centre) = (
+        x_of("\\begin{array}{l} a \\\\ bbbb \\end{array}", '𝑎'),
+        x_of("\\begin{array}{r} a \\\\ bbbb \\end{array}", '𝑎'),
+        x_of("\\begin{array}{c} a \\\\ bbbb \\end{array}", '𝑎'),
+    );
+    assert!(left < centre && centre < right, "{left} {centre} {right}");
+}
+
+#[test]
+fn aligned_lines_its_relations_up_and_spaces_them() {
+    let l = lay("\\begin{aligned} a &= b \\\\ ccc &= d \\end{aligned}", true);
+    let eq = id('=');
+    let xs: Vec<f32> = glyphs(&l)
+        .iter()
+        .filter(|g| g.0 == eq)
+        .map(|g| g.1)
+        .collect();
+    assert_eq!(xs.len(), 2);
+    assert_close(xs[0], xs[1]);
+    let a_end = glyphs(&l)
+        .iter()
+        .find(|g| g.0 == id('𝑎'))
+        .map(|g| g.1 + adv('𝑎').0)
+        .unwrap();
+    assert!(xs[0] > a_end + 0.2, "a thick space before the relation");
+}
+
+#[test]
+fn an_empty_environment_is_empty() {
+    let l = lay("\\begin{matrix}\\end{matrix}", false);
+    assert!(l.items.is_empty());
+}
+
+#[test]
 fn an_overset_relation_still_spaces_as_a_relation() {
     let rel = lay("a\\underset{n}{\\to}b", false);
     let ord = lay("a{\\underset{n}{\\to}}b", false);
