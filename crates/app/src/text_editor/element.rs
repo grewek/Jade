@@ -23,8 +23,8 @@ use super::doc::DocumentCache;
 use super::editor::ColumnMenu;
 use super::image::{self, Cache as ImageCache, Info as ImageInfo};
 use super::layout::{
-    LineState, MathPart, TableLineKind, char_budget, indent_px, is_table_active, line_runs,
-    mono_char_width, shape_display_line, shape_entry, table_line_kind, tall_row_height,
+    LineState, MathPart, TableLineKind, char_budget, entry_heights, indent_px, is_table_active,
+    line_runs, mono_char_width, shape_display_line, shape_entry, shaped_height, table_line_kind,
 };
 use super::link_table::LinkTable;
 use super::paint_trace::{FrameInfo, PaintTrace};
@@ -239,14 +239,9 @@ pub(super) fn caret_rect(
             window,
         );
         // More than one entry only for a table row whose cells wrapped.
-        for (wrapped, display_line) in &results {
-            let line_height = tall_row_height(
-                results.len(),
-                (display_line, line_text),
-                wrapped,
-                (font_size, line_height),
-            );
-            let height = wrapped.size(line_height).height;
+        let heights = entry_heights(&results, line_text, (font_size, line_height));
+        for ((wrapped, display_line), entry) in results.iter().zip(heights) {
+            let (line_height, height) = (entry.row, entry.height);
             if offset <= line_range.end {
                 let display_offset = display_line.display_offset_for_raw(offset - line_range.start);
                 let pos = justify::position_for_index(

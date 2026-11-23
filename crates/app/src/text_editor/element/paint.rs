@@ -204,18 +204,10 @@ pub(super) fn paint_lines(
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
-        let row_height = results.first().map_or(line_height, |(wrapped, display)| {
-            tall_row_height(
-                results.len(),
-                (display, line_text),
-                wrapped,
-                (font_size, line_height),
-            )
-        });
-        let total_height: Pixels = results
-            .iter()
-            .map(|(wrapped, _)| wrapped.size(row_height).height)
-            .sum();
+        let row_height = entry_heights(&results, line_text, (font_size, line_height))
+            .next()
+            .map_or(line_height, |e| e.row);
+        let (total_height, rows) = shaped_height(&results, line_text, (font_size, line_height));
         // Upgrades a cold-rebuild estimate (see `RowCache::rebuild`)
         // to the truth using the real shaping this line's painting already
         // needed — zero extra cost, and idempotent (a no-op once this line
@@ -223,7 +215,7 @@ pub(super) fn paint_lines(
         // edit). `.round()` because `total_height` is always an exact
         // multiple of `line_height` in principle, but float division can
         // land a hair off either side of the actual integer.
-        layout.correct_row_count(i, (total_height / line_height).round() as usize);
+        layout.correct_row_count(i, rows);
         if results.is_empty() {
             continue;
         }
@@ -240,7 +232,7 @@ pub(super) fn paint_lines(
             trace.line(
                 i,
                 f32::from(anchor + y_offset),
-                (total_height / line_height).round() as usize,
+                rows,
                 f32::from(total_height),
                 tag,
                 line_text,
@@ -330,7 +322,7 @@ pub(super) struct LineSlot<'a> {
     pub(super) y_offset: Pixels,
     pub(super) total_height: Pixels,
     /// The height of one row of this line: the editor's, or a whole multiple
-    /// of it for a line holding a tall formula (see `tall_row_height`).
+    /// of it for a line holding a tall formula (see `entry_heights`).
     pub(super) row_height: Pixels,
 }
 
