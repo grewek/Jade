@@ -5,15 +5,58 @@
 //! [`MAX_BLOCK_LINES`] lines of its opener, so only blocks that start that far
 //! above the edit, or that the edit touched, can change.
 
+use std::sync::atomic::{AtomicU32, Ordering};
+
 use jade_core::math_scan::{MAX_BLOCK_LINES, scan_blocks};
 
 use super::*;
 
 /// A `$$` block: the lines from its opening `$$` to its closing one, inclusive.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub(in crate::text_editor) struct MathLines {
     pub first_line: usize,
     pub last_line: usize,
+    /// How many rows the formula is shown over, set by whoever measured it (the
+    /// row cache, which has the text and the font); `0` until then, and for a
+    /// block that does not parse, which is shown as source. Atomic so the
+    /// threaded row count can share the list.
+    rows: AtomicU32,
+}
+
+impl MathLines {
+    pub(super) fn new(first_line: usize, last_line: usize) -> Self {
+        MathLines {
+            first_line,
+            last_line,
+            rows: AtomicU32::new(0),
+        }
+    }
+
+    /// The rows the rendered block takes, or `None` when it is shown as source.
+    pub(in crate::text_editor) fn rows(&self) -> Option<usize> {
+        Some(self.rows.load(Ordering::Relaxed) as usize).filter(|&r| r > 0)
+    }
+
+    pub(in crate::text_editor) fn set_rows(&self, rows: usize) {
+        self.rows.store(rows as u32, Ordering::Relaxed);
+    }
+}
+
+impl Clone for MathLines {
+    fn clone(&self) -> Self {
+        MathLines {
+            first_line: self.first_line,
+            last_line: self.last_line,
+            rows: AtomicU32::new(self.rows.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+/// Equal when they cover the same lines: the measured height is a cache.
+impl PartialEq for MathLines {
+    fn eq(&self, other: &Self) -> bool {
+        (self.first_line, self.last_line) == (other.first_line, other.last_line)
+    }
 }
 
 /// What `patch_math` must read from the *old* layout before the line shift
@@ -25,6 +68,29 @@ pub(super) struct MathPre {
 }
 
 impl DocumentCache {
+    /// The LaTeX between the delimiters of `block`.
+    pub(in crate::text_editor) fn math_body<'t>(
+        &self,
+        text: &'t str,
+        block: &MathLines,
+    ) -> &'t str {
+        let from = self.line_start_byte(block.first_line);
+        let block_text = &text[from..self.line_end_byte(block.last_line)];
+        scan_blocks(block_text)
+            .first()
+            .map_or("", |b| &block_text[b.body.clone()])
+    }
+
+    /// Whether the caret is in `block`, which then shows its source.
+    pub(in crate::text_editor) fn math_block_active(
+        &self,
+        block: &MathLines,
+        cursor: usize,
+        focused: bool,
+    ) -> bool {
+        focused && (block.first_line..=block.last_line).contains(&self.line_at(cursor))
+    }
+
     pub(in crate::text_editor) fn math_blocks(&self) -> &[MathLines] {
         &self.math_blocks
     }
@@ -45,11 +111,11 @@ impl DocumentCache {
         if !text.contains("$$") {
             return;
         }
-        self.math_blocks
-            .extend(scan_blocks(text).into_iter().map(|b| MathLines {
-                first_line: b.first_line,
-                last_line: b.last_line,
-            }));
+        self.math_blocks.extend(
+            scan_blocks(text)
+                .into_iter()
+                .map(|b| MathLines::new(b.first_line, b.last_line)),
+        );
     }
 
     /// Drops the blocks the edit touched and shifts the later ones, saving
@@ -126,7 +192,7 @@ impl DocumentCache {
             ws += 1;
         }
         // A block that began above the window and still covers its start.
-        if let Some(b) = self.math_block_at(ws).copied() {
+        if let Some(b) = self.math_block_at(ws) {
             ws = b.first_line;
         }
 
@@ -171,10 +237,7 @@ impl DocumentCache {
             .max(first);
         let fresh: Vec<MathLines> = local
             .into_iter()
-            .map(|b| MathLines {
-                first_line: ws + b.first_line,
-                last_line: ws + b.last_line,
-            })
+            .map(|b| MathLines::new(ws + b.first_line, ws + b.last_line))
             .filter(|b| b.first_line < cut)
             .collect();
         // What to relayout: the edit, the blocks it touched (a block is laid

@@ -19,7 +19,7 @@ mod symbols;
 mod tests;
 
 pub use ast::*;
-pub use cache::{MATH_SCALE, Rendered, rendered_span, rows_to_fit};
+pub use cache::{MATH_SCALE, Rendered, block_rows, rendered, rendered_span, rows_to_fit};
 pub use font::MathFont;
 pub use layout::{Item, Layout, layout};
 pub use parse::{Formula, MAX_DEPTH, MAX_SOURCE, parse};

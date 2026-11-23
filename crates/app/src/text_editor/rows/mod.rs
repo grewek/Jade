@@ -314,6 +314,7 @@ impl RowCache {
             callouts: doc.callouts(),
             images: doc.view.images(),
             columns: doc.columns(),
+            math: doc.math_blocks(),
             raw_region: doc.view.raw_region(),
             column_width: doc.view.column_width(),
             starts: &starts,
@@ -387,11 +388,17 @@ impl RowCache {
         let mut seen = Vec::with_capacity(4);
         for line in lines.flatten() {
             let line = row_owner(doc, line);
-            if seen.contains(&line) {
+            // The caret entering or leaving a `$$` block switches all its lines
+            // between the formula and the source.
+            let span = doc
+                .math_block_at(line)
+                .map_or(line..line + 1, |b| b.first_line..b.last_line + 1);
+            if seen.contains(&span.start) {
                 continue;
             }
-            seen.push(line);
-            if line < self.line_count() {
+            seen.push(span.start);
+            let count = self.line_count();
+            for line in span.filter(|&l| l < count) {
                 let old = self.row_count(line);
                 let new = patched_row_count(env, line, window);
                 self.rows.add_at(line, new as i64 - old);

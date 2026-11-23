@@ -3,7 +3,7 @@ use std::ops::Range;
 
 use gpui_kit::*;
 
-use super::state::{LineState, TableLineKind, indent_px};
+use super::state::{LineState, MathPart, TableLineKind, indent_px};
 use crate::text_editor::colors::InlineColors;
 use crate::text_editor::image;
 use crate::text_editor::math;
@@ -217,6 +217,8 @@ pub(in crate::text_editor) fn build_display_lines(
         image::rows(line, &embed, sizes, available_width, window.line_height())
     });
     let mut display_lines: Vec<DisplayLine> = match role {
+        // The formula is drawn over `rows` empty rows.
+        LineRole::Plain if let MathPart::Head(rows) = state.math => vec![hidden_line(line); rows],
         // A block is `rows` stacked empty rows; `paint_lines` draws the box over them.
         LineRole::Plain if let Some(rows) = block_rows => vec![hidden_line(line); rows],
         LineRole::FenceContent => vec![build_display_line(line, true)],

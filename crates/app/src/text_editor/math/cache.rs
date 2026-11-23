@@ -34,6 +34,18 @@ pub fn rows_to_fit(formula: (f32, f32), text: (f32, f32), line_height: f32) -> u
     (rows.max(1.0) as usize).min(MAX_ROW_SCALE)
 }
 
+/// How many rows of `line_height` px a display block whose formula reaches
+/// `formula` = (above, below) the baseline, in em, takes when drawn at
+/// `font_size` px: its height plus half a row of air, at least one row.
+pub fn block_rows(formula: (f32, f32), font_size: f32, line_height: f32) -> usize {
+    assert!(line_height > 0.0);
+    let height = (formula.0 + formula.1) * font_size * MATH_SCALE + line_height / 2.0;
+    ((height / line_height - 1e-3).ceil().max(1.0) as usize).min(MAX_BLOCK_ROWS)
+}
+
+/// Most rows a display block may be given.
+const MAX_BLOCK_ROWS: usize = 64;
+
 /// Most formulas kept; the cache is dropped whole when it grows past this.
 const MAX_ENTRIES: usize = 2048;
 

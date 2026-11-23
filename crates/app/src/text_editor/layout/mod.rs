@@ -11,7 +11,8 @@ pub(super) use shape::{
     shape_display_line, shape_entry, tall_row_height, wrapped_row_count,
 };
 pub(super) use state::{
-    LineState, TableLineKind, callout_at_line, indent_px, is_table_active, table_line_kind,
+    LineState, MathPart, TableLineKind, callout_at_line, indent_px, is_table_active,
+    table_line_kind,
 };
 
 #[cfg(test)]

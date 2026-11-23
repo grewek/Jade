@@ -625,3 +625,16 @@ fn the_rows_chosen_really_contain_the_formula() {
         }
     }
 }
+
+#[test]
+fn a_block_takes_whole_rows_with_air_and_never_fewer_than_one() {
+    // 1em above and 0.5em below at 16px, scaled 1.2: 28.8px plus half a row.
+    assert_eq!(block_rows((1.0, 0.5), 16.0, 26.0), 2);
+    assert_eq!(block_rows((0.0, 0.0), 16.0, 26.0), 1);
+    assert_eq!(block_rows((50.0, 50.0), 16.0, 26.0), 64);
+    // It always fits: the rows are at least the formula plus the air.
+    for (a, d) in [(0.7, 0.2), (2.1, 1.4), (4.0, 3.9)] {
+        let rows = block_rows((a, d), 16.0, 26.0) as f32 * 26.0;
+        assert!(rows >= (a + d) * 16.0 * MATH_SCALE + 13.0 - 0.1);
+    }
+}

@@ -23,8 +23,8 @@ use super::doc::DocumentCache;
 use super::editor::ColumnMenu;
 use super::image::{self, Cache as ImageCache, Info as ImageInfo};
 use super::layout::{
-    LineState, TableLineKind, char_budget, indent_px, is_table_active, line_runs, mono_char_width,
-    shape_display_line, shape_entry, table_line_kind, tall_row_height,
+    LineState, MathPart, TableLineKind, char_budget, indent_px, is_table_active, line_runs,
+    mono_char_width, shape_display_line, shape_entry, table_line_kind, tall_row_height,
 };
 use super::link_table::LinkTable;
 use super::paint_trace::{FrameInfo, PaintTrace};

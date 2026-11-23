@@ -132,3 +132,59 @@ fn arrow_down_from_the_tall_line_goes_to_the_line_below(cx: &mut TestAppContext)
     let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
     assert_eq!(text[..cursor].matches('\n').count(), 2);
 }
+
+const BLOCK: &str = "intro\n$$\n\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}\n$$\nlast line";
+
+#[gpui_kit::test]
+fn a_block_is_one_tall_block_of_rows_over_its_first_line(cx: &mut TestAppContext) {
+    let (window, editor) = open(cx, BLOCK);
+    let (layout, lh) = settle(cx, window, &editor);
+    let rows = (layout.height(1) / lh).round();
+    assert!(rows >= 2., "the block is {rows} rows");
+    assert_eq!((layout.height(2), layout.height(3)), (px(0.), px(0.)));
+    assert_eq!((layout.height(0), layout.height(4)), (lh, lh));
+}
+
+#[gpui_kit::test]
+fn the_caret_in_a_block_shows_its_source_line_by_line(cx: &mut TestAppContext) {
+    let (window, editor) = open(cx, BLOCK);
+    let (layout, lh) = settle(cx, window, &editor);
+    // A click (which focuses the editor) puts the caret in the block.
+    let inside = layout.cumulative_at(1) + lh;
+    cx.update_window(window, |_, window, cx| {
+        window.click_at("editor", point(px(1.), inside), cx);
+    })
+    .unwrap();
+    let (layout, _) = settle(cx, window, &editor);
+    for line in 0..5 {
+        assert_eq!(layout.height(line), lh, "line {line}");
+    }
+    // Out again: it is a formula once more.
+    editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
+    let (layout, _) = settle(cx, window, &editor);
+    assert!(layout.height(1) >= lh * 2.);
+    assert_eq!(layout.height(2), px(0.));
+}
+
+#[gpui_kit::test]
+fn clicking_a_rendered_block_puts_the_caret_in_it(cx: &mut TestAppContext) {
+    let (window, editor) = open(cx, BLOCK);
+    let (layout, lh) = settle(cx, window, &editor);
+    let inside = layout.cumulative_at(1) + lh;
+    cx.update_window(window, |_, window, cx| {
+        window.click_at("editor", point(px(1.), inside), cx);
+    })
+    .unwrap();
+    let cursor = editor.read_with(cx, |editor, _| editor.buffer().cursor());
+    let line = BLOCK[..cursor].matches('\n').count();
+    assert!((1..=3).contains(&line), "caret on line {line}");
+}
+
+#[gpui_kit::test]
+fn a_block_that_does_not_parse_stays_source(cx: &mut TestAppContext) {
+    let (window, editor) = open(cx, "intro\n$$\n\\frac{1\n$$\nlast line");
+    let (layout, lh) = settle(cx, window, &editor);
+    for line in 0..5 {
+        assert_eq!(layout.height(line), lh, "line {line}");
+    }
+}

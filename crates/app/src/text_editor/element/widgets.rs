@@ -187,8 +187,20 @@ fn paint_math(
         from.x
     };
     let baseline = origin + point(left, from.y + pad + wrapped.ascent());
-    let (ink, error) = (paint.inline.text, paint.inline.broken);
-    for item in &rendered.layout.items {
+    let colors = (paint.inline.text, paint.inline.broken);
+    paint_layout(&rendered.layout, baseline, (em, font_id), colors, window);
+}
+
+/// Draws the glyphs and rules of `layout` with its baseline origin at `baseline`;
+/// `em` is the size of 1em in px. `colors` = (ink, error ink).
+fn paint_layout(
+    layout: &math::Layout,
+    baseline: Point<Pixels>,
+    (em, font_id): (Pixels, FontId),
+    (ink, error): (Hsla, Hsla),
+    window: &mut Window,
+) {
+    for item in &layout.items {
         match *item {
             math::Item::Glyph {
                 id,
@@ -223,6 +235,26 @@ fn paint_math(
             }
         }
     }
+}
+
+/// Paints the display formula `body` of a `$$` block centred in `area`.
+pub(super) fn paint_math_block(
+    body: &str,
+    area: Bounds<Pixels>,
+    font_size: Pixels,
+    colors: (Hsla, Hsla),
+    (window, _cx): (&mut Window, &mut App),
+) {
+    let Some(rendered) = math::rendered(body, true) else {
+        return;
+    };
+    let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));
+    let em = font_size * math::MATH_SCALE;
+    let layout = &rendered.layout;
+    let left = ((area.size.width - em * layout.width) / 2.).max(px(0.));
+    let top = (area.size.height - em * (layout.ascent + layout.descent)) / 2.;
+    let baseline = area.origin + point(left, top + em * layout.ascent);
+    paint_layout(layout, baseline, (em, font_id), colors, window);
 }
 
 /// Corner radius and outline width of a task checkbox.

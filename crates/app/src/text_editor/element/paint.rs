@@ -224,6 +224,7 @@ pub(super) fn paint_lines(
         }
         if let Some(trace) = trace.as_mut() {
             let tag = match (callout, table_line_kind(tables, i), line_roles[i]) {
+                _ if matches!(state.math, MathPart::Head(_)) => "math",
                 _ if image::embed(line_text, &state).is_some() => "image",
                 (Some(c), ..) if c.is_header(i) => "callout-header",
                 (Some(_), ..) => "callout",
@@ -424,6 +425,21 @@ pub(super) fn paint_line(
                 size: size(side, side),
             },
             color,
+            (window, cx),
+        );
+    }
+
+    if let (MathPart::Head(_), Some(block)) = (state.math, doc.math_block_at(i)) {
+        let area = Bounds {
+            origin: point(bounds.origin.x, bounds.origin.y + y_offset),
+            size: size(bounds.size.width, total_height),
+        };
+        let body = doc.math_body(env.text, block);
+        paint_math_block(
+            body,
+            area,
+            font_size,
+            (inline.text, inline.broken),
             (window, cx),
         );
     }
