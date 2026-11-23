@@ -28,6 +28,17 @@ pub(in crate::text_editor) fn tall_row_height(
     if entries != 1 {
         return line_height;
     }
+    let reach = formula_reach(display_line, line_text);
+    let text = (f32::from(wrapped.ascent()), f32::from(wrapped.descent()));
+    line_height * tall_rows(reach, (font_size, line_height), text) as f32
+}
+
+/// How far the drawn formulas of `display_line` reach above and below the
+/// text baseline, in em; `(0, 0)` when it draws none.
+pub(in crate::text_editor) fn formula_reach(
+    display_line: &DisplayLine,
+    line_text: &str,
+) -> (f32, f32) {
     let mut reach = (0.0f32, 0.0f32);
     for seg in display_line
         .segments
@@ -39,13 +50,37 @@ pub(in crate::text_editor) fn tall_row_height(
             reach.1 = reach.1.max(rendered.layout.descent);
         }
     }
+    reach
+}
+
+/// How many rows of `line_height` each row of a line needs for formulas
+/// reaching `reach` (em): 1 when there is none. `text` is the row font's
+/// (ascent, descent) in px.
+pub(in crate::text_editor) fn tall_rows(
+    reach: (f32, f32),
+    (font_size, line_height): (Pixels, Pixels),
+    text: (f32, f32),
+) -> usize {
     if reach == (0.0, 0.0) {
-        return line_height;
+        return 1;
     }
     let em = f32::from(font_size) * math::MATH_SCALE;
-    let text = (f32::from(wrapped.ascent()), f32::from(wrapped.descent()));
-    let rows = math::rows_to_fit((reach.0 * em, reach.1 * em), text, f32::from(line_height));
-    line_height * rows as f32
+    math::rows_to_fit((reach.0 * em, reach.1 * em), text, f32::from(line_height))
+}
+
+/// The (ascent, descent) in px of the editor font at `font_size`, as the
+/// shaped lines report them, from the font's metrics without shaping anything.
+pub(in crate::text_editor) fn mono_ascent_descent(
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> (f32, f32) {
+    let system = window.text_system();
+    let id = system.resolve_font(font);
+    (
+        f32::from(system.ascent(id, font_size)),
+        f32::from(system.descent(id, font_size)),
+    )
 }
 
 /// The `Font` to paint a [`DisplaySegment`](super::preview::DisplaySegment)'s

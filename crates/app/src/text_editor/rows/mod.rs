@@ -14,7 +14,7 @@ use gpui_kit::*;
 
 use crate::text_editor::doc::{DocumentCache, EditPatch};
 use crate::text_editor::element::region;
-use crate::text_editor::layout::mono_char_width;
+use crate::text_editor::layout::{mono_ascent_descent, mono_char_width};
 use crate::text_editor::lines::Fenwick;
 use count::{
     DocView, RowParams, active_table, patched_row_count, pure_row_counts, row_count_for_line,
@@ -263,7 +263,10 @@ impl RowCache {
                 }
                 continue;
             }
-            if width_unknown || self.row_count(i) > 1 {
+            // A formula can make a one-row estimate too small (a tall one grows
+            // its rows), so a line with a `$` is shaped too.
+            let has_dollar = inp.text[doc.line_start_byte(i)..doc.line_end_byte(i)].contains('$');
+            if width_unknown || has_dollar || self.row_count(i) > 1 {
                 corrections.push((i, shaped_row_count_for_line(&env, i, window)));
             }
         }
@@ -324,6 +327,8 @@ impl RowCache {
             available_width: inp.width,
             char_width,
             line_height: window.line_height(),
+            font_size: inp.font_size,
+            ascent_descent: mono_ascent_descent(inp.font, inp.font_size, window),
         };
         let (mut counts, shaped) = pure_row_counts(inp.text, &view, &params);
         // Lines that need the window (an active or irregular table row) are the
