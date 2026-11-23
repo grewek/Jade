@@ -358,14 +358,24 @@ pub(super) fn hit_for_position(
         text_color,
         ..
     } = view;
-    let relative_y = (position.y - bounds.origin.y).max(px(0.));
     let range = visible_line_range(layout, bounds, viewport);
     if range.is_empty() {
         return Hit::at(0);
     }
+    // Lines are measured from the first visible one, whose window y is exact
+    // (`LineLayout::screen_y`); a click above the document's top lands on line 0.
+    let anchor = layout.screen_y(bounds.origin.y, range.start);
+    let relative_y = if range.start == 0 {
+        (position.y - anchor).max(px(0.))
+    } else {
+        position.y - anchor
+    };
 
     let frame = region::HitFrame {
-        bounds,
+        bounds: Bounds {
+            origin: point(bounds.origin.x, anchor),
+            size: bounds.size,
+        },
         relative_y,
         position,
         line_height,
@@ -373,7 +383,7 @@ pub(super) fn hit_for_position(
         font_size,
         text_color,
     };
-    let mut y_offset = layout.cumulative_at(range.start);
+    let mut y_offset = px(0.);
     for i in range.clone() {
         if let Some((region, split)) = doc.side_by_side(i)
             && i == region.start_line

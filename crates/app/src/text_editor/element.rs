@@ -223,7 +223,8 @@ pub(super) fn caret_rect(
     ) {
         return Some(found);
     }
-    let mut y_offset = layout.cumulative_at(range.start);
+    let anchor = layout.screen_y(bounds.origin.y, range.start);
+    let mut y_offset = px(0.);
     for i in range {
         let line_range = layout.line_range(i);
         let line_text = &text[line_range.clone()];
@@ -257,7 +258,7 @@ pub(super) fn caret_rect(
                 .unwrap_or(point(px(0.), px(0.)));
                 let x = pos.x + indent_px(display_line.indent.level());
                 return Some(Bounds {
-                    origin: bounds.origin + point(x, y_offset + pos.y),
+                    origin: point(bounds.origin.x + x, anchor + y_offset + pos.y),
                     size: size(px(1.), line_height),
                 });
             }
@@ -354,14 +355,21 @@ pub(super) fn caret_in_column(
     window: &mut Window,
 ) -> Option<Bounds<Pixels>> {
     let (region, _) = doc.side_by_side(doc.line_at(offset))?;
-    let top = layout.cumulative_at(region.start_line);
+    // The region's top as a window y, so nothing here adds two huge numbers.
+    let at_top = Bounds {
+        origin: point(
+            bounds.origin.x,
+            layout.screen_y(bounds.origin.y, region.start_line),
+        ),
+        size: bounds.size,
+    };
     region::caret_bounds(
         text,
         doc,
         offset,
         (cursor, focused),
         metrics,
-        (colors, top, bounds),
+        (colors, px(0.), at_top),
         window,
     )
 }
