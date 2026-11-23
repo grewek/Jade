@@ -103,6 +103,19 @@ pub enum Fence {
     DoubleBar,
 }
 
+/// What of its body a `\phantom`-like command keeps.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Phantom {
+    /// Width and height, nothing drawn.
+    Both,
+    /// Width only.
+    Width,
+    /// Height only.
+    Height,
+    /// Drawn, but takes no height (`\smash`).
+    Smash,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Env {
     Matrix(Fence),
@@ -180,6 +193,13 @@ pub enum Node {
         close: Option<char>,
         body: Vec<Node>,
     },
+    /// `\big`, `\Bigl`, `\biggr`, `\Biggm`…: one delimiter of a fixed size,
+    /// `height` times the font size, spaced as `class`.
+    Sized {
+        delim: Option<char>,
+        height: f32,
+        class: Class,
+    },
     /// `\middle` inside a [`Node::Delimited`] body.
     Middle(Option<char>),
     Accent {
@@ -213,6 +233,12 @@ pub enum Node {
     Break,
     Env(Box<Environment>),
     Boxed(Box<Node>),
+    /// `\phantom`, `\hphantom`, `\vphantom`, `\smash`: the body's box without
+    /// all or part of it.
+    Phantom {
+        kind: Phantom,
+        body: Box<Node>,
+    },
     /// Source that did not parse, kept verbatim to show in the error colour
     /// (empty: a missing argument).
     Error(String),

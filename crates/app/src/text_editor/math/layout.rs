@@ -8,7 +8,7 @@ use ttf_parser::GlyphId;
 
 use super::alphabet;
 use super::ast::{
-    Accent, Class, Env, Environment, Font, FracKind, Limits, MathStyle, Node, OpName,
+    Accent, Class, Env, Environment, Font, FracKind, Limits, MathStyle, Node, OpName, Phantom,
 };
 use super::font::{Consts, MathFont};
 
@@ -367,6 +367,16 @@ impl Typesetter<'_> {
                 Class::Inner,
                 self.delimited(*open, *close, body, style, alpha),
             ),
+            Node::Sized {
+                delim,
+                height,
+                class,
+            } => {
+                let s = style.scale(self.c());
+                let shown =
+                    delim.map_or_else(Layout::default, |ch| self.delimiter(ch, height * s, s));
+                (*class, shown)
+            }
             Node::Accent { kind, body } => (Class::Ord, self.accent(*kind, body, style, alpha)),
             Node::Stack { base, over, under } => {
                 self.stack(base, over.as_deref(), under.as_deref(), style, alpha)
@@ -378,6 +388,10 @@ impl Typesetter<'_> {
             Node::Negated(body) => self.negated(body, style, alpha),
             Node::Env(env) => (Class::Ord, self.environment(env, style, alpha)),
             Node::Boxed(body) => (Class::Ord, self.boxed(body, style, alpha)),
+            Node::Phantom { kind, body } => {
+                let drawn = self.list(std::slice::from_ref(body), style, alpha);
+                (Class::Ord, phantom(drawn, *kind))
+            }
             Node::Error(source) => (Class::Ord, self.error_run(source, style)),
             // Not laid out yet: shown as source so it is not silently lost.
             other => (Class::Ord, self.error_run(&placeholder(other), style)),
@@ -838,6 +852,33 @@ impl Layout {
         out.place(self, dx, 0.0);
         out.width = width;
         out
+    }
+}
+
+/// `drawn` with some of its box taken away, as `\phantom` and friends say.
+fn phantom(drawn: Layout, kind: Phantom) -> Layout {
+    let (width, ascent, descent) = (drawn.width, drawn.ascent, drawn.descent);
+    match kind {
+        Phantom::Smash => Layout {
+            ascent: 0.0,
+            descent: 0.0,
+            ..drawn
+        },
+        Phantom::Both => Layout {
+            width,
+            ascent,
+            descent,
+            ..Layout::default()
+        },
+        Phantom::Width => Layout {
+            width,
+            ..Layout::default()
+        },
+        Phantom::Height => Layout {
+            ascent,
+            descent,
+            ..Layout::default()
+        },
     }
 }
 

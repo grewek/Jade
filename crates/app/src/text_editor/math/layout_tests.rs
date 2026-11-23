@@ -390,6 +390,12 @@ fn every_construct_lays_out_finite_and_nonnegative() {
         "{",
         "}",
         "\\frac",
+        "\\bigl",
+        "\\Bigr",
+        "\\phantom",
+        "\\smash",
+        "\\\\",
+        "\\mod",
         "\\sqrt",
         "[",
         "]",
@@ -686,4 +692,69 @@ fn a_line_break_outside_an_environment_stacks_centred_lines() {
     assert!(two.ascent + two.descent > 1.5 * (one.ascent + one.descent));
     // A break ending the formula leaves no empty line.
     assert_eq!(lay("a \\\\", true), one);
+}
+
+#[test]
+fn sized_delimiters_grow_with_their_level_and_space_as_their_side() {
+    let height = |src: &str| {
+        let l = lay(src, false);
+        l.ascent + l.descent
+    };
+    let heights: Vec<f32> = ["\\big(", "\\Big(", "\\bigg(", "\\Bigg("]
+        .into_iter()
+        .map(height)
+        .collect();
+    assert!(heights.windows(2).all(|w| w[0] < w[1]), "{heights:?}");
+    assert!(heights[0] >= 1.2 - 0.01, "{heights:?}");
+    // `\bigl`/`\bigr` space like an opener and a closer: nothing around them.
+    let plain = lay("(x)", false).width;
+    let sized = lay("\\bigl( x \\bigr)", false).width;
+    assert!(sized > plain && sized < plain + 0.6, "{sized} vs {plain}");
+    assert!(lay("\\Biggm| x", false).width > 0.0);
+}
+
+#[test]
+fn phantoms_keep_the_size_they_say_and_draw_nothing() {
+    let body = lay("\\frac{x}{yyy}", false);
+    let both = lay("\\phantom{\\frac{x}{yyy}}", false);
+    assert!(both.items.is_empty());
+    assert_eq!(
+        (both.width, both.ascent, both.descent),
+        (body.width, body.ascent, body.descent)
+    );
+    let h = lay("\\hphantom{\\frac{x}{yyy}}", false);
+    assert_eq!((h.width, h.ascent, h.descent), (body.width, 0.0, 0.0));
+    let v = lay("\\vphantom{\\frac{x}{yyy}}", false);
+    assert_eq!(
+        (v.width, v.ascent, v.descent),
+        (0.0, body.ascent, body.descent)
+    );
+    let smashed = lay("\\smash{\\frac{x}{yyy}}", false);
+    assert_eq!(smashed.items, body.items);
+    assert_eq!((smashed.ascent, smashed.descent), (0.0, 0.0));
+}
+
+#[test]
+fn a_horizontal_space_adds_its_width_in_em() {
+    let plain = lay("ab", false).width;
+    let spaced = lay("a\\hspace{1.5em}b", false).width;
+    assert!((spaced - plain - 1.5).abs() < 0.01, "{spaced} vs {plain}");
+    let points = lay("a\\hspace{10pt}b", false).width;
+    assert!((points - plain - 1.0).abs() < 0.01);
+    assert!(parse("\\hspace{3furlong}").has_error);
+}
+
+#[test]
+fn mod_and_pod_and_the_marks_that_number_an_equation() {
+    for src in [
+        "a \\mod n",
+        "a \\pod{n}",
+        "a \\newline b",
+        "x \\nonumber",
+        "x \\notag \\label{eq:1}",
+    ] {
+        assert!(!parse(src).has_error, "{src}");
+    }
+    assert_eq!(lay("x \\label{a}", true), lay("x", true));
+    assert!(lay("a \\mod n", true).width > lay("a n", true).width);
 }

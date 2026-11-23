@@ -3,7 +3,7 @@
 //! consumes a token and every recursion passes `parse_atom`, which is capped by
 //! [`MAX_DEPTH`], so hostile nesting costs time linear in the source.
 
-use super::ast::{Class, Env, Environment, FracKind, Limits, MathStyle, Node, OpName};
+use super::ast::{Class, Env, Environment, FracKind, Limits, MathStyle, Node, OpName, Phantom};
 use super::lex::{Kind, Lexer, Token};
 use super::symbols;
 
@@ -315,6 +315,10 @@ impl<'a> Parser<'a> {
                 Node::Sqrt { index, body }
             }
             "left" => self.parse_delimited(),
+            "big" | "bigl" | "bigr" | "bigm" | "Big" | "Bigl" | "Bigr" | "Bigm" | "bigg"
+            | "biggl" | "biggr" | "biggm" | "Bigg" | "Biggl" | "Biggr" | "Biggm" => {
+                self.parse_sized(name)
+            }
             "begin" => self.parse_env(tok),
             "substack" => self.parse_substack(tok),
             "operatorname" => self.parse_operatorname(tok),
@@ -330,9 +334,30 @@ impl<'a> Parser<'a> {
                     under,
                 }
             }
-            "bmod" | "pmod" => self.parse_mod(name),
+            "bmod" | "pmod" | "mod" | "pod" => self.parse_mod(name),
             "not" => Node::Negated(Box::new(self.parse_arg())),
             "boxed" => Node::Boxed(Box::new(self.parse_arg())),
+            "phantom" | "hphantom" | "vphantom" | "smash" => Node::Phantom {
+                kind: match name {
+                    "phantom" => Phantom::Both,
+                    "hphantom" => Phantom::Width,
+                    "vphantom" => Phantom::Height,
+                    _ => Phantom::Smash,
+                },
+                body: Box::new(self.parse_arg()),
+            },
+            "hspace" => self.parse_hspace(tok),
+            "newline" => Node::Break,
+            // Numbering and labels have no place in a formula shown alone.
+            "nonumber" | "notag" => Node::Group(Vec::new()),
+            "label" => {
+                // The label's name is not content: read it and drop it.
+                match self.lex.raw_group() {
+                    Some(_) => Node::Group(Vec::new()),
+                    None => self.error_token(tok),
+                }
+            }
+
             "displaystyle" => Node::Style(MathStyle::Display),
             "textstyle" => Node::Style(MathStyle::Text),
             "scriptstyle" => Node::Style(MathStyle::Script),
@@ -427,14 +452,25 @@ impl<'a> Parser<'a> {
         }
         let body = self.parse_arg();
         let paren = |ch, class| Node::Symbol { ch, class };
-        Node::Group(vec![
-            Node::Space(18),
-            paren('(', Class::Open),
-            word(),
-            Node::Space(6),
-            body,
-            paren(')', Class::Close),
-        ])
+        match name {
+            // `\mod n`: the word and its argument, no parentheses.
+            "mod" => Node::Group(vec![Node::Space(18), word(), Node::Space(6), body]),
+            // `\pod{n}`: just the argument in parentheses.
+            "pod" => Node::Group(vec![
+                Node::Space(18),
+                paren('(', Class::Open),
+                body,
+                paren(')', Class::Close),
+            ]),
+            _ => Node::Group(vec![
+                Node::Space(18),
+                paren('(', Class::Open),
+                word(),
+                Node::Space(6),
+                body,
+                paren(')', Class::Close),
+            ]),
+        }
     }
 
     /// The `[2pt]` some write after a `\\`.
@@ -469,6 +505,54 @@ impl<'a> Parser<'a> {
             }
         };
         Node::Delimited { open, close, body }
+    }
+
+    /// After `\hspace`: `{1.5em}`, in em, ex, pt, mu, px or cm.
+    fn parse_hspace(&mut self, tok: Token<'a>) -> Node {
+        let Some((raw, _)) = self.lex.raw_group() else {
+            return self.error_token(tok);
+        };
+        let raw = raw.trim();
+        let split = raw
+            .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+            .unwrap_or(raw.len());
+        let (number, unit) = raw.split_at(split);
+        let per_em = match unit.trim() {
+            "em" => 1.0,
+            "ex" => 0.43,
+            "pt" => 0.1,
+            "px" => 0.075,
+            "cm" => 2.845,
+            "mu" => 1.0 / 18.0,
+            _ => return self.error_token(tok),
+        };
+        match number.parse::<f32>() {
+            Ok(n) => Node::Space((n * per_em * 18.0).round().clamp(-540.0, 540.0) as i16),
+            Err(_) => self.error_token(tok),
+        }
+    }
+
+    /// After `\big`, `\Bigl`, … : the delimiter, at TeX's size for the name.
+    fn parse_sized(&mut self, name: &str) -> Node {
+        let (stem, side) = name.split_at(name.len() - usize::from(name.ends_with(['l', 'r', 'm'])));
+        let height = match stem {
+            "big" => 1.2,
+            "Big" => 1.8,
+            "bigg" => 2.4,
+            _ => 3.0,
+        };
+        let class = match side {
+            "l" => Class::Open,
+            "r" => Class::Close,
+            "m" => Class::Rel,
+            _ => Class::Ord,
+        };
+        let delim = self.read_delimiter();
+        Node::Sized {
+            delim,
+            height,
+            class,
+        }
     }
 
     /// The token after `\left`, `\middle` or `\right`; `.` and a bad one are
