@@ -478,6 +478,12 @@ pub(super) fn hit_in_line(
     }
     let mut y = y_offset;
     for (wrapped, display_line) in results {
+        let line_height = tall_row_height(
+            results.len(),
+            (display_line, line_text),
+            wrapped,
+            (font_size, line_height),
+        );
         let height = wrapped.size(line_height).height;
         if relative_y < y + height {
             let relative_x =

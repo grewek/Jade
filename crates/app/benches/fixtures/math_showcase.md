@@ -1,6 +1,6 @@
 # Math showcase
 
-A hand-checked note for looking at LaTeX rendering (#13): open it in Jade and compare each formula with what you expect. Tall formulas (matrices, fractions in a matrix) overlap the neighbouring lines until rows grow to fit them (#15).
+A hand-checked note for looking at LaTeX rendering (#13): open it in Jade and compare each formula with what you expect. Lines with tall formulas (matrices, stacked limits) get taller rows; the line you are editing shows its source and shrinks back. Inside `::: columns` and `::: aside` regions rows do not grow yet, so tall formulas there overlap.
 
 ## 1. Plain prose around inline math
 

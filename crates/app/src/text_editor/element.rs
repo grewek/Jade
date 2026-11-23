@@ -24,7 +24,7 @@ use super::editor::ColumnMenu;
 use super::image::{self, Cache as ImageCache, Info as ImageInfo};
 use super::layout::{
     LineState, TableLineKind, char_budget, indent_px, is_table_active, line_runs, mono_char_width,
-    shape_display_line, shape_entry, table_line_kind,
+    shape_display_line, shape_entry, table_line_kind, tall_row_height,
 };
 use super::link_table::LinkTable;
 use super::paint_trace::{FrameInfo, PaintTrace};
@@ -220,6 +220,12 @@ pub(super) fn caret_rect(
         );
         // More than one entry only for a table row whose cells wrapped.
         for (wrapped, display_line) in &results {
+            let line_height = tall_row_height(
+                results.len(),
+                (display_line, line_text),
+                wrapped,
+                (font_size, line_height),
+            );
             let height = wrapped.size(line_height).height;
             if offset <= line_range.end {
                 let display_offset = display_line.display_offset_for_raw(offset - line_range.start);
@@ -285,7 +291,8 @@ pub(super) fn move_by_row(
         _ => caret.origin.x,
     };
     let lh = view.line_height;
-    let y = caret.origin.y + lh * 0.5 + if down { lh } else { -lh };
+    // The row below starts under the caret's own (possibly tall) row.
+    let y = caret.origin.y + lh * 0.5 + if down { caret.size.height } else { -lh };
     let (top, bottom) = (
         view.bounds.origin.y,
         view.bounds.origin.y + view.bounds.size.height,
@@ -531,6 +538,9 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
 // enabled, that glob also re-exports GPUI's `test` attribute macro, which then
 // shadows plain `#[test]` and makes `#[gpui_kit::test]`'s own expansion
 // recurse infinitely (see the project-wide note on this in `app.rs`).
+#[cfg(test)]
+mod math_rows_tests;
+
 #[cfg(test)]
 mod tests {
     use super::super::Editor;

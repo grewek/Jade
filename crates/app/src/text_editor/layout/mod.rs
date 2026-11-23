@@ -8,7 +8,7 @@ mod state;
 
 pub(super) use shape::{
     build_display_lines, char_budget, fit_with_indent, line_runs, mono_char_width,
-    shape_display_line, shape_entry, wrapped_row_count,
+    shape_display_line, shape_entry, tall_row_height, wrapped_row_count,
 };
 pub(super) use state::{
     LineState, TableLineKind, callout_at_line, indent_px, is_table_active, table_line_kind,

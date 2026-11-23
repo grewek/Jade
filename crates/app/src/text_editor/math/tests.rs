@@ -587,3 +587,41 @@ fn random_token_soup_never_panics() {
         let _ = parse(&src);
     }
 }
+
+#[test]
+fn a_formula_that_fits_the_row_needs_no_more() {
+    // 24px rows, text 16px with 4px/2px of ascent/descent: the baseline is
+    // 1px below the middle.
+    assert_eq!(rows_to_fit((10.0, 6.0), (4.0, 2.0), 24.0), 1);
+    assert_eq!(rows_to_fit((0.0, 0.0), (4.0, 2.0), 24.0), 1);
+}
+
+#[test]
+fn a_taller_formula_takes_whole_extra_rows() {
+    let rows = |above: f32, below: f32| rows_to_fit((above, below), (14.0, 6.0), 24.0);
+    assert_eq!(rows(20.0, 10.0), 2);
+    assert!(rows(60.0, 20.0) >= 4);
+    // Deep below the baseline is as much a problem as high above it.
+    assert!(rows(8.0, 40.0) >= 3);
+}
+
+#[test]
+fn row_growth_is_bounded() {
+    assert!(rows_to_fit((1e6, 1e6), (14.0, 6.0), 24.0) <= 16);
+}
+
+#[test]
+fn the_rows_chosen_really_contain_the_formula() {
+    let (asc, desc, lh) = (14.0f32, 6.0f32, 24.0f32);
+    for above in [5.0f32, 17.0, 33.0, 50.0, 90.0] {
+        for below in [2.0f32, 12.0, 30.0, 70.0] {
+            let rows = rows_to_fit((above, below), (asc, desc), lh) as f32 * lh;
+            let baseline = (rows - (asc + desc)) / 2.0 + asc;
+            assert!(baseline >= above - 1e-2, "{above}/{below}: top clipped");
+            assert!(
+                rows - baseline >= below - 1e-2,
+                "{above}/{below}: bottom clipped"
+            );
+        }
+    }
+}

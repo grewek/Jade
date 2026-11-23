@@ -199,9 +199,17 @@ pub(super) fn paint_lines(
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
+        let row_height = results.first().map_or(line_height, |(wrapped, display)| {
+            tall_row_height(
+                results.len(),
+                (display, line_text),
+                wrapped,
+                (font_size, line_height),
+            )
+        });
         let total_height: Pixels = results
             .iter()
-            .map(|(wrapped, _)| wrapped.size(line_height).height)
+            .map(|(wrapped, _)| wrapped.size(row_height).height)
             .sum();
         // Upgrades a cold-rebuild estimate (see `RowCache::rebuild`)
         // to the truth using the real shaping this line's painting already
@@ -242,6 +250,7 @@ pub(super) fn paint_lines(
             bounds,
             y_offset,
             total_height,
+            row_height,
         };
         paint_line(&env, &slot, &mut columns, window, cx);
 
@@ -314,6 +323,9 @@ pub(super) struct LineSlot<'a> {
     pub(super) bounds: Bounds<Pixels>,
     pub(super) y_offset: Pixels,
     pub(super) total_height: Pixels,
+    /// The height of one row of this line: the editor's, or a whole multiple
+    /// of it for a line holding a tall formula (see `tall_row_height`).
+    pub(super) row_height: Pixels,
 }
 
 /// Paints one shaped line (selection, text, widgets, caret, rules, images,
@@ -330,7 +342,6 @@ pub(super) fn paint_line(
         doc,
         show_cursor,
         cursor,
-        line_height,
         font,
         font_size,
         text_color,
@@ -353,6 +364,7 @@ pub(super) fn paint_line(
         bounds,
         y_offset,
         total_height,
+        row_height: line_height,
     } = *slot;
     let line_range = line_range.clone();
     let callout = state.callout;

@@ -17,6 +17,23 @@ pub const MONO_ADVANCE_EM: f32 = 0.6;
 /// reads small next to the text. Reserved columns and painting both use it.
 pub const MATH_SCALE: f32 = 1.2;
 
+/// Most normal rows a row holding a formula may be made.
+const MAX_ROW_SCALE: usize = 16;
+
+/// How many normal rows (of `line_height` px) one text row must span so a
+/// formula reaching `formula` = (above, below) the baseline stays inside it.
+/// `text` = (ascent, descent) of the row's font: GPUI centres that box in the
+/// row, so the baseline sits `(asc - desc) / 2` below the row's middle. At
+/// least 1, at most [`MAX_ROW_SCALE`].
+pub fn rows_to_fit(formula: (f32, f32), text: (f32, f32), line_height: f32) -> usize {
+    assert!(line_height > 0.0);
+    let lean = (text.0 - text.1) / 2.0;
+    let half = (formula.0 - lean).max(formula.1 + lean);
+    // The 1e-3 keeps a formula that fits exactly from rounding up to a row more.
+    let rows = (2.0 * half / line_height - 1e-3).ceil();
+    (rows.max(1.0) as usize).min(MAX_ROW_SCALE)
+}
+
 /// Most formulas kept; the cache is dropped whole when it grows past this.
 const MAX_ENTRIES: usize = 2048;
 

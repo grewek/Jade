@@ -6,12 +6,47 @@ use gpui_kit::*;
 use super::state::{LineState, TableLineKind, indent_px};
 use crate::text_editor::colors::InlineColors;
 use crate::text_editor::image;
+use crate::text_editor::math;
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
 use crate::text_editor::preview::{
     DisplayLine, InlineStyle, LineIndent, build_callout_header_line, build_display_line,
     build_display_line_in_context, hidden_line, is_thematic_break,
 };
+
+/// The height of each row of a shaped line: `line_height`, or a whole multiple
+/// of it when a drawn formula on the line reaches past one row (the formula is
+/// painted on the text baseline, which a taller row keeps centred). Whole rows
+/// keep the row counts integral. `entries` is how many shaped entries the line has.
+pub(in crate::text_editor) fn tall_row_height(
+    entries: usize,
+    (display_line, line_text): (&DisplayLine, &str),
+    wrapped: &WrappedLine,
+    (font_size, line_height): (Pixels, Pixels),
+) -> Pixels {
+    // Several entries are a wrapped table row, which never holds a drawn formula.
+    if entries != 1 {
+        return line_height;
+    }
+    let mut reach = (0.0f32, 0.0f32);
+    for seg in display_line
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+    {
+        if let Some(rendered) = line_text.get(seg.raw.clone()).and_then(math::rendered_span) {
+            reach.0 = reach.0.max(rendered.layout.ascent);
+            reach.1 = reach.1.max(rendered.layout.descent);
+        }
+    }
+    if reach == (0.0, 0.0) {
+        return line_height;
+    }
+    let em = f32::from(font_size) * math::MATH_SCALE;
+    let text = (f32::from(wrapped.ascent()), f32::from(wrapped.descent()));
+    let rows = math::rows_to_fit((reach.0 * em, reach.1 * em), text, f32::from(line_height));
+    line_height * rows as f32
+}
 
 /// The `Font` to paint a [`DisplaySegment`](super::preview::DisplaySegment)'s
 /// visible text in, derived from `base` (the editor's ambient mono font) —
