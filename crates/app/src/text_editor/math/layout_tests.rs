@@ -676,3 +676,14 @@ fn an_overset_relation_still_spaces_as_a_relation() {
         ord.width
     );
 }
+
+#[test]
+fn a_line_break_outside_an_environment_stacks_centred_lines() {
+    let one = lay("a", true);
+    let two = lay("a \\\\ bbbb", true);
+    let gathered = lay("\\begin{gathered} a \\\\ bbbb \\end{gathered}", true);
+    assert_eq!(two, gathered);
+    assert!(two.ascent + two.descent > 1.5 * (one.ascent + one.descent));
+    // A break ending the formula leaves no empty line.
+    assert_eq!(lay("a \\\\", true), one);
+}

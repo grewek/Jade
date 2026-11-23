@@ -7,7 +7,9 @@
 use ttf_parser::GlyphId;
 
 use super::alphabet;
-use super::ast::{Accent, Class, Font, FracKind, Limits, MathStyle, Node, OpName};
+use super::ast::{
+    Accent, Class, Env, Environment, Font, FracKind, Limits, MathStyle, Node, OpName,
+};
 use super::font::{Consts, MathFont};
 
 mod env;
@@ -240,7 +242,31 @@ fn class_index(class: Class) -> usize {
 /// Lays out `nodes` as a formula; `display` is the style of `$$…$$`.
 pub fn layout(font: &MathFont, nodes: &[Node], display: bool) -> Layout {
     let level = if display { Level::Display } else { Level::Text };
-    Typesetter { font }.list(nodes, Style::new(level), None)
+    let typesetter = Typesetter { font };
+    // A `\\` ending the formula starts no line.
+    let end = nodes.iter().rposition(|n| !matches!(n, Node::Break));
+    let nodes = &nodes[..end.map_or(0, |e| e + 1)];
+    if nodes.iter().any(|n| matches!(n, Node::Break)) {
+        // `\\` outside an environment: the lines are centred one above the
+        // other, as in MathJax.
+        let stacked = [Node::Env(Box::new(lines_env(nodes)))];
+        return typesetter.list(&stacked, Style::new(level), None);
+    }
+    typesetter.list(nodes, Style::new(level), None)
+}
+
+/// The `gathered` made of `nodes` cut at their `\\`s.
+fn lines_env(nodes: &[Node]) -> Environment {
+    let rows: Vec<Vec<Vec<Node>>> = nodes
+        .split(|n| matches!(n, Node::Break))
+        .map(|line| vec![line.to_vec()])
+        .collect();
+    Environment {
+        kind: Env::Gathered,
+        cols: Vec::new(),
+        rows,
+        hlines: Vec::new(),
+    }
 }
 
 struct Typesetter<'f> {
