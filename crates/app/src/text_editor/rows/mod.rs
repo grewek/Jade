@@ -230,14 +230,14 @@ impl RowCache {
         false
     }
 
-    /// Makes the counts of `lines` exact: every line of the window is shaped,
-    /// once, as it first enters the verified window. A cold rebuild seeds lines
+    /// Makes the counts of `lines` exact: every line of the window that could be
+    /// off is shaped, once, as it first enters the verified window. A cold rebuild seeds lines
     /// with an estimate that is off either way (a word wrap the monospace
     /// count misses, a tall formula), and painting only corrects line by line,
     /// *after* anything positioned from the estimates (a callout's background)
-    /// has been drawn. A one-row estimate is not safe to skip: at narrow
-    /// widths it can be one row short. `inp.width` is the width painting wraps
-    /// at.
+    /// has been drawn. A one-row estimate is skipped only when it cannot be
+    /// short (plain ASCII, no formula; see the loop). `inp.width` is the width
+    /// painting wraps at.
     pub(super) fn verify(
         &mut self,
         doc: &DocumentCache,
@@ -249,6 +249,7 @@ impl RowCache {
         if lines.start >= verified.start && lines.end <= verified.end {
             return;
         }
+        let width_unknown = self.available_width >= Pixels::MAX;
         let metrics = RowFontMetrics::measure(inp.font, inp.font_size, inp.text_color, window);
         let env = Env::new(inp, doc, metrics);
         let mut corrections = Vec::new();
@@ -270,7 +271,16 @@ impl RowCache {
                 }
                 continue;
             }
-            corrections.push((i, shaped_row_count_for_line(&env, i, window)));
+            // Not worth shaping: a line the estimate puts in a row or less that is
+            // plain ASCII with no formula. Every character is one width and
+            // markup only shrinks the text, so it fits as counted. A wide
+            // glyph or a formula can make it longer, so those are shaped.
+            let line = &inp.text[doc.line_start_byte(i)..doc.line_end_byte(i)];
+            let fits =
+                !width_unknown && self.row_count(i) <= 1 && line.is_ascii() && !line.contains('$');
+            if !fits {
+                corrections.push((i, shaped_row_count_for_line(&env, i, window)));
+            }
         }
         for (i, count) in corrections {
             self.correct(i, count);
@@ -311,7 +321,6 @@ impl RowCache {
         metrics: RowFontMetrics,
         window: &mut Window,
     ) {
-        let starts = doc.line_start_offsets();
         let view = DocView {
             roles: doc.line_roles(),
             contexts: doc.block_contexts(),
@@ -322,7 +331,7 @@ impl RowCache {
             math: doc.math_blocks(),
             raw_region: doc.view.raw_region(),
             column_width: doc.view.column_width(),
-            starts: &starts,
+            line_index: doc.line_index(),
         };
         let params = RowParams {
             active_table: active_table(doc, inp.cursor, inp.focused),
