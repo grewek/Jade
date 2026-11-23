@@ -187,6 +187,79 @@ pub fn scan_blocks(text: &str) -> Vec<MathBlock> {
     }
 }
 
+/// Which lines of a text lie inside a `$$` block, for a pass that reads prose
+/// and must leave math alone (as it leaves fenced code). Ask for lines in
+/// increasing order; each is answered in constant time.
+pub struct BlockLines {
+    blocks: Vec<MathBlock>,
+    next: usize,
+}
+
+impl BlockLines {
+    pub fn of(text: &str) -> Self {
+        // Most notes have no math: skip the line walk for them.
+        let blocks = if text.contains("$$") {
+            scan_blocks(text)
+        } else {
+            Vec::new()
+        };
+        BlockLines { blocks, next: 0 }
+    }
+
+    /// Whether zero-based `line` is one of a block's lines (its `$$` lines
+    /// included).
+    pub fn contains(&mut self, line: usize) -> bool {
+        while self
+            .blocks
+            .get(self.next)
+            .is_some_and(|b| b.last_line < line)
+        {
+            self.next += 1;
+        }
+        self.blocks
+            .get(self.next)
+            .is_some_and(|b| b.first_line <= line)
+    }
+}
+
+/// The lines of `text` that are Markdown: outside fenced code and `$$` blocks,
+/// with their zero-based numbers.
+pub fn prose_lines(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    let mut blocks = BlockLines::of(text);
+    fence::plain_lines(text).filter(move |(n, _)| !blocks.contains(*n))
+}
+
+/// Whether a plain `line` might open a `$$` block: the only lines a streaming
+/// reader needs to look ahead from.
+pub fn may_open_block(line: &str) -> bool {
+    let bytes = line.as_bytes();
+    // One comparison for the common line: this runs on every line of a note.
+    match bytes.first() {
+        Some(b'$') => bytes.starts_with(b"$$"),
+        Some(b' ' | b'\t') => {
+            let indent = bytes
+                .iter()
+                .take_while(|&&b| b == b' ' || b == b'\t')
+                .count();
+            bytes[indent..].starts_with(b"$$")
+        }
+        _ => false,
+    }
+}
+
+/// How many following lines a reader must hold to decide whether a line that
+/// [`may_open_block`] opens one.
+pub const BLOCK_LOOKAHEAD: usize = MAX_BLOCK_LINES;
+
+/// The number of lines (the opener included) of the block that opens at
+/// `lines[0]`, or `None` if it opens none. `lines` is the opener and up to
+/// [`BLOCK_LOOKAHEAD`] lines after it.
+pub fn block_len(lines: &[&str]) -> Option<usize> {
+    let text = lines.join("\n");
+    let block = scan_blocks(&text).into_iter().next()?;
+    (block.first_line == 0).then_some(block.last_line + 1)
+}
+
 /// The block whose opening `$$` is at the start of the line `text[start..end]`.
 fn block_at(text: &str, start: usize, end: usize, line_no: usize) -> Option<MathBlock> {
     let line = &text[start..end];
@@ -444,5 +517,38 @@ mod tests {
                 });
             }
         }
+    }
+
+    #[test]
+    fn prose_lines_leave_out_fences_and_math_blocks() {
+        let text = "a\n$$\nb\n$$\nc\n```\nd\n```\ne";
+        let got: Vec<_> = prose_lines(text).collect();
+        assert_eq!(got, [(0, "a"), (4, "c"), (8, "e")]);
+    }
+
+    #[test]
+    fn an_unclosed_opener_leaves_its_paragraph_as_prose() {
+        let text = "a\n$$\nb\n\nc";
+        let got: Vec<_> = prose_lines(text).map(|(n, _)| n).collect();
+        assert_eq!(got, [0, 1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn a_closing_line_belongs_to_the_block_whole() {
+        let text = "$$\nx\n$$ and [[link]]\nafter";
+        let got: Vec<_> = prose_lines(text).collect();
+        assert_eq!(got, [(3, "after")]);
+    }
+
+    #[test]
+    fn block_len_counts_the_opener_and_the_closer() {
+        assert_eq!(block_len(&["$$", "x", "$$", "tail"]), Some(3));
+        assert_eq!(block_len(&["$$", "x", "", "$$"]), None);
+        assert_eq!(block_len(&["plain", "$$"]), None);
+        assert_eq!(
+            block_len(&["$$ x $$", "y"]),
+            None,
+            "one line is inline math"
+        );
     }
 }
