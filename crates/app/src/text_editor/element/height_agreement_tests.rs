@@ -150,3 +150,79 @@ fn patching_a_few_lines_makes_them_exact(cx: &mut TestAppContext) {
         &off[..off.len().min(5)]
     );
 }
+
+/// The cold estimate only positions what is off screen, so it need not be
+/// exact, but it must stay close: a note's scrollbar and total height come
+/// from it. It counts characters, so it misses the slack greedy word wrap
+/// leaves at the end of a row: by up to a row in eight on a long paragraph.
+/// Few lines may be off at all, and none by more than that.
+#[gpui_kit::test]
+fn the_cold_estimate_stays_close_to_the_shaped_count(cx: &mut TestAppContext) {
+    let off = disagreements(cx, |_, _, _, _, _| {}, 0..usize::MAX);
+    let lines = fixture().lines().count();
+    let too_far: Vec<_> = off
+        .iter()
+        .filter(|&&(_, cached, shaped)| {
+            (cached - shaped as i64).unsigned_abs() as usize > 1 + shaped / 8
+        })
+        .collect();
+    assert!(too_far.is_empty(), "off by more than 1 + 1/8: {too_far:?}");
+    assert!(
+        off.len() * 12 <= lines,
+        "{} of {lines} lines are off",
+        off.len()
+    );
+}
+
+/// A formula inside emphasis or strikethrough is shown as written, never drawn,
+/// so it does not make its line tall; the cold estimate agrees with painting
+/// (it once counted it, doubling the line).
+#[gpui_kit::test]
+fn a_formula_inside_emphasis_does_not_make_the_estimate_tall(cx: &mut TestAppContext) {
+    let tail = " and more words here to wrap around the line a few times over and over again yes";
+    let lines: Vec<String> = [
+        "then $y^2$",
+        "then **bold $y^2$ in**",
+        "then *italic $y^2$ in*",
+        "then ~~struck $y^2$ in~~",
+        "then [[a note $y^2$]] and $y^2$",
+    ]
+    .iter()
+    .map(|l| format!("{l}{tail}"))
+    .collect();
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::theme::ThemeEngine::install(None, cx);
+    });
+    let (window, _editor) = cx.update(|cx| {
+        gpui_kit::open_window(WindowOptions::default(), cx, |_w, cx| {
+            cx.new(|cx| Editor::new("", cx))
+        })
+        .unwrap()
+    });
+    for line in lines {
+        let text = format!("{line}\n");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let font = style.font();
+            let size = style.font_size.to_pixels(window.rem_size());
+            let doc = DocumentCache::new(&text);
+            let mut cache = RowCache::empty();
+            let look = (&font, size, style.color);
+            rows::rebuild_for_test(
+                &mut cache,
+                &text,
+                &doc,
+                (0, false),
+                px(NARROW),
+                look,
+                window,
+            );
+            let shaped =
+                rows::shaped_count_for_test(&text, &doc, 0, (0, false), px(NARROW), look, window);
+            assert_eq!(rows::count_at(&cache, 0), shaped as i64, "{line}");
+        })
+        .unwrap();
+    }
+}

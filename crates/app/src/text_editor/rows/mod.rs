@@ -14,7 +14,7 @@ use gpui_kit::*;
 
 use crate::text_editor::doc::{DocumentCache, EditPatch};
 use crate::text_editor::element::region;
-use crate::text_editor::layout::{mono_ascent_descent, mono_char_width};
+use crate::text_editor::layout::RowFontMetrics;
 use crate::text_editor::lines::Fenwick;
 use count::{
     DocView, RowParams, active_table, patched_row_count, pure_row_counts, row_count_for_line,
@@ -62,21 +62,21 @@ pub(super) struct Env<'a> {
     pub cursor: usize,
     pub focused: bool,
     pub width: Pixels,
-    pub char_width: Pixels,
+    pub metrics: RowFontMetrics,
     pub font: &'a Font,
     pub font_size: Pixels,
     pub text_color: Hsla,
 }
 
 impl<'a> Env<'a> {
-    fn new(inp: &'a Inputs, doc: &'a DocumentCache, char_width: Pixels) -> Self {
+    fn new(inp: &'a Inputs, doc: &'a DocumentCache, metrics: RowFontMetrics) -> Self {
         Env {
             text: inp.text,
             doc,
             cursor: inp.cursor,
             focused: inp.focused,
             width: inp.width,
-            char_width,
+            metrics,
             font: inp.font,
             font_size: inp.font_size,
             text_color: inp.text_color,
@@ -122,9 +122,9 @@ pub(super) struct RowCache {
     editing: Option<(usize, usize)>,
     /// The width the last rebuild ran with: part of the context fingerprint.
     available_width: Pixels,
-    /// The monospace advance of the last rebuild: font and size in one
-    /// comparable value, without needing `Font: PartialEq`.
-    char_width: Pixels,
+    /// The font metrics of the last rebuild: font and size in one comparable
+    /// value, without needing `Font: PartialEq`.
+    metrics: RowFontMetrics,
     /// One contiguous window of lines (the last painted) whose counts are
     /// exact, not estimates. Reset by a rebuild or a line-count change.
     verified: Range<usize>,
@@ -146,7 +146,11 @@ impl RowCache {
             active_line: None,
             editing: None,
             available_width: px(0.),
-            char_width: px(0.),
+            metrics: RowFontMetrics {
+                char_width: px(0.),
+                ascent: 0.,
+                descent: 0.,
+            },
             verified: 0..0,
             late_corrections: 0,
             pending: None,
@@ -190,13 +194,13 @@ impl RowCache {
         inp: &Inputs,
         window: &mut Window,
     ) -> bool {
-        let char_width = mono_char_width(inp.font, inp.font_size, inp.text_color, window);
+        let metrics = RowFontMetrics::measure(inp.font, inp.font_size, inp.text_color, window);
         if let Change::Edit(patch) = &change {
             self.resize_for(patch, &doc.borrow());
         }
         let stale = self.line_count() != doc.borrow().line_count()
             || self.available_width != inp.width
-            || self.char_width != char_width;
+            || self.metrics != metrics;
         if stale {
             if matches!(change, Change::Lines(_)) {
                 self.invalidate(Invalidate::Width);
@@ -205,11 +209,11 @@ impl RowCache {
             doc.borrow_mut()
                 .view
                 .set_column_width(column_width_for(inp.width));
-            self.rebuild(&doc.borrow(), inp, char_width, window);
+            self.rebuild(&doc.borrow(), inp, metrics, window);
             return true;
         }
         let doc = doc.borrow();
-        let env = Env::new(inp, &doc, char_width);
+        let env = Env::new(inp, &doc, metrics);
         match change {
             Change::Edit(patch) => self.patch(&env, patch.touched.clone(), window),
             Change::Lines(lines) => self.patch(&env, lines, window),
@@ -245,8 +249,8 @@ impl RowCache {
         if lines.start >= verified.start && lines.end <= verified.end {
             return;
         }
-        let char_width = mono_char_width(inp.font, inp.font_size, inp.text_color, window);
-        let env = Env::new(inp, doc, char_width);
+        let metrics = RowFontMetrics::measure(inp.font, inp.font_size, inp.text_color, window);
+        let env = Env::new(inp, doc, metrics);
         let mut corrections = Vec::new();
         for i in lines.clone().filter(|i| !verified.contains(i)) {
             // A side-by-side region's rows come from shaping its columns, not
@@ -304,7 +308,7 @@ impl RowCache {
         &mut self,
         doc: &DocumentCache,
         inp: &Inputs,
-        char_width: Pixels,
+        metrics: RowFontMetrics,
         window: &mut Window,
     ) {
         let starts = doc.line_start_offsets();
@@ -323,15 +327,14 @@ impl RowCache {
         let params = RowParams {
             active_table: active_table(doc, inp.cursor, inp.focused),
             available_width: inp.width,
-            char_width,
+            metrics,
             line_height: window.line_height(),
             font_size: inp.font_size,
-            ascent_descent: mono_ascent_descent(inp.font, inp.font_size, window),
         };
         let (mut counts, shaped) = pure_row_counts(inp.text, &view, &params);
         // Lines that need the window (an active or irregular table row) are the
         // few the threads left out.
-        let env = Env::new(inp, doc, char_width);
+        let env = Env::new(inp, doc, metrics);
         for i in shaped {
             counts[i] = row_count_for_line(&env, i, window) as i64;
         }
@@ -340,7 +343,7 @@ impl RowCache {
         self.editing = doc.view.editing_cell();
         self.active_line = inp.focused.then(|| doc.line_at(inp.cursor));
         self.available_width = inp.width;
-        self.char_width = char_width;
+        self.metrics = metrics;
         self.verified = 0..0;
         self.pending = None;
     }
@@ -440,8 +443,8 @@ pub(super) fn exact_row_count(
     i: usize,
     window: &mut Window,
 ) -> usize {
-    let char_width = mono_char_width(inp.font, inp.font_size, inp.text_color, window);
-    row_count_for_line(&Env::new(inp, doc, char_width), i, window)
+    let metrics = RowFontMetrics::measure(inp.font, inp.font_size, inp.text_color, window);
+    row_count_for_line(&Env::new(inp, doc, metrics), i, window)
 }
 
 /// Test seams over the private build and patch paths, so a test can set a
@@ -465,8 +468,8 @@ pub(super) fn rebuild_for_test(
         font_size,
         text_color,
     };
-    let char_width = mono_char_width(font, font_size, text_color, window);
-    rows.rebuild(doc, &inp, char_width, window);
+    let metrics = RowFontMetrics::measure(font, font_size, text_color, window);
+    rows.rebuild(doc, &inp, metrics, window);
 }
 
 #[cfg(test)]
@@ -488,8 +491,8 @@ pub(super) fn patch_for_test(
         font_size,
         text_color,
     };
-    let char_width = mono_char_width(font, font_size, text_color, window);
-    rows.patch(&Env::new(&inp, doc, char_width), lines, window);
+    let metrics = RowFontMetrics::measure(font, font_size, text_color, window);
+    rows.patch(&Env::new(&inp, doc, metrics), lines, window);
 }
 
 #[cfg(test)]
@@ -510,8 +513,8 @@ pub(super) fn sync_for_test(
         font_size,
         text_color,
     };
-    let char_width = mono_char_width(font, font_size, text_color, window);
-    rows.sync_active_line(&Env::new(&inp, doc, char_width), window);
+    let metrics = RowFontMetrics::measure(font, font_size, text_color, window);
+    rows.sync_active_line(&Env::new(&inp, doc, metrics), window);
 }
 
 /// [`RowCache::verify`] and the exact count of a line, for the agreement tests.
@@ -555,8 +558,8 @@ pub(super) fn shaped_count_for_test(
         font_size,
         text_color,
     };
-    let char_width = mono_char_width(font, font_size, text_color, window);
-    shaped_row_count_for_line(&Env::new(&inp, doc, char_width), i, window)
+    let metrics = RowFontMetrics::measure(font, font_size, text_color, window);
+    shaped_row_count_for_line(&Env::new(&inp, doc, metrics), i, window)
 }
 
 /// Makes the next [`RowCache::verify`] shape its window again.

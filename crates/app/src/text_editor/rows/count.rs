@@ -11,9 +11,8 @@ use crate::text_editor::doc::{DocumentCache, MathLines};
 use crate::text_editor::element::region;
 use crate::text_editor::image::{self, Sizes as ImageSizes};
 use crate::text_editor::layout::{
-    LineState, build_display_lines, callout_at_line, char_budget, fit_with_indent, formula_reach,
-    indent_px, mono_ascent_descent, shape_display_line, shaped_height, tall_rows,
-    wrapped_row_count,
+    LineState, RowFontMetrics, build_display_lines, callout_at_line, char_budget, fit_with_indent,
+    formula_reach, indent_px, shape_display_line, shaped_height, tall_rows, wrapped_row_count,
 };
 use crate::text_editor::math;
 use crate::text_editor::preview::LineRole;
@@ -45,13 +44,11 @@ pub(super) struct RowParams {
     /// The table the cursor is in while focused: it renders as raw text.
     pub(super) active_table: Option<usize>,
     pub(super) available_width: Pixels,
-    pub(super) char_width: Pixels,
+    pub(super) metrics: RowFontMetrics,
     /// An image block's height is a whole number of these.
     pub(super) line_height: Pixels,
-    /// For the rows a tall formula adds: the editor font size and its
-    /// (ascent, descent) in px.
+    /// For the rows a tall formula adds: the editor font size.
     pub(super) font_size: Pixels,
-    pub(super) ascent_descent: (f32, f32),
 }
 
 /// The index of the table [`is_table_active`] would call active, found once so
@@ -116,11 +113,12 @@ fn pure_row_counts_in(
     let RowParams {
         active_table,
         available_width,
-        char_width,
+        metrics,
         line_height,
         font_size,
-        ascent_descent,
     } = *rows;
+    let char_width = metrics.char_width;
+    let ascent_descent = (metrics.ascent, metrics.descent);
     let line_count = view.roles.len();
     let mut counts = Vec::with_capacity(range.len());
     let mut shaped = Vec::new();
@@ -334,7 +332,14 @@ fn estimate_row_count(
 /// formula as its blank columns; `None` when it draws none.
 fn inline_math_extent(line: &str) -> Option<((f32, f32), usize)> {
     let (mut reach, mut chars, mut last) = ((0.0f32, 0.0f32), 0, 0);
+    let mut nest = Nesting::default();
     math_scan::scan_inline(line, 0, line.len(), |found| {
+        nest.advance(line.as_bytes(), found.span.start);
+        // Emphasis, strikethrough and link text keep a formula as written:
+        // it is counted as the plain characters it is, and makes no row tall.
+        if nest.inside() {
+            return;
+        }
         if let Some(drawn) = math::rendered_span(&line[found.span.clone()]) {
             reach.0 = reach.0.max(drawn.layout.ascent);
             reach.1 = reach.1.max(drawn.layout.descent);
@@ -343,6 +348,56 @@ fn inline_math_extent(line: &str) -> Option<((f32, f32), usize)> {
         }
     });
     (last > 0).then(|| (reach, chars + line[last..].chars().count()))
+}
+
+/// Whether a position of a line is inside an emphasis (`*`, `**`), a
+/// strikethrough (`~~`) or a bracket pair, as far as a cheap left-to-right
+/// pass can tell: a delimiter run opens when a word follows it and closes when
+/// one precedes it, so a list bullet or a lone `*` opens nothing.
+#[derive(Default)]
+struct Nesting {
+    at: usize,
+    star: bool,
+    tilde: bool,
+    brackets: u32,
+}
+
+impl Nesting {
+    /// Moves over `bytes[self.at..to]`.
+    fn advance(&mut self, bytes: &[u8], to: usize) {
+        let mut k = self.at;
+        while k < to {
+            let b = bytes[k];
+            match b {
+                b'[' => self.brackets += 1,
+                b']' => self.brackets = self.brackets.saturating_sub(1),
+                b'*' | b'~' => {
+                    let run = bytes[k..].iter().take_while(|&&c| c == b).count();
+                    let before = k.checked_sub(1).map(|p| bytes[p]);
+                    let after = bytes.get(k + run).copied();
+                    let word = |c: Option<u8>| c.is_some_and(|c| !c.is_ascii_whitespace());
+                    let flag = if b == b'*' {
+                        &mut self.star
+                    } else {
+                        &mut self.tilde
+                    };
+                    let delimiter = b == b'*' || run >= 2;
+                    if delimiter && ((!*flag && word(after)) || (*flag && word(before))) {
+                        *flag = !*flag;
+                    }
+                    k += run;
+                    continue;
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        self.at = to.max(self.at);
+    }
+
+    fn inside(&self) -> bool {
+        self.star || self.tilde || self.brackets > 0
+    }
 }
 
 /// [`wrapped_row_count`] for text of `chars` characters.
@@ -504,13 +559,14 @@ fn state_row_count(
         if reach == (0.0, 0.0) {
             return 1;
         }
-        let text = mono_ascent_descent(env.font, env.font_size, window);
+        let text = (env.metrics.ascent, env.metrics.descent);
         tall_rows(reach, (env.font_size, window.line_height()), text)
     };
     display_lines
         .iter()
         .map(|dl| {
-            wrapped_row_count(&dl.display_text, wrap_width, env.char_width) * per_row(dl, window)
+            wrapped_row_count(&dl.display_text, wrap_width, env.metrics.char_width)
+                * per_row(dl, window)
         })
         .sum::<usize>()
         .max(usize::from(!state.hidden))
