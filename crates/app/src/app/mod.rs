@@ -68,8 +68,12 @@ fn install_fonts(cx: &mut App) {
                 include_bytes!("../../assets/fonts/ibm-plex-mono/IBMPlexMono-BoldItalic.ttf")
                     .as_slice(),
             ),
+            Cow::Borrowed(
+                include_bytes!("../../assets/fonts/latin-modern-math/latinmodern-math.otf")
+                    .as_slice(),
+            ),
         ])
-        .expect("failed to load bundled IBM Plex fonts");
+        .expect("failed to load bundled fonts");
 
     let theme = Theme::global_mut(cx);
     theme.font_family = IBM_PLEX_SANS.into();

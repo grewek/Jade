@@ -8,7 +8,8 @@
 //! an edit rescans only the lines `EditPatch::touched` names and shifts the
 //! later entries' line numbers when the line count changed.
 //!
-//! Only `Plain` lines are scanned: fenced code is never Markdown. Links the
+//! Only `Plain` lines outside `$$` blocks are scanned: fenced code and math
+//! are never Markdown. Links the
 //! scanner finds inside bold or italic text are stored too, although Live
 //! Preview does not paint them as links yet.
 
@@ -16,7 +17,7 @@ use std::ops::Range;
 
 use jade_core::link_scan::{LinkKind, scan_line};
 
-use super::doc::{DocumentCache, EditPatch};
+use super::doc::{DocumentCache, EditPatch, MathLines};
 use super::lines::chunks::map_line_chunks;
 use super::preview::LineRole;
 
@@ -67,11 +68,23 @@ fn scan_into(out: &mut Vec<StoredLink>, number: u32, line: &str) {
     });
 }
 
-/// Scans the lines of `chunk`, the first being document line `first`, into `out`.
-fn scan_chunk(chunk: &str, first: usize, roles: &[LineRole], out: &mut Vec<StoredLink>) {
+/// Scans the lines of `chunk`, the first being document line `first`, into
+/// `out`. `roles` and `blocks` are the document's line roles and `$$` blocks
+/// (the cache itself is not `Sync`).
+fn scan_chunk(
+    chunk: &str,
+    first: usize,
+    (roles, blocks): (&[LineRole], &[MathLines]),
+    out: &mut Vec<StoredLink>,
+) {
+    let mut next = blocks.partition_point(|b| b.last_line < first);
     for (offset, line) in chunk.split('\n').enumerate() {
         let number = first + offset;
-        if roles.get(number) == Some(&LineRole::Plain) {
+        while blocks.get(next).is_some_and(|b| b.last_line < number) {
+            next += 1;
+        }
+        let in_math = blocks.get(next).is_some_and(|b| b.first_line <= number);
+        if roles.get(number) == Some(&LineRole::Plain) && !in_math {
             scan_into(out, number as u32, line);
         }
     }
@@ -101,7 +114,7 @@ impl LinkTable {
         if !fits(text) {
             return;
         }
-        let roles = doc.line_roles();
+        let (roles, blocks) = (doc.line_roles(), doc.math_blocks());
         // Each chunk starts on a line boundary, so the line index knows its
         // first line number without counting newlines.
         let parts: Vec<Vec<StoredLink>> = map_line_chunks(
@@ -109,7 +122,7 @@ impl LinkTable {
             |start| doc.line_at(start),
             |first, chunk, _| {
                 let mut part = Vec::new();
-                scan_chunk(chunk, first, roles, &mut part);
+                scan_chunk(chunk, first, (roles, blocks), &mut part);
                 part
             },
         );
@@ -136,7 +149,9 @@ impl LinkTable {
 
         self.scratch.clear();
         for number in start..new_end {
-            if roles.get(number as usize) == Some(&LineRole::Plain) {
+            if roles.get(number as usize) == Some(&LineRole::Plain)
+                && !doc.in_math_block(number as usize)
+            {
                 let line =
                     &text[doc.line_start_byte(number as usize)..doc.line_end_byte(number as usize)];
                 scan_into(&mut self.scratch, number, line);
@@ -349,6 +364,26 @@ mod tests {
     }
 
     #[test]
+    fn math_blocks_are_not_scanned_and_closing_one_rescans_them() {
+        let text = "[[a]]\n$$\n[[b]]\n$$\n[[c]]";
+        let lines = |t: &LinkTable| t.links.iter().map(|l| l.line).collect::<Vec<_>>();
+        assert_eq!(lines(&table_of(text)), [0, 4]);
+        // Breaking the block (a blank line before its closer) makes its text prose.
+        let new_text = "[[a]]\n$$\n[[b]]\n\n$$\n[[c]]";
+        let mut cache = DocumentCache::new(text);
+        let mut table = LinkTable::new(text, &cache);
+        let edit = TextEdit {
+            start_byte: 14,
+            old_end_byte: 14,
+            new_end_byte: 15,
+        };
+        let patch = cache.record_edit(new_text, edit).unwrap();
+        table.patch(new_text, &cache, &patch);
+        assert_eq!(lines(&table), lines(&table_of(new_text)));
+        assert_eq!(lines(&table), [0, 2, 5]);
+    }
+
+    #[test]
     fn fenced_code_is_not_scanned() {
         let text = "[[a]]\n```\n[[b]] [t](u)\n```\n[[c]]";
         let lines: Vec<u32> = table_of(text).links.iter().map(|l| l.line).collect();
@@ -432,7 +467,9 @@ mod tests {
             let cache = DocumentCache::new(text);
             let mut expected = Vec::new();
             for (number, line) in text.split('\n').enumerate() {
-                if cache.line_roles().get(number) == Some(&LineRole::Plain) {
+                if cache.line_roles().get(number) == Some(&LineRole::Plain)
+                    && !cache.in_math_block(number)
+                {
                     scan_into(&mut expected, number as u32, line);
                 }
             }

@@ -2,8 +2,8 @@
 //! Read from the source notes' files on demand with the shared scanner, so no
 //! context is kept in memory between calls.
 
-use crate::fence::plain_lines;
 use crate::link_scan::scan_line;
+use crate::math_scan::prose_lines;
 use crate::resolve::Destination;
 use crate::vault::Vault;
 
@@ -52,7 +52,7 @@ impl Vault {
             }
             let mut contexts = Vec::new();
             let mut total = 0;
-            for (n, line) in plain_lines(&text) {
+            for (n, line) in prose_lines(&text) {
                 if !(line.contains("[[") || line.contains("](")) {
                     continue;
                 }

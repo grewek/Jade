@@ -7,13 +7,14 @@ use gpui_kit::*;
 
 use super::Env;
 use crate::text_editor::columns::{self, Columns};
-use crate::text_editor::doc::DocumentCache;
+use crate::text_editor::doc::{DocumentCache, MathLines};
 use crate::text_editor::element::region;
 use crate::text_editor::image::{self, Sizes as ImageSizes};
 use crate::text_editor::layout::{
     LineState, build_display_lines, callout_at_line, char_budget, fit_with_indent, indent_px,
-    shape_display_line, wrapped_row_count,
+    shape_display_line, tall_row_height, wrapped_row_count,
 };
+use crate::text_editor::math;
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
 use crate::text_editor::preview::{LineContext, line_indent};
@@ -28,6 +29,7 @@ pub(super) struct DocView<'a> {
     pub(super) callouts: &'a [Callout],
     pub(super) images: &'a ImageSizes,
     pub(super) columns: &'a [Columns],
+    pub(super) math: &'a [MathLines],
     /// The region shown as source, laid out like plain text.
     pub(super) raw_region: Option<usize>,
     /// Set when regions are laid out side by side (see `DocumentCache::side_by_side`).
@@ -122,6 +124,7 @@ fn pure_row_counts_in(
     let mut next_table = view.tables.partition_point(|t| t.end_line <= range.start);
     let mut next_callout = view.callouts.partition_point(|c| c.end_line <= range.start);
     let mut next_region = view.columns.partition_point(|r| r.end_line <= range.start);
+    let mut next_math = view.math.partition_point(|b| b.last_line < range.start);
     let mut table_state: Option<(usize, Option<Vec<usize>>)> = None;
     for i in range {
         // A side-by-side region is one block: its first line holds the height
@@ -147,6 +150,16 @@ fn pure_row_counts_in(
                 counts.push(0);
                 continue;
             }
+        }
+        // A `$$` block's lines depend on its formula and on the caret: each is
+        // counted with a window, the head first.
+        while view.math.get(next_math).is_some_and(|b| b.last_line < i) {
+            next_math += 1;
+        }
+        if view.math.get(next_math).is_some_and(|b| b.first_line <= i) {
+            shaped.push(i);
+            counts.push(0);
+            continue;
         }
         while view
             .callouts
@@ -309,8 +322,26 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
         }
         return height;
     }
+    measure_math_block(env, i, window.line_height());
     let state = LineState::of(env.doc, i, env.cursor, env.focused);
     state_row_count(env, i, &state, env.width, window)
+}
+
+/// If line `i` opens a `$$` block, sets how many rows its formula takes (none
+/// if it does not parse), before any line of the block is shaped.
+pub(super) fn measure_math_block(env: &Env, i: usize, line_height: Pixels) {
+    let Some(block) = env.doc.math_block_at(i).filter(|b| b.first_line == i) else {
+        return;
+    };
+    let body = env.doc.math_body(env.text, block);
+    let rows = math::rendered(body, true).map_or(0, |r| {
+        math::block_rows(
+            (r.layout.ascent, r.layout.descent),
+            f32::from(env.font_size),
+            f32::from(line_height),
+        )
+    });
+    block.set_rows(rows);
 }
 
 /// An aside's rows without shaping it: the taller float stack, or that plus
@@ -401,6 +432,7 @@ fn state_row_count(
 /// out one row short of that, which verifying must not inherit.
 pub(super) fn shaped_row_count_for_line(env: &Env, i: usize, window: &mut Window) -> usize {
     let line_height = window.line_height();
+    measure_math_block(env, i, line_height);
     let state = LineState::of(env.doc, i, env.cursor, env.focused);
     let shaped = shape_display_line(
         &env.text[env.doc.line_start_byte(i)..env.doc.line_end_byte(i)],
@@ -411,9 +443,18 @@ pub(super) fn shaped_row_count_for_line(env: &Env, i: usize, window: &mut Window
         env.width,
         window,
     );
+    let text = &env.text[env.doc.line_start_byte(i)..env.doc.line_end_byte(i)];
     let height: Pixels = shaped
         .iter()
-        .map(|(wrapped, _)| wrapped.size(line_height).height)
+        .map(|(wrapped, display)| {
+            let row = tall_row_height(
+                shaped.len(),
+                (display, text),
+                wrapped,
+                (env.font_size, line_height),
+            );
+            wrapped.size(row).height
+        })
         .sum();
     ((height / line_height).round() as usize).max(usize::from(!state.hidden))
 }

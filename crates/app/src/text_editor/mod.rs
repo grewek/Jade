@@ -17,6 +17,7 @@ mod input_handler;
 mod layout;
 mod lines;
 mod link_table;
+mod math;
 #[cfg(any(test, feature = "debug-socket"))]
 mod paint_trace;
 #[cfg(not(any(test, feature = "debug-socket")))]

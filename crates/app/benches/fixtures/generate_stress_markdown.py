@@ -263,6 +263,31 @@ def extreme_stress_sections():
     return "".join(buf)
 
 
+def math_section():
+    """Formulas, inline and `$$` blocks (single- and multi-line), prose around
+    them, and a few `$` that are not math. Deterministic and independent of
+    the random stream above, so it is appended without changing anything else."""
+    formulas = [
+        r"x^2 + y^2 = z^2",
+        r"\frac{-b \pm \sqrt{b^2-4ac}}{2a}",
+        r"\sum_{i=1}^{n} \frac{1}{i^2}",
+        r"\int_0^\infty e^{-x^2} \, dx",
+        r"\begin{pmatrix} a & b \\ c & d \end{pmatrix}",
+        r"\begin{cases} x & x \ge 0 \\ -x & x < 0 \end{cases}",
+        r"\vec{v} \cdot \vec{w} = \lVert v \rVert \lVert w \rVert \cos\theta",
+        r"\lim_{n \to \infty} \left(1 + \frac{1}{n}\right)^n = e",
+    ]
+    out = ["\n# Stress: Math\n\n"]
+    for i in range(600):
+        f = formulas[i % len(formulas)]
+        g = formulas[(i * 3 + 1) % len(formulas)]
+        out.append(f"Chapter {i} states $a_{{{i % 7}}} + {i}$ and also [[Note {i % 50}]], costing $5 or $6 at most.\n\n")
+        out.append(f"$${f}$$\n\n")
+        out.append(f"$$\n{f}\n{g}\n$$\n\n")
+        out.append(f"Between them [[Note {(i + 1) % 50}]] and $${g}$$ inline.\n\n")
+    return "".join(out)
+
+
 def main():
     out_path = "/home/apollo/Projects/Rust/Jade/crates/app/benches/fixtures/large_markdown_stress_test.md"
 
@@ -307,6 +332,7 @@ def main():
 
     extreme = extreme_stress_sections()
     chunks.append(extreme)
+    chunks.append(math_section())
 
     text = "".join(chunks)
     with open(out_path, "w", encoding="utf-8") as f:

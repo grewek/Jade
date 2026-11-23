@@ -628,6 +628,9 @@ pub(super) fn paint_region(
                     bounds: sl.frame(bounds),
                     y_offset: top + sl.y,
                     total_height: sl.height,
+                    // Columns allot rows by the editor's height, so a tall
+                    // formula in one is not given more room (yet).
+                    row_height: env.line_height,
                 };
                 paint_line(env, &slot, &mut tables, window, cx);
             }

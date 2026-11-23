@@ -38,6 +38,10 @@ pub enum InlineStyle {
     /// A control drawn as a 2D element over blank columns, never as a glyph
     /// from a font: see [`Widget`].
     Widget(Widget),
+    /// A `$…$` formula `element.rs` draws from the bundled math font over the
+    /// blank columns the segment reserves (see [`math::rendered_span`]); the
+    /// segment's raw range is the span with its delimiters.
+    Math,
 }
 
 /// A control `element.rs` paints with vector shapes or an icon over the

@@ -30,7 +30,7 @@ fn normalized(text: &str) -> String {
 
 /// The first line holding a heading that matches `target`, ignoring case and
 /// runs of spaces; a GitHub-style `my-heading` also matches `My Heading`.
-/// Fenced code is skipped.
+/// Fenced code and `$$` blocks are skipped.
 pub(super) fn find_heading_line(text: &str, doc: &DocumentCache, target: &str) -> Option<usize> {
     let wanted = normalized(target);
     if wanted.is_empty() {
@@ -39,7 +39,7 @@ pub(super) fn find_heading_line(text: &str, doc: &DocumentCache, target: &str) -
     let slug_wanted = wanted.replace('-', " ");
     let roles = doc.line_roles();
     (0..doc.line_count()).find(|&line| {
-        if roles[line] != LineRole::Plain {
+        if roles[line] != LineRole::Plain || doc.in_math_block(line) {
             return false;
         }
         let raw = &text[doc.line_start_byte(line)..doc.line_end_byte(line)];

@@ -53,6 +53,7 @@ pub(in crate::text_editor) fn unknown_targets(
         let line = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
         if !may_be_image(line)
             || !matches!(doc.line_roles()[i], LineRole::Plain)
+            || doc.in_math_block(i)
             || !matches!(doc.block_contexts()[i], LineContext::Plain)
         {
             continue;

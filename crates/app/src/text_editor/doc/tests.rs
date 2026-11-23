@@ -138,6 +138,10 @@ fn assert_matches_fresh_cache(cache: &DocumentCache, text: &str, context: &str) 
         "open_block_states {context}"
     );
     assert_eq!(cache.tables, fresh.tables, "tables {context}");
+    assert_eq!(
+        cache.math_blocks, fresh.math_blocks,
+        "math_blocks {context}"
+    );
     assert_eq!(cache.callouts, fresh.callouts, "callouts {context}");
     assert_eq!(
         cache.column_markers, fresh.column_markers,
@@ -335,7 +339,8 @@ fn run_randomized_edits(mut seed: u64) {
              > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter\n\
              | a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\nafter table\n\n\
              ::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n\n\
-             ::: float left 30%\n\nfloat\n\n:::\n\npara one\n\npara two\n\npara three\n",
+             ::: float left 30%\n\nfloat\n\n:::\n\npara one\n\npara two\n\npara three\n\
+             $$\nx^2\n$$\n\n$$\n\\frac{a}{b}\n\n  y\n$$\n",
     );
     let mut cache = DocumentCache::new(&text);
 
@@ -376,6 +381,11 @@ fn run_randomized_edits(mut seed: u64) {
         "::: float\n",
         "\n::: float right 20%\n\nf\n\n:::\n\n",
         "text\n\n",
+        "$$",
+        "$$\n",
+        "\n$$\nx\n$$\n",
+        "$$\na\n\nb\n$$\n",
+        "x$$",
     ];
 
     for step in 0..400 {
@@ -567,4 +577,40 @@ mod line_stride_tests {
             assert_eq!(strides.iter().sum::<i64>() as usize, text.len(), "{text:?}");
         }
     }
+}
+
+/// Blocks whose pairing an edit far from them changes: deleting the blank
+/// line that kept an opener unclosed, or closing a fence that was hiding one.
+#[test]
+fn math_blocks_follow_edits_that_reach_them_from_a_distance() {
+    let mut text = String::from("$$\nx\n\n$$\nafter\n");
+    let mut cache = DocumentCache::new(&text);
+    assert!(cache.math_blocks().is_empty());
+    // Remove the blank line: the opener now has its closer.
+    let (new_text, edit) = apply_edit(&text, 5, 6, "");
+    cache.record_edit(&new_text, edit);
+    assert_matches_fresh_cache(&cache, &new_text, "blank removed");
+    assert_eq!(cache.math_blocks().len(), 1);
+    text = new_text;
+    // Type a fence line above: the block is code now.
+    let (new_text, edit) = apply_edit(&text, 0, 0, "```\n");
+    cache.record_edit(&new_text, edit);
+    assert_matches_fresh_cache(&cache, &new_text, "fence above");
+    assert!(cache.math_blocks().is_empty());
+    assert!(!cache.in_math_block(2));
+}
+
+#[test]
+fn a_block_keeps_its_measured_rows_through_an_edit_that_does_not_touch_it() {
+    let text = "top\n\n$$\nx\n$$\n\nbottom\n";
+    let mut cache = DocumentCache::new(text);
+    cache.math_blocks()[0].set_rows(4);
+    let (new_text, edit) = apply_edit(text, 3, 3, "!");
+    cache.record_edit(&new_text, edit);
+    assert_eq!(cache.math_blocks()[0].rows(), Some(4));
+    // An edit inside it drops the measure: the row cache takes it again.
+    let (inside, edit) = apply_edit(&new_text, 9, 9, "y");
+    let patch = cache.record_edit(&inside, edit).unwrap();
+    assert_eq!(cache.math_blocks()[0].rows(), None);
+    assert!(patch.touched.contains(&2) && patch.touched.contains(&4));
 }

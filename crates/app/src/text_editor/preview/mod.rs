@@ -58,10 +58,12 @@
 use std::ops::Range;
 use std::rc::Rc;
 
+use super::math::rendered_span;
 use callout::{CalloutType, callout_header_prefix};
 use jade_core::link_scan::{
     find_closing, parse_autolink, parse_bare_url, parse_inline_link, parse_wikilink,
 };
+use jade_core::math_scan::{opener_len, parse_inline as parse_math};
 
 pub(in crate::text_editor) mod callout;
 pub(in crate::text_editor) mod fence;
