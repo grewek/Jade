@@ -23,6 +23,8 @@ pub(super) struct WidgetPaint<'a> {
     pub(super) line_height: Pixels,
     /// The raw text `display_line`'s segments index into.
     pub(super) line_text: &'a str,
+    /// How wide the line's rows are (a display formula is centred in it).
+    pub(super) row_width: Pixels,
 }
 
 /// Paints a bundled Lucide icon (`path`) filling `bounds`.
@@ -146,8 +148,9 @@ pub(super) fn paint_widgets(
 const MATH_FONT_FAMILY: &str = "Latin Modern Math";
 
 /// Draws a formula's glyphs and rules over the blank columns `seg` reserved,
-/// left aligned on the text's baseline. A formula the wrap split across rows
-/// is left blank: there is no one place to draw it.
+/// left aligned on the text's baseline; a `$$…$$` that is the whole line is
+/// centred in the row instead. A formula the wrap split across rows is left
+/// blank: there is no one place to draw it.
 fn paint_math(
     display_line: &DisplayLine,
     seg: &DisplaySegment,
@@ -176,8 +179,14 @@ fn paint_math(
     let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));
     // GPUI centres a row's text in the line height; the baseline follows.
     let pad = (line_height - (wrapped.ascent() + wrapped.descent())) / 2.;
-    let baseline = origin + from + point(px(0.), pad + wrapped.ascent());
     let em = paint.font_size * math::MATH_SCALE;
+    let centred = raw.starts_with("$$") && paint.line_text.trim() == raw;
+    let left = if centred {
+        ((paint.row_width - em * rendered.layout.width) / 2.).max(px(0.))
+    } else {
+        from.x
+    };
+    let baseline = origin + point(left, from.y + pad + wrapped.ascent());
     let (ink, error) = (paint.inline.text, paint.inline.broken);
     for item in &rendered.layout.items {
         match *item {
