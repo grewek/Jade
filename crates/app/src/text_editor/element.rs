@@ -73,6 +73,12 @@ const TABLE_LINE_WIDTH: Pixels = px(1.);
 /// regardless).
 const OVERSCAN_LINES: usize = 20;
 
+/// `origin_y` plus `rows` rows of `line_height`, summed in `f64`.
+fn window_y(origin_y: Pixels, line_height: Pixels, rows: i64) -> Pixels {
+    let doc = f64::from(f32::from(line_height)) * rows as f64;
+    px((f64::from(f32::from(origin_y)) + doc) as f32)
+}
+
 /// Per-document, per-paint layout data that lets `measure_document`/
 /// `paint_lines`/`offset_for_position`/`input_handler::bounds_for_range`
 /// each touch only the lines they actually need, instead of every line in
@@ -117,6 +123,19 @@ impl LineLayout {
     /// document's total estimated height.
     pub(super) fn cumulative_at(&self, i: usize) -> Pixels {
         self.line_height * self.row_cache.borrow().prefix_sum(i) as f32
+    }
+
+    /// The window y of line `i`'s top, with the editor's top at `origin_y`.
+    /// Both are huge in a huge note (a 105 MB one is 57M px tall, where `f32`
+    /// steps are 4px), so the sum is done in `f64`: the result is a small number
+    /// and exact. Adding `origin_y` to [`Self::cumulative_at`] in `f32` lands
+    /// each box and each line on a different 4px step (#21).
+    pub(super) fn screen_y(&self, origin_y: Pixels, i: usize) -> Pixels {
+        window_y(
+            origin_y,
+            self.line_height,
+            self.row_cache.borrow().prefix_sum(i),
+        )
     }
 
     /// For the paint trace; see [`RowCache::trace_state`].
@@ -204,7 +223,8 @@ pub(super) fn caret_rect(
     ) {
         return Some(found);
     }
-    let mut y_offset = layout.cumulative_at(range.start);
+    let anchor = layout.screen_y(bounds.origin.y, range.start);
+    let mut y_offset = px(0.);
     for i in range {
         let line_range = layout.line_range(i);
         let line_text = &text[line_range.clone()];
@@ -238,7 +258,7 @@ pub(super) fn caret_rect(
                 .unwrap_or(point(px(0.), px(0.)));
                 let x = pos.x + indent_px(display_line.indent.level());
                 return Some(Bounds {
-                    origin: bounds.origin + point(x, y_offset + pos.y),
+                    origin: point(bounds.origin.x + x, anchor + y_offset + pos.y),
                     size: size(px(1.), line_height),
                 });
             }
@@ -335,14 +355,21 @@ pub(super) fn caret_in_column(
     window: &mut Window,
 ) -> Option<Bounds<Pixels>> {
     let (region, _) = doc.side_by_side(doc.line_at(offset))?;
-    let top = layout.cumulative_at(region.start_line);
+    // The region's top as a window y, so nothing here adds two huge numbers.
+    let at_top = Bounds {
+        origin: point(
+            bounds.origin.x,
+            layout.screen_y(bounds.origin.y, region.start_line),
+        ),
+        size: bounds.size,
+    };
     region::caret_bounds(
         text,
         doc,
         offset,
         (cursor, focused),
         metrics,
-        (colors, top, bounds),
+        (colors, px(0.), at_top),
         window,
     )
 }
@@ -503,14 +530,14 @@ fn table_grid(
         let column = region::column_with_line(&shaped, table.start_line)?;
         // The table is as wide as the line that opens it.
         let first = column.lines.iter().find(|sl| sl.line == table.start_line)?;
-        let region_top = bounds.origin.y + layout.cumulative_at(region.start_line);
+        let region_top = layout.screen_y(bounds.origin.y, region.start_line);
         let columns = TableColumns::of(table, first.width, cfg, window);
         let at = |line: usize| region::line_top(column, region_top, line);
         let (grid, top) = grid_for(table, &columns, &at);
         return Some((grid, point(bounds.origin.x + first.x, top)));
     }
     let columns = TableColumns::of(table, bounds.size.width, cfg, window);
-    let at = |line: usize| bounds.origin.y + layout.cumulative_at(line);
+    let at = |line: usize| layout.screen_y(bounds.origin.y, line);
     let (grid, top) = grid_for(table, &columns, &at);
     Some((grid, point(bounds.origin.x, top)))
 }
@@ -549,6 +576,7 @@ mod tests {
     use super::super::table::classify_tables;
     use super::super::test_support::apply_edit;
     use super::LineState;
+    use super::window_y;
     use super::{TableLineKind, shape_display_line};
     use crate::text_editor::layout::is_active_line;
     use crate::text_editor::rows::{self as rowcache, Change, Inputs, Invalidate};
@@ -587,6 +615,18 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    #[test]
+    fn window_y_stays_exact_in_a_note_millions_of_pixels_tall() {
+        // 1,358,363 rows of 26px end at y=35,317,438, which `f32` (4px steps
+        // up here) cannot hold: summing in `f32` gives -8 instead of -10.
+        let (origin, lh, rows) = (px(-35_317_448.), px(26.), 1_358_363);
+        assert_eq!(window_y(origin, lh, rows), px(-10.));
+        assert_ne!(origin + lh * rows as f32, px(-10.));
+        // Neighbouring lines keep their whole-row spacing.
+        let step = window_y(origin, lh, rows + 1) - window_y(origin, lh, rows);
+        assert_eq!(step, lh);
     }
 
     #[gpui_kit::test]

@@ -42,12 +42,17 @@ pub(super) struct FrameInfo {
     pub late_corrections_before: usize,
 }
 
+/// A box painted behind lines from the row cache's positions (a callout's tint
+/// or a table's grid), which must line up with where the lines went.
 struct Band {
     start_line: usize,
     end_line: usize,
     top: f32,
     bottom: f32,
-    kind: CalloutType,
+    /// `"callout"` or `"table"`.
+    what: &'static str,
+    /// The callout's type, empty for a table.
+    kind: String,
 }
 
 /// Where one columns region put its parts, in pixels below the editor's top
@@ -117,9 +122,23 @@ impl PaintTrace {
     pub(super) fn band(
         &mut self,
         lines: std::ops::Range<usize>,
-        top: f32,
-        bottom: f32,
+        (top, bottom): (f32, f32),
         kind: CalloutType,
+    ) {
+        self.push_band(lines, (top, bottom), "callout", format!("{kind:?}"));
+    }
+
+    /// A table's box: `lines` is its first line to one past its last.
+    pub(super) fn table_band(&mut self, lines: std::ops::Range<usize>, (top, bottom): (f32, f32)) {
+        self.push_band(lines, (top, bottom), "table", String::new());
+    }
+
+    fn push_band(
+        &mut self,
+        lines: std::ops::Range<usize>,
+        (top, bottom): (f32, f32),
+        what: &'static str,
+        kind: String,
     ) {
         if self.bands.len() >= MAX_BANDS {
             self.elided_bands += 1;
@@ -130,6 +149,7 @@ impl PaintTrace {
             end_line: lines.end,
             top,
             bottom,
+            what,
             kind,
         });
     }
@@ -169,7 +189,7 @@ impl PaintTrace {
             .saturating_sub(self.info.late_corrections_before);
         if late > 0 {
             problems.push(format!(
-                "{late} line heights corrected after the callout bands were placed"
+                "{late} line heights corrected after the callout bands and table boxes were placed"
             ));
         }
         for band in &self.bands {
@@ -181,8 +201,8 @@ impl PaintTrace {
                 && (first.y - band.top).abs() > TOLERANCE
             {
                 problems.push(format!(
-                    "callout at line {} starts at y={:.1} but its first line is at y={:.1}",
-                    band.start_line, band.top, first.y
+                    "{} at line {} starts at y={:.1} but its first line is at y={:.1}",
+                    band.what, band.start_line, band.top, first.y
                 ));
             }
             if let Some(last) = last
@@ -190,7 +210,8 @@ impl PaintTrace {
                 && ((last.y + last.height) - band.bottom).abs() > TOLERANCE
             {
                 problems.push(format!(
-                    "callout ending at line {} ends at y={:.1} but its last line ends at y={:.1}",
+                    "{} ending at line {} ends at y={:.1} but its last line ends at y={:.1}",
+                    band.what,
                     band.end_line,
                     band.bottom,
                     last.y + last.height
@@ -233,15 +254,19 @@ impl PaintTrace {
         for b in &self.bands {
             let _ = write!(
                 s,
-                " | band {:?} lines {}..{} y {:.1}..{:.1}",
-                b.kind, b.start_line, b.end_line, b.top, b.bottom
+                " | band {} lines {}..{} y {:.1}..{:.1}",
+                if b.what == "table" { "table" } else { &b.kind },
+                b.start_line,
+                b.end_line,
+                b.top,
+                b.bottom
             );
         }
         for l in &self.lines {
             let _ = write!(
                 s,
-                " | L{}@{:.1} rows={} {} {:?}",
-                l.index, l.y, l.rows, l.tag, l.preview
+                " | L{}@{:.1} rows={} h={:.1} {} {:?}",
+                l.index, l.y, l.rows, l.height, l.tag, l.preview
             );
         }
         for r in &self.regions {
@@ -385,7 +410,7 @@ mod tests {
     fn a_band_matching_its_lines_is_consistent() {
         let mut t = trace();
         lay_out_four_lines(&mut t);
-        t.band(1..3, 20., 60., CalloutType::Note);
+        t.band(1..3, (20., 60.), CalloutType::Note);
         assert!(t.problems().is_empty());
         assert!(t.signature(&[]).starts_with("ok "));
     }
@@ -394,7 +419,7 @@ mod tests {
     fn a_band_that_stops_short_is_reported() {
         let mut t = trace();
         lay_out_four_lines(&mut t);
-        t.band(1..3, 20., 40., CalloutType::Note);
+        t.band(1..3, (20., 40.), CalloutType::Note);
         let problems = t.problems();
         assert_eq!(problems.len(), 1);
         assert!(problems[0].contains("ends at y=40.0"), "{problems:?}");
@@ -404,8 +429,27 @@ mod tests {
     fn a_band_that_starts_off_is_reported() {
         let mut t = trace();
         lay_out_four_lines(&mut t);
-        t.band(1..3, 10., 60., CalloutType::Note);
+        t.band(1..3, (10., 60.), CalloutType::Note);
         assert!(t.problems()[0].contains("starts at y=10.0"));
+    }
+
+    #[test]
+    fn a_table_box_off_its_lines_is_reported() {
+        let mut t = trace();
+        lay_out_four_lines(&mut t);
+        t.table_band(1..3, (20., 60.));
+        assert!(t.problems().is_empty());
+        let mut t = trace();
+        lay_out_four_lines(&mut t);
+        t.table_band(1..3, (33., 73.));
+        let problems = t.problems();
+        assert_eq!(problems.len(), 2, "{problems:?}");
+        assert!(problems[0].starts_with("table at line 1 starts at y=33.0"));
+        assert!(problems[1].starts_with("table ending at line 3 ends at y=73.0"));
+        assert!(
+            t.signature(&problems)
+                .contains(" | band table lines 1..3 y 33.0..73.0")
+        );
     }
 
     #[test]
@@ -422,7 +466,7 @@ mod tests {
         lay_out_four_lines(&mut t);
         // Band covers lines 2..9; only 2 and 3 were painted, its recorded
         // bottom is the window's end.
-        t.band(2..4, 40., 80., CalloutType::Tip);
+        t.band(2..4, (40., 80.), CalloutType::Tip);
         assert!(t.problems().is_empty());
     }
 
@@ -442,7 +486,7 @@ mod tests {
         for i in 0..10_000 {
             t.line(i, i as f32 * 20., 1, 20., "plain", "text");
         }
-        t.band(0..10, 0., 200., CalloutType::Note);
+        t.band(0..10, (0., 200.), CalloutType::Note);
         let sig = t.signature(&[]);
         assert!(sig.len() < 20_000, "{} bytes", sig.len());
         assert!(sig.contains("elided 0 bands, 9850 lines"));

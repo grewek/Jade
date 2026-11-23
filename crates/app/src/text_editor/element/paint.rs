@@ -98,19 +98,16 @@ pub(super) fn paint_lines(
         // Past the verified window the heights are estimates; the band is
         // off-screen there anyway, so stop where they begin.
         let (top, bottom) = (
-            layout.cumulative_at(callout.start_line),
-            layout.cumulative_at(callout.end_line.min(range.end)),
+            layout.screen_y(bounds.origin.y, callout.start_line),
+            layout.screen_y(bounds.origin.y, callout.end_line.min(range.end)),
         );
         if let Some(trace) = trace.as_mut() {
             trace.band(
                 callout.start_line..callout.end_line.min(range.end),
-                f32::from(top),
-                f32::from(bottom),
+                (f32::from(top), f32::from(bottom)),
                 callout.kind,
             );
         }
-        let top = bounds.origin.y + top;
-        let bottom = bounds.origin.y + bottom;
         let span = (bounds.origin.x, bounds.size.width);
         paint_callout_band(callout, (top, bottom), span, &palette, window);
     }
@@ -119,8 +116,16 @@ pub(super) fn paint_lines(
         return;
     }
 
-    let mut y_offset = layout.cumulative_at(range.start);
-    paint_table_boxes(&range, view, doc, &palette, (window, cx));
+    paint_table_boxes(&range, view, doc, &palette, (window, cx, trace.as_mut()));
+    // Lines are placed from the first visible one: its window y comes from
+    // `screen_y` and everything after it is a small offset, not a sum of
+    // numbers in the millions (see `LineLayout::screen_y`).
+    let anchor = layout.screen_y(bounds.origin.y, range.start);
+    let mut y_offset = px(0.);
+    let bounds = Bounds {
+        origin: point(bounds.origin.x, anchor),
+        size: bounds.size,
+    };
     let mut columns: Option<(usize, TableColumns)> = None;
     let env = PaintEnv {
         text,
@@ -170,7 +175,7 @@ pub(super) fn paint_lines(
                 let line = &text[first];
                 trace.line(
                     i,
-                    f32::from(y_offset),
+                    f32::from(anchor + y_offset),
                     shaped.rows,
                     f32::from(height),
                     "columns",
@@ -234,7 +239,7 @@ pub(super) fn paint_lines(
             };
             trace.line(
                 i,
-                f32::from(y_offset),
+                f32::from(anchor + y_offset),
                 (total_height / line_height).round() as usize,
                 f32::from(total_height),
                 tag,

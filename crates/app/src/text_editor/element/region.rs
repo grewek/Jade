@@ -1068,7 +1068,9 @@ pub(super) fn restore_pill(
         return None;
     }
     let percent = columns::restored(&region, doc.view.column_width()?)?;
-    let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
+    let top = view
+        .layout
+        .screen_y(view.bounds.origin.y, region.start_line);
     let (w, h) = (px(24.), px(18.));
     let origin = point(
         view.bounds.origin.x + view.bounds.size.width - w - px(4.),
@@ -1102,8 +1104,10 @@ pub(super) fn paint_stacked_controls(
         if doc.side_by_side(region.start_line).is_some() {
             return;
         }
-        let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
-        let bottom = view.bounds.origin.y + view.layout.cumulative_at(region.end_line);
+        let top = view
+            .layout
+            .screen_y(view.bounds.origin.y, region.start_line);
+        let bottom = view.layout.screen_y(view.bounds.origin.y, region.end_line);
         let x = view.bounds.origin.x
             + px(columns::divider_x_unchecked(
                 total,

@@ -43,7 +43,9 @@ impl PaintTrace {
         None
     }
 
-    pub(super) fn band(&mut self, _: std::ops::Range<usize>, _: f32, _: f32, _: CalloutType) {}
+    pub(super) fn band(&mut self, _: std::ops::Range<usize>, _: (f32, f32), _: CalloutType) {}
+
+    pub(super) fn table_band(&mut self, _: std::ops::Range<usize>, _: (f32, f32)) {}
 
     pub(super) fn line(&mut self, _: usize, _: f32, _: usize, _: f32, _: &'static str, _: &str) {}
 
