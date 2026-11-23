@@ -443,12 +443,22 @@ fn aside_row_estimate(
     (stack + below).max(1)
 }
 
-/// [`row_count_for_line`] for a patch of one or two lines: a side-by-side
-/// region's height is its shaped one, not the monospace estimate. A patch
-/// leaves the line in the verified window, so an estimate put there would stay
-/// until paint corrects it, after anything positioned from the rows (scrolling
-/// to the caret) has used it; a region as tall as a float's text is far off.
-pub(super) fn patched_row_count(env: &Env, i: usize, window: &mut Window) -> usize {
+/// The count for a line a patch recomputes. A patch leaves the line in the
+/// verified window, so an estimate put there would stay until paint corrects
+/// it, after anything positioned from the rows (scrolling to the caret) has
+/// used it. So with `exact` the line is shaped, as painting will see it
+/// (a region as a whole); without, it is the monospace estimate, for edits
+/// that touch too many lines to shape.
+pub(super) fn patched_row_count(env: &Env, i: usize, exact: bool, window: &mut Window) -> usize {
+    if exact && env.doc.side_by_side(i).is_none() {
+        return shaped_row_count_for_line(env, i, window);
+    }
+    estimated_patch_count(env, i, window)
+}
+
+/// A region's shaped height, or the estimate of any other line: what a patch
+/// counts for lines it does not shape.
+fn estimated_patch_count(env: &Env, i: usize, window: &mut Window) -> usize {
     if let Some((region, split)) = env.doc.side_by_side(i)
         && i == region.start_line
     {

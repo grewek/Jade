@@ -569,6 +569,9 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
 mod math_rows_tests;
 
 #[cfg(test)]
+mod height_agreement_tests;
+
+#[cfg(test)]
 mod tests {
     use super::super::Editor;
     use super::super::preview::LineIndent;
@@ -3424,6 +3427,7 @@ mod tests {
                 window,
             );
 
+            let mut previous = 0;
             // Move the cursor onto the bold line (line 1), then off it again
             // onto line 2 — each a pure cursor move, no edit at all.
             for cursor in [
@@ -3440,7 +3444,25 @@ mod tests {
                     window,
                 );
 
-                let expected = exact_row_counts(
+                // A patched line is shaped, so it equals what painting sees (this
+                // short note's other lines are estimated right).
+                let expected: Vec<usize> = (0..doc_cache.line_count())
+                    .map(|i| {
+                        rowcache::shaped_count_for_test(
+                            &text,
+                            &doc_cache,
+                            i,
+                            (cursor, true),
+                            available_width,
+                            (&font, font_size, text_color),
+                            window,
+                        )
+                    })
+                    .collect();
+                // The two lines the caret moved between are shaped; the rest
+                // keep the cold count (it can be a row short of the shaped one
+                // for a wrapped line: `verify` makes the window exact).
+                let cold = exact_row_counts(
                     &text,
                     &doc_cache,
                     (cursor, true),
@@ -3448,8 +3470,13 @@ mod tests {
                     (&font, font_size, text_color),
                     window,
                 );
-
-                assert_eq!(row_counts(&row_cache), expected, "cursor at {cursor}");
+                let now = doc_cache.line_at(cursor);
+                let mut want = cold;
+                for line in [previous, now] {
+                    want[line] = expected[line] as i64;
+                }
+                previous = now;
+                assert_eq!(row_counts(&row_cache), want, "cursor at {cursor}");
             }
         })
         .unwrap();
