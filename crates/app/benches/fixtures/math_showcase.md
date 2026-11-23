@@ -1,6 +1,6 @@
 # Math showcase
 
-A hand-checked note for looking at LaTeX rendering (#13): open it in Jade and compare each formula with what you expect. Lines with tall formulas (matrices, stacked limits) get taller rows; the line you are editing shows its source and shrinks back. Inside `::: columns` and `::: aside` regions rows do not grow yet, so tall formulas there overlap.
+A hand-checked note for looking at LaTeX rendering (#13): open it in Jade and compare each formula with what you expect. Lines with tall formulas (matrices, stacked limits) get taller rows; the line you are editing shows its source and shrinks back. Inside `::: columns` and `::: aside` regions rows do not grow yet, so tall formulas there overlap, and `$$` blocks there stay source.
 
 ## 1. Plain prose around inline math
 
@@ -132,3 +132,33 @@ A very long formula that must wrap or overflow gracefully: $a_1 + a_2 + a_3 + a_
 ---
 
 *End of the showcase. Add new constructs here as the renderer learns them.*
+
+## 12. Display blocks (multi-line `$$`)
+
+A block that parses is drawn centred over rows sized to it; click it or arrow into it to edit the source.
+
+$$
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}
+\int_0^1 x^2 \, dx
+$$
+
+Lines broken with `\\` outside an environment are stacked and centred:
+
+$$
+a = b + c \\
+d = e
+$$
+
+Sized delimiters and phantoms: $\bigl( \frac{a}{b} \bigr)$, $\Bigg[ x \Bigg]$, $a\hspace{1em}b$, $\smash{\frac{x}{y}} + \phantom{z}$, $a \mod n$.
+
+A block that does not parse stays source:
+
+$$
+\frac{1
+$$
+
+A `[[link]]` inside a block is not a link:
+
+$$
+x = [[not a link]]
+$$
