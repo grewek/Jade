@@ -594,6 +594,8 @@ mod math_rows_tests;
 #[cfg(test)]
 mod anchoring_tests;
 #[cfg(test)]
+mod formula_context_tests;
+#[cfg(test)]
 mod height_agreement_tests;
 
 #[cfg(test)]

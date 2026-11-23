@@ -104,10 +104,7 @@ pub(in crate::text_editor) fn shape_region(
             let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
             let results =
                 shape_display_line(line_text, &state, font, font_size, colors, width, window);
-            let height: Pixels = results
-                .iter()
-                .map(|(wrapped, _)| wrapped.size(line_height).height)
-                .sum();
+            let (height, _) = shaped_height(&results, line_text, (font_size, line_height));
             lines.push(ShapedLine {
                 line: i,
                 y,
@@ -151,10 +148,7 @@ fn shape_at(
     let state = column_state(doc, i, (cursor, focused), &broken);
     let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
     let results = shape_display_line(line_text, &state, font, font_size, colors, width, window);
-    let height = results
-        .iter()
-        .map(|(w, _)| w.size(window.line_height()).height)
-        .sum();
+    let (height, _) = shaped_height(&results, line_text, (font_size, window.line_height()));
     (results, broken, height)
 }
 
@@ -619,18 +613,21 @@ pub(super) fn paint_region(
                 } else {
                     range.end
                 };
+                let line_text = &env.text[range.clone()];
+                let row_height =
+                    entry_heights(&sl.results, line_text, (env.font_size, env.line_height))
+                        .next()
+                        .map_or(env.line_height, |e| e.row);
                 let slot = LineSlot {
                     i: sl.line,
-                    line_text: &env.text[range.clone()],
+                    line_text,
                     line_range: range.start..end,
                     state: &state,
                     results: &sl.results,
                     bounds: sl.frame(bounds),
                     y_offset: top + sl.y,
                     total_height: sl.height,
-                    // Columns allot rows by the editor's height, so a tall
-                    // formula in one is not given more room (yet).
-                    row_height: env.line_height,
+                    row_height,
                 };
                 paint_line(env, &slot, &mut tables, window, cx);
             }
@@ -955,14 +952,16 @@ pub(super) fn caret_bounds(
     let sl = pieces()
         .find(|sl| sl.raw.start <= within && within < sl.raw.end)
         .or_else(|| pieces().last())?;
-    for (wrapped, display) in &sl.results {
+    let line_text = &text[doc.line_start_byte(line)..doc.line_end_byte(line)];
+    let heights = entry_heights(&sl.results, line_text, (font_size, line_height));
+    for ((wrapped, display), entry) in sl.results.iter().zip(heights) {
         let at = display.display_offset_for_raw(within.saturating_sub(sl.raw.start));
         let state = LineState::in_column(doc, line, cursor, focused);
         let Some(pos) = justify::position_for_index(
             (&state, wrapped, display),
             sl.results.len(),
             at,
-            line_height,
+            entry.row,
         ) else {
             continue;
         };
@@ -970,7 +969,7 @@ pub(super) fn caret_bounds(
         let origin = bounds.origin + point(sl.x + x, region_top + sl.y + pos.y);
         return Some(Bounds {
             origin,
-            size: size(px(1.), line_height),
+            size: size(px(1.), entry.row),
         });
     }
     None

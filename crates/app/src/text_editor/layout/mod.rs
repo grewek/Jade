@@ -6,6 +6,8 @@
 mod shape;
 mod state;
 
+#[cfg(test)]
+pub(super) use shape::mono_ascent_descent;
 pub(super) use shape::{
     RowFontMetrics, build_display_lines, char_budget, entry_heights, fit_with_indent,
     formula_reach, line_runs, mono_char_width, shape_display_line, shape_entry, shaped_height,

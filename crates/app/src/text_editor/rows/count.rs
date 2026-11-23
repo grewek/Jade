@@ -434,7 +434,7 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
                 .column_lines(k)
                 .map(|line| {
                     let state = LineState::in_column(env.doc, line, env.cursor, env.focused);
-                    state_row_count(env, line, (&state, width, false), window)
+                    state_row_count(env, line, (&state, width), window)
                 })
                 .sum();
             height = height.max(rows);
@@ -443,7 +443,7 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
     }
     measure_math_block(env, i, window.line_height());
     let state = LineState::of(env.doc, i, env.cursor, env.focused);
-    state_row_count(env, i, (&state, env.width, true), window)
+    state_row_count(env, i, (&state, env.width), window)
 }
 
 /// If line `i` opens a `$$` block, sets how many rows its formula takes (none
@@ -478,7 +478,7 @@ fn aside_row_estimate(
         lines
             .map(|line| {
                 let state = LineState::in_column(env.doc, line, env.cursor, env.focused);
-                state_row_count(env, line, (&state, width, false), window)
+                state_row_count(env, line, (&state, width), window)
             })
             .sum::<usize>()
     };
@@ -531,13 +531,12 @@ fn estimated_patch_count(env: &Env, i: usize, window: &mut Window) -> usize {
     row_count_for_line(env, i, window)
 }
 
-/// Line `i`'s rows when shown as `state` says, wrapped at `width`. `grow` is
-/// whether a tall formula grows its rows: not in a column, where painting
-/// does not (#23).
+/// Line `i`'s rows when shown as `state` says, wrapped at `width`; a tall
+/// formula grows them, in a column as anywhere (#23).
 fn state_row_count(
     env: &Env,
     i: usize,
-    (state, width, grow): (&LineState, Pixels, bool),
+    (state, width): (&LineState, Pixels),
     window: &mut Window,
 ) -> usize {
     let line_text = &env.text[env.doc.line_start_byte(i)..env.doc.line_end_byte(i)];
@@ -551,11 +550,7 @@ fn state_row_count(
         window,
     );
     let per_row = |dl: &DisplayLine, window: &mut Window| {
-        let reach = if grow {
-            formula_reach(dl, line_text)
-        } else {
-            (0.0, 0.0)
-        };
+        let reach = formula_reach(dl, line_text);
         if reach == (0.0, 0.0) {
             return 1;
         }
