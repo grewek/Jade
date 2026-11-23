@@ -163,6 +163,34 @@ impl LineLayout {
             .verify(&self.doc_cache.borrow(), range, inp, window);
     }
 
+    /// [`Self::verify_rows`] for the lines in view, and how far that moved the
+    /// content under the reader: the rows of lines above the first visible one
+    /// are corrected when they enter the window, which moves everything below
+    /// them. Subtracting the result from the editor's origin and the scroll
+    /// offset keeps the content where it was (#24). Zero when the window had
+    /// no such corrections.
+    pub(super) fn verify_anchored(
+        &self,
+        (bounds, viewport): (Bounds<Pixels>, Bounds<Pixels>),
+        inp: &Inputs,
+        window: &mut Window,
+    ) -> Pixels {
+        let range = visible_line_range(self, bounds, viewport);
+        if range.is_empty() {
+            return px(0.);
+        }
+        let doc_top = viewport.origin.y - bounds.origin.y;
+        let first = self
+            .partition_point_cumulative(|c| c <= doc_top)
+            .saturating_sub(1);
+        let before = self.row_cache.borrow().prefix_sum(first);
+        self.verify_rows(range, inp, window);
+        let after = self.row_cache.borrow().prefix_sum(first);
+        // `f64`: the rows times the row height is exact where `f32` cumulative
+        // heights are not (see `window_y`).
+        px((f64::from(f32::from(self.line_height)) * (after - before) as f64) as f32)
+    }
+
     /// The line containing buffer byte offset `cursor`.
     pub(super) fn line_at(&self, cursor: usize) -> usize {
         self.doc_cache.borrow().line_at(cursor)
@@ -563,6 +591,8 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
 #[cfg(test)]
 mod math_rows_tests;
 
+#[cfg(test)]
+mod anchoring_tests;
 #[cfg(test)]
 mod height_agreement_tests;
 

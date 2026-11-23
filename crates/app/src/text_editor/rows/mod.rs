@@ -559,6 +559,12 @@ pub(super) fn shaped_count_for_test(
     shaped_row_count_for_line(&Env::new(&inp, doc, char_width), i, window)
 }
 
+/// Makes the next [`RowCache::verify`] shape its window again.
+#[cfg(test)]
+pub(super) fn forget_verified_for_test(rows: &mut RowCache) {
+    rows.verified = 0..0;
+}
+
 #[cfg(test)]
 pub(super) fn count_at(rows: &RowCache, i: usize) -> i64 {
     rows.row_count(i)
