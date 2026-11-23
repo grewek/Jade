@@ -107,6 +107,35 @@ pub(in crate::text_editor) fn tall_rows(
     math::rows_to_fit((reach.0 * em, reach.1 * em), text, f32::from(line_height))
 }
 
+/// What the row estimates need to know about the editor font at one size,
+/// measured from the font once so nothing downstream hard-codes a typeface:
+/// the advance of one character (the estimates treat the text as monospace;
+/// they are approximations of the off-screen rows, checked against shaping in
+/// `height_agreement_tests`), and the ascent and descent in px. Comparable, so
+/// a cache can tell that the font or its size changed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::text_editor) struct RowFontMetrics {
+    pub char_width: Pixels,
+    pub ascent: f32,
+    pub descent: f32,
+}
+
+impl RowFontMetrics {
+    pub(in crate::text_editor) fn measure(
+        font: &Font,
+        font_size: Pixels,
+        text_color: Hsla,
+        window: &mut Window,
+    ) -> Self {
+        let (ascent, descent) = mono_ascent_descent(font, font_size, window);
+        RowFontMetrics {
+            char_width: mono_char_width(font, font_size, text_color, window),
+            ascent,
+            descent,
+        }
+    }
+}
+
 /// The (ascent, descent) in px of the editor font at `font_size`, as the
 /// shaped lines report them, from the font's metrics without shaping anything.
 pub(in crate::text_editor) fn mono_ascent_descent(
