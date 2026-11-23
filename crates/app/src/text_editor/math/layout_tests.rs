@@ -441,3 +441,145 @@ fn every_construct_lays_out_finite_and_nonnegative() {
         }
     }
 }
+
+fn extent(l: &Layout) -> (f32, f32, f32) {
+    (l.width, l.ascent, l.descent)
+}
+
+#[test]
+fn an_accent_sits_over_its_letter_without_widening_it() {
+    let plain = lay("x", false);
+    let hat = lay("\\hat{x}", false);
+    assert_close(hat.width, plain.width);
+    assert!(hat.ascent > plain.ascent + 0.05, "{hat:?}");
+    assert_close(hat.descent, plain.descent);
+    assert!(
+        !hat.items
+            .iter()
+            .any(|i| matches!(i, Item::Glyph { error: true, .. }))
+    );
+}
+
+#[test]
+fn a_tall_letter_pushes_its_accent_higher() {
+    let low = lay("\\hat{x}", false);
+    let high = lay("\\hat{b}", false);
+    let gap = |l: &Layout, base: f32| l.ascent - base;
+    assert!(gap(&high, lay("b", false).ascent) <= gap(&low, lay("x", false).ascent) + 1e-3);
+}
+
+#[test]
+fn wide_marks_grow_with_their_body() {
+    let short = lay("\\widehat{ab}", false);
+    let long = lay("\\widehat{abcdefghij}", false);
+    assert!(long.width > short.width);
+    let hat = |l: &Layout| glyphs(l).last().copied().unwrap();
+    assert!(
+        hat(&long).0 != hat(&short).0,
+        "a longer body takes a wider hat"
+    );
+    for src in [
+        "\\overrightarrow{abcdefghijkl}",
+        "\\overbrace{abcdefghijkl}",
+        "\\underbrace{abcdefghijkl}",
+    ] {
+        let l = lay(src, false);
+        let body = lay("abcdefghijkl", false);
+        assert!(l.width >= body.width - 1e-3, "{src}: {l:?}");
+    }
+}
+
+#[test]
+fn braces_go_on_the_outside_of_their_body() {
+    let body = lay("abc", false);
+    let over = lay("\\overbrace{abc}", false);
+    let under = lay("\\underbrace{abc}", false);
+    assert!(over.ascent > body.ascent && close(over.descent, body.descent));
+    assert!(under.descent > body.descent && close(under.ascent, body.ascent));
+}
+
+#[test]
+fn a_script_on_a_brace_goes_above_it() {
+    let plain = lay("\\overbrace{abc}", false);
+    let labelled = lay("\\overbrace{abc}^{n}", false);
+    assert!(labelled.ascent > plain.ascent);
+    assert_close(labelled.width, plain.width.max(labelled.width));
+    let under = lay("\\underbrace{abc}_{n}", false);
+    assert!(under.descent > lay("\\underbrace{abc}", false).descent);
+}
+
+#[test]
+fn bars_are_rules_as_wide_as_the_body() {
+    let body = lay("xyz", false);
+    for (src, above) in [("\\overline{xyz}", true), ("\\underline{xyz}", false)] {
+        let l = lay(src, false);
+        let r = rules(&l);
+        assert_eq!(r.len(), 1, "{src}");
+        assert_close(r[0].2, body.width);
+        assert_eq!(r[0].1 < 0.0, above, "{src}");
+    }
+}
+
+#[test]
+fn overset_stacks_a_label_over_the_base() {
+    let base = lay("=", false);
+    let set = lay("\\overset{!}{=}", false);
+    assert!(set.ascent > base.ascent + 0.1);
+    assert_close(set.descent, base.descent.max(set.descent));
+    let under = lay("\\underset{!}{=}", false);
+    assert!(under.descent > base.descent + 0.1);
+}
+
+#[test]
+fn an_arrow_is_longer_than_its_label() {
+    let label = lay("\\scriptstyle abcdef", false);
+    let arrow = lay("\\xrightarrow{abcdef}", false);
+    assert!(arrow.width >= label.width, "{arrow:?}");
+    assert!(arrow.ascent > label.ascent);
+    let both = lay("\\xrightarrow[xy]{abcdef}", false);
+    assert!(both.descent > arrow.descent);
+    let left = lay("\\xleftarrow{abcdef}", false);
+    assert_close(left.width, arrow.width);
+}
+
+#[test]
+fn not_draws_a_slash_over_the_relation() {
+    let eq = lay("=", false);
+    let ne = lay("\\not=", false);
+    assert_close(ne.width, eq.width);
+    assert_eq!(glyphs(&ne).len(), 2);
+}
+
+#[test]
+fn boxed_frames_the_body() {
+    let body = lay("x", false);
+    let boxed = lay("\\boxed{x}", false);
+    assert_eq!(rules(&boxed).len(), 4);
+    assert!(boxed.width > body.width + 0.2);
+    assert!(boxed.ascent > body.ascent && boxed.descent > body.descent);
+}
+
+#[test]
+fn a_very_tall_delimiter_is_assembled_from_parts() {
+    let l = lay(
+        "\\left(\\frac{\\frac{\\frac{a}{b}}{\\frac{c}{d}}}{\\frac{\\frac{e}{f}}{\\frac{g}{h}}}\\right)",
+        true,
+    );
+    let (_, ascent, descent) = extent(&l);
+    let paren = id('(');
+    let tallest = glyphs(&l).iter().filter(|g| g.0 == paren).count();
+    assert_eq!(tallest, 0, "no plain paren glyph at this height");
+    assert!(ascent + descent > 3.0);
+}
+
+#[test]
+fn an_overset_relation_still_spaces_as_a_relation() {
+    let rel = lay("a\\underset{n}{\\to}b", false);
+    let ord = lay("a{\\underset{n}{\\to}}b", false);
+    assert!(
+        rel.width > ord.width + 0.2,
+        "{} vs {}",
+        rel.width,
+        ord.width
+    );
+}

@@ -7,8 +7,11 @@
 use ttf_parser::GlyphId;
 
 use super::alphabet;
-use super::ast::{Class, Font, FracKind, Limits, MathStyle, Node, OpName};
+use super::ast::{Accent, Class, Font, FracKind, Limits, MathStyle, Node, OpName};
 use super::font::{Consts, MathFont};
+
+mod marks;
+mod stretch;
 
 /// What a painter draws. `y` is down from the formula's baseline.
 #[derive(Debug, Clone, PartialEq)]
@@ -337,6 +340,16 @@ impl Typesetter<'_> {
                 Class::Inner,
                 self.delimited(*open, *close, body, style, alpha),
             ),
+            Node::Accent { kind, body } => (Class::Ord, self.accent(*kind, body, style, alpha)),
+            Node::Stack { base, over, under } => {
+                self.stack(base, over.as_deref(), under.as_deref(), style, alpha)
+            }
+            Node::Arrow { right, over, under } => (
+                Class::Rel,
+                self.arrow(*right, over, under.as_deref(), style, alpha),
+            ),
+            Node::Negated(body) => self.negated(body, style, alpha),
+            Node::Boxed(body) => (Class::Ord, self.boxed(body, style, alpha)),
             Node::Error(source) => (Class::Ord, self.error_run(source, style)),
             // Not laid out yet: shown as source so it is not silently lost.
             other => (Class::Ord, self.error_run(&placeholder(other), style)),
@@ -452,6 +465,7 @@ impl Typesetter<'_> {
                 Limits::Display => style.is_display(),
                 Limits::Never => false,
             },
+            Node::Accent { kind, .. } => matches!(kind, Accent::OverBrace | Accent::UnderBrace),
             _ => false,
         };
         let out = if limits {
@@ -775,6 +789,11 @@ impl Typesetter<'_> {
         let base = self.font.glyph_or_notdef(ch);
         let id = self.at_least(base, target / size);
         let g = self.glyph(id, size, false);
+        // No variant is tall enough: build one from the font's parts.
+        let g = match self.assemble_tall(base, target, size) {
+            Some(built) if g.ascent + g.descent < target => built,
+            _ => g,
+        };
         let shift = (g.ascent - g.descent) / 2.0 - self.c().axis_height * size;
         shifted_box(g, shift)
     }
@@ -848,11 +867,6 @@ fn effective_classes(entries: &[Entry]) -> Vec<Class> {
 /// What shows for a construct the layout does not handle yet.
 fn placeholder(node: &Node) -> String {
     match node {
-        Node::Accent { .. } => "accent",
-        Node::Stack { .. } => "overset",
-        Node::Arrow { .. } => "xarrow",
-        Node::Negated(_) => "not",
-        Node::Boxed(_) => "boxed",
         Node::Env(_) => "matrix",
         Node::Break => "\\\\",
         Node::Middle(_) => "\\middle",
