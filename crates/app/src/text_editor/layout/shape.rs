@@ -14,11 +14,50 @@ use crate::text_editor::preview::{
     build_display_line_in_context, hidden_line, is_thematic_break,
 };
 
+/// What a shaped line occupies, the one place its heights are decided: for
+/// each entry of `results` (more than one only for a wrapped table row) its
+/// row height and its height. Painting, the caret, clicks and the row counts
+/// all read the line through this, so they cannot disagree.
+pub(in crate::text_editor) fn entry_heights<'a>(
+    results: &'a [(WrappedLine, DisplayLine)],
+    line_text: &'a str,
+    metrics: (Pixels, Pixels),
+) -> impl Iterator<Item = EntryHeight> + 'a {
+    results.iter().map(move |(wrapped, display_line)| {
+        let row = tall_row_height(results.len(), (display_line, line_text), wrapped, metrics);
+        EntryHeight {
+            row,
+            height: wrapped.size(row).height,
+        }
+    })
+}
+
+/// One shaped entry's row height (`line_height`, or a whole multiple of it
+/// under a tall formula) and its total height, a whole number of rows.
+#[derive(Clone, Copy)]
+pub(in crate::text_editor) struct EntryHeight {
+    pub row: Pixels,
+    pub height: Pixels,
+}
+
+/// The height of the whole shaped line, and how many editor rows (of
+/// `line_height`) it is.
+pub(in crate::text_editor) fn shaped_height(
+    results: &[(WrappedLine, DisplayLine)],
+    line_text: &str,
+    metrics: (Pixels, Pixels),
+) -> (Pixels, usize) {
+    let height: Pixels = entry_heights(results, line_text, metrics)
+        .map(|e| e.height)
+        .sum();
+    (height, (height / metrics.1).round() as usize)
+}
+
 /// The height of each row of a shaped line: `line_height`, or a whole multiple
 /// of it when a drawn formula on the line reaches past one row (the formula is
 /// painted on the text baseline, which a taller row keeps centred). Whole rows
 /// keep the row counts integral. `entries` is how many shaped entries the line has.
-pub(in crate::text_editor) fn tall_row_height(
+fn tall_row_height(
     entries: usize,
     (display_line, line_text): (&DisplayLine, &str),
     wrapped: &WrappedLine,

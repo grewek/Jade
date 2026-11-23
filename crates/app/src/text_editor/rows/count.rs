@@ -12,7 +12,7 @@ use crate::text_editor::element::region;
 use crate::text_editor::image::{self, Sizes as ImageSizes};
 use crate::text_editor::layout::{
     LineState, build_display_lines, callout_at_line, char_budget, fit_with_indent, formula_reach,
-    indent_px, mono_ascent_descent, shape_display_line, tall_row_height, tall_rows,
+    indent_px, mono_ascent_descent, shape_display_line, shaped_height, tall_rows,
     wrapped_row_count,
 };
 use crate::text_editor::math;
@@ -533,17 +533,6 @@ pub(super) fn shaped_row_count_for_line(env: &Env, i: usize, window: &mut Window
         window,
     );
     let text = &env.text[env.doc.line_start_byte(i)..env.doc.line_end_byte(i)];
-    let height: Pixels = shaped
-        .iter()
-        .map(|(wrapped, display)| {
-            let row = tall_row_height(
-                shaped.len(),
-                (display, text),
-                wrapped,
-                (env.font_size, line_height),
-            );
-            wrapped.size(row).height
-        })
-        .sum();
-    ((height / line_height).round() as usize).max(usize::from(!state.hidden))
+    let (_, rows) = shaped_height(&shaped, text, (env.font_size, line_height));
+    rows.max(usize::from(!state.hidden))
 }
