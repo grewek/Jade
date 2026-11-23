@@ -247,6 +247,17 @@ pub fn may_open_block(line: &str) -> bool {
     }
 }
 
+/// Whether `line` opens a block as far as its own text says: an opening `$$`
+/// at the start (after indent) that nothing on the line closes (a line that
+/// closes itself is a display formula, not a block).
+pub fn opens_block(line: &str) -> bool {
+    if !may_open_block(line) {
+        return false;
+    }
+    let indent = line.len() - line.trim_start_matches([' ', '\t']).len();
+    find_double(line, indent + 2, line.len()).is_none()
+}
+
 /// How many following lines a reader must hold to decide whether a line that
 /// [`may_open_block`] opens one.
 pub const BLOCK_LOOKAHEAD: usize = MAX_BLOCK_LINES;

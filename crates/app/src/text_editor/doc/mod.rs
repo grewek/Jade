@@ -41,11 +41,13 @@ use super::table;
 use std::ops::Range;
 
 mod edit;
+mod math;
 mod patch;
 mod view;
 
 use edit::EditSpan;
 pub(in crate::text_editor) use edit::{EditPatch, TextEdit};
+pub(in crate::text_editor) use math::MathLines;
 use patch::*;
 pub(in crate::text_editor) use view::ViewState;
 
@@ -81,6 +83,8 @@ pub(super) struct DocumentCache {
     /// `line_roles`.
     open_block_states: Vec<OpenBlock>,
     tables: Vec<Table>,
+    /// The `$$` blocks, in line order.
+    math_blocks: Vec<MathLines>,
     callouts: Vec<Callout>,
     /// Reused by `patch_callouts` to hold the callouts the walk re-derives
     /// before they are spliced into `callouts`.
@@ -111,6 +115,7 @@ impl DocumentCache {
             block_contexts: Vec::new(),
             open_block_states: Vec::new(),
             tables: Vec::new(),
+            math_blocks: Vec::new(),
             callouts: Vec::new(),
             callout_states: Vec::new(),
             callout_scratch: Vec::new(),
@@ -211,6 +216,7 @@ impl DocumentCache {
         self.recompute_block_context(text, &strides);
         self.recompute_tables(text, &strides);
         self.recompute_columns(text, &strides);
+        self.recompute_math(text);
         self.line_index = Fenwick::from_vec(strides);
         // Reads lines through the index, so only now.
         self.cap_tails(text);
@@ -234,6 +240,7 @@ impl DocumentCache {
         };
 
         let table_pre = self.table_pre(&span);
+        let math_pre = self.math_pre(&span);
         self.resize_lines(&span);
 
         // Every line the edit's new text actually spans has different raw
@@ -250,8 +257,9 @@ impl DocumentCache {
         let r4 = self.patch_tables(text, &span, &table_pre);
         // Needs `r1`: a code fence opened or closed changes what is code below.
         let r5 = self.patch_columns(text, &span, &r1);
+        let r6 = self.patch_math(text, &span, &math_pre, &r1);
 
-        let touched = [minimal, r1, r2, r3, r4, r5]
+        let touched = [minimal, r1, r2, r3, r4, r5, r6]
             .into_iter()
             .reduce(union_ranges)
             .unwrap();
