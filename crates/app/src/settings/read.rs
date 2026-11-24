@@ -37,6 +37,7 @@ impl Typography {
         reader.font(&table, &mut typography);
         reader.shape(&table, &mut typography);
         reader.heading(&table, &mut typography);
+        reader.blocks(&table, &mut typography);
         Read {
             typography,
             notices: reader.notices,
@@ -59,6 +60,8 @@ pub fn load(dirs: Option<&ConfigDirs>) -> Read {
         },
     }
 }
+
+mod blocks;
 
 struct Reader {
     notices: Vec<String>,
@@ -172,23 +175,27 @@ impl Reader {
         );
     }
 
-    /// `"full"` or px.
-    fn radius(&mut self, path: &str, value: &Value, default: Radius) -> Radius {
+    /// `"full"` or px; `None` (with a notice) for anything else.
+    fn try_radius(&mut self, path: &str, value: &Value) -> Option<Radius> {
         if value
             .as_str()
             .is_some_and(|s| s.eq_ignore_ascii_case("full"))
         {
-            return Radius::Full;
+            return Some(Radius::Full);
         }
         match as_f32(value) {
-            Some(n) => Radius::Px(self.clamped(path, n, RADIUS)),
+            Some(n) => Some(Radius::Px(self.clamped(path, n, RADIUS))),
             None => {
                 self.notice(format!(
                     "{path} must be a number or \"full\", using the default"
                 ));
-                default
+                None
             }
         }
+    }
+
+    fn radius(&mut self, path: &str, value: &Value, default: Radius) -> Radius {
+        self.try_radius(path, value).unwrap_or(default)
     }
 
     fn heading(&mut self, root: &Table, t: &mut Typography) {
@@ -233,29 +240,29 @@ impl Reader {
         });
     }
 
-    /// Fills six levels from `items`; see [`Reader::levels`]. `parse` returns
+    /// Fills `N` slots from `items`; see [`Reader::levels`]. `parse` returns
     /// `None` for a bad entry.
-    fn spread<T: Copy>(
+    fn spread<T: Copy, const N: usize>(
         &mut self,
         path: &str,
         items: &[Value],
-        default: [T; HEADING_LEVELS],
+        default: [T; N],
         mut parse: impl FnMut(&mut Reader, &Value) -> Option<T>,
-    ) -> [T; HEADING_LEVELS] {
+    ) -> [T; N] {
         if items.is_empty() {
             self.notice(format!("{path} is empty, using the default"));
             return default;
         }
-        if items.len() > HEADING_LEVELS {
+        if items.len() > N {
             self.notice(format!(
-                "{path} has {} entries, only {HEADING_LEVELS} are used",
+                "{path} has {} entries, only {N} are used",
                 items.len()
             ));
         }
         let mut out = default;
         // Each entry is judged once; the last one then covers the levels after it.
         let mut last = None;
-        for (level, item) in items.iter().take(HEADING_LEVELS).enumerate() {
+        for (level, item) in items.iter().take(N).enumerate() {
             last = parse(self, item);
             match last {
                 Some(v) => out[level] = v,
@@ -265,7 +272,7 @@ impl Reader {
             }
         }
         if let Some(v) = last {
-            out[items.len().min(HEADING_LEVELS)..].fill(v);
+            out[items.len().min(N)..].fill(v);
         }
         out
     }
@@ -293,7 +300,7 @@ mod tests {
         for src in [
             "",
             "vault = \"/v\"\ntheme = \"x\"\njustify = true\n",
-            "[callout]\nradius = 4\n",
+            "[something_else]\nradius = 4\n",
         ] {
             let r = read(src);
             assert_eq!(r.typography, Typography::default(), "{src:?}");
