@@ -96,6 +96,14 @@ fn read_config(dirs: Option<&ConfigDirs>) -> Option<Result<ConfigFile, String>> 
     }))
 }
 
+/// The text of `config.toml`: `None` when there is no file, `Err` when it
+/// cannot be read (too big, not UTF-8, ...). Other readers of the file parse it
+/// themselves, so each reports only its own keys.
+pub fn config_text(dirs: Option<&ConfigDirs>) -> Option<Result<String, String>> {
+    let path = dirs?.config_file();
+    path.is_file().then(|| read_bounded(&path))
+}
+
 /// `justify` from `config.toml`; off when absent or the file does not parse
 /// (the theme load already reports that).
 pub fn configured_justify(dirs: Option<&ConfigDirs>) -> bool {

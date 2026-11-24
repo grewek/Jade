@@ -19,7 +19,7 @@ mod watch;
 pub use choices::{Choice, remember_justify, remember_vault};
 pub use contrast::ContrastWarning;
 pub use engine::ThemeEngine;
-pub use loader::{Loaded, configured_justify, configured_vault, load_startup};
+pub use loader::{Loaded, config_text, configured_justify, configured_vault, load_startup};
 pub use palette::Palette;
 pub use parse::{
     Defaults, FORMAT_VERSION, Kind, MAX_PALETTE_ENTRIES, MAX_THEME_BYTES, ResolvedTheme, Rgb,
