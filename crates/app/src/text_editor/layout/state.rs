@@ -220,7 +220,10 @@ pub(in crate::text_editor) fn is_active_line(
 /// Whether the `$$` block holding line `i` (if any) lies in one column of its
 /// region, from its first line to its last.
 fn block_in_one_column(doc: &DocumentCache, i: usize) -> bool {
-    let (Some(block), Some((region, _))) = (doc.math_block_at(i), doc.side_by_side(i)) else {
+    let Some(block) = doc.math_block_at(i) else {
+        return true;
+    };
+    let Some((region, _)) = doc.side_by_side(i) else {
         return true;
     };
     let column = region.column_of(block.first_line);
