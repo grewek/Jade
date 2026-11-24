@@ -17,6 +17,12 @@ pub const MONO_ADVANCE_EM: f32 = 0.6;
 /// reads small next to the text. Reserved columns and painting both use it.
 pub const MATH_SCALE: f32 = 1.2;
 
+/// The formula size relative to the body font: the built-in 1.2 times the
+/// user's `font.math_scale`.
+pub fn scale() -> f32 {
+    MATH_SCALE * crate::settings::math_scale()
+}
+
 /// Most normal rows a row holding a formula may be made.
 const MAX_ROW_SCALE: usize = 16;
 
@@ -39,7 +45,7 @@ pub fn rows_to_fit(formula: (f32, f32), text: (f32, f32), line_height: f32) -> u
 /// `font_size` px: its height plus half a row of air, at least one row.
 pub fn block_rows(formula: (f32, f32), font_size: f32, line_height: f32) -> usize {
     assert!(line_height > 0.0);
-    let height = (formula.0 + formula.1) * font_size * MATH_SCALE + line_height / 2.0;
+    let height = (formula.0 + formula.1) * font_size * scale() + line_height / 2.0;
     ((height / line_height - 1e-3).ceil().max(1.0) as usize).min(MAX_BLOCK_ROWS)
 }
 
@@ -104,8 +110,6 @@ fn build(source: &str, display: bool, macros: &Macros) -> Option<Arc<Rendered>> 
         return None;
     }
     let layout = layout(font, &formula.nodes, display);
-    let columns = (layout.width * MATH_SCALE / MONO_ADVANCE_EM)
-        .ceil()
-        .max(1.0) as usize;
+    let columns = (layout.width * scale() / MONO_ADVANCE_EM).ceil().max(1.0) as usize;
     Some(Arc::new(Rendered { layout, columns }))
 }

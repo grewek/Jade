@@ -132,6 +132,15 @@ mod tests {
             (settings::body_font_size(), settings::body_row_height()),
             (20.0, 40.0)
         );
+        // Formulas: the built-in 1.2 times font.math_scale; a formula block's rows follow.
+        assert_eq!(crate::text_editor::math::scale(), 1.2);
+        let rows = |s| crate::text_editor::math::block_rows((1.0, 0.5), 20.0, s);
+        let before_rows = rows(40.0);
+        write(&dirs, "[font]\nmath_scale = 2\n");
+        cx.update(|cx| TextSettings::reload(Some(&dirs), cx));
+        assert_eq!(settings::math_scale(), 2.0);
+        assert_eq!(crate::text_editor::math::scale(), 2.4);
+        assert!(rows(40.0) > before_rows);
         // Back to the defaults so no other test sees this file's numbers.
         write(&dirs, "");
         cx.update(|cx| TextSettings::reload(Some(&dirs), cx));

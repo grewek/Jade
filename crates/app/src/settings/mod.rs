@@ -29,12 +29,18 @@ pub fn layout_changed() {
     LAYOUT_GENERATION.fetch_add(1, Ordering::Relaxed);
 }
 
-/// The body font size and row height in px, as f32 bits. The editor lays out in
+/// The body font size, row height and math scale in px, as f32 bits. The editor lays out in
 /// the render, paint and input phases, which share no style stack to carry
 /// them, so they read these (set whenever the typography is) instead of the
 /// window's ambient text style. Defaults match [`Typography::default`].
 static BODY_SIZE: AtomicU32 = AtomicU32::new(16.0f32.to_bits());
 static BODY_ROW: AtomicU32 = AtomicU32::new(26.0f32.to_bits());
+static MATH_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+
+/// `font.math_scale`: formulas relative to the built-in formula size.
+pub fn math_scale() -> f32 {
+    f32::from_bits(MATH_SCALE.load(Ordering::Relaxed))
+}
 
 pub fn body_font_size() -> f32 {
     f32::from_bits(BODY_SIZE.load(Ordering::Relaxed))
@@ -48,4 +54,5 @@ pub fn body_row_height() -> f32 {
 pub fn set_body(typography: &Typography) {
     BODY_SIZE.store(typography.font.size.to_bits(), Ordering::Relaxed);
     BODY_ROW.store(typography.line_height_px().to_bits(), Ordering::Relaxed);
+    MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
 }

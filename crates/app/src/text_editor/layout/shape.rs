@@ -232,7 +232,7 @@ pub(in crate::text_editor) fn tall_rows(
     if reach == (0.0, 0.0) {
         return 1;
     }
-    let em = f32::from(font_size) * math::MATH_SCALE;
+    let em = f32::from(font_size) * math::scale();
     math::rows_to_fit((reach.0 * em, reach.1 * em), text, f32::from(line_height))
 }
 
