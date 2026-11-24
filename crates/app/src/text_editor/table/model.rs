@@ -25,6 +25,8 @@
 
 use std::ops::Range;
 
+use super::super::math::{Macros, NO_MACROS};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
     Left,
@@ -135,12 +137,18 @@ pub const LINE_BREAK: &str = "<br>";
 /// with fewer cells than `widths` counts the missing ones as one empty line;
 /// extra cells are ignored.
 pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
-    row_line_count_editing(line, widths, None)
+    row_line_count_in(line, widths, None, &NO_MACROS)
 }
 
 /// [`row_line_count`] for a row whose cell `editing` is being edited: that cell
-/// shows its text verbatim (see `table::geometry::wrap_raw`), so it wraps differently.
-pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usize>) -> usize {
+/// shows its text verbatim (see `table::geometry::wrap_raw`), so it wraps
+/// differently. The other cells draw their formulas, expanded with `macros`.
+pub fn row_line_count_in(
+    line: &str,
+    widths: &[usize],
+    editing: Option<usize>,
+    macros: &Macros,
+) -> usize {
     let mut lines = 1;
     let mut column = 0;
     for_each_cell_range(line, |raw| {
@@ -151,8 +159,8 @@ pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usiz
             } else {
                 let cell = line[raw].trim();
                 // Bytes are never fewer than characters.
-                if cell.len() > width || cell.contains(LINE_BREAK) {
-                    lines = lines.max(wrapped_line_count(cell, width));
+                if cell.len() > width || cell.contains(LINE_BREAK) || cell.contains('$') {
+                    lines = lines.max(wrapped_line_count_in(cell, width, macros));
                 }
             }
         }
@@ -163,8 +171,117 @@ pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usiz
 
 /// How many rows each line of the row takes when it is shaped as `entries`
 /// rows: more than one when a drawn formula in a cell is taller than a row.
-pub fn row_scale(line: &str, widths: &[usize], editing: Option<usize>, entries: usize) -> usize {
-    (entries / row_line_count_editing(line, widths, editing)).max(1)
+pub fn row_scale(
+    line: &str,
+    widths: &[usize],
+    (editing, macros): (Option<usize>, &Macros),
+    entries: usize,
+) -> usize {
+    (entries / row_line_count_in(line, widths, editing, macros)).max(1)
+}
+
+/// A run of a cell that the wrapping places whole.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::text_editor) struct Chunk {
+    /// Where it is in the cell text.
+    pub range: Range<usize>,
+    /// Characters it takes on a line (`\|` shows as one, a drawn formula as
+    /// many as it reserves).
+    pub len: usize,
+    /// It follows the chunk before it with no space between.
+    pub glued: bool,
+}
+
+/// Characters `word` takes once `\|` shows as `|`.
+pub(in crate::text_editor) fn shown_len(word: &str) -> usize {
+    word.chars().count() - word.matches("\\|").count()
+}
+
+/// `text` as the runs the greedy fill places. Spaces separate them, except
+/// inside a drawn formula (`formulas`: raw range and reserved characters, in
+/// order): it is one run of its drawn width, so it is never cut. A word that
+/// touches a formula is cut at the formula's edges into glued runs. A formula
+/// wider than `width` is not kept whole (it shows as the text it is, which
+/// wraps as text).
+pub(in crate::text_editor) fn chunks(
+    text: &str,
+    formulas: &[(Range<usize>, usize)],
+    width: usize,
+) -> Vec<Chunk> {
+    let kept: Vec<_> = formulas
+        .iter()
+        .filter(|(_, w)| *w <= width.max(1))
+        .collect();
+    let (mut out, mut next, mut at) = (Vec::new(), 0, 0);
+    let mut prev_end = None;
+    while at < text.len() {
+        if let Some((range, len)) = kept.get(next).filter(|(r, _)| r.start == at) {
+            out.push(Chunk {
+                range: range.clone(),
+                len: *len,
+                glued: prev_end == Some(at),
+            });
+            (at, next, prev_end) = (range.end, next + 1, Some(range.end));
+            continue;
+        }
+        let Some(c) = text[at..].chars().next() else {
+            break;
+        };
+        if c.is_whitespace() {
+            at += c.len_utf8();
+            continue;
+        }
+        let start = at;
+        let stop = kept.get(next).map_or(text.len(), |(r, _)| r.start);
+        while at < stop
+            && text[at..]
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_whitespace())
+        {
+            at += text[at..].chars().next().map_or(1, char::len_utf8);
+        }
+        out.push(Chunk {
+            range: start..at,
+            len: shown_len(&text[start..at]),
+            glued: prev_end == Some(start),
+        });
+        prev_end = Some(at);
+    }
+    out
+}
+
+/// [`wrapped_line_count`] with the cell's formulas drawn (see [`chunks`]).
+pub fn wrapped_line_count_in(cell: &str, width: usize, macros: &Macros) -> usize {
+    if cell.contains(LINE_BREAK) {
+        return cell
+            .split(LINE_BREAK)
+            .map(|part| wrapped_line_count_in(part, width, macros))
+            .sum();
+    }
+    if !cell.contains('$') {
+        return wrapped_line_count(cell, width);
+    }
+    let formulas = super::super::preview::cell_formulas(cell, macros);
+    if formulas.is_empty() {
+        return wrapped_line_count(cell, width);
+    }
+    let width = width.max(1);
+    let (mut lines, mut used) = (0, 0);
+    for chunk in chunks(cell, &formulas, width) {
+        let len = chunk.len;
+        let separator = usize::from(used > 0 && !chunk.glued);
+        if used + separator + len <= width {
+            used += separator + len;
+        } else if len <= width {
+            lines += 1;
+            used = len;
+        } else {
+            lines += usize::from(used > 0) + (len - 1) / width;
+            used = len - (len - 1) / width * width;
+        }
+    }
+    lines + usize::from(used > 0 || lines == 0)
 }
 
 /// `wrap_cell_text(&cell.replace("\\|", "|"), width).len()` without building a

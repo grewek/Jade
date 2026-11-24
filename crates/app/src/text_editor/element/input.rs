@@ -477,7 +477,7 @@ pub(super) fn hit_in_line(
         let scale = table::row_scale(
             line_text,
             &columns.widths,
-            state.editing_cell,
+            (state.editing_cell, state.macros),
             results.len(),
         );
         let row = ((relative_y - y_offset) / (line_height * scale as f32)) as usize;
