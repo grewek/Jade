@@ -9,6 +9,7 @@ use super::apply;
 use super::builtin;
 use super::choices::{self, Choice};
 use super::loader;
+use super::overrides::{self, ColorOverrides};
 use super::palette::Palette;
 use super::parse::{Kind, ResolvedTheme};
 use super::paths::ConfigDirs;
@@ -19,6 +20,8 @@ pub struct ThemeEngine {
     kind: Kind,
     palette: Palette,
     dirs: Option<ConfigDirs>,
+    /// The user's `[colors]`, kept across theme switches.
+    overrides: ColorOverrides,
 }
 
 impl Global for ThemeEngine {}
@@ -29,13 +32,18 @@ impl ThemeEngine {
     pub fn install(dirs: Option<ConfigDirs>, cx: &mut App) -> Vec<String> {
         let loaded = loader::load_startup(&builtin::defaults(), dirs.as_ref());
         let mut notices = loaded.notices;
-        let palette = Palette::from_resolved(&loaded.theme);
-        if !apply_to_widgets(&loaded.theme, cx) {
+        let (overrides, more) = ColorOverrides::load(dirs.as_ref());
+        notices.extend(more);
+        let applied = overrides.apply_to(&loaded.theme);
+        notices.extend(overrides::new_warnings(&loaded.theme, &applied.theme));
+        let palette = Palette::from_resolved(&applied.theme).with_opacity(&applied.alpha);
+        if !apply_to_widgets(&applied.theme, cx) {
             notices.push("could not apply the theme to the widgets".to_owned());
         }
         cx.set_global(ThemeEngine {
             dirs,
             palette,
+            overrides,
             kind: loaded.theme.kind,
             active_id: loaded.id,
         });
@@ -53,6 +61,9 @@ impl ThemeEngine {
             }
         };
         let mut notices = loaded.notices;
+        let (overrides, more) = ColorOverrides::load(dirs);
+        notices.extend(more);
+        cx.global_mut::<ThemeEngine>().overrides = overrides;
         if !Self::activate(loaded.id, &loaded.theme, cx) {
             notices.push("could not apply the theme to the widgets".to_owned());
         }
@@ -88,11 +99,12 @@ impl ThemeEngine {
     }
 
     fn activate(id: String, theme: &ResolvedTheme, cx: &mut App) -> bool {
-        if !apply_to_widgets(theme, cx) {
+        let applied = Self::global(cx).overrides.apply_to(theme);
+        if !apply_to_widgets(&applied.theme, cx) {
             return false;
         }
         let engine = cx.global_mut::<ThemeEngine>();
-        engine.palette = Palette::from_resolved(theme);
+        engine.palette = Palette::from_resolved(&applied.theme).with_opacity(&applied.alpha);
         engine.kind = theme.kind;
         engine.active_id = id;
         cx.refresh_windows();
