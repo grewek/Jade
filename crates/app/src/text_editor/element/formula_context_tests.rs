@@ -6,7 +6,7 @@
 use super::super::Editor;
 use super::region::shape_region;
 use crate::text_editor::doc::DocumentCache;
-use crate::text_editor::layout::LineState;
+use crate::text_editor::layout::{EntryHeight, LineState, entry_heights, shape_display_line};
 use crate::text_editor::rows::{self, RowCache};
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, Pixels, TestAppContext, WindowOptions, px};
@@ -362,4 +362,170 @@ fn a_block_across_a_divider_stays_source(cx: &mut TestAppContext) {
         let _ = cx;
     })
     .unwrap();
+}
+
+/// A paragraph of plain words wrapped over several rows with a tall formula in
+/// the second; where a formula is not drawn the same text takes one row less.
+fn long_paragraph() -> String {
+    let words = |n: usize| "word ".repeat(n);
+    format!("{}{TALL} {}", words(22), words(120).trim_end())
+}
+
+/// Shapes `text` (one paragraph) at the test width and returns the entry's
+/// shaped line, its display line and its row heights.
+fn shaped_paragraph(
+    text: &str,
+    width: Pixels,
+    window: &mut gpui_kit::Window,
+) -> (
+    gpui_kit::WrappedLine,
+    crate::text_editor::preview::DisplayLine,
+    EntryHeight,
+) {
+    let style = window.text_style();
+    let (font, size) = (style.font(), style.font_size.to_pixels(window.rem_size()));
+    let state = LineState::plain();
+    let mut results = shape_display_line(text, &state, &font, size, style.color, width, window);
+    let doc = DocumentCache::new(text);
+    let entry = entry_heights(&results, text, (size, window.line_height()), doc.macros())
+        .next()
+        .unwrap();
+    let (wrapped, display) = results.remove(0);
+    (wrapped, display, entry)
+}
+
+#[gpui_kit::test]
+fn only_the_rows_holding_a_tall_formula_are_tall(cx: &mut TestAppContext) {
+    let window = open(cx);
+    let text = long_paragraph();
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let (wrapped, _, entry) = shaped_paragraph(&text, px(WIDTH), window);
+        let rows = wrapped.wrap_boundaries().len() + 1;
+        assert!(
+            rows >= 4,
+            "the paragraph must wrap over several rows: {rows}"
+        );
+        assert_eq!(entry.row, window.line_height());
+        assert_eq!(entry.varied.len(), rows, "rows differ in height");
+        let tall = entry.varied.iter().filter(|&&u| u > 1).count();
+        assert_eq!(tall, 1, "one row holds the formula: {:?}", entry.varied);
+        let units: usize = entry.varied.iter().map(|&u| usize::from(u)).sum();
+        assert_eq!(entry.height, window.line_height() * units as f32);
+        assert!(
+            units < rows * 2,
+            "not every row grew: {units} units, {rows} rows"
+        );
+        // The rows tile the entry: each starts where the one before ends.
+        for row in 1..rows {
+            assert_eq!(
+                entry.top(row),
+                entry.top(row - 1) + entry.row_height(row - 1)
+            );
+        }
+        // A position GPUI's layout gives lands on its row's top, with its height.
+        for row in 0..rows {
+            // One character in: the index of a row's first glyph is the end of the row before.
+            let at = super::justify::row_start(&wrapped, row).unwrap() + 1;
+            let layout = wrapped.position_for_index(at, entry.row).unwrap();
+            let (placed, height) = entry.place(layout);
+            assert_eq!(placed.y, entry.top(row), "row {row}");
+            assert_eq!(height, entry.row_height(row), "row {row}");
+            assert_eq!(placed.x, layout.x);
+        }
+        // A y inside a row finds that row, and the layout y is GPUI's for it.
+        for row in 0..rows {
+            let inside = entry.top(row) + entry.row_height(row) / 2.;
+            assert_eq!(entry.row_at(inside), row);
+            assert_eq!(entry.layout_y(inside), window.line_height() * row as f32);
+        }
+    })
+    .unwrap();
+}
+
+/// The cold estimate puts the extra rows on the row of the formula, so a
+/// paragraph is counted at most a text wrap off what shaping makes of it.
+#[gpui_kit::test]
+fn a_paragraph_with_one_tall_formula_is_counted_by_its_row(cx: &mut TestAppContext) {
+    let window = open(cx);
+    let text = format!("intro\n\n{}\n\nlast\n", long_paragraph());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let style = window.text_style();
+        let (font, size) = (style.font(), style.font_size.to_pixels(window.rem_size()));
+        let look = (&font, size, style.color);
+        let doc = DocumentCache::new(&text);
+        let mut cache = RowCache::empty();
+        rows::rebuild_for_test(&mut cache, &text, &doc, (0, false), px(WIDTH), look, window);
+        let cold = rows::count_at(&cache, 2);
+        let shaped =
+            rows::shaped_count_for_test(&text, &doc, 2, (0, false), px(WIDTH), look, window);
+        assert!(
+            (0..=1).contains(&(shaped as i64 - cold)),
+            "cold {cold}, shaped {shaped}"
+        );
+        // Not the old whole-line growth, which made every row tall.
+        let rows_of_text = (text.lines().nth(2).unwrap().chars().count() / 90).max(1);
+        assert!(
+            shaped < rows_of_text * 2,
+            "{shaped} rows for about {rows_of_text} of text"
+        );
+    })
+    .unwrap();
+}
+
+/// Clicks land on the text of the rows below a tall one, and a click on the
+/// tall row itself lands on it (through real dispatch).
+#[gpui_kit::test]
+fn a_click_below_a_tall_row_lands_on_its_own_row(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::theme::ThemeEngine::install(None, cx);
+    });
+    // The paragraph is below the caret's line, which shows its source.
+    let (text, above) = (long_paragraph(), "intro\n\n");
+    let owned = format!("{above}{text}");
+    let (window, editor) = cx.update(|cx| {
+        gpui_kit::open_window(WindowOptions::default(), cx, move |_w, cx| {
+            cx.new(|cx| Editor::new(&owned, cx))
+        })
+        .unwrap()
+    });
+    // Each wrapped row: where its second word starts (x, painted y) and the
+    // offset a click there must give.
+    let spots = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let width = window.find("editor").bounds().size.width;
+            let (wrapped, display, entry) = shaped_paragraph(&text, width, window);
+            let lh = window.line_height();
+            (0..=wrapped.wrap_boundaries().len())
+                .map(|row| {
+                    let at = super::justify::row_start(&wrapped, row).unwrap() + 2;
+                    let pos = wrapped.position_for_index(at, entry.row).unwrap();
+                    let (pos, height) = entry.place(pos);
+                    let y = lh * 2. + pos.y + height / 2.;
+                    (pos.x, y, above.len() + display.raw_offset_for_display(at))
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap();
+    assert!(spots.len() >= 4);
+    for (row, (x, y, target)) in spots.into_iter().enumerate() {
+        // The first row holds the formula and is tall; the others are not.
+        cx.update_window(window, |_, window, cx| {
+            window.click_at("editor", gpui_kit::point(x + px(1.), y), cx);
+        })
+        .unwrap();
+        let cursor = editor.read_with(cx, |e, _| e.buffer().cursor());
+        assert_eq!(
+            cursor, target,
+            "row {row}: the click should land on the word it hit"
+        );
+        // Back above the paragraph so it is drawn rendered again.
+        cx.update_window(window, |_, window, cx| {
+            window.click_at("editor", gpui_kit::point(px(3.), px(3.)), cx);
+        })
+        .unwrap();
+    }
 }

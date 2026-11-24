@@ -271,11 +271,12 @@ pub(super) fn paint_table_row(
             let spare = (column_width - wrapped.size(line_height).width).max(px(0.));
             let at = point(left + spare * fraction, origin.y + pitch * j as f32 + lift);
             let _ = wrapped.paint(at, line_height, TextAlign::Left, None, window, cx);
+            let entry = EntryHeight::uniform(line_height);
             let widgets = WidgetPaint {
                 colors: widget_colors,
                 inline: colors,
                 font_size,
-                line_height,
+                entry: &entry,
                 line_text: text,
                 row_width: column_width,
                 macros,

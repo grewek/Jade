@@ -12,13 +12,13 @@ use crate::text_editor::element::region;
 use crate::text_editor::image::{self, Sizes as ImageSizes};
 use crate::text_editor::layout::{
     LineState, RowFontMetrics, build_display_lines, callout_at_line, char_budget, fit_with_indent,
-    formula_reach, indent_px, shape_display_line, shaped_height, tall_rows, wrapped_row_count,
+    indent_px, shape_display_line, shaped_height, tall_rows, wrapped_row_count,
 };
 use crate::text_editor::lines::Fenwick;
 use crate::text_editor::math::{self, Macros};
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
-use crate::text_editor::preview::{DisplayLine, LineContext, line_indent};
+use crate::text_editor::preview::{DisplayLine, InlineStyle, LineContext, line_indent};
 use crate::text_editor::table::Table;
 use jade_core::math_scan;
 
@@ -359,25 +359,116 @@ fn estimate_row_count(
     // rows are counted on what is left of the text, each as many as it needs.
     if has_dollar
         && matches!(doc.roles[i], LineRole::Plain)
-        && let Some((reach, chars)) = inline_math_extent(
+        && let Some((mut formulas, chars)) = inline_math_extent(
             line,
             doc.macros,
             fit_with_indent(available_width, char_width, indent_level),
         )
     {
-        let per_row = tall_rows(reach, (font_size, line_height), text);
-        return rows_for_chars(chars, wrap_width, char_width) * per_row;
+        let per_row = chars_per_row(wrap_width, char_width);
+        let moved = settle_formulas(&mut formulas, per_row);
+        let rows = rows_for_chars(chars + moved, wrap_width, char_width);
+        return rows + tall_extra_rows(&formulas, per_row, (font_size, line_height), text);
     }
     wrapped_row_count(line, wrap_width, char_width).max(1)
 }
 
-/// How far the drawn inline formulas of `line` reach above and below the
-/// baseline (em), and how many display characters the line has with each
-/// formula as its blank columns; `None` when it draws none. A formula wider than
-/// `fit` columns (a row; 0 = unknown) is shown as its source, as the shaped line
-/// does (#49), so it counts as plain characters.
-fn inline_math_extent(line: &str, macros: &Macros, fit: usize) -> Option<((f32, f32), usize)> {
-    let (mut reach, mut chars, mut last) = ((0.0f32, 0.0f32), 0, 0);
+/// A drawn formula as the row estimate sees it: the display character it starts
+/// at, how many blank columns it takes, and how far it reaches above and below
+/// the baseline (em).
+#[derive(Clone, Copy)]
+pub(super) struct FormulaSpot {
+    start: usize,
+    columns: usize,
+    reach: (f32, f32),
+}
+
+/// Moves each formula that would run past the end of its row to the start of the
+/// next, as the wrap does (a formula's blank columns are one unbreakable word), and
+/// returns how many characters of room that leaves empty. `start`s are in
+/// characters; a formula wider than a row stays where it is.
+fn settle_formulas(formulas: &mut [FormulaSpot], per_row: usize) -> usize {
+    let mut moved = 0;
+    for f in formulas {
+        f.start += moved;
+        let column = f.start % per_row;
+        if column + f.columns > per_row && f.columns <= per_row {
+            let gap = per_row - column;
+            f.start += gap;
+            moved += gap;
+        }
+    }
+    moved
+}
+
+/// How many rows more than its text a line needs for its tall formulas: each
+/// row is as tall as its tallest formula (#32). The row a formula is on is
+/// guessed from its character offset (monospace, no word wrapping), so a formula
+/// the wrap moves to the next row can be off; painting corrects the count. A
+/// formula that would be split by the row's end is not drawn and counts for
+/// nothing, as when shaped. `per_row` is the characters a row holds.
+fn tall_extra_rows(
+    formulas: &[FormulaSpot],
+    per_row: usize,
+    (font_size, line_height): (Pixels, Pixels),
+    text: (f32, f32),
+) -> usize {
+    let (mut extra, mut row, mut reach) = (0, 0, (0.0f32, 0.0f32));
+    let mut flush = |reach: (f32, f32)| {
+        extra += tall_rows(reach, (font_size, line_height), text) - 1;
+    };
+    for f in formulas {
+        let (first, last) = (
+            f.start / per_row,
+            (f.start + f.columns.max(1) - 1) / per_row,
+        );
+        if first != last {
+            continue;
+        }
+        if first != row {
+            flush(reach);
+            (row, reach) = (first, (0.0, 0.0));
+        }
+        reach = (reach.0.max(f.reach.0), reach.1.max(f.reach.1));
+    }
+    flush(reach);
+    extra
+}
+
+/// The drawn formulas of a display line, for [`tall_extra_rows`]; none (and no
+/// allocation) for a line without a drawn formula.
+fn formula_spots(dl: &DisplayLine, line_text: &str, macros: &Macros) -> Vec<FormulaSpot> {
+    dl.segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .filter_map(|seg| {
+            let drawn = math::rendered_span(line_text.get(seg.raw.clone())?, macros)?;
+            Some(FormulaSpot {
+                start: dl.display_text[..seg.display.start].chars().count(),
+                columns: dl.display_text[seg.display.clone()].chars().count(),
+                reach: (drawn.layout.ascent, drawn.layout.descent),
+            })
+        })
+        .collect()
+}
+
+/// The characters a row of `wrap_width` holds.
+fn chars_per_row(wrap_width: Option<Pixels>, char_width: Pixels) -> usize {
+    wrap_width
+        .filter(|_| char_width > px(0.))
+        .map_or(usize::MAX, |w| ((w / char_width) as usize).max(1))
+}
+
+/// The drawn inline formulas of `line`, and how many display characters the line
+/// has with each formula as its blank columns; `None` when it draws none. A
+/// formula wider than `fit` columns (a row; 0 = unknown) is shown as its source,
+/// as the shaped line does (#49), so it counts as plain characters.
+fn inline_math_extent(
+    line: &str,
+    macros: &Macros,
+    fit: usize,
+) -> Option<(Vec<FormulaSpot>, usize)> {
+    let (mut formulas, mut chars, mut last) = (Vec::new(), 0, 0);
     let mut nest = Nesting::default();
     math_scan::scan_inline(line, 0, line.len(), |found| {
         nest.advance(line.as_bytes(), found.span.start);
@@ -389,13 +480,17 @@ fn inline_math_extent(line: &str, macros: &Macros, fit: usize) -> Option<((f32, 
         if let Some(drawn) = math::rendered_span(&line[found.span.clone()], macros)
             && (fit == 0 || drawn.columns <= fit)
         {
-            reach.0 = reach.0.max(drawn.layout.ascent);
-            reach.1 = reach.1.max(drawn.layout.descent);
-            chars += line[last..found.span.start].chars().count() + drawn.columns;
+            chars += line[last..found.span.start].chars().count();
+            formulas.push(FormulaSpot {
+                start: chars,
+                columns: drawn.columns,
+                reach: (drawn.layout.ascent, drawn.layout.descent),
+            });
+            chars += drawn.columns;
             last = found.span.end;
         }
     });
-    (last > 0).then(|| (reach, chars + line[last..].chars().count()))
+    (last > 0).then(|| (formulas, chars + line[last..].chars().count()))
 }
 
 /// Whether a position of a line is inside an emphasis (`*`, `**`), a
@@ -613,19 +708,21 @@ fn state_row_count(
         width,
         window,
     );
-    let per_row = |dl: &DisplayLine, window: &mut Window| {
-        let reach = formula_reach(dl, line_text, env.doc.macros());
-        if reach == (0.0, 0.0) {
-            return 1;
-        }
+    let line_height = window.line_height();
+    let tall = |dl: &DisplayLine| {
+        let mut formulas = formula_spots(dl, line_text, env.doc.macros());
         let text = (env.metrics.ascent, env.metrics.descent);
-        tall_rows(reach, (env.font_size, window.line_height()), text)
+        let per_row = chars_per_row(wrap_width, env.metrics.char_width);
+        let moved = settle_formulas(&mut formulas, per_row);
+        let chars = dl.display_text.chars().count();
+        // The room left empty before a moved formula can cost a row of text.
+        let pushed = (chars + moved).div_ceil(per_row) - chars.div_ceil(per_row);
+        pushed + tall_extra_rows(&formulas, per_row, (env.font_size, line_height), text)
     };
     display_lines
         .iter()
         .map(|dl| {
-            wrapped_row_count(&dl.display_text, wrap_width, env.metrics.char_width)
-                * per_row(dl, window)
+            wrapped_row_count(&dl.display_text, wrap_width, env.metrics.char_width) + tall(dl)
         })
         .sum::<usize>()
         .max(usize::from(!state.hidden))

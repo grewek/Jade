@@ -171,12 +171,16 @@ fn slice_runs(runs: &[TextRun], range: &Range<usize>, out: &mut Vec<TextRun>) {
 /// What a justified line needs to paint: where it sits and how it is styled.
 pub(super) struct RowPaint<'a> {
     pub origin: Point<Pixels>,
-    pub line_height: Pixels,
+    /// The heights of the rows: each is painted at its own top, centred in its own height.
+    pub entry: &'a EntryHeight,
+    /// Whether the rows are stretched (justified) or only painted one by one.
+    pub stretch: bool,
     pub font_size: Pixels,
     pub runs: &'a [TextRun],
 }
 
-/// Paints `wrapped` row by row, with the stretch of each justified row.
+/// Paints `wrapped` row by row, with the stretch of each justified row when
+/// `paint.stretch`; a line whose rows differ in height is painted this way too.
 pub(super) fn paint(
     wrapped: &WrappedLine,
     text: &str,
@@ -197,15 +201,16 @@ pub(super) fn paint(
             &scratch,
             None,
         );
-        let at = paint.origin + point(x, paint.line_height * row as f32);
-        let _ = shaped.paint(at, paint.line_height, TextAlign::Left, None, window, cx);
+        let at = paint.origin + point(x, paint.entry.top(row));
+        let height = paint.entry.row_height(row);
+        let _ = shaped.paint(at, height, TextAlign::Left, None, window, cx);
     };
     for row in 0..rows {
         let Some(start) = row_start(wrapped, row) else {
             continue;
         };
         let end = row_start(wrapped, row + 1).unwrap_or(text.len());
-        let Some(plan) = plan(wrapped, text, row) else {
+        let Some(plan) = plan(wrapped, text, row).filter(|_| paint.stretch) else {
             piece(start..end, px(0.), row, window);
             continue;
         };

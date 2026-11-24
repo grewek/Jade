@@ -473,12 +473,18 @@ fn shape_aside(
                 } else {
                     whole
                 };
-                let h = wrapped.size(line_height).height;
+                let results = vec![(wrapped, piece)];
+                let (h, _) = shaped_height(
+                    &results,
+                    &line_text[raw.clone()],
+                    (font_size, line_height),
+                    state.macros,
+                );
                 flow_lines.push(ShapedLine {
                     line: i,
                     y,
                     height: h,
-                    results: vec![(wrapped, piece)],
+                    results,
                     broken: piece_broken,
                     x: bx,
                     width: bw,
@@ -620,14 +626,14 @@ pub(super) fn paint_region(
                     range.end
                 };
                 let line_text = &env.text[range.clone()];
-                let row_height = entry_heights(
+                let entry = entry_heights(
                     &sl.results,
                     line_text,
                     (env.font_size, env.line_height),
                     env.doc.macros(),
                 )
                 .next()
-                .map_or(env.line_height, |e| e.row);
+                .unwrap_or_else(|| EntryHeight::uniform(env.line_height));
                 let slot = LineSlot {
                     i: sl.line,
                     line_text,
@@ -637,7 +643,7 @@ pub(super) fn paint_region(
                     bounds: sl.frame(bounds),
                     y_offset: top + sl.y,
                     total_height: sl.height,
-                    row_height,
+                    entry: &entry,
                 };
                 paint_line(env, &slot, &mut tables, window, cx);
             }
@@ -980,11 +986,12 @@ pub(super) fn caret_bounds(
         ) else {
             continue;
         };
+        let (pos, caret_height) = entry.place(pos);
         let x = pos.x + indent_px(display.indent.level());
         let origin = bounds.origin + point(sl.x + x, region_top + sl.y + pos.y);
         return Some(Bounds {
             origin,
-            size: size(px(1.), entry.row),
+            size: size(px(1.), caret_height),
         });
     }
     None

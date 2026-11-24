@@ -204,9 +204,9 @@ pub(super) fn paint_lines(
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
-        let row_height = entry_heights(&results, line_text, (font_size, line_height), state.macros)
+        let entry = entry_heights(&results, line_text, (font_size, line_height), state.macros)
             .next()
-            .map_or(line_height, |e| e.row);
+            .unwrap_or_else(|| EntryHeight::uniform(line_height));
         let (total_height, rows) =
             shaped_height(&results, line_text, (font_size, line_height), state.macros);
         // Upgrades a cold-rebuild estimate (see `RowCache::rebuild`)
@@ -249,7 +249,7 @@ pub(super) fn paint_lines(
             bounds,
             y_offset,
             total_height,
-            row_height,
+            entry: &entry,
         };
         paint_line(&env, &slot, &mut columns, window, cx);
 
@@ -322,9 +322,9 @@ pub(super) struct LineSlot<'a> {
     pub(super) bounds: Bounds<Pixels>,
     pub(super) y_offset: Pixels,
     pub(super) total_height: Pixels,
-    /// The height of one row of this line: the editor's, or a whole multiple
-    /// of it for a line holding a tall formula (see `entry_heights`).
-    pub(super) row_height: Pixels,
+    /// The heights of this line's rows: the editor's, or a whole multiple of
+    /// it where a tall formula sits (see `entry_heights`).
+    pub(super) entry: &'a EntryHeight,
 }
 
 /// Paints one shaped line (selection, text, widgets, caret, rules, images,
@@ -363,8 +363,9 @@ pub(super) fn paint_line(
         bounds,
         y_offset,
         total_height,
-        row_height: line_height,
+        entry,
     } = *slot;
+    let line_height = entry.row;
     let line_range = line_range.clone();
     let callout = state.callout;
 
@@ -603,13 +604,16 @@ pub(super) fn paint_line(
                     line_height,
                 )
                 .unwrap_or(point(full_row_width, total_height - line_height));
-                let start_row = (start_pos.y / line_height) as i32;
-                let end_row = (end_pos.y / line_height) as i32;
+                // Rows are `line_height` apart in the layout, however tall they are painted.
+                let row_of = |y: Pixels| (f32::from(y) / f32::from(line_height)).round() as usize;
+                let (start_row, end_row) = (row_of(start_pos.y), row_of(end_pos.y));
+                let (start_pos, start_height) = entry.place(start_pos);
+                let (end_pos, _) = entry.place(end_pos);
                 if start_row == end_row {
                     window.paint_quad(fill(
                         Bounds {
                             origin: line_origin + start_pos,
-                            size: size(end_pos.x - start_pos.x, line_height),
+                            size: size(end_pos.x - start_pos.x, start_height),
                         },
                         selection_fill,
                     ));
@@ -631,8 +635,8 @@ pub(super) fn paint_line(
                         if x1 > x0 {
                             window.paint_quad(fill(
                                 Bounds {
-                                    origin: line_origin + point(x0, line_height * row as f32),
-                                    size: size(x1 - x0, line_height),
+                                    origin: line_origin + point(x0, entry.top(row)),
+                                    size: size(x1 - x0, entry.row_height(row)),
                                 },
                                 selection_fill,
                             ));
@@ -642,9 +646,8 @@ pub(super) fn paint_line(
             }
         }
 
-        if justify::eligible(state, display_line, results.len())
-            && !wrapped.wrap_boundaries().is_empty()
-        {
+        let stretch = justify::eligible(state, display_line, results.len());
+        if (stretch && !wrapped.wrap_boundaries().is_empty()) || !entry.varied.is_empty() {
             let runs = line_runs(
                 display_line,
                 (font, &inline),
@@ -653,7 +656,8 @@ pub(super) fn paint_line(
             );
             let row_paint = justify::RowPaint {
                 origin: line_origin,
-                line_height,
+                entry,
+                stretch,
                 font_size,
                 runs: &runs,
             };
@@ -670,7 +674,7 @@ pub(super) fn paint_line(
             colors: &widget_colors,
             inline: &inline,
             font_size,
-            line_height,
+            entry,
             line_text,
             row_width: full_row_width,
             macros: state.macros,
@@ -685,10 +689,11 @@ pub(super) fn paint_line(
                 line_height,
             )
             .unwrap_or(point(px(0.), px(0.)));
+            let (pos, height) = entry.place(pos);
             window.paint_quad(fill(
                 Bounds {
                     origin: line_origin + pos,
-                    size: size(px(1.), line_height),
+                    size: size(px(1.), height),
                 },
                 cursor_color,
             ));
