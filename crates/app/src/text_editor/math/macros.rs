@@ -164,13 +164,24 @@ impl Macros {
     }
 }
 
+/// Where in `text` a definition command begins (a backslash). One pass that
+/// stops only at backslashes, so a note without any costs a search, not five.
+pub fn definition_starts(text: &str) -> impl Iterator<Item = usize> + '_ {
+    const COMMANDS: [&str; 5] = [
+        "newcommand",
+        "renewcommand",
+        "providecommand",
+        "DeclareMathOperator",
+        "def",
+    ];
+    text.match_indices('\\')
+        .filter(|(i, _)| COMMANDS.iter().any(|c| text[i + 1..].starts_with(c)))
+        .map(|(i, _)| i)
+}
+
 /// Whether `src` could hold a definition; most formulas cannot.
 pub fn may_define(src: &str) -> bool {
-    src.contains("\\newcommand")
-        || src.contains("\\renewcommand")
-        || src.contains("\\providecommand")
-        || src.contains("\\DeclareMathOperator")
-        || src.contains("\\def")
+    definition_starts(src).next().is_some()
 }
 
 /// A macro's arguments, `None` when too few follow it.

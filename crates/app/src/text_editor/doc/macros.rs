@@ -11,7 +11,7 @@ use std::sync::Arc;
 use jade_core::math_scan::scan_inline;
 
 use super::*;
-use crate::text_editor::math::{Macros, may_define, span_body};
+use crate::text_editor::math::{Macros, definition_starts, may_define, span_body};
 
 impl DocumentCache {
     /// The note's macros; empty for nearly every note.
@@ -23,12 +23,13 @@ impl DocumentCache {
     /// the table changed.
     pub(super) fn recompute_macros(&mut self, text: &str) -> bool {
         self.macro_lines.clear();
-        if may_define(text) {
-            for (i, line) in text.split('\n').enumerate() {
-                if self.defines(line, i) {
-                    self.macro_lines.push(i);
-                }
+        let mut last = None;
+        for at in definition_starts(text) {
+            let line = self.line_at(at);
+            if last != Some(line) && self.is_plain(line) {
+                self.macro_lines.push(line);
             }
+            last = Some(line);
         }
         self.rebuild_macros(text)
     }
@@ -68,7 +69,7 @@ impl DocumentCache {
         if may_define(self.edited_text(text, &edited)) {
             for i in edited.clone() {
                 let line = &text[self.line_start_byte(i)..self.line_end_byte(i)];
-                if self.defines(line, i) {
+                if may_define(line) && self.is_plain(i) {
                     found.push(i);
                 }
             }
@@ -93,9 +94,9 @@ impl DocumentCache {
         &text[self.line_start_byte(lines.start)..self.line_end_byte(lines.end - 1)]
     }
 
-    /// Whether line `i` (`line`) may hold a definition: plain text, not code.
-    fn defines(&self, line: &str, i: usize) -> bool {
-        may_define(line) && matches!(self.line_roles.get(i), Some(LineRole::Plain))
+    /// Whether line `i` is plain text, not code: only there is a definition one.
+    fn is_plain(&self, i: usize) -> bool {
+        matches!(self.line_roles.get(i), Some(LineRole::Plain))
     }
 
     fn rebuild_macros(&mut self, text: &str) -> bool {

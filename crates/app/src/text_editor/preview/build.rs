@@ -240,6 +240,7 @@ pub(super) fn compound_inner(
 ///   its *entire* text styled as that block's content (`Blockquote(depth)`,
 ///   or `Plain` for a list continuation, matching what a real prefix line's
 ///   own content would be styled as).
+#[cfg(test)]
 pub fn build_display_line_in_context(line: &str, active: bool, ctx: LineContext) -> DisplayLine {
     build_display_line_in_context_with(line, active, ctx, &Macros::default())
 }
@@ -361,6 +362,7 @@ pub fn is_thematic_break(line: &str) -> bool {
 /// blockquote prefix or a callout header after it (shouldn't happen for a
 /// line `callout::classify_callouts` identified as a header, but cheaper
 /// and simpler than unwrapping).
+#[cfg(test)]
 pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
     build_callout_header_line_with(line, active, &Macros::default())
 }

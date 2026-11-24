@@ -4,7 +4,7 @@ use gpui_kit::*;
 
 use crate::text_editor::doc::DocumentCache;
 use crate::text_editor::image::Sizes as ImageSizes;
-use crate::text_editor::math::{Macros, NO_MACROS};
+use crate::text_editor::math::Macros;
 use crate::text_editor::preview::LineContext;
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::{Callout, callout_index_at};
@@ -133,7 +133,7 @@ impl<'a> LineState<'a> {
             column_frame: false,
             justify: false,
             math: MathPart::None,
-            macros: &NO_MACROS,
+            macros: &crate::text_editor::math::NO_MACROS,
         }
     }
 }
