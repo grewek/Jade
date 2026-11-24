@@ -3,7 +3,7 @@
 //! are the theme engine's business (`crate::theme`); this is sizes, spacing,
 //! shapes and switches.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 mod read;
 mod typography;
@@ -27,4 +27,25 @@ pub fn layout_generation() -> u64 {
 
 pub fn layout_changed() {
     LAYOUT_GENERATION.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The body font size and row height in px, as f32 bits. The editor lays out in
+/// the render, paint and input phases, which share no style stack to carry
+/// them, so they read these (set whenever the typography is) instead of the
+/// window's ambient text style. Defaults match [`Typography::default`].
+static BODY_SIZE: AtomicU32 = AtomicU32::new(16.0f32.to_bits());
+static BODY_ROW: AtomicU32 = AtomicU32::new(26.0f32.to_bits());
+
+pub fn body_font_size() -> f32 {
+    f32::from_bits(BODY_SIZE.load(Ordering::Relaxed))
+}
+
+pub fn body_row_height() -> f32 {
+    f32::from_bits(BODY_ROW.load(Ordering::Relaxed))
+}
+
+/// Records the body metrics of `typography`; call whenever the global changes.
+pub fn set_body(typography: &Typography) {
+    BODY_SIZE.store(typography.font.size.to_bits(), Ordering::Relaxed);
+    BODY_ROW.store(typography.line_height_px().to_bits(), Ordering::Relaxed);
 }

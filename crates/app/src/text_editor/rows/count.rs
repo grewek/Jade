@@ -577,7 +577,11 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
                 .column_lines(k)
                 .map(|line| {
                     if env.doc.math_block_at(line).is_some() {
-                        measure_math_block(env, line, window.line_height());
+                        measure_math_block(
+                            env,
+                            line,
+                            crate::text_editor::settings::body_row_height(),
+                        );
                     }
                     let state = LineState::in_column(env.doc, line, env.cursor, env.focused);
                     state_row_count(env, line, (&state, width), window)
@@ -587,7 +591,7 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
         }
         return height;
     }
-    measure_math_block(env, i, window.line_height());
+    measure_math_block(env, i, crate::text_editor::settings::body_row_height());
     // A `$$` block shown as a formula is its first line's `rows` and nothing on
     // the others: no need to build and wrap them.
     if let Some(block) = env
@@ -634,7 +638,7 @@ fn aside_row_estimate(
         lines
             .map(|line| {
                 if env.doc.math_block_at(line).is_some() {
-                    measure_math_block(env, line, window.line_height());
+                    measure_math_block(env, line, crate::text_editor::settings::body_row_height());
                 }
                 let state = LineState::in_column(env.doc, line, env.cursor, env.focused);
                 state_row_count(env, line, (&state, width), window)
@@ -681,7 +685,11 @@ fn estimated_patch_count(env: &Env, i: usize, window: &mut Window) -> usize {
             env.doc,
             (&region, &split),
             (env.cursor, env.focused),
-            (env.font, env.font_size, window.line_height()),
+            (
+                env.font,
+                env.font_size,
+                crate::text_editor::settings::body_row_height(),
+            ),
             (env.text_color.into(), None),
             window,
         )
@@ -708,7 +716,7 @@ fn state_row_count(
         width,
         window,
     );
-    let line_height = window.line_height();
+    let line_height = crate::text_editor::settings::body_row_height();
     let tall = |dl: &DisplayLine| {
         let mut formulas = formula_spots(dl, line_text, env.doc.macros());
         let text = (env.metrics.ascent, env.metrics.descent);
@@ -732,7 +740,7 @@ fn state_row_count(
 /// wrapping is included. [`row_count_for_line`]'s monospace estimate can come
 /// out one row short of that, which verifying must not inherit.
 pub(super) fn shaped_row_count_for_line(env: &Env, i: usize, window: &mut Window) -> usize {
-    let line_height = window.line_height();
+    let line_height = crate::text_editor::settings::body_row_height();
     measure_math_block(env, i, line_height);
     let state = LineState::of(env.doc, i, env.cursor, env.focused);
     let shaped = shape_display_line(
