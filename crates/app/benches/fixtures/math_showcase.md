@@ -71,6 +71,10 @@ Spacing: $a\,b$, $a\;b$, $a\quad b$, $a\qquad b$, $a\!b$, $a\ b$.
 
 $\hat{x}$, $\bar{x}$, $\vec{v}$, $\tilde{n}$, $\dot{x}$, $\ddot{x}$, $\widehat{xyz}$, $\overline{AB}$, $\underline{x}$, $\overbrace{a + b}^{n}$, $\underbrace{a + b}_{m}$, $\overset{!}{=}$, $\xrightarrow{f}$, $\not\in$, $\boxed{x = 1}$.
 
+Strikes: $\cancel{x}$, $\bcancel{x+1}$, $\xcancel{\frac{a}{b}}$, $\frac{\cancel{a}b}{\cancel{a}c}$.
+
+More marks: $\dddot{x}$, $\widecheck{xyz}$, $\overparen{x+y+z}$, $\overleftrightarrow{AB}$, $\underbar{x}$, $\fbox{a framed word}$, $a \atop b$, $\mathinner{\ldots}$, $\strut x$.
+
 ## 8. Environments
 
 Matrices inline: $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ and $\begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}$ and $\begin{vmatrix} a & b \\ c & d \end{vmatrix}$.

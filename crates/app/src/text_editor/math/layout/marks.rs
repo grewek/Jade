@@ -4,8 +4,8 @@
 use ttf_parser::GlyphId;
 
 use super::super::alphabet;
-use super::super::ast::{Accent, Class, Font, Node};
-use super::{Layout, Style, Typesetter};
+use super::super::ast::{Accent, Class, Font, Node, Strike};
+use super::{Item, Layout, Style, Typesetter};
 
 /// The character an accent draws; the combining form sits over a base letter.
 fn accent_char(kind: Accent) -> Option<char> {
@@ -21,6 +21,10 @@ fn accent_char(kind: Accent) -> Option<char> {
         Accent::Bar => '\u{304}',
         Accent::Vec | Accent::OverRightArrow => '\u{20D7}',
         Accent::OverLeftArrow => '\u{20D6}',
+        Accent::OverLeftRightArrow => '\u{20E1}',
+        Accent::DotDotDot => '\u{20DB}',
+        Accent::WideCheck => '\u{30C}',
+        Accent::OverParen => '\u{23DC}',
         Accent::Ring => '\u{30A}',
         Accent::OverBrace => '\u{23DE}',
         Accent::UnderBrace => '\u{23DF}',
@@ -33,7 +37,10 @@ fn stretches(kind: Accent) -> bool {
     matches!(
         kind,
         Accent::WideHat
+            | Accent::WideCheck
             | Accent::WideTilde
+            | Accent::OverLeftRightArrow
+            | Accent::OverParen
             | Accent::OverRightArrow
             | Accent::OverLeftArrow
             | Accent::OverBrace
@@ -103,7 +110,9 @@ impl Typesetter<'_> {
         let (ascent, descent) = (inner.ascent, inner.descent);
         let dy = match kind {
             Accent::UnderBrace => descent + c.stretch_gap_below_min * s + mark.top,
-            Accent::OverBrace => -(ascent + c.stretch_gap_above_min * s - mark.bottom),
+            Accent::OverBrace | Accent::OverParen => {
+                -(ascent + c.stretch_gap_above_min * s - mark.bottom)
+            }
             _ => -(ascent - c.accent_base_height * s).max(0.0),
         };
         let mut out = Layout::default();
@@ -201,6 +210,36 @@ impl Typesetter<'_> {
         out.place(slash, (width - (left + right) * s) / 2.0, 0.0);
         out.width = width;
         (class, out)
+    }
+
+    /// `\cancel` and friends: diagonals corner to corner over `inner`, a
+    /// little past it as TeX's `cancel` package does.
+    pub(super) fn cancelled(&self, mut inner: Layout, kind: Strike, style: Style) -> Layout {
+        let s = style.scale(self.c());
+        let (pad, thickness) = (0.1 * s, self.c().frac_rule * s);
+        let (left, right) = (-pad, inner.width + pad);
+        let (top, bottom) = (-inner.ascent - pad, inner.descent + pad);
+        if matches!(kind, Strike::Up | Strike::Cross) {
+            inner.items.push(Item::Line {
+                x: left,
+                y: bottom,
+                x2: right,
+                y2: top,
+                thickness,
+                color: None,
+            });
+        }
+        if matches!(kind, Strike::Down | Strike::Cross) {
+            inner.items.push(Item::Line {
+                x: left,
+                y: top,
+                x2: right,
+                y2: bottom,
+                thickness,
+                color: None,
+            });
+        }
+        inner
     }
 
     /// `\boxed`: the body in a frame of rules, a little air inside.

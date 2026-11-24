@@ -39,7 +39,7 @@ fn glyphs(l: &Layout) -> Vec<(u16, f32, f32, f32)> {
         .iter()
         .filter_map(|i| match i {
             Item::Glyph { id, x, y, size, .. } => Some((*id, *x, *y, *size)),
-            Item::Rule { .. } => None,
+            Item::Rule { .. } | Item::Line { .. } => None,
         })
         .collect()
 }
@@ -55,7 +55,7 @@ fn rules(l: &Layout) -> Vec<(f32, f32, f32, f32)> {
                 height,
                 ..
             } => Some((*x, *y, *width, *height)),
-            Item::Glyph { .. } => None,
+            Item::Glyph { .. } | Item::Line { .. } => None,
         })
         .collect()
 }
@@ -421,6 +421,7 @@ fn every_construct_lays_out_finite_and_nonnegative() {
         "\\over",
         "'",
         "\\boxed",
+        "\\cancel",
         "\\xrightarrow",
         "\\middle|",
         "\\unknown",
@@ -444,6 +445,7 @@ fn every_construct_lays_out_finite_and_nonnegative() {
                     height,
                     ..
                 } => [*x, *y, *width, *height].iter().all(|v| v.is_finite()),
+                Item::Line { x, y, x2, y2, .. } => [*x, *y, *x2, *y2].iter().all(|v| v.is_finite()),
             };
             assert!(all_finite, "{src:?}: {item:?}");
         }
@@ -565,6 +567,80 @@ fn boxed_frames_the_body() {
     assert_eq!(rules(&boxed).len(), 4);
     assert!(boxed.width > body.width + 0.2);
     assert!(boxed.ascent > body.ascent && boxed.descent > body.descent);
+}
+
+fn lines(l: &Layout) -> Vec<(f32, f32, f32, f32)> {
+    l.items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Line { x, y, x2, y2, .. } => Some((*x, *y, *x2, *y2)),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn cancel_strikes_corner_to_corner_without_resizing() {
+    let body = lay("x", false);
+    for (src, count) in [("\\cancel{x}", 1), ("\\bcancel{x}", 1), ("\\xcancel{x}", 2)] {
+        let l = lay(src, false);
+        let strokes = lines(&l);
+        assert_eq!(strokes.len(), count, "{src}");
+        assert_eq!(l.width, body.width, "{src}");
+        for (x, _, x2, _) in strokes {
+            assert!(x < 0.0 && x2 > l.width, "{src}: reaches past the body");
+        }
+    }
+    let (up, down) = (
+        lines(&lay("\\cancel{x}", false)),
+        lines(&lay("\\bcancel{x}", false)),
+    );
+    assert!(up[0].1 > up[0].3, "rises to the right");
+    assert!(down[0].1 < down[0].3, "falls to the right");
+}
+
+#[test]
+fn cancel_takes_the_colour_of_its_surroundings() {
+    let l = lay("\\textcolor{red}{\\cancel{x}}", false);
+    assert!(colors(&l).iter().all(Option::is_some));
+}
+
+#[test]
+fn atop_is_a_fraction_without_bar_or_parentheses() {
+    let l = lay("a \\atop b", true);
+    assert!(rules(&l).is_empty());
+    assert_eq!(glyphs(&l).len(), 2);
+    let (_, up, down) = extent(&l);
+    assert!(up > 0.5 && down > 0.5, "stacked around the axis");
+}
+
+#[test]
+fn the_added_accents_and_boxes_lay_out_as_formulas() {
+    for src in [
+        "\\dddot{x}",
+        "\\overleftrightarrow{xyz}",
+        "\\widecheck{xyz}",
+        "\\overparen{xyz}",
+        "\\underbar{x}",
+        "\\mathinner{x}",
+        "\\strut x",
+        "\\mathstrut x",
+        "\\fbox{a b}",
+    ] {
+        assert!(!parse(src).has_error, "{src}");
+        let l = lay(src, false);
+        assert!(!glyphs(&l).is_empty() || !rules(&l).is_empty(), "{src}");
+    }
+    for mark in ['\u{20DB}', '\u{20E1}', '\u{30C}', '\u{23DC}'] {
+        id(mark);
+    }
+    assert_eq!(rules(&lay("\\fbox{a b}", false)).len(), 4);
+    let plain = lay("x", false);
+    let wide = lay("\\overparen{xyzxyz}", false);
+    assert!(wide.ascent > plain.ascent, "the paren sits above");
+    let strut = lay("\\strut", false);
+    assert_eq!(strut.width, 0.0);
+    assert!(strut.ascent > plain.ascent);
 }
 
 #[test]
@@ -766,7 +842,9 @@ fn colors(l: &Layout) -> Vec<Option<u32>> {
     l.items
         .iter()
         .map(|i| match i {
-            Item::Glyph { color, .. } | Item::Rule { color, .. } => *color,
+            Item::Glyph { color, .. } | Item::Rule { color, .. } | Item::Line { color, .. } => {
+                *color
+            }
         })
         .collect()
 }
