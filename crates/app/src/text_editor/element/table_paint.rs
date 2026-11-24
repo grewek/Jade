@@ -3,6 +3,7 @@
 
 use super::*;
 #[allow(unused_imports)]
+use crate::text_editor::math::Macros;
 use crate::text_editor::table;
 
 /// Corner radius of a table's box.
@@ -220,17 +221,21 @@ pub(super) fn paint_table_handles(
 
 /// One table row's cell text, each cell's lines placed in its column by the
 /// table's alignment. `origin` is the row's top-left; `header` makes it bold.
+/// A drawn formula taller than a row makes each cell line `scale` rows high
+/// (see `table::row_scale`); the text sits in the middle of them.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn paint_table_row(
     line: &str,
     columns: &TableColumns,
     origin: Point<Pixels>,
-    (header, editing): (bool, Option<usize>),
+    (header, editing, scale): (bool, Option<usize>, usize),
     (font, font_size, line_height): (&Font, Pixels, Pixels),
-    colors: &InlineColors,
+    (colors, widget_colors, macros): (&InlineColors, &WidgetColors, &Macros),
     window: &mut Window,
     cx: &mut App,
 ) {
+    let pitch = line_height * scale as f32;
+    let lift = (pitch - line_height) / 2.;
     for (c, cell) in layout_row_editing(line, &columns.widths, editing)
         .iter()
         .enumerate()
@@ -248,10 +253,11 @@ pub(super) fn paint_table_row(
             if range.is_empty() {
                 continue;
             }
+            let text = &line[range.clone()];
             let shown = if editing == Some(c) {
-                raw_cell_line(&line[range.clone()])
+                raw_cell_line(text)
             } else {
-                build_cell_line(&line[range.clone()])
+                build_cell_line_with(text, macros, columns.widths[c])
             };
             let wrapped = shape_entry(
                 &shown,
@@ -263,8 +269,18 @@ pub(super) fn paint_table_row(
                 window,
             );
             let spare = (column_width - wrapped.size(line_height).width).max(px(0.));
-            let at = point(left + spare * fraction, origin.y + line_height * j as f32);
+            let at = point(left + spare * fraction, origin.y + pitch * j as f32 + lift);
             let _ = wrapped.paint(at, line_height, TextAlign::Left, None, window, cx);
+            let widgets = WidgetPaint {
+                colors: widget_colors,
+                inline: colors,
+                font_size,
+                line_height,
+                line_text: text,
+                row_width: column_width,
+                macros,
+            };
+            paint_widgets(&shown, &wrapped, at, &widgets, (window, cx));
         }
     }
 }
@@ -278,6 +294,8 @@ pub(super) struct EditingCell<'a> {
     /// The row's top left.
     pub(super) origin: Point<Pixels>,
     pub(super) line_height: Pixels,
+    /// Rows each cell line takes (see [`paint_table_row`]).
+    pub(super) scale: usize,
 }
 
 /// Marks the cell being edited: an accent outline, the part of the selection
@@ -295,9 +313,12 @@ pub(super) fn paint_editing_cell(
         column,
         origin,
         line_height,
+        scale,
     } = *cell;
+    let pitch = line_height * scale as f32;
+    let lift = (pitch - line_height) / 2.;
     let lines = &table::layout_row_editing(line, &columns.widths, Some(column))[column].lines;
-    let height = line_height
+    let height = pitch
         * table::layout_row_editing(line, &columns.widths, Some(column))
             .iter()
             .map(|c| c.lines.len())
@@ -337,7 +358,7 @@ pub(super) fn paint_editing_cell(
                     Bounds {
                         origin: point(
                             origin.x + x_of(range, a),
-                            origin.y + line_height * row as f32,
+                            origin.y + pitch * row as f32 + lift,
                         ),
                         size: size(x_of(range, b) - x_of(range, a), line_height),
                     },
@@ -351,7 +372,10 @@ pub(super) fn paint_editing_cell(
         let (row, x) = table::caret_at(line, &columns.widths, column, offset);
         window.paint_quad(fill(
             Bounds {
-                origin: point(origin.x + columns.x(x), origin.y + line_height * row as f32),
+                origin: point(
+                    origin.x + columns.x(x),
+                    origin.y + pitch * row as f32 + lift,
+                ),
                 size: size(px(1.), line_height),
             },
             cursor_color,

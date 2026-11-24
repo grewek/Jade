@@ -31,7 +31,8 @@ use super::paint_trace::{FrameInfo, PaintTrace};
 use super::preview::LineRole;
 use super::preview::callout::{Callout, callout_index_at};
 use super::preview::{
-    DisplayLine, InlineStyle, LineIndent, Widget, build_cell_line, is_thematic_break, raw_cell_line,
+    DisplayLine, InlineStyle, LineIndent, Widget, build_cell_line_with, is_thematic_break,
+    raw_cell_line,
 };
 use super::rows::{Change, Inputs, RowCache};
 use super::table::Align;

@@ -10,8 +10,8 @@ use crate::text_editor::math::{self, Macros};
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
 use crate::text_editor::preview::{
-    DisplayLine, InlineStyle, LineIndent, build_callout_header_line_with, build_display_line,
-    build_display_line_in_context_with, hidden_line, is_thematic_break,
+    DisplayLine, InlineStyle, LineIndent, build_callout_header_line_with, build_cell_line_with,
+    build_display_line, build_display_line_in_context_with, hidden_line, is_thematic_break,
 };
 
 /// What a shaped line occupies, the one place its heights are decided: for
@@ -113,6 +113,37 @@ pub(in crate::text_editor) fn tall_rows(
     }
     let em = f32::from(font_size) * math::MATH_SCALE;
     math::rows_to_fit((reach.0 * em, reach.1 * em), text, f32::from(line_height))
+}
+
+/// How many rows each line of a table row takes: more than one when a drawn
+/// formula in one of its cells reaches past a row. All lines of all cells grow
+/// together, as the rows of a wrapped paragraph do. The cell being edited shows
+/// its source and does not count.
+fn table_row_scale(
+    line: &str,
+    widths: &[usize],
+    state: &LineState,
+    (font, font_size): (&Font, Pixels),
+    window: &mut Window,
+) -> usize {
+    if !line.contains('$') {
+        return 1;
+    }
+    let mut reach = (0.0f32, 0.0f32);
+    for (column, cell) in table::layout_row_editing(line, widths, state.editing_cell)
+        .iter()
+        .enumerate()
+        .filter(|(c, _)| state.editing_cell != Some(*c))
+    {
+        for range in &cell.lines {
+            let text = &line[range.clone()];
+            let shown = build_cell_line_with(text, state.macros, widths[column]);
+            let (up, down) = formula_reach(&shown, text, state.macros);
+            reach = (reach.0.max(up), reach.1.max(down));
+        }
+    }
+    let text = mono_ascent_descent(font, font_size, window);
+    tall_rows(reach, (font_size, window.line_height()), text)
 }
 
 /// What the row estimates need to know about the editor font at one size,
@@ -356,10 +387,9 @@ pub(in crate::text_editor) fn build_display_lines(
                 let max_chars =
                     table_row_char_budget(available_width, font, font_size, text_color, window);
                 let widths = table::resolve_widths(&table.columns, max_chars);
-                vec![
-                    hidden_line(line);
-                    table::row_line_count_editing(line, &widths, state.editing_cell)
-                ]
+                let lines = table::row_line_count_editing(line, &widths, state.editing_cell);
+                let scale = table_row_scale(line, &widths, state, (font, font_size), window);
+                vec![hidden_line(line); lines * scale]
             }
         },
     };

@@ -49,6 +49,12 @@ fn contexts() -> Vec<(&'static str, String, usize, bool)> {
             "table cell",
             &format!("| a | {TALL} |\n| - | - |\n| c | d |"),
             2,
+            true,
+        ),
+        at(
+            "table cell, small formula",
+            "| a | $x^2$ |\n| - | - |\n| c | d |",
+            2,
             false,
         ),
     ]
