@@ -730,7 +730,10 @@ fn state_row_count(
     display_lines
         .iter()
         .map(|dl| {
-            wrapped_row_count(&dl.display_text, wrap_width, env.metrics.char_width) + tall(dl)
+            // A heading's characters are wider and each of its rows is several
+            // body rows (#58); its formulas are not yet sized with it (C6).
+            let char_width = env.metrics.char_width * dl.font_scale();
+            wrapped_row_count(&dl.display_text, wrap_width, char_width) * dl.row_units() + tall(dl)
         })
         .sum::<usize>()
         .max(usize::from(!state.hidden))

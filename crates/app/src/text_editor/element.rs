@@ -598,6 +598,8 @@ mod anchoring_tests;
 #[cfg(test)]
 mod formula_context_tests;
 #[cfg(test)]
+mod heading_size_tests;
+#[cfg(test)]
 mod heading_spike_tests;
 #[cfg(test)]
 mod height_agreement_tests;
