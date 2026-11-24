@@ -242,8 +242,7 @@ fn paint_layout(
                 height,
                 color,
             } => {
-                // At least a device pixel, or a thin bar can vanish.
-                let thick = (em * height).max(px(1.));
+                let thick = bar_thickness(em * height, window.scale_factor());
                 window.paint_quad(fill(
                     Bounds {
                         origin: baseline + point(em * x, em * y),
@@ -254,6 +253,13 @@ fn paint_layout(
             }
         }
     }
+}
+
+/// A bar's drawn thickness: its own, but at least one device pixel, or a thin bar
+/// can vanish. Not a logical pixel, which is two device pixels on a scaled
+/// display and makes the bars of small nested fractions touch their digits (#50).
+fn bar_thickness(thickness: Pixels, scale_factor: f32) -> Pixels {
+    thickness.max(px(1.) / scale_factor.max(1.))
 }
 
 /// `color` (`0xRRGGBB`) from a `\color`, or the text colour.
@@ -379,4 +385,24 @@ pub(super) fn paint_image_placeholder(
         window,
         cx,
     );
+}
+
+#[cfg(test)]
+mod bar_tests {
+    // Not `use super::*`: with `test-support` that glob brings in GPUI's `test`
+    // macro, which shadows `#[test]` (see the note in `element.rs`).
+    use super::bar_thickness;
+    use gpui_kit::px;
+
+    #[test]
+    fn a_thin_bar_is_a_device_pixel_not_a_logical_one() {
+        assert_eq!(bar_thickness(px(0.2), 1.0), px(1.));
+        assert_eq!(bar_thickness(px(0.2), 2.0), px(0.5));
+        assert_eq!(bar_thickness(px(0.2), 0.0), px(1.), "an unknown scale is 1");
+    }
+
+    #[test]
+    fn a_thick_bar_keeps_its_thickness() {
+        assert_eq!(bar_thickness(px(1.5), 2.0), px(1.5));
+    }
 }
