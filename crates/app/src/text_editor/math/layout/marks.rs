@@ -21,6 +21,10 @@ fn accent_char(kind: Accent) -> Option<char> {
         Accent::Bar => '\u{304}',
         Accent::Vec | Accent::OverRightArrow => '\u{20D7}',
         Accent::OverLeftArrow => '\u{20D6}',
+        Accent::OverLeftRightArrow => '\u{20E1}',
+        Accent::DotDotDot => '\u{20DB}',
+        Accent::WideCheck => '\u{30C}',
+        Accent::OverParen => '\u{23DC}',
         Accent::Ring => '\u{30A}',
         Accent::OverBrace => '\u{23DE}',
         Accent::UnderBrace => '\u{23DF}',
@@ -33,7 +37,10 @@ fn stretches(kind: Accent) -> bool {
     matches!(
         kind,
         Accent::WideHat
+            | Accent::WideCheck
             | Accent::WideTilde
+            | Accent::OverLeftRightArrow
+            | Accent::OverParen
             | Accent::OverRightArrow
             | Accent::OverLeftArrow
             | Accent::OverBrace
@@ -103,7 +110,9 @@ impl Typesetter<'_> {
         let (ascent, descent) = (inner.ascent, inner.descent);
         let dy = match kind {
             Accent::UnderBrace => descent + c.stretch_gap_below_min * s + mark.top,
-            Accent::OverBrace => -(ascent + c.stretch_gap_above_min * s - mark.bottom),
+            Accent::OverBrace | Accent::OverParen => {
+                -(ascent + c.stretch_gap_above_min * s - mark.bottom)
+            }
             _ => -(ascent - c.accent_base_height * s).max(0.0),
         };
         let mut out = Layout::default();

@@ -606,6 +606,44 @@ fn cancel_takes_the_colour_of_its_surroundings() {
 }
 
 #[test]
+fn atop_is_a_fraction_without_bar_or_parentheses() {
+    let l = lay("a \\atop b", true);
+    assert!(rules(&l).is_empty());
+    assert_eq!(glyphs(&l).len(), 2);
+    let (_, up, down) = extent(&l);
+    assert!(up > 0.5 && down > 0.5, "stacked around the axis");
+}
+
+#[test]
+fn the_added_accents_and_boxes_lay_out_as_formulas() {
+    for src in [
+        "\\dddot{x}",
+        "\\overleftrightarrow{xyz}",
+        "\\widecheck{xyz}",
+        "\\overparen{xyz}",
+        "\\underbar{x}",
+        "\\mathinner{x}",
+        "\\strut x",
+        "\\mathstrut x",
+        "\\fbox{a b}",
+    ] {
+        assert!(!parse(src).has_error, "{src}");
+        let l = lay(src, false);
+        assert!(!glyphs(&l).is_empty() || !rules(&l).is_empty(), "{src}");
+    }
+    for mark in ['\u{20DB}', '\u{20E1}', '\u{30C}', '\u{23DC}'] {
+        id(mark);
+    }
+    assert_eq!(rules(&lay("\\fbox{a b}", false)).len(), 4);
+    let plain = lay("x", false);
+    let wide = lay("\\overparen{xyzxyz}", false);
+    assert!(wide.ascent > plain.ascent, "the paren sits above");
+    let strut = lay("\\strut", false);
+    assert_eq!(strut.width, 0.0);
+    assert!(strut.ascent > plain.ascent);
+}
+
+#[test]
 fn a_very_tall_delimiter_is_assembled_from_parts() {
     let l = lay(
         "\\left(\\frac{\\frac{\\frac{a}{b}}{\\frac{c}{d}}}{\\frac{\\frac{e}{f}}{\\frac{g}{h}}}\\right)",

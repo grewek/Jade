@@ -597,7 +597,10 @@ impl Typesetter<'_> {
                 Limits::Display => style.is_display(),
                 Limits::Never => false,
             },
-            Node::Accent { kind, .. } => matches!(kind, Accent::OverBrace | Accent::UnderBrace),
+            Node::Accent { kind, .. } => matches!(
+                kind,
+                Accent::OverBrace | Accent::OverParen | Accent::UnderBrace
+            ),
             _ => false,
         };
         let out = if limits {
@@ -741,7 +744,7 @@ impl Typesetter<'_> {
         let axis = c.axis_height * s;
         let rule = match kind {
             FracKind::Fraction => c.frac_rule * s,
-            FracKind::Binom => 0.0,
+            FracKind::Binom | FracKind::Atop => 0.0,
         };
         let (up, down) = self.fraction_shifts(&n, &d, kind, style, rule);
         // TeX's null delimiter space on both sides.

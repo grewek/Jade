@@ -103,12 +103,12 @@ impl<'a> Parser<'a> {
             let atom = match tok.kind {
                 // A script with nothing before it scripts an empty group.
                 Kind::Sup | Kind::Sub => Node::Group(Vec::new()),
-                Kind::Cmd(name @ ("over" | "choose")) if infix.is_none() => {
+                Kind::Cmd(name @ ("over" | "choose" | "atop")) if infix.is_none() => {
                     self.lex.next();
-                    let kind = if name == "over" {
-                        FracKind::Fraction
-                    } else {
-                        FracKind::Binom
+                    let kind = match name {
+                        "over" => FracKind::Fraction,
+                        "atop" => FracKind::Atop,
+                        _ => FracKind::Binom,
                     };
                     infix = Some((kind, out.len()));
                     continue;
@@ -325,7 +325,7 @@ impl<'a> Parser<'a> {
             "substack" => self.parse_substack(tok),
             "operatorname" => self.parse_operatorname(tok),
             "mathbin" | "mathrel" | "mathop" | "mathord" | "mathopen" | "mathclose"
-            | "mathpunct" => self.parse_class(name),
+            | "mathpunct" | "mathinner" => self.parse_class(name),
             "overset" | "stackrel" | "underset" => self.parse_stack(name),
             "xrightarrow" | "xleftarrow" => {
                 let under = self.parse_optional().map(Box::new);
@@ -337,18 +337,8 @@ impl<'a> Parser<'a> {
                 }
             }
             "bmod" | "pmod" | "mod" | "pod" => self.parse_mod(name),
-            "not" => Node::Negated(Box::new(self.parse_arg())),
-            "boxed" => Node::Boxed(Box::new(self.parse_arg())),
-            "cancel" | "bcancel" | "xcancel" => self.parse_cancel(name),
-            "phantom" | "hphantom" | "vphantom" | "smash" => Node::Phantom {
-                kind: match name {
-                    "phantom" => Phantom::Both,
-                    "hphantom" => Phantom::Width,
-                    "vphantom" => Phantom::Height,
-                    _ => Phantom::Smash,
-                },
-                body: Box::new(self.parse_arg()),
-            },
+            "not" | "boxed" | "cancel" | "bcancel" | "xcancel" | "strut" | "mathstrut" | "fbox"
+            | "phantom" | "hphantom" | "vphantom" | "smash" => self.parse_marked(name, tok),
             "tag" => self.parse_tag(tok),
             "color" | "textcolor" => self.parse_color(name, tok),
             "hspace" => self.parse_hspace(tok),
@@ -377,6 +367,21 @@ impl<'a> Parser<'a> {
         }
     }
 
+    /// `\fbox{text}`: the text, set upright, in a frame.
+    fn parse_fbox(&mut self, tok: Token<'a>) -> Node {
+        match self.lex.raw_group() {
+            Some((raw, closed)) => {
+                self.has_error |= !closed;
+                let text = Node::Text {
+                    text: unescape(raw),
+                    font: super::ast::Font::Roman,
+                };
+                Node::Boxed(Box::new(text))
+            }
+            None => self.error_token(tok),
+        }
+    }
+
     fn parse_cancel(&mut self, name: &str) -> Node {
         let kind = match name {
             "cancel" => Strike::Up,
@@ -386,6 +391,35 @@ impl<'a> Parser<'a> {
         Node::Cancel {
             kind,
             body: Box::new(self.parse_arg()),
+        }
+    }
+
+    /// Commands that mark or reshape one argument: `\not`, boxes, strikes,
+    /// phantoms and struts.
+    fn parse_marked(&mut self, name: &str, tok: Token<'a>) -> Node {
+        match name {
+            "not" => Node::Negated(Box::new(self.parse_arg())),
+            "boxed" => Node::Boxed(Box::new(self.parse_arg())),
+            "cancel" | "bcancel" | "xcancel" => self.parse_cancel(name),
+            // The height and depth of a parenthesis, no width.
+            "strut" | "mathstrut" => Node::Phantom {
+                kind: Phantom::Height,
+                body: Box::new(Node::Symbol {
+                    ch: '(',
+                    class: Class::Open,
+                }),
+            },
+            "fbox" => self.parse_fbox(tok),
+            "phantom" | "hphantom" | "vphantom" | "smash" => Node::Phantom {
+                kind: match name {
+                    "phantom" => Phantom::Both,
+                    "hphantom" => Phantom::Width,
+                    "vphantom" => Phantom::Height,
+                    _ => Phantom::Smash,
+                },
+                body: Box::new(self.parse_arg()),
+            },
+            _ => self.error_token(tok),
         }
     }
 
@@ -472,6 +506,7 @@ impl<'a> Parser<'a> {
             "mathopen" => Class::Open,
             "mathclose" => Class::Close,
             "mathpunct" => Class::Punct,
+            "mathinner" => Class::Inner,
             _ => Class::Ord,
         };
         let body = Box::new(self.parse_arg());

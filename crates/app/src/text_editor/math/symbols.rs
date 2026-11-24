@@ -288,8 +288,12 @@ pub fn accent(name: &str) -> Option<Accent> {
         "overline" => Accent::OverLine,
         "overrightarrow" => Accent::OverRightArrow,
         "overleftarrow" => Accent::OverLeftArrow,
+        "overleftrightarrow" => Accent::OverLeftRightArrow,
+        "dddot" => Accent::DotDotDot,
+        "widecheck" => Accent::WideCheck,
+        "overparen" => Accent::OverParen,
         "overbrace" => Accent::OverBrace,
-        "underline" => Accent::UnderLine,
+        "underline" | "underbar" => Accent::UnderLine,
         "underbrace" => Accent::UnderBrace,
         _ => return None,
     })

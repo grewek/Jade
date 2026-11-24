@@ -60,6 +60,8 @@ pub enum FracKind {
     Fraction,
     /// `\binom`: no bar, in parentheses.
     Binom,
+    /// `\atop`: no bar, no parentheses.
+    Atop,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,9 +80,13 @@ pub enum Accent {
     WideHat,
     WideTilde,
     OverLine,
+    DotDotDot,
+    WideCheck,
     OverRightArrow,
     OverLeftArrow,
+    OverLeftRightArrow,
     OverBrace,
+    OverParen,
     UnderLine,
     UnderBrace,
 }
