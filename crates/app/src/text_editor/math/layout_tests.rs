@@ -678,6 +678,17 @@ fn above_and_genfrac_are_fractions_with_or_without_a_bar() {
 }
 
 #[test]
+fn a_line_break_inside_a_group_stacks_lines_there() {
+    let flat = lay("{a} + {b}", false);
+    let nested = lay("{a \\\\ b} + c", false);
+    assert!(nested.ascent + nested.descent > 2.0 * (flat.ascent + flat.descent) * 0.8);
+    assert_eq!(glyphs(&nested).len(), 4);
+    assert!(!parse("x^{a \\\\ b}").has_error);
+    // Trailing and doubled breaks start no empty line.
+    assert_eq!(lay("{a \\\\}", false), lay("{a}", false));
+}
+
+#[test]
 fn a_very_tall_delimiter_is_assembled_from_parts() {
     let l = lay(
         "\\left(\\frac{\\frac{\\frac{a}{b}}{\\frac{c}{d}}}{\\frac{\\frac{e}{f}}{\\frac{g}{h}}}\\right)",

@@ -185,3 +185,29 @@ $$\newcommand{\R}{\mathbb{R}} \newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
 $\def\pair#1#2{(#1, #2)}$ $\DeclareMathOperator{\Tr}{Tr}$
 
 With them: $f\colon \R \to \R$, $\norm{x + y} \le \norm{x} + \norm{y}$, $\pair{a}{b}$, $\Tr(AB) = \Tr(BA)$.
+
+## Blocks in regions and nested line breaks
+
+::: columns
+
+Left column, with a block:
+
+$$
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}
+$$
+
+---
+
+Right column: ${a \\ b} + {c \\ d}$ and $x^{a \\ b}$.
+
+:::
+
+::: aside right 40%
+
+$$
+\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
+$$
+
+:::
+
+Text next to the aside, which flows around the block above.

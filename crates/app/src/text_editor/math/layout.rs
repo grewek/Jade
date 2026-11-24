@@ -352,15 +352,6 @@ pub fn layout(font: &MathFont, nodes: &[Node], display: bool) -> Layout {
 }
 
 fn layout_body(typesetter: &Typesetter, nodes: &[Node], level: Level) -> Layout {
-    // A `\\` ending the formula starts no line.
-    let end = nodes.iter().rposition(|n| !matches!(n, Node::Break));
-    let nodes = &nodes[..end.map_or(0, |e| e + 1)];
-    if nodes.iter().any(|n| matches!(n, Node::Break)) {
-        // `\\` outside an environment: the lines are centred one above the
-        // other, as in MathJax.
-        let stacked = [Node::Env(Box::new(lines_env(nodes)))];
-        return typesetter.list(&stacked, Style::new(level), None);
-    }
     typesetter.list(nodes, Style::new(level), None)
 }
 
@@ -395,6 +386,16 @@ impl Typesetter<'_> {
 
     /// Atoms side by side with TeX's inter-atom spacing.
     fn list(&self, nodes: &[Node], mut style: Style, alpha: Option<Font>) -> Layout {
+        if nodes.iter().any(|n| matches!(n, Node::Break)) {
+            // A `\\` ending the list starts no line.
+            let end = nodes.iter().rposition(|n| !matches!(n, Node::Break));
+            let nodes = &nodes[..end.map_or(0, |e| e + 1)];
+            return if nodes.iter().any(|n| matches!(n, Node::Break)) {
+                self.lines(nodes, style, alpha)
+            } else {
+                self.list(nodes, style, alpha)
+            };
+        }
         let mut entries: Vec<Entry> = Vec::with_capacity(nodes.len());
         let mut color: Option<u32> = None;
         for (i, node) in nodes.iter().enumerate() {
@@ -445,6 +446,13 @@ impl Typesetter<'_> {
             }
         }
         out
+    }
+
+    /// `\\` in a list, at the top of the formula or inside a group: the lines
+    /// are centred one above the other, as in MathJax.
+    fn lines(&self, nodes: &[Node], style: Style, alpha: Option<Font>) -> Layout {
+        let stacked = Node::Env(Box::new(lines_env(nodes)));
+        self.atom(&stacked, style, alpha).1
     }
 
     fn gap(&self, left: Class, right: Class, style: Style) -> f32 {

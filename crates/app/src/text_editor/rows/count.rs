@@ -470,6 +470,7 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
             let rows: usize = region
                 .column_lines(k)
                 .map(|line| {
+                    measure_math_block(env, line, window.line_height());
                     let state = LineState::in_column(env.doc, line, env.cursor, env.focused);
                     state_row_count(env, line, (&state, width), window)
                 })
@@ -524,6 +525,7 @@ fn aside_row_estimate(
     let rows_of = |lines: &mut dyn Iterator<Item = usize>, width: Pixels, window: &mut Window| {
         lines
             .map(|line| {
+                measure_math_block(env, line, window.line_height());
                 let state = LineState::in_column(env.doc, line, env.cursor, env.focused);
                 state_row_count(env, line, (&state, width), window)
             })
