@@ -3,7 +3,9 @@
 //! consumes a token and every recursion passes `parse_atom`, which is capped by
 //! [`MAX_DEPTH`], so hostile nesting costs time linear in the source.
 
-use super::ast::{Class, Env, Environment, FracKind, Limits, MathStyle, Node, OpName, Phantom};
+use super::ast::{
+    Class, Env, Environment, FracKind, Limits, MathStyle, Node, OpName, Phantom, Strike,
+};
 use super::lex::{Kind, Lexer, Token};
 use super::symbols;
 
@@ -337,6 +339,14 @@ impl<'a> Parser<'a> {
             "bmod" | "pmod" | "mod" | "pod" => self.parse_mod(name),
             "not" => Node::Negated(Box::new(self.parse_arg())),
             "boxed" => Node::Boxed(Box::new(self.parse_arg())),
+            "cancel" | "bcancel" | "xcancel" => Node::Cancel {
+                kind: match name {
+                    "cancel" => Strike::Up,
+                    "bcancel" => Strike::Down,
+                    _ => Strike::Cross,
+                },
+                body: Box::new(self.parse_arg()),
+            },
             "phantom" | "hphantom" | "vphantom" | "smash" => Node::Phantom {
                 kind: match name {
                     "phantom" => Phantom::Both,

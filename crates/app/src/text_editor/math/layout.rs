@@ -9,6 +9,7 @@ use ttf_parser::GlyphId;
 use super::alphabet;
 use super::ast::{
     Accent, Class, Env, Environment, Font, FracKind, Limits, MathStyle, Node, OpName, Phantom,
+    Strike,
 };
 use super::font::{Consts, MathFont};
 
@@ -30,6 +31,15 @@ pub enum Item {
         /// `0xRRGGBB` from `\color`; `None` is the text colour.
         color: Option<u32>,
     },
+    /// A straight stroke from `(x, y)` to `(x2, y2)`: the strikes of `\cancel`.
+    Line {
+        x: f32,
+        y: f32,
+        x2: f32,
+        y2: f32,
+        thickness: f32,
+        color: Option<u32>,
+    },
     /// A filled rectangle: fraction bars, root overbars. `y` is its top edge.
     Rule {
         x: f32,
@@ -43,7 +53,8 @@ pub enum Item {
 impl Item {
     /// Colours the item unless an inner `\color` already did.
     fn tinted(mut self, rgb: u32) -> Item {
-        let (Item::Glyph { color, .. } | Item::Rule { color, .. }) = &mut self;
+        let (Item::Glyph { color, .. } | Item::Rule { color, .. } | Item::Line { color, .. }) =
+            &mut self;
         color.get_or_insert(rgb);
         self
     }
@@ -76,6 +87,21 @@ impl Item {
                 y: y + dy,
                 width,
                 height,
+                color,
+            },
+            Item::Line {
+                x,
+                y,
+                x2,
+                y2,
+                thickness,
+                color,
+            } => Item::Line {
+                x: x + dx,
+                y: y + dy,
+                x2: x2 + dx,
+                y2: y2 + dy,
+                thickness,
                 color,
             },
         }
@@ -441,6 +467,10 @@ impl Typesetter<'_> {
             Node::Env(env) => (Class::Ord, self.environment(env, style, alpha)),
             Node::Tag { .. } => (Class::Ord, Layout::default()),
             Node::Boxed(body) => (Class::Ord, self.boxed(body, style, alpha)),
+            Node::Cancel { kind, body } => {
+                let (class, laid) = self.atom(body, style, alpha);
+                (class, self.cancelled(laid, *kind, style))
+            }
             Node::Color { color, body } => {
                 let (class, mut laid) = self.atom(body, style, alpha);
                 laid.tint(*color);

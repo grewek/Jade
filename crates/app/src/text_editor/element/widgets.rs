@@ -218,6 +218,21 @@ fn paint_layout(
                     if failed { error } else { tint(color, ink) },
                 );
             }
+            math::Item::Line {
+                x,
+                y,
+                x2,
+                y2,
+                thickness,
+                color,
+            } => {
+                let mut stroke = PathBuilder::stroke((em * thickness).max(px(1.)));
+                stroke.move_to(baseline + point(em * x, em * y));
+                stroke.line_to(baseline + point(em * x2, em * y2));
+                if let Ok(path) = stroke.build() {
+                    window.paint_path(path, tint(color, ink));
+                }
+            }
             math::Item::Rule {
                 x,
                 y,

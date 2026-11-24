@@ -4,8 +4,8 @@
 use ttf_parser::GlyphId;
 
 use super::super::alphabet;
-use super::super::ast::{Accent, Class, Font, Node};
-use super::{Layout, Style, Typesetter};
+use super::super::ast::{Accent, Class, Font, Node, Strike};
+use super::{Item, Layout, Style, Typesetter};
 
 /// The character an accent draws; the combining form sits over a base letter.
 fn accent_char(kind: Accent) -> Option<char> {
@@ -201,6 +201,36 @@ impl Typesetter<'_> {
         out.place(slash, (width - (left + right) * s) / 2.0, 0.0);
         out.width = width;
         (class, out)
+    }
+
+    /// `\cancel` and friends: diagonals corner to corner over `inner`, a
+    /// little past it as TeX's `cancel` package does.
+    pub(super) fn cancelled(&self, mut inner: Layout, kind: Strike, style: Style) -> Layout {
+        let s = style.scale(self.c());
+        let (pad, thickness) = (0.1 * s, self.c().frac_rule * s);
+        let (left, right) = (-pad, inner.width + pad);
+        let (top, bottom) = (-inner.ascent - pad, inner.descent + pad);
+        if matches!(kind, Strike::Up | Strike::Cross) {
+            inner.items.push(Item::Line {
+                x: left,
+                y: bottom,
+                x2: right,
+                y2: top,
+                thickness,
+                color: None,
+            });
+        }
+        if matches!(kind, Strike::Down | Strike::Cross) {
+            inner.items.push(Item::Line {
+                x: left,
+                y: top,
+                x2: right,
+                y2: bottom,
+                thickness,
+                color: None,
+            });
+        }
+        inner
     }
 
     /// `\boxed`: the body in a frame of rules, a little air inside.

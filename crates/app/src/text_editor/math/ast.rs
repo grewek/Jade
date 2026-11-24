@@ -116,6 +116,17 @@ pub enum Phantom {
     Smash,
 }
 
+/// Which diagonals a `\cancel` command draws.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strike {
+    /// `\cancel`: bottom left to top right.
+    Up,
+    /// `\bcancel`: top left to bottom right.
+    Down,
+    /// `\xcancel`: both.
+    Cross,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Env {
     Matrix(Fence),
@@ -246,6 +257,11 @@ pub enum Node {
     Break,
     Env(Box<Environment>),
     Boxed(Box<Node>),
+    /// `\cancel`, `\bcancel`, `\xcancel`: strike lines through the body.
+    Cancel {
+        kind: Strike,
+        body: Box<Node>,
+    },
     /// `\phantom`, `\hphantom`, `\vphantom`, `\smash`: the body's box without
     /// all or part of it.
     Phantom {
