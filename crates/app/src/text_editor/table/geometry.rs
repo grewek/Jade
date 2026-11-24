@@ -7,7 +7,8 @@
 
 use std::ops::Range;
 
-use super::super::preview::{build_cell_line, raw_cell_line};
+use super::super::math::Macros;
+use super::super::preview::{build_cell_line_with, raw_cell_line};
 use super::model::{Align, LINE_BREAK, for_each_cell_range};
 
 /// Space on each side of a cell's text, in characters. The grid is laid out in
@@ -60,7 +61,7 @@ pub(in crate::text_editor) fn offset_at(
     x: f32,
     row: usize,
 ) -> usize {
-    offset_at_editing(line, widths, aligns, x, row, None)
+    offset_at_editing(line, widths, aligns, x, row, (None, &Macros::default()))
 }
 
 /// [`offset_at`] on a row whose cell `editing` shows its text verbatim.
@@ -70,7 +71,7 @@ pub(in crate::text_editor) fn offset_at_editing(
     aligns: &[Align],
     x: f32,
     row: usize,
-    editing: Option<usize>,
+    (editing, macros): (Option<usize>, &Macros),
 ) -> usize {
     let column = column_at(widths, x);
     let cell = &layout_row_editing(line, widths, editing)[column];
@@ -78,7 +79,7 @@ pub(in crate::text_editor) fn offset_at_editing(
     let shown = if editing == Some(column) {
         raw_cell_line(&line[range.clone()])
     } else {
-        build_cell_line(&line[range.clone()])
+        build_cell_line_with(&line[range.clone()], macros, widths[column])
     };
     let chars = shown.display_text.chars().count();
     let spare = widths[column].saturating_sub(chars) as f32;
@@ -497,7 +498,7 @@ mod tests {
             &aligns,
             text_left(&widths, 1) + 1.0,
             0,
-            Some(1),
+            (Some(1), &Macros::default()),
         );
         assert_eq!(click, shown.start + 1);
     }

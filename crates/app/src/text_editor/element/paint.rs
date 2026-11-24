@@ -480,13 +480,19 @@ pub(super) fn paint_line(
             *columns = Some((index, boxed));
         }
         if let Some((_, columns)) = &columns {
+            let scale = table::row_scale(
+                line_text,
+                &columns.widths,
+                state.editing_cell,
+                results.len(),
+            );
             paint_table_row(
                 line_text,
                 columns,
                 bounds.origin + point(px(0.), y_offset),
-                (table.is_first_row(i), state.editing_cell),
+                (table.is_first_row(i), state.editing_cell, scale),
                 (font, font_size, line_height),
-                &inline,
+                (&inline, widget_colors, state.macros),
                 window,
                 cx,
             );
@@ -497,6 +503,7 @@ pub(super) fn paint_line(
                     column,
                     origin: bounds.origin + point(px(0.), y_offset),
                     line_height,
+                    scale,
                 };
                 let (selection, caret) = (selection.as_ref(), show_cursor.then_some(cursor));
                 paint_editing_cell(

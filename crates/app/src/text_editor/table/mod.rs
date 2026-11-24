@@ -21,5 +21,5 @@ pub(super) use geometry::{
 pub(super) use model::classify_tables;
 pub(super) use model::{
     Align, MIN_COLUMN_WIDTH, Table, classify_table_list, classify_table_list_from, fits_unshrunk,
-    is_pipe_row, resolve_widths, row_line_count, row_line_count_editing, table_index_at,
+    is_pipe_row, resolve_widths, row_line_count, row_line_count_editing, row_scale, table_index_at,
 };

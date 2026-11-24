@@ -161,6 +161,12 @@ pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usiz
     lines
 }
 
+/// How many rows each line of the row takes when it is shaped as `entries`
+/// rows: more than one when a drawn formula in a cell is taller than a row.
+pub fn row_scale(line: &str, widths: &[usize], editing: Option<usize>, entries: usize) -> usize {
+    (entries / row_line_count_editing(line, widths, editing)).max(1)
+}
+
 /// `wrap_cell_text(&cell.replace("\\|", "|"), width).len()` without building a
 /// string: the same greedy fill, counting instead of copying. `cell` is a raw
 /// (still escaped) cell; `\|` counts as the one character it renders as.

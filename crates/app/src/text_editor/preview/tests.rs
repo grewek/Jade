@@ -211,7 +211,26 @@ fn a_formula_is_drawn_once_the_notes_macro_defines_it() {
 }
 
 #[test]
-fn a_table_cell_never_gets_a_drawn_formula() {
+fn a_table_cell_draws_a_formula_that_fits_its_column() {
+    let none = Macros::default();
+    let dl = build_cell_line_with("a $x^2$ b", &none, 12);
+    assert_eq!(
+        dl.segments
+            .iter()
+            .filter(|s| s.style == InlineStyle::Math)
+            .count(),
+        1
+    );
+    // Wider than the column once drawn: shown as typed.
+    let dl = build_cell_line_with("$WWWWWWWW$", &none, 10);
+    assert_eq!(dl.display_text, "$WWWWWWWW$");
+    let macros = Macros::collect(["\\newcommand{\\R}{\\mathbb{R}}"]);
+    let dl = build_cell_line_with("$\\R$", &macros, 5);
+    assert!(dl.segments.iter().any(|s| s.style == InlineStyle::Math));
+}
+
+#[test]
+fn a_table_cell_without_the_notes_macros_never_gets_a_drawn_formula() {
     let dl = build_cell_line("$x^2$");
     assert_eq!(dl.display_text, "$x^2$");
 }

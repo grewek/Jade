@@ -159,7 +159,24 @@ pub fn raw_cell_line(text: &str) -> DisplayLine {
 /// A table cell's text with its inline markup applied (bold, code, links), as
 /// one line. Unlike [`build_display_line`] it never reads a leading `>`, `-` or
 /// `#` as a block: inside a cell they are just characters.
+#[cfg(test)]
 pub fn build_cell_line(text: &str) -> DisplayLine {
+    build_cell_line_in(text, None)
+}
+
+/// [`build_cell_line`] with the formulas of `text` drawn (expanded with the
+/// note's `macros`), as long as the line still fits `width` characters: a cell
+/// is laid out on its raw text, and a formula can reserve more columns than
+/// its source has characters, in which case the line is shown as typed.
+pub fn build_cell_line_with(text: &str, macros: &Macros, width: usize) -> DisplayLine {
+    let drawn = build_cell_line_in(text, Some(macros));
+    if drawn.display_text.chars().count() <= width {
+        return drawn;
+    }
+    build_cell_line_in(text, None)
+}
+
+fn build_cell_line_in(text: &str, math: Option<&Macros>) -> DisplayLine {
     let mut segments = Vec::new();
     let mut display_text = String::new();
     scan_inline_in(
@@ -167,7 +184,7 @@ pub fn build_cell_line(text: &str) -> DisplayLine {
         0,
         text.len(),
         InlineStyle::Plain,
-        None,
+        math,
         &mut segments,
         &mut display_text,
     );

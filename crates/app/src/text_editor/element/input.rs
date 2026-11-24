@@ -474,7 +474,13 @@ pub(super) fn hit_in_line(
             (font, font_size, text_color),
             window,
         );
-        let row = ((relative_y - y_offset) / line_height) as usize;
+        let scale = table::row_scale(
+            line_text,
+            &columns.widths,
+            state.editing_cell,
+            results.len(),
+        );
+        let row = ((relative_y - y_offset) / (line_height * scale as f32)) as usize;
         let x = (position.x - bounds.origin.x) / columns.char_width;
         let offset = table::offset_at_editing(
             line_text,
@@ -482,7 +488,7 @@ pub(super) fn hit_in_line(
             &columns.aligns,
             x,
             row,
-            state.editing_cell,
+            (state.editing_cell, state.macros),
         );
         return Ok(Hit::at(line_start + offset));
     }

@@ -241,12 +241,16 @@ fn pure_row_counts_in(
                 match &table_state {
                     // An inactive, plainly rendered table: a delimiter is one hidden
                     // row, a row is as tall as its tallest wrapped cell.
-                    Some((n, widths)) if plain && active_table != Some(*n) => match widths {
-                        Some(widths) if !table.is_delimiter(i) => {
-                            table::row_line_count(line, widths)
+                    // A row with a `$` may draw a tall formula, which only
+                    // shaping measures.
+                    Some((n, widths)) if plain && active_table != Some(*n) && !has_dollar => {
+                        match widths {
+                            Some(widths) if !table.is_delimiter(i) => {
+                                table::row_line_count(line, widths)
+                            }
+                            _ => 1,
                         }
-                        _ => 1,
-                    },
+                    }
                     _ => {
                         shaped.push(i);
                         0
