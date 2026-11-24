@@ -12,6 +12,7 @@ use crate::text_editor::preview::callout::Callout;
 use crate::text_editor::preview::{
     DisplayLine, InlineStyle, LineIndent, build_callout_header_line_with, build_cell_line_with,
     build_display_line, build_display_line_in_context_with, hidden_line, is_thematic_break,
+    show_wide_formulas,
 };
 
 /// What a shaped line occupies, the one place its heights are decided: for
@@ -375,12 +376,18 @@ pub(in crate::text_editor) fn build_display_lines(
         }
         LineRole::Plain => match table_kind {
             TableLineKind::None if !active && is_thematic_break(line) => vec![hidden_line(line)],
-            TableLineKind::None => vec![build_display_line_in_context_with(
-                line,
-                active,
-                block_ctx,
-                state.macros,
-            )],
+            TableLineKind::None => {
+                let mut display_line =
+                    build_display_line_in_context_with(line, active, block_ctx, state.macros);
+                if line.contains('$') {
+                    // A formula wider than a row cannot be drawn (#49).
+                    let char_width = mono_char_width(font, font_size, text_color, window);
+                    let fit =
+                        fit_with_indent(available_width, char_width, display_line.indent.level());
+                    show_wide_formulas(&mut display_line, line, fit);
+                }
+                vec![display_line]
+            }
             TableLineKind::Delimiter => vec![hidden_line(line)],
             // `paint_table_row` draws the cells over these empty rows.
             TableLineKind::Row(table) => {
