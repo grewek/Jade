@@ -14,6 +14,7 @@ use crate::text_editor::layout::{
     LineState, RowFontMetrics, build_display_lines, callout_at_line, char_budget, fit_with_indent,
     formula_reach, indent_px, shape_display_line, shaped_height, tall_rows, wrapped_row_count,
 };
+use crate::text_editor::lines::Fenwick;
 use crate::text_editor::math;
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
@@ -35,8 +36,8 @@ pub(super) struct DocView<'a> {
     pub(super) raw_region: Option<usize>,
     /// Set when regions are laid out side by side (see `DocumentCache::side_by_side`).
     pub(super) column_width: Option<f32>,
-    /// Byte offset of each line, plus the text length.
-    pub(super) starts: &'a [usize],
+    /// Where each line starts, for finding the bytes of a stretch of lines.
+    pub(super) line_index: &'a Fenwick,
 }
 
 /// What a row count depends on besides the document.
@@ -66,6 +67,13 @@ pub(super) fn active_table(doc: &DocumentCache, cursor: usize, focused: bool) ->
 /// Below this many lines a thread per core costs more than it saves.
 const PARALLEL_MIN_LINES: usize = 20_000;
 
+/// Lines a thread takes at a time: small enough that a stretch of costly lines
+/// (a run of formulas) is shared out, big enough that fetching one is free.
+const CHUNK_LINES: usize = 4096;
+
+/// Most threads a rebuild uses.
+const MAX_THREADS: usize = 16;
+
 /// Every line's row count that needs no `Window`, split over threads on big
 /// notes, plus the lines that do need one (their entry is a placeholder `0`).
 pub(super) fn pure_row_counts(
@@ -77,39 +85,55 @@ pub(super) fn pure_row_counts(
     let threads = if line_count < PARALLEL_MIN_LINES {
         1
     } else {
-        std::thread::available_parallelism().map_or(1, |n| n.get().min(8))
+        std::thread::available_parallelism().map_or(1, |n| n.get().min(MAX_THREADS))
     };
-    let step = line_count.div_ceil(threads).max(1);
-    let parts: Vec<(Vec<i64>, Vec<usize>)> = if threads == 1 {
-        vec![pure_row_counts_in(text, view, rows, 0..line_count)]
-    } else {
-        std::thread::scope(|scope| {
-            let handles: Vec<_> = (0..threads)
-                .map(|k| (k * step).min(line_count)..((k + 1) * step).min(line_count))
-                .map(|range| scope.spawn(move || pure_row_counts_in(text, view, rows, range)))
-                .collect();
-            handles
-                .into_iter()
-                .map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-                .collect()
-        })
-    };
-    let mut counts = Vec::with_capacity(line_count);
-    let mut shaped = Vec::new();
-    for (part, part_shaped) in parts {
-        counts.extend(part);
-        shaped.extend(part_shaped);
+    // Threads fill their chunks of one array, so nothing is copied together
+    // afterwards; lines with no rows keep the 0 they start as.
+    let mut counts = vec![0i64; line_count];
+    if threads == 1 {
+        let shaped = pure_row_counts_in(text, view, rows, 0, &mut counts);
+        return (counts, shaped);
     }
+    let mut jobs: Vec<(usize, &mut [i64])> = counts.chunks_mut(CHUNK_LINES).enumerate().collect();
+    jobs.reverse();
+    let queue = std::sync::Mutex::new(jobs);
+    let mut shaped: Vec<(usize, Vec<usize>)> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let job = queue.lock().unwrap_or_else(|e| e.into_inner()).pop();
+                        let Some((k, chunk)) = job else { break };
+                        done.push((
+                            k,
+                            pure_row_counts_in(text, view, rows, k * CHUNK_LINES, chunk),
+                        ));
+                    }
+                    done
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .flat_map(|h| h.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    shaped.sort_unstable_by_key(|&(k, _)| k);
+    let shaped = shaped.into_iter().flat_map(|(_, lines)| lines).collect();
     (counts, shaped)
 }
 
-/// [`pure_row_counts`] for the lines in `range`.
+/// [`pure_row_counts`] for the lines from `first` on, as many as `counts` has
+/// (zeroed): fills their counts and returns the lines that need a window.
 fn pure_row_counts_in(
     text: &str,
     view: &DocView,
     rows: &RowParams,
-    range: std::ops::Range<usize>,
-) -> (Vec<i64>, Vec<usize>) {
+    first: usize,
+    counts: &mut [i64],
+) -> Vec<usize> {
+    let range = first..first + counts.len();
     let RowParams {
         active_table,
         available_width,
@@ -120,7 +144,6 @@ fn pure_row_counts_in(
     let char_width = metrics.char_width;
     let ascent_descent = (metrics.ascent, metrics.descent);
     let line_count = view.roles.len();
-    let mut counts = Vec::with_capacity(range.len());
     let mut shaped = Vec::new();
     // One sequential pass: `tables` are sorted, so table membership comes from
     // a cursor instead of a binary search per line. What is the same for every
@@ -132,7 +155,8 @@ fn pure_row_counts_in(
     let mut next_region = view.columns.partition_point(|r| r.end_line <= range.start);
     let mut next_math = view.math.partition_point(|b| b.last_line < range.start);
     let mut table_state: Option<(usize, Option<Vec<usize>>)> = None;
-    let dollar_lines = lines_with_dollar(text, view.starts, &range);
+    let starts = chunk_starts(text, view.line_index, first, counts.len());
+    let dollar_lines = lines_with_dollar(text, &starts, first);
     let mut next_dollar = 0;
     for i in range {
         while dollar_lines.get(next_dollar).is_some_and(|&l| l < i) {
@@ -159,7 +183,6 @@ fn pure_row_counts_in(
                 if i == r.start_line {
                     shaped.push(i);
                 }
-                counts.push(0);
                 continue;
             }
         }
@@ -170,7 +193,6 @@ fn pure_row_counts_in(
         }
         if view.math.get(next_math).is_some_and(|b| b.first_line <= i) {
             shaped.push(i);
-            counts.push(0);
             continue;
         }
         while view
@@ -181,15 +203,14 @@ fn pure_row_counts_in(
             next_callout += 1;
         }
         if view.callouts.get(next_callout).is_some_and(|c| c.hides(i)) {
-            counts.push(0);
             continue;
         }
         let end = if i + 1 < line_count {
-            view.starts[i + 1] - 1
+            starts[i - first + 1] - 1
         } else {
-            view.starts[i + 1]
+            starts[i - first + 1]
         };
-        let line = &text[view.starts[i]..end];
+        let line = &text[starts[i - first]..end];
         while view.tables.get(next_table).is_some_and(|t| t.end_line <= i) {
             next_table += 1;
         }
@@ -232,21 +253,36 @@ fn pure_row_counts_in(
                 }
             }
         };
-        counts.push(count as i64);
+        counts[i - first] = count as i64;
     }
-    (counts, shaped)
+    shaped
 }
 
-/// The lines in `range` that hold a `$`, found in one pass over their bytes: a
-/// check on every line cost more than the rest of the estimate on a big note.
-fn lines_with_dollar(text: &str, starts: &[usize], range: &std::ops::Range<usize>) -> Vec<usize> {
-    let (base, end) = (starts[range.start], starts[range.end].min(text.len()));
+/// Where each of the `len` lines from line `first` starts, and the start of the
+/// line after them (the text's length at the end): found from the first line's
+/// offset by scanning for newlines, so a rebuild keeps no per-line table.
+fn chunk_starts(text: &str, index: &Fenwick, first: usize, len: usize) -> Vec<usize> {
+    let mut at = index.prefix_sum(first) as usize;
+    let mut starts = Vec::with_capacity(len + 1);
+    starts.push(at);
+    for _ in 0..len {
+        at = text[at..].find('\n').map_or(text.len(), |p| at + p + 1);
+        starts.push(at);
+    }
+    starts
+}
+
+/// The lines (numbered from `first`, whose starts are `starts`) that hold a
+/// `$`, found in one pass over their bytes: a check on every line cost more
+/// than the rest of the estimate on a big note.
+fn lines_with_dollar(text: &str, starts: &[usize], first: usize) -> Vec<usize> {
+    let (base, end) = (starts[0], starts[starts.len() - 1].min(text.len()));
     let hay = &text[base..end];
     let mut lines = Vec::new();
     let mut at = 0;
     while let Some(found) = hay[at..].find('$') {
         let line = starts.partition_point(|&s| s <= base + at + found) - 1;
-        lines.push(line);
+        lines.push(first + line);
         at = starts[line + 1].min(end) - base;
     }
     lines
@@ -442,6 +478,16 @@ pub(super) fn row_count_for_line(env: &Env, i: usize, window: &mut Window) -> us
         return height;
     }
     measure_math_block(env, i, window.line_height());
+    // A `$$` block shown as a formula is its first line's `rows` and nothing on
+    // the others: no need to build and wrap them.
+    if let Some(block) = env
+        .doc
+        .math_block_at(i)
+        .filter(|b| !env.doc.math_block_active(b, env.cursor, env.focused))
+        && let Some(rows) = block.rows()
+    {
+        return if block.first_line == i { rows } else { 0 };
+    }
     let state = LineState::of(env.doc, i, env.cursor, env.focused);
     state_row_count(env, i, (&state, env.width), window)
 }

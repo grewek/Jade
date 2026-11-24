@@ -380,12 +380,8 @@ impl DocumentCache {
     /// `starts[i]..starts[i + 1] - 1` (without its `\n`), except the last
     /// line, which runs to `starts[line_count()]`. Far cheaper than scanning
     /// the text for newlines or calling [`Self::line_start_byte`] per line.
-    pub(super) fn line_start_offsets(&self) -> Vec<usize> {
-        self.line_index
-            .prefix_sums()
-            .into_iter()
-            .map(|offset| offset as usize)
-            .collect()
+    pub(super) fn line_index(&self) -> &Fenwick {
+        &self.line_index
     }
 
     /// The byte offset right after line `line`'s own content, excluding

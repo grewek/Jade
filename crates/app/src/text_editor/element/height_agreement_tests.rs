@@ -226,3 +226,48 @@ fn a_formula_inside_emphasis_does_not_make_the_estimate_tall(cx: &mut TestAppCon
         .unwrap();
     }
 }
+
+/// A `$$` block shown as a formula is counted without building its lines (the
+/// first line holds the rows, the rest none); that equals what shaping gives,
+/// whether the caret is outside the block or inside it.
+#[gpui_kit::test]
+fn the_cold_count_of_a_math_block_equals_shaping(cx: &mut TestAppContext) {
+    let dir = env!("CARGO_MANIFEST_DIR");
+    let text = std::fs::read_to_string(format!("{dir}/benches/fixtures/math_showcase.md")).unwrap();
+    let inside = text.find("$$").unwrap() + 3;
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::theme::ThemeEngine::install(None, cx);
+    });
+    let (window, _editor) = cx.update(|cx| {
+        gpui_kit::open_window(WindowOptions::default(), cx, |_w, cx| {
+            cx.new(|cx| Editor::new("", cx))
+        })
+        .unwrap()
+    });
+    for (cursor, focused) in [(0, false), (inside, true)] {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let (font, size) = (style.font(), style.font_size.to_pixels(window.rem_size()));
+            let look = (&font, size, style.color);
+            let doc = DocumentCache::new(&text);
+            let mut cache = RowCache::empty();
+            let state = (cursor, focused);
+            rows::rebuild_for_test(&mut cache, &text, &doc, state, px(NARROW), look, window);
+            let mut blocks = 0;
+            for i in (0..doc.line_count()).filter(|&i| doc.math_block_at(i).is_some()) {
+                blocks += 1;
+                let shaped =
+                    rows::shaped_count_for_test(&text, &doc, i, state, px(NARROW), look, window);
+                assert_eq!(
+                    rows::count_at(&cache, i),
+                    shaped as i64,
+                    "line {i}, caret {cursor}"
+                );
+            }
+            assert!(blocks > 10, "the note has math blocks");
+        })
+        .unwrap();
+    }
+}
