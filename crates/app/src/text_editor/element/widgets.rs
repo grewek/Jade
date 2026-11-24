@@ -186,7 +186,7 @@ fn paint_math(
     let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));
     // GPUI centres a row's text in the line height; the baseline follows.
     let pad = (line_height - (wrapped.ascent() + wrapped.descent())) / 2.;
-    let em = paint.font_size * math::MATH_SCALE;
+    let em = paint.font_size * math::scale();
     let centred = raw.starts_with("$$") && paint.line_text.trim() == raw;
     let left = if centred {
         ((paint.row_width - em * rendered.layout.width) / 2.).max(px(0.))
@@ -288,7 +288,7 @@ pub(super) fn paint_math_block(
         return;
     };
     let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));
-    let em = font_size * math::MATH_SCALE;
+    let em = font_size * math::scale();
     let layout = &rendered.layout;
     let mut left = ((area.size.width - em * layout.width) / 2.).max(px(0.));
     let top = (area.size.height - em * (layout.ascent + layout.descent)) / 2.;
