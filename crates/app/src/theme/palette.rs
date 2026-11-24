@@ -24,6 +24,14 @@ impl Palette {
         }
     }
 
+    /// Gives roles an opacity (255 = opaque), as `#rrggbbaa` overrides ask.
+    pub fn with_opacity(mut self, alpha: &[u8; Role::COUNT]) -> Palette {
+        for (color, &a) in self.colors.iter_mut().zip(alpha) {
+            color.a = f32::from(a) / 255.0;
+        }
+        self
+    }
+
     pub fn color(&self, role: Role) -> Hsla {
         self.colors[role.index()]
     }

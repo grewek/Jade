@@ -567,6 +567,53 @@ mod engine_setup {
         });
     }
 
+    #[gpui_kit::test]
+    fn colors_override_the_theme_and_survive_a_theme_switch(cx: &mut TestAppContext) {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        write(
+            &dirs.config_file(),
+            "[colors]\nheading_5 = \"#c0392b\"\nheading = \"#102030\"\ncode_background = \"#11223340\"\nquote_bar = \"accent\"\nbogus = \"#fff000\"\n",
+        );
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let notices = ThemeEngine::install(Some(dirs.clone()), cx);
+            assert!(
+                notices.iter().any(|n| n.contains("colors.bogus")),
+                "{notices:?}"
+            );
+            let red: gpui_kit::Hsla = gpui_kit::rgb(0xc0392b).into();
+            let navy: gpui_kit::Hsla = gpui_kit::rgb(0x102030).into();
+            assert_eq!(ThemeEngine::color(cx, Role::Heading5), red);
+            // Levels follow the overridden heading, except the one set itself.
+            assert_eq!(ThemeEngine::color(cx, Role::Heading2), navy);
+            assert_eq!(ThemeEngine::color(cx, Role::Heading), navy);
+            // Alpha rides along; an alias reads the theme's color of that role.
+            assert!(
+                (ThemeEngine::color(cx, Role::CodeBackground).a - 0x40 as f32 / 255.0).abs() < 1e-3
+            );
+            assert_eq!(
+                ThemeEngine::color(cx, Role::QuoteBar),
+                ThemeEngine::color(cx, Role::Accent)
+            );
+            // Text itself is untouched.
+            assert_ne!(ThemeEngine::color(cx, Role::Text), navy);
+
+            ThemeEngine::set("catppuccin-mocha", cx).expect("switches");
+            assert_eq!(ThemeEngine::color(cx, Role::Heading5), red);
+            assert_eq!(ThemeEngine::color(cx, Role::Heading3), navy);
+
+            // Removing the table and reloading goes back to the theme's colors.
+            write(&dirs.config_file(), "theme = \"catppuccin-mocha\"\n");
+            ThemeEngine::reload(Some(&dirs), cx);
+            assert_eq!(
+                ThemeEngine::color(cx, Role::Heading5),
+                ThemeEngine::color(cx, Role::Text)
+            );
+            let _ = cx.new(|_| ());
+        });
+    }
+
     #[test]
     fn available_lists_built_ins_then_user_themes() {
         let tmp = tempdir().expect("tmp");
@@ -912,4 +959,46 @@ fn heading_level_maps_one_to_six_and_clamps() {
     assert_eq!(Role::heading_level(6), Role::Heading6);
     assert_eq!(Role::heading_level(0), Role::Heading1);
     assert_eq!(Role::heading_level(9), Role::Heading6);
+}
+
+#[test]
+fn overrides_apply_to_a_theme_and_leave_the_original() {
+    use super::overrides::{ColorOverrides, new_warnings};
+    let theme = resolved("");
+    let (o, _) = ColorOverrides::parse("[colors]\ntext = \"#f8f8f8\"\nheading_2 = \"link\"\n");
+    let applied = o.apply_to(&theme);
+    assert_eq!(applied.theme.color(Role::Text), rgb("f8f8f8"));
+    assert_eq!(
+        applied.theme.color(Role::Heading),
+        rgb("f8f8f8"),
+        "follows text"
+    );
+    assert_eq!(applied.theme.color(Role::Heading2), theme.color(Role::Link));
+    assert_eq!(
+        theme.color(Role::Text),
+        rgb("000000"),
+        "the theme itself is unchanged"
+    );
+    // A near-white text on the white background is a new warning, once.
+    let fresh = new_warnings(&theme, &applied.theme);
+    assert!(
+        fresh.iter().any(|w| w.contains("text on background")),
+        "{fresh:?}"
+    );
+    assert!(new_warnings(&applied.theme, &applied.theme).is_empty());
+    let (none, _) = ColorOverrides::parse("");
+    assert_eq!(
+        none.apply_to(&theme).theme.color(Role::Text),
+        theme.color(Role::Text)
+    );
+}
+
+#[test]
+fn a_role_the_theme_colored_itself_does_not_follow_the_override() {
+    use super::overrides::ColorOverrides;
+    let theme = resolved("\n[overrides]\nheading_3 = \"#445566\"\n");
+    let (o, _) = ColorOverrides::parse("[colors]\nheading = \"#102030\"\n");
+    let t = o.apply_to(&theme).theme;
+    assert_eq!(t.color(Role::Heading3), rgb("445566"));
+    assert_eq!(t.color(Role::Heading4), rgb("102030"));
 }

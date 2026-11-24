@@ -24,6 +24,22 @@ pub struct Rgb {
 }
 
 impl Rgb {
+    /// `#rrggbb` or `#rrggbbaa` (alpha 255 when absent).
+    pub(super) fn parse_hex_alpha(s: &str) -> Option<(Rgb, u8)> {
+        match s.len() {
+            7 => Some((Rgb::parse_hex(s)?, 255)),
+            9 => {
+                let rgb = Rgb::parse_hex(&s[..7])?;
+                let alpha = s.get(7..)?;
+                let ok = alpha.bytes().all(|b| b.is_ascii_hexdigit());
+                ok.then(|| u8::from_str_radix(alpha, 16).ok())
+                    .flatten()
+                    .map(|a| (rgb, a))
+            }
+            _ => None,
+        }
+    }
+
     /// Exactly `#rrggbb`.
     fn parse_hex(s: &str) -> Option<Rgb> {
         let digits = s.strip_prefix('#')?;
@@ -263,6 +279,19 @@ pub struct ResolvedTheme {
 impl ResolvedTheme {
     pub fn color(&self, role: Role) -> Rgb {
         self.colors[role.index()]
+    }
+
+    pub(super) fn colors(&self) -> &[Rgb; Role::COUNT] {
+        &self.colors
+    }
+
+    /// The same theme with other colors; the warnings follow the new ones.
+    pub(super) fn with_colors(&self, colors: [Rgb; Role::COUNT]) -> ResolvedTheme {
+        ResolvedTheme {
+            warnings: contrast::check(&colors),
+            colors,
+            ..self.clone()
+        }
     }
 
     pub fn alpha(&self, alpha: Alpha) -> f32 {
