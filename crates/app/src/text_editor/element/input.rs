@@ -487,7 +487,7 @@ pub(super) fn hit_in_line(
         return Ok(Hit::at(line_start + offset));
     }
     let mut y = y_offset;
-    let heights = entry_heights(results, line_text, (font_size, line_height));
+    let heights = entry_heights(results, line_text, (font_size, line_height), doc.macros());
     for ((wrapped, display_line), entry) in results.iter().zip(heights) {
         let (line_height, height) = (entry.row, entry.height);
         if relative_y < y + height {

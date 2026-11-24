@@ -13,6 +13,7 @@ mod layout;
 #[cfg(test)]
 mod layout_tests;
 mod lex;
+mod macros;
 mod parse;
 mod symbols;
 pub use symbols::channels;
@@ -20,7 +21,10 @@ pub use symbols::channels;
 mod tests;
 
 pub use ast::*;
-pub use cache::{MATH_SCALE, Rendered, block_rows, rendered, rendered_span, rows_to_fit};
+pub use cache::{
+    MATH_SCALE, Rendered, block_rows, rendered, rendered_span, rows_to_fit, span_body,
+};
 pub use font::MathFont;
 pub use layout::{Item, Layout, layout};
+pub use macros::{Macros, NO_MACROS, TooDeep, definition_starts, may_define};
 pub use parse::{Formula, MAX_DEPTH, MAX_SOURCE, parse};

@@ -175,3 +175,31 @@ fn a_region_is_as_tall_as_the_lines_it_holds(cx: &mut TestAppContext) {
         .unwrap();
     }
 }
+
+/// A formula that is tall only through a macro of the note grows its line, and
+/// the cold estimate agrees with shaping (#14); changing the definition away
+/// from a tall one shrinks it again.
+#[gpui_kit::test]
+fn a_tall_formula_made_by_a_macro_grows_its_line(cx: &mut TestAppContext) {
+    let window = open(cx);
+    let define = "$\\newcommand{\\M}{\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}}$";
+    let tall = format!("{define}\n\ntext $\\M$ here\n\nlast\n");
+    let flat = tall.replace("\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}", "x");
+    for (name, text, rows_expected) in [("tall", tall, true), ("flat", flat, false)] {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let (font, size) = (style.font(), style.font_size.to_pixels(window.rem_size()));
+            let look = (&font, size, style.color);
+            let doc = DocumentCache::new(&text);
+            let mut cache = RowCache::empty();
+            rows::rebuild_for_test(&mut cache, &text, &doc, (0, false), px(WIDTH), look, window);
+            let cold = rows::count_at(&cache, 2);
+            let shaped =
+                rows::shaped_count_for_test(&text, &doc, 2, (0, false), px(WIDTH), look, window);
+            assert_eq!(rows_expected, shaped >= 2, "{name}: {shaped} rows");
+            assert_eq!(cold, shaped as i64, "{name}: cold {cold}, shaped {shaped}");
+        })
+        .unwrap();
+    }
+}

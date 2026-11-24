@@ -6,12 +6,12 @@ use gpui_kit::*;
 use super::state::{LineState, MathPart, TableLineKind, indent_px};
 use crate::text_editor::colors::InlineColors;
 use crate::text_editor::image;
-use crate::text_editor::math;
+use crate::text_editor::math::{self, Macros};
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
 use crate::text_editor::preview::{
-    DisplayLine, InlineStyle, LineIndent, build_callout_header_line, build_display_line,
-    build_display_line_in_context, hidden_line, is_thematic_break,
+    DisplayLine, InlineStyle, LineIndent, build_callout_header_line_with, build_display_line,
+    build_display_line_in_context_with, hidden_line, is_thematic_break,
 };
 
 /// What a shaped line occupies, the one place its heights are decided: for
@@ -22,9 +22,11 @@ pub(in crate::text_editor) fn entry_heights<'a>(
     results: &'a [(WrappedLine, DisplayLine)],
     line_text: &'a str,
     metrics: (Pixels, Pixels),
+    macros: &'a Macros,
 ) -> impl Iterator<Item = EntryHeight> + 'a {
     results.iter().map(move |(wrapped, display_line)| {
-        let row = tall_row_height(results.len(), (display_line, line_text), wrapped, metrics);
+        let line = (display_line, line_text);
+        let row = tall_row_height(results.len(), line, wrapped, metrics, macros);
         EntryHeight {
             row,
             height: wrapped.size(row).height,
@@ -46,8 +48,9 @@ pub(in crate::text_editor) fn shaped_height(
     results: &[(WrappedLine, DisplayLine)],
     line_text: &str,
     metrics: (Pixels, Pixels),
+    macros: &Macros,
 ) -> (Pixels, usize) {
-    let height: Pixels = entry_heights(results, line_text, metrics)
+    let height: Pixels = entry_heights(results, line_text, metrics, macros)
         .map(|e| e.height)
         .sum();
     (height, (height / metrics.1).round() as usize)
@@ -62,12 +65,13 @@ fn tall_row_height(
     (display_line, line_text): (&DisplayLine, &str),
     wrapped: &WrappedLine,
     (font_size, line_height): (Pixels, Pixels),
+    macros: &Macros,
 ) -> Pixels {
     // Several entries are a wrapped table row, which never holds a drawn formula.
     if entries != 1 {
         return line_height;
     }
-    let reach = formula_reach(display_line, line_text);
+    let reach = formula_reach(display_line, line_text, macros);
     let text = (f32::from(wrapped.ascent()), f32::from(wrapped.descent()));
     line_height * tall_rows(reach, (font_size, line_height), text) as f32
 }
@@ -77,6 +81,7 @@ fn tall_row_height(
 pub(in crate::text_editor) fn formula_reach(
     display_line: &DisplayLine,
     line_text: &str,
+    macros: &Macros,
 ) -> (f32, f32) {
     let mut reach = (0.0f32, 0.0f32);
     for seg in display_line
@@ -84,7 +89,10 @@ pub(in crate::text_editor) fn formula_reach(
         .iter()
         .filter(|s| s.style == InlineStyle::Math)
     {
-        if let Some(rendered) = line_text.get(seg.raw.clone()).and_then(math::rendered_span) {
+        if let Some(rendered) = line_text
+            .get(seg.raw.clone())
+            .and_then(|span| math::rendered_span(span, macros))
+        {
             reach.0 = reach.0.max(rendered.layout.ascent);
             reach.1 = reach.1.max(rendered.layout.descent);
         }
@@ -331,10 +339,17 @@ pub(in crate::text_editor) fn build_display_lines(
             vec![build_display_line(line, true)]
         }
         LineRole::Plain if state.column_frame && !active => vec![hidden_line(line)],
-        LineRole::Plain if callout_is_header => vec![build_callout_header_line(line, active)],
+        LineRole::Plain if callout_is_header => {
+            vec![build_callout_header_line_with(line, active, state.macros)]
+        }
         LineRole::Plain => match table_kind {
             TableLineKind::None if !active && is_thematic_break(line) => vec![hidden_line(line)],
-            TableLineKind::None => vec![build_display_line_in_context(line, active, block_ctx)],
+            TableLineKind::None => vec![build_display_line_in_context_with(
+                line,
+                active,
+                block_ctx,
+                state.macros,
+            )],
             TableLineKind::Delimiter => vec![hidden_line(line)],
             // `paint_table_row` draws the cells over these empty rows.
             TableLineKind::Row(table) => {

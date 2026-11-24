@@ -176,3 +176,10 @@ $$
 $$
 \textcolor{blue}{\frac{a}{b}} = \color{orange} \sqrt{x} \tag*{(star)}
 $$
+
+## Macros
+
+$$\newcommand{\R}{\mathbb{R}} \newcommand{\norm}[1]{\left\lVert #1 \right\rVert}$$
+$\def\pair#1#2{(#1, #2)}$ $\DeclareMathOperator{\Tr}{Tr}$
+
+With them: $f\colon \R \to \R$, $\norm{x + y} \le \norm{x} + \norm{y}$, $\pair{a}{b}$, $\Tr(AB) = \Tr(BA)$.

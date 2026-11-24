@@ -142,6 +142,15 @@ fn assert_matches_fresh_cache(cache: &DocumentCache, text: &str, context: &str) 
         cache.math_blocks, fresh.math_blocks,
         "math_blocks {context}"
     );
+    assert_eq!(
+        cache.macro_lines, fresh.macro_lines,
+        "macro_lines {context}"
+    );
+    assert_eq!(
+        cache.macros.stamp(),
+        fresh.macros.stamp(),
+        "macros {context}"
+    );
     assert_eq!(cache.callouts, fresh.callouts, "callouts {context}");
     assert_eq!(
         cache.column_markers, fresh.column_markers,
@@ -340,7 +349,8 @@ fn run_randomized_edits(mut seed: u64) {
              | a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\nafter table\n\n\
              ::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n\n\
              ::: float left 30%\n\nfloat\n\n:::\n\npara one\n\npara two\n\npara three\n\
-             $$\nx^2\n$$\n\n$$\n\\frac{a}{b}\n\n  y\n$$\n",
+             $$\nx^2\n$$\n\n$$\n\\frac{a}{b}\n\n  y\n$$\n\
+             $\\newcommand{\\R}{\\mathbb{R}}$ and $\\R$\n$$\n\\def\\c#1{#1}\n$$\n",
     );
     let mut cache = DocumentCache::new(&text);
 
@@ -386,6 +396,11 @@ fn run_randomized_edits(mut seed: u64) {
         "\n$$\nx\n$$\n",
         "$$\na\n\nb\n$$\n",
         "x$$",
+        "$\\newcommand{\\a}{x}$\n",
+        "\\newcommand{\\b}[1]{#1}",
+        "\n$$\n\\renewcommand{\\R}{1}\n$$\n",
+        "$$\n\\DeclareMathOperator{\\Tr}{Tr}\n",
+        "\\def\\d{y}",
     ];
 
     for step in 0..400 {
@@ -613,4 +628,34 @@ fn a_block_keeps_its_measured_rows_through_an_edit_that_does_not_touch_it() {
     let patch = cache.record_edit(&inside, edit).unwrap();
     assert_eq!(cache.math_blocks()[0].rows(), None);
     assert!(patch.touched.contains(&2) && patch.touched.contains(&4));
+}
+
+#[test]
+fn a_definition_edit_dirties_the_whole_note_and_other_edits_do_not() {
+    let text = "$\\newcommand{\\R}{x}$\n\nfar\n\nlet $\\R$\n\nmore\n";
+    let mut cache = DocumentCache::new(text);
+    assert!(!cache.macros().is_empty());
+    let before = cache.macros().stamp();
+
+    let far = text.find("far").unwrap() + 1;
+    let (edited, edit) = apply_edit(text, far, far, "!");
+    let patch = cache.record_edit(&edited, edit).unwrap();
+    assert!(
+        patch.touched.len() < cache.line_count(),
+        "{:?}",
+        patch.touched
+    );
+    assert_eq!(cache.macros().stamp(), before);
+
+    let at = edited.find('x').unwrap();
+    let (changed, edit) = apply_edit(&edited, at, at + 1, "y");
+    let patch = cache.record_edit(&changed, edit).unwrap();
+    assert_eq!(patch.touched, 0..cache.line_count());
+    assert_ne!(cache.macros().stamp(), before);
+    assert_matches_fresh_cache(&cache, &changed, "definition changed");
+
+    let (gone, edit) = apply_edit(&changed, 0, changed.find('\n').unwrap(), "");
+    let patch = cache.record_edit(&gone, edit).unwrap();
+    assert_eq!(patch.touched, 0..cache.line_count());
+    assert!(cache.macros().is_empty());
 }

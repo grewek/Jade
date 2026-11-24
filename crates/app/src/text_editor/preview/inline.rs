@@ -220,20 +220,30 @@ pub(super) fn scan_inline(
     pos: usize,
     end: usize,
     default_style: InlineStyle,
+    macros: &Macros,
     segments: &mut Vec<DisplaySegment>,
     display_text: &mut String,
 ) {
-    scan_inline_in(line, pos, end, default_style, true, segments, display_text);
+    scan_inline_in(
+        line,
+        pos,
+        end,
+        default_style,
+        Some(macros),
+        segments,
+        display_text,
+    );
 }
 
-/// [`scan_inline`], where `math` says whether a formula may become a drawn
-/// [`InlineStyle::Math`] segment: a table cell paints its own text and cannot.
+/// [`scan_inline`], where `math` is the macros a formula is expanded with, or
+/// `None` when a formula may not become a drawn [`InlineStyle::Math`] segment:
+/// a table cell paints its own text and cannot.
 pub(super) fn scan_inline_in(
     line: &str,
     mut pos: usize,
     end: usize,
     default_style: InlineStyle,
-    math: bool,
+    math: Option<&Macros>,
     segments: &mut Vec<DisplaySegment>,
     display_text: &mut String,
 ) {
@@ -369,9 +379,7 @@ pub(super) fn scan_inline_in(
                 })
             }
             ConstructKind::Math => parse_math(line, construct_start, end).map(|found| {
-                let drawn = math
-                    .then(|| rendered_span(&line[found.span.clone()]))
-                    .flatten();
+                let drawn = math.and_then(|m| rendered_span(&line[found.span.clone()], m));
                 if let Some(drawn) = drawn {
                     let blank = " ".repeat(drawn.columns);
                     push_replaced(

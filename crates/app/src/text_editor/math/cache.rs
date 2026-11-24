@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
-use super::{Layout, MathFont, layout, parse};
+use super::{Layout, Macros, MathFont, layout, parse};
 
 /// Advance of the editor's monospace font in em (IBM Plex Mono). A formula
 /// reserves that many display columns per advance, so a line's text and the
@@ -56,7 +56,8 @@ pub struct Rendered {
     pub columns: usize,
 }
 
-type Formulas = HashMap<String, Option<Arc<Rendered>>>;
+/// The macro set (see [`Macros::stamp`]) a formula was made under, and the result.
+type Formulas = HashMap<String, (u64, Option<Arc<Rendered>>)>;
 
 /// Index 0 holds inline formulas, 1 display ones.
 static CACHE: Mutex<[Option<Formulas>; 2]> = Mutex::new([None, None]);
@@ -64,32 +65,41 @@ static CACHE: Mutex<[Option<Formulas>; 2]> = Mutex::new([None, None]);
 /// The formula between the delimiters of `span` (`$x$` or `$$x$$`), or `None`
 /// if the font is missing or the source does not parse cleanly; the caller then
 /// shows the source as typed.
-pub fn rendered_span(span: &str) -> Option<Arc<Rendered>> {
-    let delim = span.bytes().take_while(|&b| b == b'$').count().min(2);
-    let body = span.get(delim..span.len().checked_sub(delim)?)?;
-    rendered(body, delim == 2)
+pub fn rendered_span(span: &str, macros: &Macros) -> Option<Arc<Rendered>> {
+    let body = span_body(span)?;
+    rendered(body, span.starts_with("$$"), macros)
 }
 
-pub fn rendered(source: &str, display: bool) -> Option<Arc<Rendered>> {
+/// The source between the delimiters of `span` (`$x$` or `$$x$$`).
+pub fn span_body(span: &str) -> Option<&str> {
+    let delim = span.bytes().take_while(|&b| b == b'$').count().min(2);
+    span.get(delim..span.len().checked_sub(delim)?)
+}
+
+pub fn rendered(source: &str, display: bool, macros: &Macros) -> Option<Arc<Rendered>> {
     let slot = usize::from(display);
     // Poisoning only means another thread panicked mid-insert; the map is still
     // a valid cache.
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
     let map = cache[slot].get_or_insert_with(HashMap::new);
-    if let Some(hit) = map.get(source) {
+    if let Some((stamp, hit)) = map.get(source)
+        && *stamp == macros.stamp()
+    {
         return hit.clone();
     }
-    let made = build(source, display);
+    let made = build(source, display, macros);
     if map.len() >= MAX_ENTRIES {
         map.clear();
     }
-    map.insert(source.to_owned(), made.clone());
+    map.insert(source.to_owned(), (macros.stamp(), made.clone()));
     made
 }
 
-fn build(source: &str, display: bool) -> Option<Arc<Rendered>> {
+fn build(source: &str, display: bool, macros: &Macros) -> Option<Arc<Rendered>> {
     let font = MathFont::bundled()?;
-    let formula = parse(source);
+    // A macro that expands without end is not a formula: shown as source.
+    let expanded = macros.expand(source).ok()?;
+    let formula = parse(&expanded);
     if formula.has_error {
         return None;
     }

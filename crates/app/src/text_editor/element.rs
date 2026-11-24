@@ -267,7 +267,7 @@ pub(super) fn caret_rect(
             window,
         );
         // More than one entry only for a table row whose cells wrapped.
-        let heights = entry_heights(&results, line_text, (font_size, line_height));
+        let heights = entry_heights(&results, line_text, (font_size, line_height), state.macros);
         for ((wrapped, display_line), entry) in results.iter().zip(heights) {
             let (line_height, height) = (entry.row, entry.height);
             if offset <= line_range.end {
