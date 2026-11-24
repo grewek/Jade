@@ -339,14 +339,7 @@ impl<'a> Parser<'a> {
             "bmod" | "pmod" | "mod" | "pod" => self.parse_mod(name),
             "not" => Node::Negated(Box::new(self.parse_arg())),
             "boxed" => Node::Boxed(Box::new(self.parse_arg())),
-            "cancel" | "bcancel" | "xcancel" => Node::Cancel {
-                kind: match name {
-                    "cancel" => Strike::Up,
-                    "bcancel" => Strike::Down,
-                    _ => Strike::Cross,
-                },
-                body: Box::new(self.parse_arg()),
-            },
+            "cancel" | "bcancel" | "xcancel" => self.parse_cancel(name),
             "phantom" | "hphantom" | "vphantom" | "smash" => Node::Phantom {
                 kind: match name {
                     "phantom" => Phantom::Both,
@@ -381,6 +374,18 @@ impl<'a> Parser<'a> {
             // Meaningless alone; harmless to drop.
             "limits" | "nolimits" => Node::Group(Vec::new()),
             _ => self.error_token(tok),
+        }
+    }
+
+    fn parse_cancel(&mut self, name: &str) -> Node {
+        let kind = match name {
+            "cancel" => Strike::Up,
+            "bcancel" => Strike::Down,
+            _ => Strike::Cross,
+        };
+        Node::Cancel {
+            kind,
+            body: Box::new(self.parse_arg()),
         }
     }
 
