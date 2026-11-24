@@ -135,6 +135,42 @@ impl Layout {
             .extend(other.items.into_iter().map(|item| item.shifted(dx, dy)));
     }
 
+    /// Everything in the layout `factor` times as large.
+    fn scale(&mut self, factor: f32) {
+        self.width *= factor;
+        self.ascent *= factor;
+        self.descent *= factor;
+        self.italic *= factor;
+        for item in &mut self.items {
+            match item {
+                Item::Glyph { x, y, size, .. } => {
+                    (*x, *y, *size) = (*x * factor, *y * factor, *size * factor);
+                }
+                Item::Rule {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } => {
+                    (*x, *y) = (*x * factor, *y * factor);
+                    (*width, *height) = (*width * factor, *height * factor);
+                }
+                Item::Line {
+                    x,
+                    y,
+                    x2,
+                    y2,
+                    thickness,
+                    ..
+                } => {
+                    (*x, *y, *x2, *y2) = (*x * factor, *y * factor, *x2 * factor, *y2 * factor);
+                    *thickness *= factor;
+                }
+            }
+        }
+    }
+
     /// Appends `other` after the current width, on the same baseline.
     fn push(&mut self, other: Layout) {
         let at = self.width;
@@ -316,15 +352,6 @@ pub fn layout(font: &MathFont, nodes: &[Node], display: bool) -> Layout {
 }
 
 fn layout_body(typesetter: &Typesetter, nodes: &[Node], level: Level) -> Layout {
-    // A `\\` ending the formula starts no line.
-    let end = nodes.iter().rposition(|n| !matches!(n, Node::Break));
-    let nodes = &nodes[..end.map_or(0, |e| e + 1)];
-    if nodes.iter().any(|n| matches!(n, Node::Break)) {
-        // `\\` outside an environment: the lines are centred one above the
-        // other, as in MathJax.
-        let stacked = [Node::Env(Box::new(lines_env(nodes)))];
-        return typesetter.list(&stacked, Style::new(level), None);
-    }
     typesetter.list(nodes, Style::new(level), None)
 }
 
@@ -359,12 +386,32 @@ impl Typesetter<'_> {
 
     /// Atoms side by side with TeX's inter-atom spacing.
     fn list(&self, nodes: &[Node], mut style: Style, alpha: Option<Font>) -> Layout {
+        if nodes.iter().any(|n| matches!(n, Node::Break)) {
+            // A `\\` ending the list starts no line.
+            let end = nodes.iter().rposition(|n| !matches!(n, Node::Break));
+            let nodes = &nodes[..end.map_or(0, |e| e + 1)];
+            return if nodes.iter().any(|n| matches!(n, Node::Break)) {
+                self.lines(nodes, style, alpha)
+            } else {
+                self.list(nodes, style, alpha)
+            };
+        }
         let mut entries: Vec<Entry> = Vec::with_capacity(nodes.len());
         let mut color: Option<u32> = None;
-        for node in nodes {
+        for (i, node) in nodes.iter().enumerate() {
             match node {
                 Node::Style(m) => style = Style::new(level_of(*m)),
                 Node::ColorSwitch(rgb) => color = Some(*rgb),
+                // Everything after it in the group, set at its own size.
+                Node::Size(factor) => {
+                    let mut rest = self.list(&nodes[i + 1..], style, alpha);
+                    rest.scale(*factor);
+                    if let Some(rgb) = color {
+                        rest.tint(rgb);
+                    }
+                    entries.push(Entry::Atom(Class::Ord, rest));
+                    break;
+                }
                 Node::Space(mu) => {
                     entries.push(Entry::Space(f32::from(*mu) / 18.0 * style.scale(self.c())))
                 }
@@ -399,6 +446,13 @@ impl Typesetter<'_> {
             }
         }
         out
+    }
+
+    /// `\\` in a list, at the top of the formula or inside a group: the lines
+    /// are centred one above the other, as in MathJax.
+    fn lines(&self, nodes: &[Node], style: Style, alpha: Option<Font>) -> Layout {
+        let stacked = Node::Env(Box::new(lines_env(nodes)));
+        self.atom(&stacked, style, alpha).1
     }
 
     fn gap(&self, left: Class, right: Class, style: Style) -> f32 {

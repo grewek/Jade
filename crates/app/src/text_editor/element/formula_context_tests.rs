@@ -9,7 +9,7 @@ use crate::text_editor::doc::DocumentCache;
 use crate::text_editor::layout::LineState;
 use crate::text_editor::rows::{self, RowCache};
 use gpui_kit::test::TestWindowExt;
-use gpui_kit::{AppContext, TestAppContext, WindowOptions, px};
+use gpui_kit::{AppContext, Pixels, TestAppContext, WindowOptions, px};
 
 const TALL: &str = "$\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}$";
 const WIDTH: f32 = 800.;
@@ -202,4 +202,109 @@ fn a_tall_formula_made_by_a_macro_grows_its_line(cx: &mut TestAppContext) {
         })
         .unwrap();
     }
+}
+
+const BLOCK: &str = "$$\n\\begin{pmatrix} a & b \\\\ c & d \\end{pmatrix}\n$$";
+
+/// A `$$` block inside a column or an aside is drawn as a formula over the
+/// rows its height needs (#18), and the region is as tall as its lines.
+#[gpui_kit::test]
+fn a_block_in_a_region_is_a_formula_over_its_rows(cx: &mut TestAppContext) {
+    let window = open(cx);
+    let regions = [
+        (
+            "columns",
+            format!("::: columns\n\nleft\n\n{BLOCK}\n\n---\n\nright\n\n:::\n"),
+        ),
+        (
+            "aside text",
+            format!("::: aside left 30%\n\nfloat\n\n---\n\n{BLOCK}\n\nmore\n\n:::\n"),
+        ),
+        (
+            "aside float",
+            format!("::: aside left 30%\n\n{BLOCK}\n\n---\n\nplain text\n\n:::\n"),
+        ),
+    ];
+    for (name, text) in regions {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let (font, size) = (style.font(), style.font_size.to_pixels(window.rem_size()));
+            let line_height = window.line_height();
+            let look = (&font, size, style.color);
+            let mut doc = DocumentCache::new(&text);
+            doc.view.set_column_width(Some(WIDTH));
+            let mut cache = RowCache::empty();
+            rows::rebuild_for_test(&mut cache, &text, &doc, (0, false), px(WIDTH), look, window);
+            let block = doc.math_blocks().first().expect(name);
+            let rows = block
+                .rows()
+                .unwrap_or_else(|| panic!("{name}: not measured"));
+            assert!(rows >= 2, "{name}: {rows} rows");
+            let (first, last) = (block.first_line, block.last_line);
+            let (region, split) = doc.side_by_side(0).expect(name);
+            let shaped = shape_region(
+                &text,
+                &doc,
+                (&region, &split),
+                (usize::MAX, false),
+                (&font, size, line_height),
+                (style.color.into(), None),
+                window,
+            );
+            let lines: Vec<_> = shaped.columns.iter().flat_map(|c| &c.lines).collect();
+            let head = lines.iter().find(|sl| sl.line == first).expect(name);
+            assert_eq!(head.height, line_height * rows as f32, "{name}: head");
+            for sl in lines.iter().filter(|sl| sl.line > first && sl.line <= last) {
+                assert_eq!(sl.height, px(0.), "{name}: line {} is hidden", sl.line);
+            }
+            rows::verify_for_test(&mut cache, &text, &doc, 0..doc.line_count(), look, window);
+            assert_eq!(
+                rows::count_at(&cache, 0),
+                shaped.rows as i64,
+                "{name}: cached region height"
+            );
+            // With the caret in it the block is its source lines.
+            let inside = doc.line_start_byte(first + 1);
+            let open = shape_region(
+                &text,
+                &doc,
+                (&region, &split),
+                (inside, true),
+                (&font, size, line_height),
+                (style.color.into(), None),
+                window,
+            );
+            let lines: Vec<_> = open.columns.iter().flat_map(|c| &c.lines).collect();
+            let source: Pixels = lines
+                .iter()
+                .filter(|sl| (first..=last).contains(&sl.line))
+                .map(|sl| sl.height)
+                .sum();
+            assert!(source >= line_height * 3., "{name}: source rows");
+        })
+        .unwrap();
+    }
+}
+
+/// A block that runs across a divider is not one formula: it stays source.
+#[gpui_kit::test]
+fn a_block_across_a_divider_stays_source(cx: &mut TestAppContext) {
+    let window = open(cx);
+    let text = "::: columns\n\nleft\n\n$$\nx\n\n---\n\ny\n$$\n\n:::\n";
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let mut doc = DocumentCache::new(text);
+        doc.view.set_column_width(Some(WIDTH));
+        let Some(block) = doc.math_blocks().first() else {
+            return;
+        };
+        block.set_rows(3);
+        let first = block.first_line;
+        let state = LineState::in_column(&doc, first, usize::MAX, false);
+        assert_eq!(state.math, crate::text_editor::layout::MathPart::None);
+        assert!(!state.hidden);
+        let _ = cx;
+    })
+    .unwrap();
 }

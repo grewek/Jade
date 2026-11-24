@@ -371,6 +371,23 @@ pub fn text_font(name: &str) -> Option<Font> {
     })
 }
 
+/// The size factor of `\tiny`…`\Huge` (MathJax's).
+pub fn size(name: &str) -> Option<f32> {
+    Some(match name {
+        "tiny" => 0.5,
+        "Tiny" => 0.6,
+        "scriptsize" => 0.7,
+        "small" => 0.85,
+        "normalsize" => 1.0,
+        "large" => 1.2,
+        "Large" => 1.44,
+        "LARGE" => 1.728,
+        "huge" => 2.07,
+        "Huge" => 2.49,
+        _ => return None,
+    })
+}
+
 /// A horizontal space in 1/18 em.
 pub fn space(name: &str) -> Option<i16> {
     Some(match name {

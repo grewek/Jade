@@ -107,10 +107,15 @@ impl<'a> LineState<'a> {
         focused: bool,
     ) -> Self {
         let state = Self::of(doc, i, cursor, focused);
+        // A block that runs over a divider is not one formula: its source.
+        let math = if block_in_one_column(doc, i) {
+            state.math
+        } else {
+            MathPart::None
+        };
         LineState {
-            hidden: state.callout.is_some_and(|c| c.hides(i)),
-            // A column shows a block's lines as source.
-            math: MathPart::None,
+            hidden: state.callout.is_some_and(|c| c.hides(i)) || math == MathPart::Tail,
+            math,
             ..state
         }
     }
@@ -210,6 +215,19 @@ pub(in crate::text_editor) fn is_active_line(
     focused: bool,
 ) -> bool {
     focused && cursor >= line_range.start && cursor <= line_range.end
+}
+
+/// Whether the `$$` block holding line `i` (if any) lies in one column of its
+/// region, from its first line to its last.
+fn block_in_one_column(doc: &DocumentCache, i: usize) -> bool {
+    let Some(block) = doc.math_block_at(i) else {
+        return true;
+    };
+    let Some((region, _)) = doc.side_by_side(i) else {
+        return true;
+    };
+    let column = region.column_of(block.first_line);
+    column.is_some() && column == region.column_of(block.last_line)
 }
 
 /// Line `i`'s part in a `$$` block shown as a formula.

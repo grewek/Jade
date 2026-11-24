@@ -103,11 +103,12 @@ impl<'a> Parser<'a> {
             let atom = match tok.kind {
                 // A script with nothing before it scripts an empty group.
                 Kind::Sup | Kind::Sub => Node::Group(Vec::new()),
-                Kind::Cmd(name @ ("over" | "choose" | "atop")) if infix.is_none() => {
+                Kind::Cmd(name @ ("over" | "choose" | "atop" | "above")) if infix.is_none() => {
                     self.lex.next();
                     let kind = match name {
                         "over" => FracKind::Fraction,
                         "atop" => FracKind::Atop,
+                        "above" => self.parse_above_kind(),
                         _ => FracKind::Binom,
                     };
                     infix = Some((kind, out.len()));
@@ -290,6 +291,9 @@ impl<'a> Parser<'a> {
         if let Some(mu) = symbols::space(name) {
             return Node::Space(mu);
         }
+        if let Some(factor) = symbols::size(name) {
+            return Node::Size(factor);
+        }
         if let Some(font) = symbols::text_font(name) {
             return match self.lex.raw_group() {
                 Some((raw, closed)) => {
@@ -340,6 +344,7 @@ impl<'a> Parser<'a> {
             "not" | "boxed" | "cancel" | "bcancel" | "xcancel" | "strut" | "mathstrut" | "fbox"
             | "phantom" | "hphantom" | "vphantom" | "smash" => self.parse_marked(name, tok),
             "tag" => self.parse_tag(tok),
+            "genfrac" => self.parse_genfrac(tok),
             "color" | "textcolor" => self.parse_color(name, tok),
             "hspace" => self.parse_hspace(tok),
             "newline" => Node::Break,
@@ -420,6 +425,85 @@ impl<'a> Parser<'a> {
                 body: Box::new(self.parse_arg()),
             },
             _ => self.error_token(tok),
+        }
+    }
+
+    /// The bar of `a \above 1pt b`: none for a zero thickness.
+    fn parse_above_kind(&mut self) -> FracKind {
+        let mut thickness = String::new();
+        while let Some(Kind::Char(c)) = self.lex.peek().map(|t| t.kind) {
+            if !(c.is_ascii_digit() || matches!(c, '.' | '-' | '+') || c.is_ascii_alphabetic()) {
+                break;
+            }
+            thickness.push(c);
+            self.lex.next();
+        }
+        let number: String = thickness
+            .chars()
+            .take_while(|c| !c.is_ascii_alphabetic())
+            .collect();
+        match number.parse::<f32>() {
+            Ok(0.0) => FracKind::Atop,
+            Ok(_) => FracKind::Fraction,
+            Err(_) => {
+                self.has_error = true;
+                FracKind::Fraction
+            }
+        }
+    }
+
+    /// `\genfrac{left}{right}{thickness}{style}{num}{den}`.
+    fn parse_genfrac(&mut self, tok: Token<'a>) -> Node {
+        let mut raw = [""; 4];
+        for slot in &mut raw {
+            match self.lex.raw_group() {
+                Some((text, closed)) => {
+                    self.has_error |= !closed;
+                    *slot = text;
+                }
+                None => return self.error_token(tok),
+            }
+        }
+        let [left, right, thickness, style] = raw;
+        let delim = |s: &str| {
+            s.trim()
+                .strip_prefix('\\')
+                .or(Some(s.trim()))
+                .and_then(|d| d.chars().next())
+        };
+        let kind = match thickness.trim() {
+            "" => FracKind::Fraction,
+            t => match t
+                .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+                .parse::<f32>()
+            {
+                Ok(0.0) => FracKind::Atop,
+                _ => FracKind::Fraction,
+            },
+        };
+        let style = match style.trim() {
+            "0" => Some(MathStyle::Display),
+            "1" => Some(MathStyle::Text),
+            "2" => Some(MathStyle::Script),
+            "3" => Some(MathStyle::ScriptScript),
+            _ => None,
+        };
+        let num = Box::new(self.parse_arg());
+        let den = Box::new(self.parse_arg());
+        let frac = Node::Frac {
+            num,
+            den,
+            kind,
+            style,
+        };
+        let (open, close) = (delim(left), delim(right));
+        if open.is_none() && close.is_none() {
+            return frac;
+        }
+        Node::Delimited {
+            open,
+            close,
+            body: vec![frac],
         }
     }
 

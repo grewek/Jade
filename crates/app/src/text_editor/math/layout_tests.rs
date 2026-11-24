@@ -377,6 +377,20 @@ fn source_that_failed_is_drawn_as_error_glyphs() {
     assert_eq!(errors, "\\nosuchcommand".chars().count());
 }
 
+fn item_is_finite(item: &Item) -> bool {
+    match item {
+        Item::Glyph { x, y, size, .. } => [*x, *y, *size].iter().all(|v| v.is_finite()),
+        Item::Rule {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } => [*x, *y, *width, *height].iter().all(|v| v.is_finite()),
+        Item::Line { x, y, x2, y2, .. } => [*x, *y, *x2, *y2].iter().all(|v| v.is_finite()),
+    }
+}
+
 #[test]
 fn every_construct_lays_out_finite_and_nonnegative() {
     let mut rng = Rng::new(0x1234_5678_9ABC_DEF1);
@@ -422,6 +436,11 @@ fn every_construct_lays_out_finite_and_nonnegative() {
         "'",
         "\\boxed",
         "\\cancel",
+        "\\Large",
+        "\\genfrac{(}{)}{0pt}{}",
+        "\\above",
+        "{",
+        "}",
         "\\xrightarrow",
         "\\middle|",
         "\\unknown",
@@ -436,18 +455,7 @@ fn every_construct_lays_out_finite_and_nonnegative() {
             assert!(v.is_finite() && v >= -1e-4, "{src:?}: {v}");
         }
         for item in &l.items {
-            let all_finite = match item {
-                Item::Glyph { x, y, size, .. } => [*x, *y, *size].iter().all(|v| v.is_finite()),
-                Item::Rule {
-                    x,
-                    y,
-                    width,
-                    height,
-                    ..
-                } => [*x, *y, *width, *height].iter().all(|v| v.is_finite()),
-                Item::Line { x, y, x2, y2, .. } => [*x, *y, *x2, *y2].iter().all(|v| v.is_finite()),
-            };
-            assert!(all_finite, "{src:?}: {item:?}");
+            assert!(item_is_finite(item), "{src:?}: {item:?}");
         }
     }
 }
@@ -641,6 +649,51 @@ fn the_added_accents_and_boxes_lay_out_as_formulas() {
     let strut = lay("\\strut", false);
     assert_eq!(strut.width, 0.0);
     assert!(strut.ascent > plain.ascent);
+}
+
+#[test]
+fn a_size_command_scales_what_follows_it_in_its_group() {
+    let plain = lay("xy", false);
+    let big = lay("x \\Large y", false);
+    let (x, y) = (lay("x", false), lay("y", false));
+    let (gx, gy) = (glyphs(&plain), glyphs(&big));
+    assert_eq!(gx[0].3, gy[0].3, "before it: unchanged");
+    assert!((gy[1].3 / gx[1].3 - 1.44).abs() < 1e-4, "after it: scaled");
+    assert!(big.width > plain.width && big.ascent > x.ascent.max(y.ascent));
+    let grouped = lay("{\\tiny x} y", false);
+    assert!((glyphs(&grouped)[0].3 - 0.5).abs() < 1e-4);
+    assert_eq!(glyphs(&grouped)[1].3, 1.0, "the group ends the size");
+    assert!(!parse("\\tiny\\scriptsize\\small\\normalsize\\large\\LARGE\\huge\\Huge x").has_error);
+}
+
+#[test]
+fn above_and_genfrac_are_fractions_with_or_without_a_bar() {
+    assert_eq!(rules(&lay("a \\above 1pt b", true)).len(), 1);
+    assert!(rules(&lay("a \\above 0pt b", true)).is_empty());
+    assert_eq!(rules(&lay("\\genfrac{}{}{}{}{a}{b}", true)).len(), 1);
+    assert!(rules(&lay("\\genfrac{}{}{0pt}{}{a}{b}", true)).is_empty());
+    let bare = lay("\\genfrac{}{}{0pt}{}{a}{b}", true);
+    let wrapped = lay("\\genfrac{(}{)}{0pt}{}{a}{b}", true);
+    assert_eq!(glyphs(&wrapped).len(), glyphs(&bare).len() + 2);
+    assert!(wrapped.width > bare.width);
+    let text = lay("\\genfrac{}{}{}{1}{a}{b}", true);
+    assert!(
+        text.ascent + text.descent
+            < lay("\\genfrac{}{}{}{0}{a}{b}", true).ascent
+                + lay("\\genfrac{}{}{}{0}{a}{b}", true).descent
+    );
+    assert!(parse("\\genfrac{(}").has_error);
+}
+
+#[test]
+fn a_line_break_inside_a_group_stacks_lines_there() {
+    let flat = lay("{a} + {b}", false);
+    let nested = lay("{a \\\\ b} + c", false);
+    assert!(nested.ascent + nested.descent > 2.0 * (flat.ascent + flat.descent) * 0.8);
+    assert_eq!(glyphs(&nested).len(), 4);
+    assert!(!parse("x^{a \\\\ b}").has_error);
+    // Trailing and doubled breaks start no empty line.
+    assert_eq!(lay("{a \\\\}", false), lay("{a}", false));
 }
 
 #[test]

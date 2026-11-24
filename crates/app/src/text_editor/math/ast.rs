@@ -250,6 +250,8 @@ pub enum Node {
         text: String,
         starred: bool,
     },
+    /// `\tiny`…`\Huge`: the siblings after it at this multiple of the size.
+    Size(f32),
     /// `\color{c}`: `0xRRGGBB` for the siblings after it.
     ColorSwitch(u32),
     /// `\textcolor{c}{body}`.

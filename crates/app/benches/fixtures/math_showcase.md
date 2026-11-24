@@ -75,6 +75,8 @@ Strikes: $\cancel{x}$, $\bcancel{x+1}$, $\xcancel{\frac{a}{b}}$, $\frac{\cancel{
 
 More marks: $\dddot{x}$, $\widecheck{xyz}$, $\overparen{x+y+z}$, $\overleftrightarrow{AB}$, $\underbar{x}$, $\fbox{a framed word}$, $a \atop b$, $\mathinner{\ldots}$, $\strut x$.
 
+Sizes: $\tiny a \small b \normalsize c \large d \Large e \huge f$, $\genfrac{(}{)}{0pt}{}{n}{k}$, $a \above 1pt b$, $\genfrac{}{}{0pt}{1}{x}{y}$.
+
 ## 8. Environments
 
 Matrices inline: $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ and $\begin{bmatrix} 1 & 0 \\ 0 & 1 \end{bmatrix}$ and $\begin{vmatrix} a & b \\ c & d \end{vmatrix}$.
@@ -183,3 +185,29 @@ $$\newcommand{\R}{\mathbb{R}} \newcommand{\norm}[1]{\left\lVert #1 \right\rVert}
 $\def\pair#1#2{(#1, #2)}$ $\DeclareMathOperator{\Tr}{Tr}$
 
 With them: $f\colon \R \to \R$, $\norm{x + y} \le \norm{x} + \norm{y}$, $\pair{a}{b}$, $\Tr(AB) = \Tr(BA)$.
+
+## Blocks in regions and nested line breaks
+
+::: columns
+
+Left column, with a block:
+
+$$
+\begin{pmatrix} a & b \\ c & d \end{pmatrix}
+$$
+
+---
+
+Right column: ${a \\ b} + {c \\ d}$ and $x^{a \\ b}$.
+
+:::
+
+::: aside right 40%
+
+$$
+\int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
+$$
+
+:::
+
+Text next to the aside, which flows around the block above.
