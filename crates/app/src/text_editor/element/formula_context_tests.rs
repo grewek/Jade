@@ -529,3 +529,22 @@ fn a_click_below_a_tall_row_lands_on_its_own_row(cx: &mut TestAppContext) {
         .unwrap();
     }
 }
+
+/// `Typography::default()` is today's look: the size and row height the window
+/// gives the editor (#58). When this fails, a step changed them without the
+/// defaults.
+#[gpui_kit::test]
+fn the_typography_default_matches_the_window_text_style(cx: &mut TestAppContext) {
+    let window = open(cx);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let style = window.text_style();
+        let typography = crate::settings::Typography::default();
+        assert_eq!(
+            f32::from(style.font_size.to_pixels(window.rem_size())),
+            typography.font.size
+        );
+        assert_eq!(f32::from(window.line_height()), typography.line_height_px());
+    })
+    .unwrap();
+}
