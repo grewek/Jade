@@ -811,3 +811,105 @@ fn ui_code_has_no_color_literals() {
         }
     }
 }
+
+fn resolved(extra: &str) -> ResolvedTheme {
+    ResolvedTheme::parse(&defaults(), &mini(extra)).expect("valid")
+}
+
+#[test]
+fn a_style_role_follows_its_fallback_until_set() {
+    let t = resolved("");
+    let c = |role| t.color(role);
+    assert_eq!(c(Role::Heading), c(Role::Text));
+    for level in 1..=6 {
+        assert_eq!(
+            c(Role::heading_level(level)),
+            c(Role::Text),
+            "level {level}"
+        );
+    }
+    assert_eq!(c(Role::QuoteBar), c(Role::BorderStrong));
+    assert_eq!(c(Role::LinkUnderline), c(Role::Link));
+    assert_eq!(c(Role::CodeBackground), c(Role::Surface));
+}
+
+#[test]
+fn heading_colors_cascade_from_heading_to_a_level() {
+    let t = resolved("\n[overrides]\nheading = \"#112233\"\nheading_5 = \"#445566\"\n");
+    assert_eq!(t.color(Role::Heading), rgb("112233"));
+    assert_eq!(t.color(Role::Heading1), rgb("112233"));
+    assert_eq!(t.color(Role::Heading6), rgb("112233"));
+    assert_eq!(t.color(Role::Heading5), rgb("445566"));
+    // Text is untouched.
+    assert_ne!(t.color(Role::Text), rgb("112233"));
+}
+
+#[test]
+fn an_overridden_fallback_carries_to_the_roles_that_follow_it() {
+    let t = resolved("\n[overrides]\nlink = \"#abcdef\"\ntext = \"#102030\"\n");
+    assert_eq!(t.color(Role::LinkUnderline), rgb("abcdef"));
+    assert_eq!(t.color(Role::Heading3), rgb("102030"));
+}
+
+#[test]
+fn roles_toml_may_assign_a_role_that_has_a_fallback() {
+    let with = ROLES.replace("[alpha]", "[roles_extra]\n[alpha]");
+    assert!(
+        Defaults::parse(&with).is_err(),
+        "an unknown section is rejected"
+    );
+    let with = ROLES.replacen("[roles]\n", "[roles]\nheading = \"lavender\"\n", 1);
+    let d = Defaults::parse(&with).expect("valid");
+    let t = ResolvedTheme::parse(&d, &mini("")).expect("valid");
+    assert_eq!(t.color(Role::Heading), t.color(Role::Accent));
+    assert_eq!(t.color(Role::Heading2), t.color(Role::Accent));
+}
+
+#[test]
+fn a_role_without_a_value_or_fallback_is_still_required() {
+    let without = ROLES.replace("highlight = \"yellow\"", "");
+    let errors = Defaults::parse(&without).expect_err("highlight is required");
+    assert_eq!(
+        errors,
+        vec![ThemeError::MissingDefault { name: "highlight" }]
+    );
+}
+
+#[test]
+fn every_fallback_chain_ends_at_a_role_roles_toml_assigns() {
+    let d = defaults();
+    for &role in Role::ALL {
+        let (mut current, mut steps) = (role, 0);
+        while let Some(next) = current.fallback() {
+            current = next;
+            steps += 1;
+            assert!(steps <= 3, "{} loops or is too deep", role.name());
+        }
+        assert!(
+            d.assigns(current),
+            "{} ends at {}, which roles.toml must assign",
+            role.name(),
+            current.name()
+        );
+    }
+}
+
+#[test]
+fn a_low_contrast_heading_warns_once_not_once_per_level() {
+    let t = resolved("\n[overrides]\nheading = \"#f0f0f0\"\nheading_3 = \"#f1f1f1\"\n");
+    let headings: Vec<Role> = t
+        .warnings
+        .iter()
+        .map(|w| w.foreground)
+        .filter(|r| r.name().starts_with("heading"))
+        .collect();
+    assert_eq!(headings, vec![Role::Heading, Role::Heading3]);
+}
+
+#[test]
+fn heading_level_maps_one_to_six_and_clamps() {
+    assert_eq!(Role::heading_level(1), Role::Heading1);
+    assert_eq!(Role::heading_level(6), Role::Heading6);
+    assert_eq!(Role::heading_level(0), Role::Heading1);
+    assert_eq!(Role::heading_level(9), Role::Heading6);
+}

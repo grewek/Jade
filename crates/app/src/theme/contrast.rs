@@ -22,6 +22,13 @@ const PAIRS: &[(Role, Role, f32)] = &[
     (Role::Warning, Role::Background, 4.5),
     (Role::Error, Role::Background, 4.5),
     (Role::Neutral, Role::Background, 4.5),
+    (Role::Heading, Role::Background, 4.5),
+    (Role::Heading1, Role::Background, 4.5),
+    (Role::Heading2, Role::Background, 4.5),
+    (Role::Heading3, Role::Background, 4.5),
+    (Role::Heading4, Role::Background, 4.5),
+    (Role::Heading5, Role::Background, 4.5),
+    (Role::Heading6, Role::Background, 4.5),
     (Role::TextOnAccent, Role::Accent, 4.5),
     (Role::Accent, Role::Background, 3.0),
 ];
@@ -67,6 +74,12 @@ pub fn ratio(a: Rgb, b: Rgb) -> f32 {
 pub fn check(colors: &[Rgb; Role::COUNT]) -> Vec<ContrastWarning> {
     let mut warnings = Vec::new();
     for &(fg, bg, minimum) in PAIRS {
+        // A level that just follows `heading` would repeat its warning.
+        if fg.fallback() == Some(Role::Heading)
+            && colors[fg.index()] == colors[Role::Heading.index()]
+        {
+            continue;
+        }
         let r = ratio(colors[fg.index()], colors[bg.index()]);
         if r < minimum {
             warnings.push(ContrastWarning {

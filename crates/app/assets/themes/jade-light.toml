@@ -76,6 +76,7 @@ summary = "purple"                       # Summary
 tip     = "turquoise"                    # Tip
 success = "green"                        # Todo, Success
 warning = "orange"                       # Question, Warning
+highlight = "orange"                     # ==highlight==, like warning
 error   = "red"                          # Failure, Danger, Bug
 neutral = "gray_55"                      # Example, Quote
 
