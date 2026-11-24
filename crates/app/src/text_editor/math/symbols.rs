@@ -295,6 +295,49 @@ pub fn accent(name: &str) -> Option<Accent> {
     })
 }
 
+/// A colour as `\color` takes it: a name or `#rgb` / `#rrggbb`, as `0xRRGGBB`.
+pub fn color(spec: &str) -> Option<u32> {
+    let spec = spec.trim();
+    if let Some(hex) = spec.strip_prefix('#') {
+        let digits = u32::from_str_radix(hex, 16).ok()?;
+        return match hex.len() {
+            6 => Some(digits),
+            3 => {
+                let (r, g, b) = ((digits >> 8) & 15, (digits >> 4) & 15, digits & 15);
+                Some(((r * 17) << 16) | ((g * 17) << 8) | (b * 17))
+            }
+            _ => None,
+        };
+    }
+    Some(match spec.to_ascii_lowercase().as_str() {
+        "black" => 0x000000,
+        "white" => 0xffffff,
+        "red" => 0xff0000,
+        "green" => 0x00ff00,
+        "blue" => 0x0000ff,
+        "yellow" => 0xffff00,
+        "cyan" => 0x00ffff,
+        "magenta" => 0xff00ff,
+        "gray" | "grey" => 0x808080,
+        "orange" => 0xff8000,
+        "purple" => 0xbf0040,
+        "violet" => 0x800080,
+        "brown" => 0xbf8040,
+        "pink" => 0xffbfbf,
+        "teal" => 0x008080,
+        "olive" => 0x808000,
+        "lime" => 0xbfff00,
+        "darkgray" => 0x404040,
+        "lightgray" => 0xbfbfbf,
+        _ => return None,
+    })
+}
+
+/// The red, green and blue of a `0xRRGGBB` colour, each 0 to 1.
+pub fn channels(rgb: u32) -> [f32; 3] {
+    [16, 8, 0].map(|shift| ((rgb >> shift) & 255) as f32 / 255.0)
+}
+
 /// A command that sets its argument in another alphabet.
 pub fn font(name: &str) -> Option<Font> {
     Some(match name {

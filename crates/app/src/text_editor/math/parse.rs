@@ -346,6 +346,8 @@ impl<'a> Parser<'a> {
                 },
                 body: Box::new(self.parse_arg()),
             },
+            "tag" => self.parse_tag(tok),
+            "color" | "textcolor" => self.parse_color(name, tok),
             "hspace" => self.parse_hspace(tok),
             "newline" => Node::Break,
             // Numbering and labels have no place in a formula shown alone.
@@ -370,6 +372,41 @@ impl<'a> Parser<'a> {
             "limits" | "nolimits" => Node::Group(Vec::new()),
             _ => self.error_token(tok),
         }
+    }
+
+    /// `\tag{n}` or `\tag*{n}`.
+    fn parse_tag(&mut self, tok: Token<'a>) -> Node {
+        let starred = matches!(self.lex.peek().map(|t| t.kind), Some(Kind::Char('*')));
+        if starred {
+            self.lex.next();
+        }
+        match self.lex.raw_group() {
+            Some((raw, closed)) => {
+                self.has_error |= !closed;
+                Node::Tag {
+                    text: unescape(raw),
+                    starred,
+                }
+            }
+            None => self.error_token(tok),
+        }
+    }
+
+    /// `\color{c}` (for what follows it in the list) or `\textcolor{c}{body}`;
+    /// a colour not known is source in the error colour.
+    fn parse_color(&mut self, name: &str, tok: Token<'a>) -> Node {
+        let Some((spec, closed)) = self.lex.raw_group() else {
+            return self.error_token(tok);
+        };
+        self.has_error |= !closed;
+        let Some(color) = symbols::color(spec) else {
+            return self.error_token(tok);
+        };
+        if name == "color" {
+            return Node::ColorSwitch(color);
+        }
+        let body = Box::new(self.parse_arg());
+        Node::Color { color, body }
     }
 
     fn parse_frac(&mut self, name: &str) -> Node {

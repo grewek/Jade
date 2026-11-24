@@ -105,6 +105,7 @@ impl Typesetter<'_> {
                 y: 0.0,
                 size,
                 error: false,
+                color: None,
             });
         }
         out.width = total * size;
@@ -129,6 +130,7 @@ impl Typesetter<'_> {
             y: 0.0,
             size,
             error: false,
+            color: None,
         }];
         layout.width = (right - left) * size;
         layout.italic = 0.0;
@@ -156,6 +158,7 @@ impl Typesetter<'_> {
                 y: -at * size,
                 size,
                 error: false,
+                color: None,
             });
         }
         out.ascent = total * size;

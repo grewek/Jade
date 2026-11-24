@@ -15,6 +15,7 @@ mod layout_tests;
 mod lex;
 mod parse;
 mod symbols;
+pub use symbols::channels;
 #[cfg(test)]
 mod tests;
 

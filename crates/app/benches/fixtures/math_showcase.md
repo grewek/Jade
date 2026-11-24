@@ -162,3 +162,13 @@ A `[[link]]` inside a block is not a link:
 $$
 x = [[not a link]]
 $$
+
+Colour and numbering: $\textcolor{red}{a} + \color{#0a0} b + c$
+
+$$
+E = mc^2 \tag{1}
+$$
+
+$$
+\textcolor{blue}{\frac{a}{b}} = \color{orange} \sqrt{x} \tag*{(star)}
+$$
