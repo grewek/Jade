@@ -40,7 +40,7 @@ const APP_ID: &str = "jade";
 const IBM_PLEX_SANS: &str = "IBM Plex Sans";
 const IBM_PLEX_MONO: &str = "IBM Plex Mono";
 
-fn install_fonts(cx: &mut App) {
+pub(crate) fn install_fonts(cx: &mut App) {
     use std::borrow::Cow;
 
     cx.text_system()
