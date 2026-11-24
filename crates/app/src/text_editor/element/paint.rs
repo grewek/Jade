@@ -483,7 +483,7 @@ pub(super) fn paint_line(
             let scale = table::row_scale(
                 line_text,
                 &columns.widths,
-                state.editing_cell,
+                (state.editing_cell, state.macros),
                 results.len(),
             );
             paint_table_row(
@@ -504,6 +504,7 @@ pub(super) fn paint_line(
                     origin: bounds.origin + point(px(0.), y_offset),
                     line_height,
                     scale,
+                    macros: state.macros,
                 };
                 let (selection, caret) = (selection.as_ref(), show_cursor.then_some(cursor));
                 paint_editing_cell(

@@ -7,9 +7,9 @@
 
 use std::ops::Range;
 
-use super::super::math::Macros;
-use super::super::preview::{build_cell_line_with, raw_cell_line};
-use super::model::{Align, LINE_BREAK, for_each_cell_range};
+use super::super::math::{Macros, NO_MACROS};
+use super::super::preview::{build_cell_line_with, cell_formulas, raw_cell_line};
+use super::model::{Align, Chunk, LINE_BREAK, chunks, for_each_cell_range, shown_len};
 
 /// Space on each side of a cell's text, in characters. The grid is laid out in
 /// characters (the font is monospace); `element.rs` multiplies by the advance.
@@ -74,7 +74,7 @@ pub(in crate::text_editor) fn offset_at_editing(
     (editing, macros): (Option<usize>, &Macros),
 ) -> usize {
     let column = column_at(widths, x);
-    let cell = &layout_row_editing(line, widths, editing)[column];
+    let cell = &layout_row_in(line, widths, editing, macros)[column];
     let range = cell.lines[row.min(cell.lines.len() - 1)].clone();
     let shown = if editing == Some(column) {
         raw_cell_line(&line[range.clone()])
@@ -225,6 +225,17 @@ pub(in crate::text_editor) fn layout_row_editing(
     widths: &[usize],
     editing: Option<usize>,
 ) -> Vec<CellBox> {
+    layout_row_in(line, widths, editing, &NO_MACROS)
+}
+
+/// [`layout_row_editing`] with the other cells' formulas drawn (expanded with
+/// `macros`), so a formula is one unbreakable run of its drawn width.
+pub(in crate::text_editor) fn layout_row_in(
+    line: &str,
+    widths: &[usize],
+    editing: Option<usize>,
+    macros: &Macros,
+) -> Vec<CellBox> {
     let mut ranges = Vec::with_capacity(widths.len());
     for_each_cell_range(line, |raw| ranges.push(raw));
     widths
@@ -235,7 +246,7 @@ pub(in crate::text_editor) fn layout_row_editing(
                 lines: wrap_raw(line, edit_range(line, raw.clone()), width),
             },
             Some(raw) => CellBox {
-                lines: wrap_ranges(line, raw.clone(), width),
+                lines: wrap_ranges(line, raw.clone(), width, macros),
             },
             None => CellBox {
                 lines: vec![line.len()..line.len()],
@@ -246,35 +257,63 @@ pub(in crate::text_editor) fn layout_row_editing(
 
 /// The greedy fill of `table::model::wrapped_line_count`, returning where each
 /// line is instead of how many there are.
-fn wrap_ranges(line: &str, raw: Range<usize>, width: usize) -> Vec<Range<usize>> {
+fn wrap_ranges(line: &str, raw: Range<usize>, width: usize, macros: &Macros) -> Vec<Range<usize>> {
     let cell = &line[raw.clone()];
     if !cell.contains(LINE_BREAK) {
-        return wrap_ranges_between_breaks(line, raw, width);
+        return wrap_ranges_between_breaks(line, raw, width, macros);
     }
     // Each part between `<br>`s wraps on its own; the tags are not shown.
     let mut lines = Vec::new();
     let mut start = raw.start;
     for part in cell.split(LINE_BREAK) {
         let end = start + part.len();
-        lines.extend(wrap_ranges_between_breaks(line, start..end, width));
+        lines.extend(wrap_ranges_between_breaks(line, start..end, width, macros));
         start = end + LINE_BREAK.len();
     }
     lines
 }
 
-fn wrap_ranges_between_breaks(line: &str, raw: Range<usize>, width: usize) -> Vec<Range<usize>> {
-    let width = width.max(1);
+fn wrap_ranges_between_breaks(
+    line: &str,
+    raw: Range<usize>,
+    width: usize,
+    macros: &Macros,
+) -> Vec<Range<usize>> {
     let cell = &line[raw.clone()];
+    let formulas = if cell.contains('$') {
+        cell_formulas(cell, macros)
+    } else {
+        Vec::new()
+    };
+    if formulas.is_empty() {
+        let words = words(cell).map(|(start, word)| Chunk {
+            range: start..start + word.len(),
+            len: shown_len(word),
+            glued: false,
+        });
+        return fill(line, raw, width, words);
+    }
+    fill(line, raw.clone(), width, chunks(cell, &formulas, width))
+}
+
+/// The greedy fill over `chunks` (ranges relative to the cell at `raw`): each
+/// line's byte range in `line`.
+fn fill(
+    line: &str,
+    raw: Range<usize>,
+    width: usize,
+    chunks: impl IntoIterator<Item = Chunk>,
+) -> Vec<Range<usize>> {
+    let width = width.max(1);
     let mut lines = Vec::new();
     // The open line: its byte range and how many characters it shows.
     let mut open: Option<(Range<usize>, usize)> = None;
-    for (word_start, word) in words(cell) {
-        let word_start = raw.start + word_start;
-        let mut word = word_start..word_start + word.len();
-        let mut len = shown_len(&line[word.clone()]);
+    for chunk in chunks {
+        let mut word = raw.start + chunk.range.start..raw.start + chunk.range.end;
+        let mut len = chunk.len;
         loop {
             let used = open.as_ref().map_or(0, |(_, used)| *used);
-            let separator = usize::from(open.is_some());
+            let separator = usize::from(open.is_some() && !chunk.glued);
             if used + separator + len <= width {
                 open = Some(match open.take() {
                     Some((range, used)) => (range.start..word.end, used + separator + len),
@@ -328,11 +367,6 @@ fn byte_after_shown(word: &str, shown: usize) -> usize {
     at
 }
 
-/// Characters `word` takes once `\|` shows as `|`.
-fn shown_len(word: &str) -> usize {
-    word.chars().count() - word.matches("\\|").count()
-}
-
 /// Where byte `offset` of the edited cell `column` of `line` is: the row of the
 /// cell it is on, and its x in characters from the table's left edge.
 pub(in crate::text_editor) fn caret_at(
@@ -384,7 +418,7 @@ pub(in crate::text_editor) fn offset_in_line(
 #[cfg(test)]
 mod tests {
     use super::super::super::test_support::Rng;
-    use super::super::model::{row_line_count, row_line_count_editing, wrap_cell_text};
+    use super::super::model::{row_line_count, row_line_count_in, wrap_cell_text};
     use super::*;
 
     fn texts<'a>(line: &'a str, cell: &CellBox) -> Vec<&'a str> {
@@ -461,7 +495,7 @@ mod tests {
             edited[0].lines,
             cells[0].lines.iter().map(|r| r.clone()).collect::<Vec<_>>()
         );
-        assert_eq!(row_line_count_editing(line, &[40], Some(0)), 4);
+        assert_eq!(row_line_count_in(line, &[40], Some(0), &NO_MACROS), 4);
         let tag = line.find("<br>").unwrap();
         assert_eq!(caret_at(line, &[40], 0, tag).0, 0);
         assert_eq!(caret_at(line, &[40], 0, tag + 4).0, 1);
@@ -575,5 +609,53 @@ mod tests {
                 assert_eq!(got, expected, "{line:?} column {c} at {widths:?}");
             }
         }
+    }
+
+    /// A drawn formula is one unbreakable run of its drawn width (#43): a
+    /// column far narrower than its source still draws it, on a line of its
+    /// own, and the line count agrees with the ranges at every width.
+    #[test]
+    fn a_formula_wider_in_source_than_its_column_is_never_cut() {
+        let macros = Macros::default();
+        let formula = r"$\frac{\frac{a}{b}}{\frac{c}{d}}$";
+        let line = format!("| c | {formula} |");
+        for width in 6..=40 {
+            let widths = [3, width];
+            let cell = &layout_row_in(&line, &widths, None, &macros)[1];
+            let whole = cell
+                .lines
+                .iter()
+                .filter(|r| line[(*r).clone()].contains(formula))
+                .count();
+            let drawn = cell_formulas(formula, &macros)[0].1;
+            if drawn <= width {
+                assert_eq!(whole, 1, "width {width}: {:?}", cell.lines);
+            }
+            assert_eq!(
+                cell.lines.len(),
+                row_line_count_in(&line, &widths, None, &macros),
+                "width {width}"
+            );
+        }
+    }
+
+    #[test]
+    fn text_around_a_formula_wraps_between_the_pieces() {
+        let macros = Macros::default();
+        let line = r"| aaaa bbbb $x^2$ cccc dddd |";
+        let widths = [10];
+        let lines = &layout_row_in(line, &widths, None, &macros)[0].lines;
+        assert!(lines.len() >= 2, "{lines:?}");
+        assert!(lines.iter().any(|r| line[r.clone()].contains("$x^2$")));
+        assert_eq!(lines.len(), row_line_count_in(line, &widths, None, &macros));
+    }
+
+    #[test]
+    fn a_formula_glued_to_a_word_stays_with_it_when_it_fits() {
+        let macros = Macros::default();
+        let line = "| ab$x$cd |";
+        let lines = &layout_row_in(line, &[12], None, &macros)[0].lines;
+        assert_eq!(lines.len(), 1);
+        assert_eq!(&line[lines[0].clone()], "ab$x$cd");
     }
 }

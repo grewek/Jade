@@ -130,7 +130,7 @@ fn table_row_scale(
         return 1;
     }
     let mut reach = (0.0f32, 0.0f32);
-    for (column, cell) in table::layout_row_editing(line, widths, state.editing_cell)
+    for (column, cell) in table::layout_row_in(line, widths, state.editing_cell, state.macros)
         .iter()
         .enumerate()
         .filter(|(c, _)| state.editing_cell != Some(*c))
@@ -387,7 +387,8 @@ pub(in crate::text_editor) fn build_display_lines(
                 let max_chars =
                     table_row_char_budget(available_width, font, font_size, text_color, window);
                 let widths = table::resolve_widths(&table.columns, max_chars);
-                let lines = table::row_line_count_editing(line, &widths, state.editing_cell);
+                let lines =
+                    table::row_line_count_in(line, &widths, state.editing_cell, state.macros);
                 let scale = table_row_scale(line, &widths, state, (font, font_size), window);
                 vec![hidden_line(line); lines * scale]
             }
