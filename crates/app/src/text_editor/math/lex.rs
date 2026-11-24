@@ -91,6 +91,38 @@ impl<'a> Lexer<'a> {
         }
     }
 
+    /// The text of a `[…]` group (braces balanced inside), `None` and nothing
+    /// consumed when no `[` follows or its `]` is missing.
+    pub fn raw_bracket(&mut self) -> Option<&'a str> {
+        let mut probe = self.clone();
+        if probe.next()?.kind != Kind::Char('[') {
+            return None;
+        }
+        let body = &self.src[probe.pos..];
+        let mut depth = 0usize;
+        let mut chars = body.char_indices();
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '\\' => {
+                    chars.next();
+                }
+                '{' => depth += 1,
+                '}' => depth = depth.saturating_sub(1),
+                ']' if depth == 0 => {
+                    self.pos = probe.pos + i + 1;
+                    return Some(&body[..i]);
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Where the next token would be read from.
+    pub fn pos(&self) -> usize {
+        self.pos
+    }
+
     /// The text of a `{…}` group, braces balanced and `\x` skipped as a
     /// pair, with whether its closing brace was there. `None` (nothing
     /// consumed) when no `{` follows.

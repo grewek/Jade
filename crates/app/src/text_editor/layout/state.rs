@@ -4,6 +4,7 @@ use gpui_kit::*;
 
 use crate::text_editor::doc::DocumentCache;
 use crate::text_editor::image::Sizes as ImageSizes;
+use crate::text_editor::math::{Macros, NO_MACROS};
 use crate::text_editor::preview::LineContext;
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::{Callout, callout_index_at};
@@ -46,6 +47,8 @@ pub(in crate::text_editor) struct LineState<'a> {
     pub justify: bool,
     /// The line's part in a `$$` block shown as a formula.
     pub math: MathPart,
+    /// The note's macros, which its formulas are expanded with.
+    pub macros: &'a Macros,
 }
 
 /// Where a line is in a `$$` block that is shown as a formula (the caret is not
@@ -91,6 +94,7 @@ impl<'a> LineState<'a> {
             column_frame: doc.is_column_frame(i),
             justify: doc.view.justify(),
             math,
+            macros: doc.macros(),
         }
     }
 
@@ -129,6 +133,7 @@ impl<'a> LineState<'a> {
             column_frame: false,
             justify: false,
             math: MathPart::None,
+            macros: &NO_MACROS,
         }
     }
 }

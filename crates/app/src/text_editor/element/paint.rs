@@ -204,10 +204,11 @@ pub(super) fn paint_lines(
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
-        let row_height = entry_heights(&results, line_text, (font_size, line_height))
+        let row_height = entry_heights(&results, line_text, (font_size, line_height), state.macros)
             .next()
             .map_or(line_height, |e| e.row);
-        let (total_height, rows) = shaped_height(&results, line_text, (font_size, line_height));
+        let (total_height, rows) =
+            shaped_height(&results, line_text, (font_size, line_height), state.macros);
         // Upgrades a cold-rebuild estimate (see `RowCache::rebuild`)
         // to the truth using the real shaping this line's painting already
         // needed — zero extra cost, and idempotent (a no-op once this line
@@ -437,6 +438,7 @@ pub(super) fn paint_line(
             area,
             font_size,
             (inline.text, inline.broken),
+            doc.macros(),
             (window, cx),
         );
     }
@@ -663,6 +665,7 @@ pub(super) fn paint_line(
             line_height,
             line_text,
             row_width: full_row_width,
+            macros: state.macros,
         };
         paint_widgets(display_line, wrapped, line_origin, &widgets, (window, cx));
 

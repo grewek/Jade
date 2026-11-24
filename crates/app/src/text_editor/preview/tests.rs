@@ -186,6 +186,31 @@ fn a_formula_that_does_not_parse_stays_source() {
 }
 
 #[test]
+fn a_formula_is_drawn_once_the_notes_macro_defines_it() {
+    let line = "let $f: \\R \\to \\R$ here";
+    let unknown = build_display_line(line, false);
+    assert!(
+        unknown
+            .segments
+            .iter()
+            .all(|s| s.style != InlineStyle::Math)
+    );
+    let macros = Macros::collect(["\\newcommand{\\R}{\\mathbb{R}}"]);
+    let dl = build_display_line_with(line, false, &macros);
+    assert_eq!(
+        dl.segments
+            .iter()
+            .filter(|s| s.style == InlineStyle::Math)
+            .count(),
+        1
+    );
+    // A macro that never ends is source, not a hang.
+    let looping = Macros::collect(["\\newcommand{\\R}{\\R}"]);
+    let dl = build_display_line_with(line, false, &looping);
+    assert_eq!(dl.display_text, line);
+}
+
+#[test]
 fn a_table_cell_never_gets_a_drawn_formula() {
     let dl = build_cell_line("$x^2$");
     assert_eq!(dl.display_text, "$x^2$");

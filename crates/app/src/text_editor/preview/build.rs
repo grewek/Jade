@@ -22,6 +22,11 @@ use super::*;
 /// scope (list-in-list compounding on one line, e.g. unindented `- - x`;
 /// and compounding more than one level deep).
 pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
+    build_display_line_with(line, active, &Macros::default())
+}
+
+/// [`build_display_line`], its formulas expanded with the note's `macros`.
+pub fn build_display_line_with(line: &str, active: bool, macros: &Macros) -> DisplayLine {
     let indent = line_indent(line);
 
     if active || line.is_empty() {
@@ -47,6 +52,7 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
             prefix_len,
             line.len(),
             InlineStyle::Heading(level),
+            macros,
             &mut segments,
             &mut display_text,
         );
@@ -73,6 +79,7 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
             content_start,
             line.len(),
             style,
+            macros,
             &mut segments,
             &mut display_text,
         );
@@ -107,6 +114,7 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
             content_start,
             line.len(),
             style,
+            macros,
             &mut segments,
             &mut display_text,
         );
@@ -122,6 +130,7 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
         0,
         line.len(),
         InlineStyle::Plain,
+        macros,
         &mut segments,
         &mut display_text,
     );
@@ -158,7 +167,7 @@ pub fn build_cell_line(text: &str) -> DisplayLine {
         0,
         text.len(),
         InlineStyle::Plain,
-        false,
+        None,
         &mut segments,
         &mut display_text,
     );
@@ -232,10 +241,20 @@ pub(super) fn compound_inner(
 ///   or `Plain` for a list continuation, matching what a real prefix line's
 ///   own content would be styled as).
 pub fn build_display_line_in_context(line: &str, active: bool, ctx: LineContext) -> DisplayLine {
+    build_display_line_in_context_with(line, active, ctx, &Macros::default())
+}
+
+/// [`build_display_line_in_context`], its formulas expanded with `macros`.
+pub fn build_display_line_in_context_with(
+    line: &str,
+    active: bool,
+    ctx: LineContext,
+    macros: &Macros,
+) -> DisplayLine {
     match ctx {
-        LineContext::Plain => build_display_line(line, active),
+        LineContext::Plain => build_display_line_with(line, active, macros),
         LineContext::ListMarkerLine(depth) => {
-            let mut display_line = build_display_line(line, active);
+            let mut display_line = build_display_line_with(line, active, macros);
             display_line.indent = LineIndent::List(depth);
             display_line
         }
@@ -258,7 +277,15 @@ pub fn build_display_line_in_context(line: &str, active: bool, ctx: LineContext)
             };
             let mut segments = Vec::new();
             let mut display_text = String::new();
-            scan_inline(line, 0, line.len(), style, &mut segments, &mut display_text);
+            scan_inline(
+                line,
+                0,
+                line.len(),
+                style,
+                macros,
+                &mut segments,
+                &mut display_text,
+            );
             DisplayLine {
                 display_text,
                 segments,
@@ -335,6 +362,11 @@ pub fn is_thematic_break(line: &str) -> bool {
 /// line `callout::classify_callouts` identified as a header, but cheaper
 /// and simpler than unwrapping).
 pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
+    build_callout_header_line_with(line, active, &Macros::default())
+}
+
+/// [`build_callout_header_line`], its title's formulas expanded with `macros`.
+pub fn build_callout_header_line_with(line: &str, active: bool, macros: &Macros) -> DisplayLine {
     let indent = line_indent(line);
 
     if active || line.is_empty() {
@@ -351,11 +383,11 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
     }
 
     let Some((_, prefix_len)) = blockquote_prefix(line) else {
-        return build_display_line(line, active);
+        return build_display_line_with(line, active, macros);
     };
     let content = &line[prefix_len..];
     let Some(header) = callout_header_prefix(content) else {
-        return build_display_line(line, active);
+        return build_display_line_with(line, active, macros);
     };
 
     let mut segments = Vec::new();
@@ -387,6 +419,7 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
                 title_start,
                 line.len(),
                 InlineStyle::CalloutTitle,
+                macros,
                 &mut segments,
                 &mut display_text,
             );

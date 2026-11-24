@@ -39,8 +39,12 @@
 
 use super::table;
 use std::ops::Range;
+use std::sync::Arc;
+
+use super::math::Macros;
 
 mod edit;
+mod macros;
 mod math;
 mod patch;
 mod view;
@@ -85,6 +89,10 @@ pub(super) struct DocumentCache {
     tables: Vec<Table>,
     /// The `$$` blocks, in line order.
     math_blocks: Vec<MathLines>,
+    /// Lines holding a macro definition (`\newcommand`…), in order.
+    macro_lines: Vec<usize>,
+    /// The macros those lines define.
+    macros: Arc<Macros>,
     callouts: Vec<Callout>,
     /// Reused by `patch_callouts` to hold the callouts the walk re-derives
     /// before they are spliced into `callouts`.
@@ -116,6 +124,8 @@ impl DocumentCache {
             open_block_states: Vec::new(),
             tables: Vec::new(),
             math_blocks: Vec::new(),
+            macro_lines: Vec::new(),
+            macros: Arc::new(Macros::default()),
             callouts: Vec::new(),
             callout_states: Vec::new(),
             callout_scratch: Vec::new(),
@@ -219,6 +229,7 @@ impl DocumentCache {
         self.recompute_math(text);
         self.line_index = Fenwick::from_vec(strides);
         // Reads lines through the index, so only now.
+        self.recompute_macros(text);
         self.cap_tails(text);
         // Spare room for Enter to grow into without reallocating.
         reserve_line_slack(self);
@@ -259,10 +270,14 @@ impl DocumentCache {
         let r5 = self.patch_columns(text, &span, &r1);
         let r6 = self.patch_math(text, &span, &math_pre, &r1);
 
-        let touched = [minimal, r1, r2, r3, r4, r5, r6]
+        let mut touched = [minimal, r1, r2, r3, r4, r5, r6]
             .into_iter()
             .reduce(union_ranges)
             .unwrap();
+        // A changed macro changes any formula of the note.
+        if self.patch_macros(text, &span, &touched) {
+            touched = 0..self.line_roles.len();
+        }
         Some(EditPatch {
             touched: touched.start..touched.end.min(self.line_roles.len()),
             splice_at: span.splice_at(),

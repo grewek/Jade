@@ -15,7 +15,7 @@ use crate::text_editor::layout::{
     formula_reach, indent_px, shape_display_line, shaped_height, tall_rows, wrapped_row_count,
 };
 use crate::text_editor::lines::Fenwick;
-use crate::text_editor::math;
+use crate::text_editor::math::{self, Macros};
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
 use crate::text_editor::preview::{DisplayLine, LineContext, line_indent};
@@ -32,6 +32,7 @@ pub(super) struct DocView<'a> {
     pub(super) images: &'a ImageSizes,
     pub(super) columns: &'a [Columns],
     pub(super) math: &'a [MathLines],
+    pub(super) macros: &'a Macros,
     /// The region shown as source, laid out like plain text.
     pub(super) raw_region: Option<usize>,
     /// Set when regions are laid out side by side (see `DocumentCache::side_by_side`).
@@ -355,7 +356,7 @@ fn estimate_row_count(
     // rows are counted on what is left of the text, each as many as it needs.
     if has_dollar
         && matches!(doc.roles[i], LineRole::Plain)
-        && let Some((reach, chars)) = inline_math_extent(line)
+        && let Some((reach, chars)) = inline_math_extent(line, doc.macros)
     {
         let per_row = tall_rows(reach, (font_size, line_height), text);
         return rows_for_chars(chars, wrap_width, char_width) * per_row;
@@ -366,7 +367,7 @@ fn estimate_row_count(
 /// How far the drawn inline formulas of `line` reach above and below the
 /// baseline (em), and how many display characters the line has with each
 /// formula as its blank columns; `None` when it draws none.
-fn inline_math_extent(line: &str) -> Option<((f32, f32), usize)> {
+fn inline_math_extent(line: &str, macros: &Macros) -> Option<((f32, f32), usize)> {
     let (mut reach, mut chars, mut last) = ((0.0f32, 0.0f32), 0, 0);
     let mut nest = Nesting::default();
     math_scan::scan_inline(line, 0, line.len(), |found| {
@@ -376,7 +377,7 @@ fn inline_math_extent(line: &str) -> Option<((f32, f32), usize)> {
         if nest.inside() {
             return;
         }
-        if let Some(drawn) = math::rendered_span(&line[found.span.clone()]) {
+        if let Some(drawn) = math::rendered_span(&line[found.span.clone()], macros) {
             reach.0 = reach.0.max(drawn.layout.ascent);
             reach.1 = reach.1.max(drawn.layout.descent);
             chars += line[last..found.span.start].chars().count() + drawn.columns;
@@ -499,7 +500,7 @@ pub(super) fn measure_math_block(env: &Env, i: usize, line_height: Pixels) {
         return;
     };
     let body = env.doc.math_body(env.text, block);
-    let rows = math::rendered(body, true).map_or(0, |r| {
+    let rows = math::rendered(body, true, env.doc.macros()).map_or(0, |r| {
         math::block_rows(
             (r.layout.ascent, r.layout.descent),
             f32::from(env.font_size),
@@ -596,7 +597,7 @@ fn state_row_count(
         window,
     );
     let per_row = |dl: &DisplayLine, window: &mut Window| {
-        let reach = formula_reach(dl, line_text);
+        let reach = formula_reach(dl, line_text, env.doc.macros());
         if reach == (0.0, 0.0) {
             return 1;
         }
@@ -630,6 +631,11 @@ pub(super) fn shaped_row_count_for_line(env: &Env, i: usize, window: &mut Window
         window,
     );
     let text = &env.text[env.doc.line_start_byte(i)..env.doc.line_end_byte(i)];
-    let (_, rows) = shaped_height(&shaped, text, (env.font_size, line_height));
+    let (_, rows) = shaped_height(
+        &shaped,
+        text,
+        (env.font_size, line_height),
+        env.doc.macros(),
+    );
     rows.max(usize::from(!state.hidden))
 }

@@ -3,7 +3,7 @@
 
 #[allow(unused_imports)]
 use super::*;
-use crate::text_editor::math;
+use crate::text_editor::math::{self, Macros};
 use crate::text_editor::preview::DisplaySegment;
 
 /// Colors of the controls drawn over a line's widget columns.
@@ -25,6 +25,8 @@ pub(super) struct WidgetPaint<'a> {
     pub(super) line_text: &'a str,
     /// How wide the line's rows are (a display formula is centred in it).
     pub(super) row_width: Pixels,
+    /// The note's macros, which its formulas are expanded with.
+    pub(super) macros: &'a Macros,
 }
 
 /// Paints a bundled Lucide icon (`path`) filling `bounds`.
@@ -163,7 +165,7 @@ fn paint_math(
     let Some(raw) = paint.line_text.get(seg.raw.clone()) else {
         return;
     };
-    let Some(rendered) = math::rendered_span(raw) else {
+    let Some(rendered) = math::rendered_span(raw, paint.macros) else {
         return;
     };
     let line_height = paint.line_height;
@@ -253,9 +255,10 @@ pub(super) fn paint_math_block(
     area: Bounds<Pixels>,
     font_size: Pixels,
     colors: (Hsla, Hsla),
+    macros: &Macros,
     (window, _cx): (&mut Window, &mut App),
 ) {
-    let Some(rendered) = math::rendered(body, true) else {
+    let Some(rendered) = math::rendered(body, true, macros) else {
         return;
     };
     let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));

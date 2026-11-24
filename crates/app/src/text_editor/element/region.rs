@@ -104,7 +104,8 @@ pub(in crate::text_editor) fn shape_region(
             let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
             let results =
                 shape_display_line(line_text, &state, font, font_size, colors, width, window);
-            let (height, _) = shaped_height(&results, line_text, (font_size, line_height));
+            let (height, _) =
+                shaped_height(&results, line_text, (font_size, line_height), state.macros);
             lines.push(ShapedLine {
                 line: i,
                 y,
@@ -148,7 +149,12 @@ fn shape_at(
     let state = column_state(doc, i, (cursor, focused), &broken);
     let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
     let results = shape_display_line(line_text, &state, font, font_size, colors, width, window);
-    let (height, _) = shaped_height(&results, line_text, (font_size, window.line_height()));
+    let (height, _) = shaped_height(
+        &results,
+        line_text,
+        (font_size, window.line_height()),
+        state.macros,
+    );
     (results, broken, height)
 }
 
@@ -614,10 +620,14 @@ pub(super) fn paint_region(
                     range.end
                 };
                 let line_text = &env.text[range.clone()];
-                let row_height =
-                    entry_heights(&sl.results, line_text, (env.font_size, env.line_height))
-                        .next()
-                        .map_or(env.line_height, |e| e.row);
+                let row_height = entry_heights(
+                    &sl.results,
+                    line_text,
+                    (env.font_size, env.line_height),
+                    env.doc.macros(),
+                )
+                .next()
+                .map_or(env.line_height, |e| e.row);
                 let slot = LineSlot {
                     i: sl.line,
                     line_text,
@@ -953,7 +963,12 @@ pub(super) fn caret_bounds(
         .find(|sl| sl.raw.start <= within && within < sl.raw.end)
         .or_else(|| pieces().last())?;
     let line_text = &text[doc.line_start_byte(line)..doc.line_end_byte(line)];
-    let heights = entry_heights(&sl.results, line_text, (font_size, line_height));
+    let heights = entry_heights(
+        &sl.results,
+        line_text,
+        (font_size, line_height),
+        doc.macros(),
+    );
     for ((wrapped, display), entry) in sl.results.iter().zip(heights) {
         let at = display.display_offset_for_raw(within.saturating_sub(sl.raw.start));
         let state = LineState::in_column(doc, line, cursor, focused);

@@ -329,6 +329,7 @@ impl RowCache {
             images: doc.view.images(),
             columns: doc.columns(),
             math: doc.math_blocks(),
+            macros: doc.macros(),
             raw_region: doc.view.raw_region(),
             column_width: doc.view.column_width(),
             line_index: doc.line_index(),
