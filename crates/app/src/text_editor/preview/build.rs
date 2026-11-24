@@ -187,6 +187,51 @@ pub fn cell_formulas(text: &str, macros: &Macros) -> Vec<(std::ops::Range<usize>
         .collect()
 }
 
+/// Shows every drawn formula of `display_line` that reserves more than
+/// `max_columns` blank columns (more than a row holds) as its source, so it
+/// wraps as text instead of being split across rows and left blank (#49). The
+/// source takes the style of the text before it (after it, if it starts the
+/// line). `max_columns == 0` means the width is unknown: nothing changes.
+pub fn show_wide_formulas(display_line: &mut DisplayLine, line: &str, max_columns: usize) {
+    let wide = |s: &DisplaySegment| {
+        s.style == InlineStyle::Math && s.replaced && s.display.len() > max_columns
+    };
+    if max_columns == 0 || !display_line.segments.iter().any(wide) {
+        return;
+    }
+    let plain_style = |s: &DisplaySegment| {
+        !s.is_hidden()
+            && !matches!(
+                s.style,
+                InlineStyle::Math | InlineStyle::Widget(_) | InlineStyle::ListMarker
+            )
+    };
+    let styles: Vec<InlineStyle> = (0..display_line.segments.len())
+        .map(|k| {
+            let segments = &display_line.segments;
+            segments[..k]
+                .iter()
+                .rev()
+                .chain(&segments[k + 1..])
+                .find(|s| plain_style(s))
+                .map_or(InlineStyle::Plain, |s| s.style)
+        })
+        .collect();
+    let mut text = String::with_capacity(display_line.display_text.len());
+    for (k, seg) in display_line.segments.iter_mut().enumerate() {
+        let start = text.len();
+        if wide(seg) {
+            text.push_str(&line[seg.raw.clone()]);
+            seg.style = styles[k];
+            seg.replaced = false;
+        } else {
+            text.push_str(&display_line.display_text[seg.display.clone()]);
+        }
+        seg.display = start..text.len();
+    }
+    display_line.display_text = text;
+}
+
 fn build_cell_line_in(text: &str, math: Option<&Macros>) -> DisplayLine {
     let mut segments = Vec::new();
     let mut display_text = String::new();

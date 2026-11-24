@@ -99,6 +99,55 @@ fn a_tall_formula_grows_its_line_wherever_it_is_drawn(cx: &mut TestAppContext) {
     }
 }
 
+/// A formula wider than a row is shown as its source and wraps as text (#49):
+/// the cold estimate is at most a text wrap short of shaping, and no row is made
+/// tall for it.
+#[gpui_kit::test]
+fn a_formula_wider_than_a_row_is_source_and_agrees_with_shaping(cx: &mut TestAppContext) {
+    let window = open(cx);
+    let terms = (1..=60).map(|k| format!("x_{{{k}}}")).collect::<Vec<_>>();
+    let wide = format!(
+        "$\\begin{{pmatrix}} {} \\end{{pmatrix}}$",
+        terms.join(" & ")
+    );
+    for (name, body) in [
+        ("paragraph", format!("text {wide} here")),
+        ("heading", format!("## head {wide} here")),
+        ("bullet", format!("- item {wide} here")),
+        ("quote", format!("> text {wide} here")),
+    ] {
+        let text = format!("intro\n\n{body}\n\nlast\n");
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let style = window.text_style();
+            let (font, size) = (style.font(), style.font_size.to_pixels(window.rem_size()));
+            let look = (&font, size, style.color);
+            let doc = DocumentCache::new(&text);
+            let mut cache = RowCache::empty();
+            rows::rebuild_for_test(&mut cache, &text, &doc, (0, false), px(WIDTH), look, window);
+            let cold = rows::count_at(&cache, 2);
+            let shaped =
+                rows::shaped_count_for_test(&text, &doc, 2, (0, false), px(WIDTH), look, window);
+            // Text wraps at words, which the monospace estimate does not see: it
+            // may be one row short, as for any text; painting makes it exact.
+            assert!(
+                (shaped as i64 - cold) == 0 || (shaped as i64 - cold) == 1,
+                "{name}: cold {cold}, shaped {shaped}"
+            );
+            // The source wraps over several rows, one text row each, none taller.
+            let chars = body.chars().count();
+            let line_height = f32::from(window.line_height());
+            let char_width = f32::from(size) * 0.6;
+            let per_row = (WIDTH / char_width) as usize;
+            assert!(
+                shaped >= chars / per_row && shaped <= chars / per_row + 3,
+                "{name}: {shaped} rows for {chars} characters ({per_row} a row, {line_height}px)"
+            );
+        })
+        .unwrap();
+    }
+}
+
 /// A region holding the formula in each of its kinds of column.
 fn regions() -> Vec<(&'static str, String)> {
     let body = format!("text {TALL} here");

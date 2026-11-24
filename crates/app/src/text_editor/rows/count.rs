@@ -359,7 +359,11 @@ fn estimate_row_count(
     // rows are counted on what is left of the text, each as many as it needs.
     if has_dollar
         && matches!(doc.roles[i], LineRole::Plain)
-        && let Some((reach, chars)) = inline_math_extent(line, doc.macros)
+        && let Some((reach, chars)) = inline_math_extent(
+            line,
+            doc.macros,
+            fit_with_indent(available_width, char_width, indent_level),
+        )
     {
         let per_row = tall_rows(reach, (font_size, line_height), text);
         return rows_for_chars(chars, wrap_width, char_width) * per_row;
@@ -369,8 +373,10 @@ fn estimate_row_count(
 
 /// How far the drawn inline formulas of `line` reach above and below the
 /// baseline (em), and how many display characters the line has with each
-/// formula as its blank columns; `None` when it draws none.
-fn inline_math_extent(line: &str, macros: &Macros) -> Option<((f32, f32), usize)> {
+/// formula as its blank columns; `None` when it draws none. A formula wider than
+/// `fit` columns (a row; 0 = unknown) is shown as its source, as the shaped line
+/// does (#49), so it counts as plain characters.
+fn inline_math_extent(line: &str, macros: &Macros, fit: usize) -> Option<((f32, f32), usize)> {
     let (mut reach, mut chars, mut last) = ((0.0f32, 0.0f32), 0, 0);
     let mut nest = Nesting::default();
     math_scan::scan_inline(line, 0, line.len(), |found| {
@@ -380,7 +386,9 @@ fn inline_math_extent(line: &str, macros: &Macros) -> Option<((f32, f32), usize)
         if nest.inside() {
             return;
         }
-        if let Some(drawn) = math::rendered_span(&line[found.span.clone()], macros) {
+        if let Some(drawn) = math::rendered_span(&line[found.span.clone()], macros)
+            && (fit == 0 || drawn.columns <= fit)
+        {
             reach.0 = reach.0.max(drawn.layout.ascent);
             reach.1 = reach.1.max(drawn.layout.descent);
             chars += line[last..found.span.start].chars().count() + drawn.columns;

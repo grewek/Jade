@@ -211,6 +211,69 @@ fn a_formula_is_drawn_once_the_notes_macro_defines_it() {
 }
 
 #[test]
+fn a_formula_wider_than_a_row_is_shown_as_its_source() {
+    let macros = Macros::default();
+    let line = "a $x^2$ b $\\frac{a}{b} + \\frac{c}{d} + \\frac{e}{f}$ c";
+    let drawn = build_display_line_with(line, false, &macros);
+    let wide = drawn
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .map(|s| s.display.len())
+        .max()
+        .unwrap();
+    let narrow = drawn
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .map(|s| s.display.len())
+        .min()
+        .unwrap();
+    assert!(narrow < wide);
+    // A row that holds the wide one changes nothing.
+    let mut same = drawn.clone();
+    show_wide_formulas(&mut same, line, wide);
+    assert_eq!(same, drawn);
+    // One that holds only the narrow one shows the wide one's source.
+    let mut shown = drawn.clone();
+    show_wide_formulas(&mut shown, line, narrow);
+    let source = "$\\frac{a}{b} + \\frac{c}{d} + \\frac{e}{f}$";
+    assert!(
+        shown.display_text.contains(source),
+        "{}",
+        shown.display_text
+    );
+    assert_eq!(
+        shown.display_text.len(),
+        drawn.display_text.len() - wide + source.len()
+    );
+    let math: Vec<_> = shown
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .collect();
+    assert_eq!(math.len(), 1, "only the narrow formula is still drawn");
+    // Every segment still points at its own text, in order.
+    let mut end = 0;
+    for seg in &shown.segments {
+        assert_eq!(seg.display.start, end);
+        end = seg.display.end;
+    }
+    assert_eq!(end, shown.display_text.len());
+    let at = shown
+        .segments
+        .iter()
+        .find(|s| shown.display_text[s.display.clone()] == *source)
+        .unwrap();
+    assert_eq!(at.style, InlineStyle::Plain);
+    assert!(!at.is_replaced());
+    // Unknown width leaves it alone.
+    let mut unknown = drawn.clone();
+    show_wide_formulas(&mut unknown, line, 0);
+    assert_eq!(unknown, drawn);
+}
+
+#[test]
 fn a_table_cell_draws_a_formula_that_fits_its_column() {
     let none = Macros::default();
     let dl = build_cell_line_with("a $x^2$ b", &none, 12);
