@@ -377,6 +377,20 @@ fn source_that_failed_is_drawn_as_error_glyphs() {
     assert_eq!(errors, "\\nosuchcommand".chars().count());
 }
 
+fn item_is_finite(item: &Item) -> bool {
+    match item {
+        Item::Glyph { x, y, size, .. } => [*x, *y, *size].iter().all(|v| v.is_finite()),
+        Item::Rule {
+            x,
+            y,
+            width,
+            height,
+            ..
+        } => [*x, *y, *width, *height].iter().all(|v| v.is_finite()),
+        Item::Line { x, y, x2, y2, .. } => [*x, *y, *x2, *y2].iter().all(|v| v.is_finite()),
+    }
+}
+
 #[test]
 fn every_construct_lays_out_finite_and_nonnegative() {
     let mut rng = Rng::new(0x1234_5678_9ABC_DEF1);
@@ -422,6 +436,11 @@ fn every_construct_lays_out_finite_and_nonnegative() {
         "'",
         "\\boxed",
         "\\cancel",
+        "\\Large",
+        "\\genfrac{(}{)}{0pt}{}",
+        "\\above",
+        "{",
+        "}",
         "\\xrightarrow",
         "\\middle|",
         "\\unknown",
@@ -436,18 +455,7 @@ fn every_construct_lays_out_finite_and_nonnegative() {
             assert!(v.is_finite() && v >= -1e-4, "{src:?}: {v}");
         }
         for item in &l.items {
-            let all_finite = match item {
-                Item::Glyph { x, y, size, .. } => [*x, *y, *size].iter().all(|v| v.is_finite()),
-                Item::Rule {
-                    x,
-                    y,
-                    width,
-                    height,
-                    ..
-                } => [*x, *y, *width, *height].iter().all(|v| v.is_finite()),
-                Item::Line { x, y, x2, y2, .. } => [*x, *y, *x2, *y2].iter().all(|v| v.is_finite()),
-            };
-            assert!(all_finite, "{src:?}: {item:?}");
+            assert!(item_is_finite(item), "{src:?}: {item:?}");
         }
     }
 }
