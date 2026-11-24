@@ -4268,10 +4268,10 @@ mod tests {
             cx.update_window(window, |_, window, cx| {
                 window.render_frame(cx);
                 let bounds = window.find("editor").bounds();
-                // The body row is the third line, below the (one-row) header.
+                // The body row is the second row, below the (one-row) header.
                 let position = point(
                     bounds.origin.x + px(20.),
-                    bounds.origin.y + window.line_height() * 2.5,
+                    bounds.origin.y + window.line_height() * 1.5,
                 );
                 let (button, modifiers) = (MouseButton::Right, Default::default());
                 let down = MouseDownEvent {
@@ -4325,8 +4325,8 @@ mod tests {
                 let col_x = (0..=columns.widths.len())
                     .map(|c| f32::from(columns.x(table::column_left(&columns.widths, c))))
                     .collect();
-                // The header and the delimiter band are 2 lines, then 1 per row.
-                let row_y = [0.0, 2.0, 3.0, 4.0, 5.0].map(|n| n * line).to_vec();
+                // The header is one line (its delimiter has no row), then 1 per row.
+                let row_y = [0.0, 1.0, 2.0, 3.0, 4.0].map(|n| n * line).to_vec();
                 (bounds.origin, Grid { col_x, row_y })
             })
             .unwrap()
@@ -4394,6 +4394,32 @@ mod tests {
                 origin + point(px(10.0), px(grid.row_y[4] + 120.0)),
             );
             assert_eq!(hover(cx), None, "gone below the table");
+        }
+
+        /// Rows of each line as the row cache holds them.
+        fn rows_of_lines(cx: &mut TestAppContext, editor: &Entity<Editor>) -> Vec<i64> {
+            editor.read_with(cx, |e, _| {
+                let rows = e.row_height_cache.borrow();
+                (0..rows.line_count())
+                    .map(|l| rows.prefix_sum(l + 1) - rows.prefix_sum(l))
+                    .collect()
+            })
+        }
+
+        #[gpui_kit::test]
+        fn a_drawn_tables_header_is_one_row_and_its_delimiter_has_none(cx: &mut TestAppContext) {
+            // #48: the header was as tall as its text plus the hidden delimiter's row.
+            let (window, editor) = open_at(cx, TABLE, TABLE.len());
+            assert_eq!(rows_of_lines(cx, &editor), [1, 0, 1, 1, 1]);
+            assert_rows_are_exact(cx, window, &editor);
+            // A caret in a cell leaves it drawn.
+            let (window, editor) = open_at(cx, TABLE, 2);
+            assert_eq!(rows_of_lines(cx, &editor), [1, 0, 1, 1, 1]);
+            assert_rows_are_exact(cx, window, &editor);
+            // On the delimiter line the table is raw text: every line has its row.
+            let (window, editor) = open_at(cx, TABLE, TABLE.find("|---").unwrap() + 1);
+            assert_eq!(rows_of_lines(cx, &editor), [1, 1, 1, 1, 1]);
+            assert_rows_are_exact(cx, window, &editor);
         }
 
         #[gpui_kit::test]
