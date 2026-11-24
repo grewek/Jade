@@ -32,9 +32,15 @@ pub(crate) fn run(socket: &Path, args: LaunchArgs) -> Result<(), String> {
     let _ = std::fs::remove_file(socket); // a stale socket from a previous run
     let log = PathBuf::from(format!("{}.log", socket.display()));
     let log_file = File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
-    let mut child = std::process::Command::new(&bin)
-        .arg(&vault)
-        .env("JADE_DEBUG_SOCKET", socket)
+    let mut app = std::process::Command::new(&bin);
+    app.arg(&vault).env("JADE_DEBUG_SOCKET", socket);
+    if args.headless {
+        app.env("JADE_DEBUG_HEADLESS", "1");
+        if let Some(size) = &args.size {
+            app.env("JADE_DEBUG_SIZE", size);
+        }
+    }
+    let mut child = app
         .stdin(Stdio::null())
         .stdout(log_file.try_clone().map_err(|e| e.to_string())?)
         .stderr(log_file)

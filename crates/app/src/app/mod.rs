@@ -416,6 +416,11 @@ impl Render for JadeApp {
 pub fn run() {
     let cli_vault = std::env::args().nth(1).map(PathBuf::from);
 
+    #[cfg(feature = "debug-socket")]
+    if debug_server::headless::requested() {
+        return debug_server::headless::run(cli_vault);
+    }
+
     debug_server::start_if_enabled();
 
     // Registers the bundled Lucide icon SVGs (`Dialog`'s own close "x",
@@ -425,24 +430,7 @@ pub fn run() {
     gpui_kit::application()
         .with_assets(crate::assets::JadeAssets)
         .run(move |cx| {
-            gpui_kit::init(cx);
-            install_fonts(cx);
-            let config_dirs = ConfigDirs::from_environment();
-            let mut notices = ThemeEngine::install(config_dirs.clone(), cx);
-            crate::text_editor::TextSettings::install(config_dirs.as_ref(), cx);
-            if let Some(dirs) = config_dirs.clone() {
-                notices.extend(crate::theme::watch(dirs, cx));
-            }
-            for notice in notices {
-                eprintln!("jade: {notice}");
-            }
-            cx.bind_keys([
-                KeyBinding::new("f2", RenameNote, Some("NoteList")),
-                KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
-                KeyBinding::new("ctrl-p", OpenCommandPalette, None),
-            ]);
-            cx.bind_keys(crate::text_editor::key_bindings());
-            bind_open_command_palette(cx);
+            let config_dirs = setup(cx);
             // Wayland picks the window icon from the desktop entry whose name
             // is this id (`packaging/jade.desktop`); the compositor ignores
             // any icon the app sends.
@@ -471,6 +459,31 @@ pub fn run() {
             }
             debug_server::install(&app, cx);
         });
+}
+
+/// Registers what a window needs before it opens: components, fonts, the theme
+/// and editor settings (with their file watcher), and the key bindings. Shared
+/// by [`run`] and the debug server's headless mode, so both start the same app.
+pub(crate) fn setup(cx: &mut App) -> Option<ConfigDirs> {
+    gpui_kit::init(cx);
+    install_fonts(cx);
+    let config_dirs = ConfigDirs::from_environment();
+    let mut notices = ThemeEngine::install(config_dirs.clone(), cx);
+    crate::text_editor::TextSettings::install(config_dirs.as_ref(), cx);
+    if let Some(dirs) = config_dirs.clone() {
+        notices.extend(crate::theme::watch(dirs, cx));
+    }
+    for notice in notices {
+        eprintln!("jade: {notice}");
+    }
+    cx.bind_keys([
+        KeyBinding::new("f2", RenameNote, Some("NoteList")),
+        KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
+        KeyBinding::new("ctrl-p", OpenCommandPalette, None),
+    ]);
+    cx.bind_keys(crate::text_editor::key_bindings());
+    bind_open_command_palette(cx);
+    config_dirs
 }
 
 /// Registers `OpenCommandPalette`'s handler globally (`cx.on_action`, not an

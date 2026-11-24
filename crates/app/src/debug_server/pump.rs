@@ -17,11 +17,16 @@ use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
 use gpui_kit::{App, Entity, WeakEntity};
-use jade_debug_protocol::{Answer, Command, ReqId};
+use jade_debug_protocol::{Answer, Command, Message, ReqId};
 
 use super::client::Client;
-use super::{commands, input};
+use super::{capture, commands, input};
 use crate::JadeApp;
+
+/// Commands finished so far; the headless loop paints a frame after each.
+pub(super) static COMPLETED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// Set when `quit` was answered, for a loop that has to stop itself.
+pub(super) static QUIT: AtomicBool = AtomicBool::new(false);
 
 /// Commands waiting for the main thread; beyond this a client is told `busy`.
 const MAX_QUEUED: usize = 256;
@@ -47,8 +52,25 @@ impl Reply {
     }
 
     pub(super) fn send(&self, answer: Answer) {
-        if !self.0.sent.swap(true, Ordering::AcqRel) {
-            self.0.client.reply(self.0.req, answer);
+        self.send_then(answer, Vec::new());
+    }
+
+    /// Sends `answer`, then `follow` (chunks of a capture, stamped with this
+    /// request's id) in order.
+    pub(super) fn send_then(&self, answer: Answer, follow: Vec<Message>) {
+        if self.0.sent.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        if !self.0.client.reply(self.0.req, answer) {
+            return;
+        }
+        for mut message in follow {
+            if let Message::Chunk { req, .. } = &mut message {
+                *req = self.0.req;
+            }
+            if !self.0.client.send(&message) {
+                return;
+            }
         }
     }
 }
@@ -119,6 +141,13 @@ fn run(job: Job, app: &WeakEntity<JadeApp>, cx: &mut App) {
     } = job;
     let quit = matches!(command, Command::Quit);
     let wait_for_paint = input::is_input(&command);
+    if capture::is_pixel_command(&command) {
+        let (answer, follow) = capture::execute(&command, cx);
+        reply.send_then(answer, follow);
+        let _ = done.send(());
+        COMPLETED.fetch_add(1, Ordering::AcqRel);
+        return;
+    }
     let answer = commands::execute(command, app, cx);
     let window = cx.windows().into_iter().next();
     match window {
@@ -139,8 +168,10 @@ fn run(job: Job, app: &WeakEntity<JadeApp>, cx: &mut App) {
             let _ = done.send(());
         }
     }
+    COMPLETED.fetch_add(1, Ordering::AcqRel);
     if quit {
         super::remove_socket();
+        QUIT.store(true, Ordering::Release);
         cx.quit();
     }
 }

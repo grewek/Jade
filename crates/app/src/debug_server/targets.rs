@@ -12,7 +12,7 @@ use gpui_kit::{
     App, Bounds, Element, ElementId, GlobalElementId, InspectorElementId, IntoElement, LayoutId,
     Pixels, SharedString, Window,
 };
-use jade_debug_protocol::{Point, Target};
+use jade_debug_protocol::{Point, Rect, Target};
 
 /// More than this many named elements in one frame are dropped.
 const MAX_TARGETS: usize = 512;
@@ -72,15 +72,23 @@ pub(super) fn list() -> Vec<Target> {
         .collect()
 }
 
-/// Center of the visible part of the one element called `name`.
-pub(super) fn resolve(name: &str) -> Result<Point, String> {
+/// The visible part of the one element called `name`, in window coordinates.
+pub(super) fn visible_bounds(name: &str) -> Result<Rect, String> {
     let Ok(registry) = REGISTRY.lock() else {
         return Err("target registry poisoned".into());
     };
-    resolve_in(&registry, name)
+    let entry = unique(&registry, name)?;
+    let r = entry.visible;
+    Ok(Rect {
+        x: r.origin.x.into(),
+        y: r.origin.y.into(),
+        w: r.size.width.into(),
+        h: r.size.height.into(),
+    })
 }
 
-fn resolve_in(registry: &[Entry], name: &str) -> Result<Point, String> {
+/// The one entry called `name`, or why there is not exactly one visible.
+fn unique<'a>(registry: &'a [Entry], name: &str) -> Result<&'a Entry, String> {
     let mut matches = registry.iter().filter(|e| &*e.name == name);
     let (Some(entry), None) = (matches.next(), matches.next()) else {
         let count = registry.iter().filter(|e| &*e.name == name).count();
@@ -94,6 +102,19 @@ fn resolve_in(registry: &[Entry], name: &str) -> Result<Point, String> {
             "element {name:?} is scrolled or clipped out of view"
         ));
     }
+    Ok(entry)
+}
+
+/// Center of the visible part of the one element called `name`.
+pub(super) fn resolve(name: &str) -> Result<Point, String> {
+    let Ok(registry) = REGISTRY.lock() else {
+        return Err("target registry poisoned".into());
+    };
+    resolve_in(&registry, name)
+}
+
+fn resolve_in(registry: &[Entry], name: &str) -> Result<Point, String> {
+    let entry = unique(registry, name)?;
     let center = entry.visible.center();
     Ok(Point {
         x: center.x.into(),

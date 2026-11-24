@@ -64,9 +64,34 @@ impl Connection {
                 }
                 // Request 0 is the app rejecting a line it could not parse.
                 Some(Message::Response { req: 0, answer }) => return Ok((answer, events)),
-                Some(Message::Response { .. }) => {} // a stale answer
+                Some(Message::Response { .. } | Message::Chunk { .. }) => {} // stale
             }
         }
+    }
+
+    /// Reads the `count` capture chunks that follow a `Capture` reply and
+    /// joins them into the PNG's bytes. Events that arrive between are
+    /// returned too.
+    pub(crate) fn read_chunks(&mut self, count: u32) -> Result<(Vec<u8>, Vec<Event>), String> {
+        let deadline = Instant::now() + CALL_TIMEOUT;
+        let (mut bytes, mut events) = (Vec::new(), Vec::new());
+        let mut next = 0;
+        while next < count {
+            let left = deadline.saturating_duration_since(Instant::now());
+            match self.next_message(left)? {
+                None => return Err("timed out waiting for the rest of the capture".into()),
+                Some(Message::Event { event }) => events.push(event),
+                Some(Message::Chunk { index, data, .. }) if index == next => {
+                    bytes.extend(jade_debug_protocol::base64::decode(&data)?);
+                    next += 1;
+                }
+                Some(Message::Chunk { index, .. }) => {
+                    return Err(format!("capture chunk {index} arrived, expected {next}"));
+                }
+                Some(Message::Response { .. }) => {}
+            }
+        }
+        Ok((bytes, events))
     }
 
     /// The next message, `None` if `timeout` passes first.
@@ -232,6 +257,78 @@ mod tests {
                 event: frames_event()
             }
         );
+        drop(conn);
+        app.join().unwrap();
+    }
+
+    #[test]
+    fn capture_chunks_are_joined_in_order() {
+        use jade_debug_protocol::{CaptureInfo, Rect, base64};
+        let png = b"not really a png, but bytes that must survive".to_vec();
+        let parts: Vec<Vec<u8>> = png.chunks(10).map(<[u8]>::to_vec).collect();
+        let total = parts.len() as u32;
+        let bytes = png.len();
+        let (mut conn, app) = fake_app(move |r| {
+            let mut messages = vec![Message::Response {
+                req: r.req,
+                answer: Answer::Capture(CaptureInfo {
+                    width: 1,
+                    height: 1,
+                    scale: 1.0,
+                    bounds: Rect {
+                        x: 0.0,
+                        y: 0.0,
+                        w: 1.0,
+                        h: 1.0,
+                    },
+                    bytes,
+                    chunks: total,
+                }),
+            }];
+            for (index, part) in parts.iter().enumerate() {
+                messages.push(Message::Chunk {
+                    req: r.req,
+                    index: index as u32,
+                    total,
+                    data: base64::encode(part),
+                });
+            }
+            messages
+        });
+        let (answer, _) = conn
+            .call(Command::Capture {
+                target: "editor".into(),
+                rect: None,
+                scale: None,
+            })
+            .unwrap();
+        let Answer::Capture(info) = answer else {
+            panic!("not a capture");
+        };
+        let (joined, _) = conn.read_chunks(info.chunks).unwrap();
+        assert_eq!(joined, png);
+        drop(conn);
+        app.join().unwrap();
+    }
+
+    #[test]
+    fn a_chunk_out_of_order_is_an_error() {
+        let (mut conn, app) = fake_app(|r| {
+            vec![
+                Message::Response {
+                    req: r.req,
+                    answer: Answer::Ok,
+                },
+                Message::Chunk {
+                    req: r.req,
+                    index: 1,
+                    total: 2,
+                    data: String::new(),
+                },
+            ]
+        });
+        conn.call(Command::ListTargets).unwrap();
+        assert!(conn.read_chunks(2).unwrap_err().contains("expected 0"));
         drop(conn);
         app.join().unwrap();
     }

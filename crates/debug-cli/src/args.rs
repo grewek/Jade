@@ -3,7 +3,8 @@
 use std::path::PathBuf;
 
 use jade_debug_protocol::{
-    Button, Command, DEFAULT_DRAG_STEPS, Location, Modifiers, Point, Query, Topic,
+    Button, Check, Command, DEFAULT_DRAG_STEPS, DEFAULT_TOLERANCE, Fact, Location, Modifiers,
+    Point, Query, Rect, Topic,
 };
 
 pub(crate) const DEFAULT_SOCKET: &str = "/tmp/jade-debug.sock";
@@ -23,6 +24,19 @@ observe
   await TOPIC [TIMEOUT_MS]      the next event on TOPIC
   watch TOPIC [SECONDS]         stream events (default 5s)
 
+look (needs `launch --headless`; TARGET is a target name, coordinates are logical px
+relative to its top-left, \"ink\" is anything unlike the region's background)
+  facts TARGET FACT... [--rect X,Y,W,H] [--tol N]
+                                FACT: grid:CxR (ink coverage thumbnail) rows cols
+                                (ink per pixel row/column) bbox (bounds of the ink)
+                                palette[:N] pixel:X,Y
+  expect TARGET CHECK... [--tol N]
+                                CHECK: ink:X,Y,W,H[,MIN%] empty:X,Y,W,H[,MAX%]
+                                color:X,Y,#rrggbb[,TOL] within:X,Y,W,H
+                                prints PASS/FAIL with what was measured; fails if any does
+  capture TARGET [--rect X,Y,W,H] [--scale S] [--out FILE.png]
+                                a PNG of the element (S in 0..1 shrinks it)
+
 act (WHERE is a target name like note-Big, or x,y)
   click WHERE [--right|--middle] [--double|--triple] [--shift --ctrl --alt --meta]
   move WHERE [--held] | down WHERE | up WHERE   (--held: left button down during the move)
@@ -33,9 +47,12 @@ act (WHERE is a target name like note-Big, or x,y)
   quit                          close the app (flushes the open note)
 
 session
-  launch VAULT [--bin PATH] [--in-place]
+  launch VAULT [--bin PATH] [--in-place] [--headless] [--size WxH]
                                 start the app on a COPY of VAULT (autosave would
-                                otherwise edit your notes) and wait until ready
+                                otherwise edit your notes) and wait until ready;
+                                --headless renders without a window (needed for
+                                facts, expect and capture; the app must be built
+                                with --features debug-socket)
   script                        read commands from stdin, one per line
                                 (# comments, \"quoted words\", sleep MS)
 ";
@@ -49,13 +66,26 @@ pub(crate) struct LaunchArgs {
     pub vault: PathBuf,
     pub bin: Option<PathBuf>,
     pub in_place: bool,
+    pub headless: bool,
+    /// `WxH` in logical pixels, for the headless window.
+    pub size: Option<String>,
 }
 
 pub(crate) enum Action {
     Send(Command),
-    Frames { raw: bool },
+    /// A capture: the command, and where the PNG goes.
+    Capture {
+        command: Command,
+        out: PathBuf,
+    },
+    Frames {
+        raw: bool,
+    },
     Sleep(u64),
-    Watch { topic: Topic, seconds: u64 },
+    Watch {
+        topic: Topic,
+        seconds: u64,
+    },
     Script,
     Launch(LaunchArgs),
     Help,
@@ -149,6 +179,9 @@ pub(crate) fn parse_action(words: &[String]) -> Result<Action, String> {
             topic: topic(pos.first())?,
             seconds: number(pos.get(1), 5, "SECONDS")?,
         }),
+        "facts" => facts_command(&flags_with_values(rest)?),
+        "expect" => expect_command(&flags_with_values(rest)?),
+        "capture" => capture_command(&flags_with_values(rest)?),
         "type" => type_command(rest),
         "key" => key_command(&pos),
         "launch" => launch_command(rest),
@@ -331,10 +364,14 @@ fn launch_command(words: &[String]) -> Result<Action, String> {
     let mut vault = None;
     let mut bin = None;
     let mut in_place = false;
+    let mut headless = false;
+    let mut size = None;
     let mut iter = words.iter();
     while let Some(word) = iter.next() {
         match word.as_str() {
             "--in-place" => in_place = true,
+            "--headless" => headless = true,
+            "--size" => size = Some(iter.next().ok_or("--size needs WxH")?.clone()),
             "--bin" => bin = Some(PathBuf::from(iter.next().ok_or("--bin needs a path")?)),
             flag if flag.starts_with("--") => return Err(format!("unknown flag {flag}")),
             path if vault.is_none() => vault = Some(PathBuf::from(path)),
@@ -346,7 +383,211 @@ fn launch_command(words: &[String]) -> Result<Action, String> {
         vault,
         bin,
         in_place,
+        headless,
+        size,
     }))
+}
+
+/// Words of a pixel command: the positional ones, and the `--flag VALUE` pairs.
+struct Words<'a> {
+    pos: Vec<&'a str>,
+    flags: Vec<(&'a str, &'a str)>,
+}
+
+impl<'a> Words<'a> {
+    fn flag(&self, name: &str) -> Option<&'a str> {
+        self.flags.iter().find(|(f, _)| *f == name).map(|(_, v)| *v)
+    }
+
+    fn reject_unknown(&self, known: &[&str]) -> Result<(), String> {
+        match self.flags.iter().find(|(f, _)| !known.contains(f)) {
+            Some((flag, _)) => Err(format!("unknown flag {flag}")),
+            None => Ok(()),
+        }
+    }
+}
+
+fn flags_with_values(words: &[String]) -> Result<Words<'_>, String> {
+    let mut parsed = Words {
+        pos: Vec::new(),
+        flags: Vec::new(),
+    };
+    let mut iter = words.iter().map(String::as_str);
+    while let Some(word) = iter.next() {
+        if word.starts_with("--") {
+            let value = iter.next().ok_or_else(|| format!("{word} needs a value"))?;
+            parsed.flags.push((word, value));
+        } else {
+            parsed.pos.push(word);
+        }
+    }
+    Ok(parsed)
+}
+
+/// Comma-separated numbers, exactly `count` of them.
+fn numbers(text: &str, count: usize, what: &str) -> Result<Vec<f32>, String> {
+    let values: Result<Vec<f32>, _> = text.split(',').map(str::parse).collect();
+    match values {
+        Ok(v) if v.len() == count => Ok(v),
+        _ => Err(format!(
+            "{what} must be {count} comma-separated numbers, got {text:?}"
+        )),
+    }
+}
+
+fn rect(text: &str) -> Result<Rect, String> {
+    let v = numbers(text, 4, "a rect (X,Y,W,H)")?;
+    Ok(Rect {
+        x: v[0],
+        y: v[1],
+        w: v[2],
+        h: v[3],
+    })
+}
+
+fn tolerance(words: &Words) -> Result<u8, String> {
+    words.flag("--tol").map_or(Ok(DEFAULT_TOLERANCE), |t| {
+        t.parse()
+            .map_err(|_| format!("--tol must be 0 to 255, got {t:?}"))
+    })
+}
+
+fn parse_fact(word: &str) -> Result<Fact, String> {
+    let (name, arg) = word
+        .split_once(':')
+        .map_or((word, None), |(n, a)| (n, Some(a)));
+    match (name, arg) {
+        ("grid", Some(dims)) => {
+            let bad = || format!("grid needs CxR, like grid:32x8, got {dims:?}");
+            let (c, r) = dims.split_once('x').ok_or_else(bad)?;
+            Ok(Fact::InkGrid {
+                cols: c.parse().map_err(|_| bad())?,
+                rows: r.parse().map_err(|_| bad())?,
+            })
+        }
+        ("rows", None) => Ok(Fact::RowProfile),
+        ("cols", None) => Ok(Fact::ColProfile),
+        ("bbox", None) => Ok(Fact::Bbox),
+        ("palette", arg) => Ok(Fact::Palette {
+            max: arg.map_or(Ok(8), |a| a.parse().map_err(|_| "palette:N needs a number"))?,
+        }),
+        ("pixel", Some(xy)) => {
+            let v = numbers(xy, 2, "pixel:X,Y")?;
+            Ok(Fact::Pixel { x: v[0], y: v[1] })
+        }
+        _ => Err(format!(
+            "unknown fact {word:?}: use grid:CxR rows cols bbox palette[:N] pixel:X,Y"
+        )),
+    }
+}
+
+fn facts_command(words: &Words) -> Result<Action, String> {
+    words.reject_unknown(&["--rect", "--tol"])?;
+    let Some((target, facts)) = words.pos.split_first() else {
+        return Err("facts needs a target and at least one fact".into());
+    };
+    if facts.is_empty() {
+        return Err(
+            "facts needs at least one fact: grid:CxR rows cols bbox palette pixel:X,Y".into(),
+        );
+    }
+    Ok(Action::Send(Command::Facts {
+        target: (*target).into(),
+        facts: facts
+            .iter()
+            .map(|f| parse_fact(f))
+            .collect::<Result<_, _>>()?,
+        rect: words.flag("--rect").map(rect).transpose()?,
+        tolerance: tolerance(words)?,
+    }))
+}
+
+fn parse_check(word: &str) -> Result<Check, String> {
+    let (name, args) = word
+        .split_once(':')
+        .ok_or_else(|| format!("{word:?} is not a check: use ink:, empty:, color: or within:"))?;
+    let parts: Vec<&str> = args.split(',').collect();
+    let percent = |extra: Option<&&str>, default: f32| {
+        extra.map_or(Ok(default), |p| {
+            p.trim_end_matches('%')
+                .parse()
+                .map_err(|_| format!("{p:?} is not a percentage"))
+        })
+    };
+    let area = |parts: &[&str]| rect(&parts[..parts.len().min(4)].join(","));
+    match name {
+        "ink" if parts.len() == 4 || parts.len() == 5 => Ok(Check::InkIn {
+            rect: area(&parts)?,
+            min_percent: percent(parts.get(4), 0.1)?,
+        }),
+        "empty" if parts.len() == 4 || parts.len() == 5 => Ok(Check::Empty {
+            rect: area(&parts)?,
+            max_percent: percent(parts.get(4), 0.0)?,
+        }),
+        "within" if parts.len() == 4 => Ok(Check::BboxWithin {
+            rect: area(&parts)?,
+        }),
+        "color" if parts.len() == 3 || parts.len() == 4 => {
+            let v = numbers(&parts[..2].join(","), 2, "color:X,Y,#rrggbb")?;
+            Ok(Check::Color {
+                x: v[0],
+                y: v[1],
+                color: parts[2].into(),
+                tolerance: parts.get(3).map_or(Ok(DEFAULT_TOLERANCE), |t| {
+                    t.parse()
+                        .map_err(|_| format!("{t:?} is not a tolerance (0-255)"))
+                })?,
+            })
+        }
+        _ => Err(format!(
+            "bad check {word:?}: ink:X,Y,W,H[,MIN%] empty:X,Y,W,H[,MAX%] \
+             color:X,Y,#rrggbb[,TOL] within:X,Y,W,H"
+        )),
+    }
+}
+
+fn expect_command(words: &Words) -> Result<Action, String> {
+    words.reject_unknown(&["--tol"])?;
+    let Some((target, checks)) = words.pos.split_first() else {
+        return Err("expect needs a target and at least one check".into());
+    };
+    if checks.is_empty() {
+        return Err("expect needs at least one check".into());
+    }
+    Ok(Action::Send(Command::Expect {
+        target: (*target).into(),
+        checks: checks
+            .iter()
+            .map(|c| parse_check(c))
+            .collect::<Result<_, _>>()?,
+        tolerance: tolerance(words)?,
+    }))
+}
+
+fn capture_command(words: &Words) -> Result<Action, String> {
+    words.reject_unknown(&["--rect", "--scale", "--out"])?;
+    let [target] = words.pos.as_slice() else {
+        return Err("capture needs exactly one target".into());
+    };
+    let scale = words
+        .flag("--scale")
+        .map(|s| {
+            s.parse::<f32>()
+                .map_err(|_| format!("--scale must be a number, got {s:?}"))
+        })
+        .transpose()?;
+    let out = words.flag("--out").map_or_else(
+        || PathBuf::from(format!("/tmp/jade-capture-{target}.png")),
+        PathBuf::from,
+    );
+    Ok(Action::Capture {
+        command: Command::Capture {
+            target: (*target).into(),
+            rect: words.flag("--rect").map(rect).transpose()?,
+            scale,
+        },
+        out,
+    })
 }
 
 /// Splits a script line into words; double or single quotes group words.
@@ -570,5 +811,133 @@ mod tests {
         );
         assert_eq!(words(r#"a "" b"#), ["a", "", "b"]);
         assert!(split_words(r#"type "oops"#).is_err());
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rect {
+        Rect { x, y, w, h }
+    }
+
+    #[test]
+    fn facts_words_become_facts_with_their_options() {
+        assert_eq!(
+            command(
+                "facts editor grid:32x8 rows cols bbox palette:4 pixel:3,4 --rect 1,2,30,40 --tol 5"
+            ),
+            Command::Facts {
+                target: "editor".into(),
+                facts: vec![
+                    Fact::InkGrid { cols: 32, rows: 8 },
+                    Fact::RowProfile,
+                    Fact::ColProfile,
+                    Fact::Bbox,
+                    Fact::Palette { max: 4 },
+                    Fact::Pixel { x: 3.0, y: 4.0 },
+                ],
+                rect: Some(rect(1.0, 2.0, 30.0, 40.0)),
+                tolerance: 5,
+            }
+        );
+        let Command::Facts {
+            rect: None,
+            tolerance,
+            facts,
+            ..
+        } = command("facts editor palette")
+        else {
+            panic!("not facts");
+        };
+        assert_eq!(tolerance, DEFAULT_TOLERANCE);
+        assert_eq!(facts, vec![Fact::Palette { max: 8 }]);
+        for bad in [
+            "facts",
+            "facts editor",
+            "facts editor grid:3",
+            "facts editor wat",
+            "facts editor bbox --rect 1,2",
+        ] {
+            assert!(parse_action(&words(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn expect_words_become_checks() {
+        assert_eq!(
+            command(
+                "expect editor ink:1,2,3,4 empty:5,6,7,8,2% color:9,9,#1e1e2e,3 within:0,0,50,60 --tol 4"
+            ),
+            Command::Expect {
+                target: "editor".into(),
+                checks: vec![
+                    Check::InkIn {
+                        rect: rect(1.0, 2.0, 3.0, 4.0),
+                        min_percent: 0.1,
+                    },
+                    Check::Empty {
+                        rect: rect(5.0, 6.0, 7.0, 8.0),
+                        max_percent: 2.0,
+                    },
+                    Check::Color {
+                        x: 9.0,
+                        y: 9.0,
+                        color: "#1e1e2e".into(),
+                        tolerance: 3,
+                    },
+                    Check::BboxWithin {
+                        rect: rect(0.0, 0.0, 50.0, 60.0),
+                    },
+                ],
+                tolerance: 4,
+            }
+        );
+        for bad in [
+            "expect",
+            "expect editor",
+            "expect editor ink:1,2,3",
+            "expect editor nope:1",
+            "expect editor color:1,2",
+        ] {
+            assert!(parse_action(&words(bad)).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn capture_takes_a_rect_a_scale_and_a_file() {
+        let Action::Capture { command, out } = parse_action(&words(
+            "capture editor --rect 0,0,100,50 --scale 0.5 --out /tmp/x.png",
+        ))
+        .unwrap() else {
+            panic!("not a capture");
+        };
+        assert_eq!(
+            command,
+            Command::Capture {
+                target: "editor".into(),
+                rect: Some(rect(0.0, 0.0, 100.0, 50.0)),
+                scale: Some(0.5),
+            }
+        );
+        assert_eq!(out, PathBuf::from("/tmp/x.png"));
+        let Action::Capture { out, .. } = parse_action(&words("capture note-Big")).unwrap() else {
+            panic!("not a capture");
+        };
+        assert_eq!(out, PathBuf::from("/tmp/jade-capture-note-Big.png"));
+        assert!(parse_action(&words("capture")).is_err());
+        assert!(parse_action(&words("capture a b")).is_err());
+        assert!(parse_action(&words("capture a --scale")).is_err());
+    }
+
+    #[test]
+    fn launch_can_ask_for_the_headless_mode() {
+        let Action::Launch(args) =
+            parse_action(&words("launch /v --headless --size 900x500")).unwrap()
+        else {
+            panic!("not a launch");
+        };
+        assert!(args.headless);
+        assert_eq!(args.size.as_deref(), Some("900x500"));
+        let Action::Launch(args) = parse_action(&words("launch /v")).unwrap() else {
+            panic!("not a launch");
+        };
+        assert!(!args.headless && args.size.is_none());
     }
 }
