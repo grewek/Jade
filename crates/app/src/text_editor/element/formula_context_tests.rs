@@ -548,3 +548,28 @@ fn the_typography_default_matches_the_window_text_style(cx: &mut TestAppContext)
     })
     .unwrap();
 }
+
+/// A reload that moves a layout key makes the row cache rebuild at the next
+/// layout, once (#58).
+#[gpui_kit::test]
+fn a_layout_settings_change_rebuilds_the_row_cache_once(cx: &mut TestAppContext) {
+    let window = open(cx);
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        let style = window.text_style();
+        let (font, size) = (style.font(), style.font_size.to_pixels(window.rem_size()));
+        let look = (&font, size, style.color);
+        let text = "one\n\ntwo\n";
+        let doc = std::cell::RefCell::new(DocumentCache::new(text));
+        let mut cache = RowCache::empty();
+        let mut update = |window: &mut gpui_kit::Window| {
+            rows::update_layout_for_test(&mut cache, text, &doc, px(WIDTH), look, window)
+        };
+        assert!(update(window), "the first layout builds");
+        assert!(!update(window), "nothing changed");
+        crate::settings::layout_changed();
+        assert!(update(window), "a layout key moved");
+        assert!(!update(window), "once");
+    })
+    .unwrap();
+}

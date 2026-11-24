@@ -469,12 +469,23 @@ pub(crate) fn setup(cx: &mut App) -> Option<ConfigDirs> {
     install_fonts(cx);
     let config_dirs = ConfigDirs::from_environment();
     let mut notices = ThemeEngine::install(config_dirs.clone(), cx);
-    crate::text_editor::TextSettings::install(config_dirs.as_ref(), cx);
+    notices.extend(crate::text_editor::TextSettings::install(
+        config_dirs.as_ref(),
+        cx,
+    ));
     if let Some(dirs) = config_dirs.clone() {
-        notices.extend(crate::theme::watch(dirs, cx));
+        let reload = |dirs: &ConfigDirs, cx: &mut App| {
+            crate::text_editor::TextSettings::reload(Some(dirs), cx)
+        };
+        notices.extend(crate::theme::watch(dirs, reload, cx));
     }
+    // A file that does not parse is reported by every reader of it, once.
+    let mut seen = Vec::new();
     for notice in notices {
-        eprintln!("jade: {notice}");
+        if !seen.contains(&notice) {
+            eprintln!("jade: {notice}");
+            seen.push(notice);
+        }
     }
     cx.bind_keys([
         KeyBinding::new("f2", RenameNote, Some("NoteList")),

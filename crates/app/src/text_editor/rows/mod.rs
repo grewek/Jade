@@ -125,6 +125,9 @@ pub(super) struct RowCache {
     /// The font metrics of the last rebuild: font and size in one comparable
     /// value, without needing `Font: PartialEq`.
     metrics: RowFontMetrics,
+    /// `settings::layout_generation` at the last rebuild: a settings reload
+    /// that moves things makes the counts stale.
+    layout_generation: u64,
     /// One contiguous window of lines (the last painted) whose counts are
     /// exact, not estimates. Reset by a rebuild or a line-count change.
     verified: Range<usize>,
@@ -151,6 +154,7 @@ impl RowCache {
                 ascent: 0.,
                 descent: 0.,
             },
+            layout_generation: crate::settings::layout_generation(),
             verified: 0..0,
             late_corrections: 0,
             pending: None,
@@ -200,7 +204,8 @@ impl RowCache {
         }
         let stale = self.line_count() != doc.borrow().line_count()
             || self.available_width != inp.width
-            || self.metrics != metrics;
+            || self.metrics != metrics
+            || self.layout_generation != crate::settings::layout_generation();
         if stale {
             if matches!(change, Change::Lines(_)) {
                 self.invalidate(Invalidate::Width);
@@ -354,6 +359,7 @@ impl RowCache {
         self.active_line = inp.focused.then(|| doc.line_at(inp.cursor));
         self.available_width = inp.width;
         self.metrics = metrics;
+        self.layout_generation = crate::settings::layout_generation();
         self.verified = 0..0;
         self.pending = None;
     }
@@ -480,6 +486,28 @@ pub(super) fn rebuild_for_test(
     };
     let metrics = RowFontMetrics::measure(font, font_size, text_color, window);
     rows.rebuild(doc, &inp, metrics, window);
+}
+
+/// [`RowCache::update`] for a layout change: whether it rebuilt every count.
+#[cfg(test)]
+pub(super) fn update_layout_for_test(
+    rows: &mut RowCache,
+    text: &str,
+    doc: &RefCell<DocumentCache>,
+    width: Pixels,
+    (font, font_size, text_color): (&Font, Pixels, Hsla),
+    window: &mut Window,
+) -> bool {
+    let inp = Inputs {
+        text,
+        cursor: 0,
+        focused: false,
+        width,
+        font,
+        font_size,
+        text_color,
+    };
+    rows.update(doc, Change::Layout, &inp, window)
 }
 
 #[cfg(test)]

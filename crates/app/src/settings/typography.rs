@@ -279,6 +279,37 @@ impl Typography {
         usize::from(level.clamp(1, HEADING_LEVELS as u8)) - 1
     }
 
+    /// Whether going from `self` to `other` changes where anything sits (sizes,
+    /// spacing, padding) and not only how it is painted. A key is paint-only
+    /// when it is listed in `paint_only_from`; a new key counts as
+    /// layout until it is listed there, so a rebuild is never missed.
+    pub fn layout_differs(&self, other: &Typography) -> bool {
+        let mut same_paint = *self;
+        same_paint.paint_only_from(other);
+        same_paint != *other
+    }
+
+    /// Copies the keys that never move anything from `other`.
+    fn paint_only_from(&mut self, other: &Typography) {
+        self.shape = other.shape;
+        self.heading.weight = other.heading.weight;
+        self.heading.rule = other.heading.rule;
+        self.inline_code.background = other.inline_code.background;
+        self.inline_code.radius = other.inline_code.radius;
+        self.code_block.background = other.code_block.background;
+        self.code_block.border = other.code_block.border;
+        self.code_block.radius = other.code_block.radius;
+        self.callout.radius = other.callout.radius;
+        self.table.radius = other.table.radius;
+        self.table.zebra = other.table.zebra;
+        self.table.header_bold = other.table.header_bold;
+        self.image.radius = other.image.radius;
+        self.link = other.link;
+        self.blockquote.italic = other.blockquote.italic;
+        self.list.bullet_shapes = other.list.bullet_shapes;
+        self.task = other.task;
+    }
+
     /// The line height in px.
     pub fn line_height_px(&self) -> f32 {
         self.font.size * self.font.line_height
@@ -327,6 +358,32 @@ mod tests {
         assert_eq!(Radius::Px(-3.0).px(40.0), 0.0);
         assert_eq!(Radius::Full.px(26.0), 13.0);
         assert_eq!(Radius::Full.px(0.0), 0.0);
+    }
+
+    #[test]
+    fn only_a_layout_key_makes_the_layout_differ() {
+        let base = Typography::default();
+        let mut paint = base;
+        paint.shape.radius = Radius::Full;
+        paint.heading.weight = [400; HEADING_LEVELS];
+        paint.link.underline = Underline::Always;
+        paint.task.done_style = DoneStyle::Both;
+        paint.table.zebra = true;
+        assert!(!base.layout_differs(&paint));
+        let edits: [fn(&mut Typography); 6] = [
+            |t| t.font.size = 18.0,
+            |t| t.heading.scale[2] = 1.5,
+            |t| t.heading.space_above[0] = 1.0,
+            |t| t.code_block.padding = 0.5,
+            |t| t.list.indent = 2.0,
+            |t| t.spacing.block_gap = 2.0,
+        ];
+        for edit in edits {
+            let mut layout = base;
+            edit(&mut layout);
+            assert!(base.layout_differs(&layout));
+            assert!(layout.layout_differs(&base));
+        }
     }
 
     #[test]
