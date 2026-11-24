@@ -81,7 +81,8 @@ pub(in crate::text_editor) use build::{
 };
 pub(in crate::text_editor) use build::{
     build_callout_header_line_with, build_cell_line_with, build_display_line,
-    build_display_line_in_context_with, hidden_line, is_thematic_break, raw_cell_line,
+    build_display_line_in_context_with, cell_formulas, hidden_line, is_thematic_break,
+    raw_cell_line,
 };
 pub(in crate::text_editor) use context::{LineContext, OpenBlock, block_context_step, line_indent};
 pub(in crate::text_editor) use fence::LineRole;

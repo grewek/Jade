@@ -37,7 +37,6 @@ use super::preview::{
 use super::rows::{Change, Inputs, RowCache};
 use super::table::Align;
 use super::table::handles::{Grid, Handle, TableDrag};
-use super::table::layout_row_editing;
 use super::table::ops::Op;
 use super::table::{Table, table_index_at};
 use crate::debug_server::targets::DebugName;

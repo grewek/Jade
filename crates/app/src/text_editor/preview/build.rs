@@ -176,6 +176,17 @@ pub fn build_cell_line_with(text: &str, macros: &Macros, width: usize) -> Displa
     build_cell_line_in(text, None)
 }
 
+/// The formulas of a cell `text` that are drawn, in order: each one's raw range
+/// and the characters it reserves. What the table's wrapping keeps whole.
+pub fn cell_formulas(text: &str, macros: &Macros) -> Vec<(std::ops::Range<usize>, usize)> {
+    build_cell_line_in(text, Some(macros))
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math && s.replaced)
+        .map(|s| (s.raw.clone(), s.display.len()))
+        .collect()
+}
+
 fn build_cell_line_in(text: &str, math: Option<&Macros>) -> DisplayLine {
     let mut segments = Vec::new();
     let mut display_text = String::new();

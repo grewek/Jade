@@ -236,7 +236,7 @@ pub(super) fn paint_table_row(
 ) {
     let pitch = line_height * scale as f32;
     let lift = (pitch - line_height) / 2.;
-    for (c, cell) in layout_row_editing(line, &columns.widths, editing)
+    for (c, cell) in table::layout_row_in(line, &columns.widths, editing, macros)
         .iter()
         .enumerate()
     {
@@ -296,6 +296,8 @@ pub(super) struct EditingCell<'a> {
     pub(super) line_height: Pixels,
     /// Rows each cell line takes (see [`paint_table_row`]).
     pub(super) scale: usize,
+    /// The note's macros: the other cells' formulas decide the row's height.
+    pub(super) macros: &'a Macros,
 }
 
 /// Marks the cell being edited: an accent outline, the part of the selection
@@ -314,12 +316,13 @@ pub(super) fn paint_editing_cell(
         origin,
         line_height,
         scale,
+        macros,
     } = *cell;
     let pitch = line_height * scale as f32;
     let lift = (pitch - line_height) / 2.;
     let lines = &table::layout_row_editing(line, &columns.widths, Some(column))[column].lines;
     let height = pitch
-        * table::layout_row_editing(line, &columns.widths, Some(column))
+        * table::layout_row_in(line, &columns.widths, Some(column), macros)
             .iter()
             .map(|c| c.lines.len())
             .max()
