@@ -381,7 +381,7 @@ pub(super) fn paint_image_placeholder(
     let shaped = window
         .text_system()
         .shape_line(name.to_string().into(), font_size, &[run], None);
-    let line_height = window.line_height();
+    let line_height = crate::text_editor::settings::body_row_height();
     let _ = shaped.paint(
         frame.origin + point(px(8.), px(4.)),
         line_height,

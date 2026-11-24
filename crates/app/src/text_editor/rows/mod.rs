@@ -268,7 +268,11 @@ impl RowCache {
                         doc,
                         (&region, &split),
                         (inp.cursor, inp.focused),
-                        (inp.font, inp.font_size, window.line_height()),
+                        (
+                            inp.font,
+                            inp.font_size,
+                            crate::text_editor::settings::body_row_height(),
+                        ),
                         (inp.text_color.into(), None),
                         window,
                     );
@@ -343,7 +347,7 @@ impl RowCache {
             active_table: active_table(doc, inp.cursor, inp.focused),
             available_width: inp.width,
             metrics,
-            line_height: window.line_height(),
+            line_height: crate::text_editor::settings::body_row_height(),
             font_size: inp.font_size,
         };
         let (mut counts, shaped) = pure_row_counts(inp.text, &view, &params);

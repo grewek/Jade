@@ -152,7 +152,7 @@ fn shape_at(
     let (height, _) = shaped_height(
         &results,
         line_text,
-        (font_size, window.line_height()),
+        (font_size, crate::text_editor::settings::body_row_height()),
         state.macros,
     );
     (results, broken, height)

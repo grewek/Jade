@@ -16,10 +16,21 @@ pub struct TextSettings {
 
 impl Global for TextSettings {}
 
+/// The body font size, as the editor lays out and paints with it.
+pub fn body_font_size() -> gpui_kit::Pixels {
+    gpui_kit::px(settings::body_font_size())
+}
+
+/// The height of one body row (`font.size * font.line_height`).
+pub fn body_row_height() -> gpui_kit::Pixels {
+    gpui_kit::px(settings::body_row_height())
+}
+
 impl TextSettings {
     /// Reads `config.toml` once at startup; returns what to tell the user.
     pub fn install(dirs: Option<&ConfigDirs>, cx: &mut App) -> Vec<String> {
         let read = settings::load(dirs);
+        settings::set_body(&read.typography);
         cx.set_global(TextSettings {
             justify: theme::configured_justify(dirs),
             typography: read.typography,
@@ -41,6 +52,7 @@ impl TextSettings {
             if before.typography.layout_differs(&next.typography) {
                 settings::layout_changed();
             }
+            settings::set_body(&next.typography);
             cx.set_global(next);
             cx.refresh_windows();
         }
@@ -111,6 +123,22 @@ mod tests {
             TextSettings::reload(Some(&dirs), cx);
         });
         assert_eq!(settings::layout_generation(), before + 1, "unchanged file");
+        // The editor's body metrics follow the file: size 22 at the default 1.625.
+        assert_eq!(settings::body_font_size(), 22.0);
+        assert_eq!(settings::body_row_height(), 22.0 * 1.625);
+        write(&dirs, "[font]\nsize = 20\nline_height = 2\n");
+        cx.update(|cx| TextSettings::reload(Some(&dirs), cx));
+        assert_eq!(
+            (settings::body_font_size(), settings::body_row_height()),
+            (20.0, 40.0)
+        );
+        // Back to the defaults so no other test sees this file's numbers.
+        write(&dirs, "");
+        cx.update(|cx| TextSettings::reload(Some(&dirs), cx));
+        assert_eq!(
+            (settings::body_font_size(), settings::body_row_height()),
+            (16.0, 26.0)
+        );
     }
 
     #[gpui_kit::test]

@@ -82,7 +82,7 @@ pub(in crate::text_editor) fn render_params(
     font.family = gpui_kit::component::Theme::global(cx)
         .mono_font_family
         .clone();
-    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let font_size = crate::text_editor::settings::body_font_size();
     let text_color = ThemeEngine::color(cx, Role::Text);
     // The editor's own on-screen width isn't known yet before the first
     // layout — `scroll_handle`'s tracked container bounds (the same "last
@@ -93,7 +93,7 @@ pub(in crate::text_editor) fn render_params(
         let width = editor.scroll_handle.bounds().size.width;
         if width > px(0.) { width } else { Pixels::MAX }
     };
-    let line_height = window.line_height();
+    let line_height = crate::text_editor::settings::body_row_height();
     RenderParams {
         font,
         font_size,

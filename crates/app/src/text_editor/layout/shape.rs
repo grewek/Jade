@@ -1,3 +1,4 @@
+use crate::text_editor::settings::body_row_height;
 use crate::text_editor::table;
 use std::ops::Range;
 
@@ -263,7 +264,7 @@ fn table_row_scale(
         }
     }
     let text = mono_ascent_descent(font, font_size, window);
-    tall_rows(reach, (font_size, window.line_height()), text)
+    tall_rows(reach, (font_size, body_row_height()), text)
 }
 
 /// What the row estimates need to know about the editor font at one size,
@@ -476,7 +477,7 @@ pub(in crate::text_editor) fn build_display_lines(
     }
     let block_rows = image::embed(line, state).map(|embed| {
         let sizes = state.images;
-        image::rows(line, &embed, sizes, available_width, window.line_height())
+        image::rows(line, &embed, sizes, available_width, body_row_height())
     });
     let mut display_lines: Vec<DisplayLine> = match role {
         // The formula is drawn over `rows` empty rows.
