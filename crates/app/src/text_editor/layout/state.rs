@@ -62,6 +62,16 @@ pub(in crate::text_editor) enum MathPart {
     Tail,
 }
 
+/// A drawn table's delimiter line (`| --- |`) has nothing to show and no row:
+/// the header is as tall as its cells (#48). An active table is raw text, where
+/// it is a line like the others.
+pub(in crate::text_editor) fn is_hidden_delimiter(
+    kind: &TableLineKind,
+    table_active: bool,
+) -> bool {
+    matches!(kind, TableLineKind::Delimiter) && !table_active
+}
+
 impl<'a> LineState<'a> {
     pub(in crate::text_editor) fn of(
         doc: &'a DocumentCache,
@@ -75,17 +85,22 @@ impl<'a> LineState<'a> {
         let column_hidden = doc
             .side_by_side(i)
             .is_some_and(|(region, _)| i != region.start_line);
+        let table_kind = table_line_kind(doc.tables(), i);
+        let table_active = is_table_active(doc, i, focused);
         LineState {
             role: doc.line_roles()[i],
             block_ctx: doc.block_contexts()[i],
-            table_kind: table_line_kind(doc.tables(), i),
-            table_active: is_table_active(doc, i, focused),
+            table_active,
             callout,
             callout_is_header: callout.is_some_and(|c| c.is_header(i)),
             active: is_active_line(&line_range, cursor, focused),
             broken: &[],
             images: Some(doc.view.images()),
-            hidden: column_hidden || callout.is_some_and(|c| c.hides(i)) || math == MathPart::Tail,
+            hidden: column_hidden
+                || callout.is_some_and(|c| c.hides(i))
+                || math == MathPart::Tail
+                || is_hidden_delimiter(&table_kind, table_active),
+            table_kind,
             editing_cell: doc
                 .view
                 .editing_cell()
@@ -114,7 +129,9 @@ impl<'a> LineState<'a> {
             MathPart::None
         };
         LineState {
-            hidden: state.callout.is_some_and(|c| c.hides(i)) || math == MathPart::Tail,
+            hidden: state.callout.is_some_and(|c| c.hides(i))
+                || math == MathPart::Tail
+                || is_hidden_delimiter(&state.table_kind, state.table_active),
             math,
             ..state
         }
