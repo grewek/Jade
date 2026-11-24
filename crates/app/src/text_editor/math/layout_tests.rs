@@ -644,6 +644,40 @@ fn the_added_accents_and_boxes_lay_out_as_formulas() {
 }
 
 #[test]
+fn a_size_command_scales_what_follows_it_in_its_group() {
+    let plain = lay("xy", false);
+    let big = lay("x \\Large y", false);
+    let (x, y) = (lay("x", false), lay("y", false));
+    let (gx, gy) = (glyphs(&plain), glyphs(&big));
+    assert_eq!(gx[0].3, gy[0].3, "before it: unchanged");
+    assert!((gy[1].3 / gx[1].3 - 1.44).abs() < 1e-4, "after it: scaled");
+    assert!(big.width > plain.width && big.ascent > x.ascent.max(y.ascent));
+    let grouped = lay("{\\tiny x} y", false);
+    assert!((glyphs(&grouped)[0].3 - 0.5).abs() < 1e-4);
+    assert_eq!(glyphs(&grouped)[1].3, 1.0, "the group ends the size");
+    assert!(!parse("\\tiny\\scriptsize\\small\\normalsize\\large\\LARGE\\huge\\Huge x").has_error);
+}
+
+#[test]
+fn above_and_genfrac_are_fractions_with_or_without_a_bar() {
+    assert_eq!(rules(&lay("a \\above 1pt b", true)).len(), 1);
+    assert!(rules(&lay("a \\above 0pt b", true)).is_empty());
+    assert_eq!(rules(&lay("\\genfrac{}{}{}{}{a}{b}", true)).len(), 1);
+    assert!(rules(&lay("\\genfrac{}{}{0pt}{}{a}{b}", true)).is_empty());
+    let bare = lay("\\genfrac{}{}{0pt}{}{a}{b}", true);
+    let wrapped = lay("\\genfrac{(}{)}{0pt}{}{a}{b}", true);
+    assert_eq!(glyphs(&wrapped).len(), glyphs(&bare).len() + 2);
+    assert!(wrapped.width > bare.width);
+    let text = lay("\\genfrac{}{}{}{1}{a}{b}", true);
+    assert!(
+        text.ascent + text.descent
+            < lay("\\genfrac{}{}{}{0}{a}{b}", true).ascent
+                + lay("\\genfrac{}{}{}{0}{a}{b}", true).descent
+    );
+    assert!(parse("\\genfrac{(}").has_error);
+}
+
+#[test]
 fn a_very_tall_delimiter_is_assembled_from_parts() {
     let l = lay(
         "\\left(\\frac{\\frac{\\frac{a}{b}}{\\frac{c}{d}}}{\\frac{\\frac{e}{f}}{\\frac{g}{h}}}\\right)",

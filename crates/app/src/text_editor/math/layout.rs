@@ -135,6 +135,42 @@ impl Layout {
             .extend(other.items.into_iter().map(|item| item.shifted(dx, dy)));
     }
 
+    /// Everything in the layout `factor` times as large.
+    fn scale(&mut self, factor: f32) {
+        self.width *= factor;
+        self.ascent *= factor;
+        self.descent *= factor;
+        self.italic *= factor;
+        for item in &mut self.items {
+            match item {
+                Item::Glyph { x, y, size, .. } => {
+                    (*x, *y, *size) = (*x * factor, *y * factor, *size * factor);
+                }
+                Item::Rule {
+                    x,
+                    y,
+                    width,
+                    height,
+                    ..
+                } => {
+                    (*x, *y) = (*x * factor, *y * factor);
+                    (*width, *height) = (*width * factor, *height * factor);
+                }
+                Item::Line {
+                    x,
+                    y,
+                    x2,
+                    y2,
+                    thickness,
+                    ..
+                } => {
+                    (*x, *y, *x2, *y2) = (*x * factor, *y * factor, *x2 * factor, *y2 * factor);
+                    *thickness *= factor;
+                }
+            }
+        }
+    }
+
     /// Appends `other` after the current width, on the same baseline.
     fn push(&mut self, other: Layout) {
         let at = self.width;
@@ -361,10 +397,20 @@ impl Typesetter<'_> {
     fn list(&self, nodes: &[Node], mut style: Style, alpha: Option<Font>) -> Layout {
         let mut entries: Vec<Entry> = Vec::with_capacity(nodes.len());
         let mut color: Option<u32> = None;
-        for node in nodes {
+        for (i, node) in nodes.iter().enumerate() {
             match node {
                 Node::Style(m) => style = Style::new(level_of(*m)),
                 Node::ColorSwitch(rgb) => color = Some(*rgb),
+                // Everything after it in the group, set at its own size.
+                Node::Size(factor) => {
+                    let mut rest = self.list(&nodes[i + 1..], style, alpha);
+                    rest.scale(*factor);
+                    if let Some(rgb) = color {
+                        rest.tint(rgb);
+                    }
+                    entries.push(Entry::Atom(Class::Ord, rest));
+                    break;
+                }
                 Node::Space(mu) => {
                     entries.push(Entry::Space(f32::from(*mu) / 18.0 * style.scale(self.c())))
                 }
