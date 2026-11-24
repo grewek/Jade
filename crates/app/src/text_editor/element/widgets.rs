@@ -20,7 +20,8 @@ pub(super) struct WidgetPaint<'a> {
     pub(super) colors: &'a WidgetColors,
     pub(super) inline: &'a InlineColors,
     pub(super) font_size: Pixels,
-    pub(super) line_height: Pixels,
+    /// The heights of the line's rows.
+    pub(super) entry: &'a EntryHeight,
     /// The raw text `display_line`'s segments index into.
     pub(super) line_text: &'a str,
     /// How wide the line's rows are (a display formula is centred in it).
@@ -60,9 +61,10 @@ pub(super) fn paint_widgets(
         colors,
         inline,
         font_size,
-        line_height,
+        entry,
         ..
     } = *paint;
+    let line_height = entry.row;
     for seg in &display_line.segments {
         if seg.style == InlineStyle::Math {
             paint_math(display_line, seg, wrapped, origin, paint, (window, cx));
@@ -77,6 +79,8 @@ pub(super) fn paint_widgets(
         ) else {
             continue;
         };
+        let (from, line_height) = entry.place(from);
+        let to = entry.place(to).0;
         let cell = Bounds {
             origin: origin + from,
             size: size(to.x - from.x, line_height),
@@ -168,16 +172,17 @@ fn paint_math(
     let Some(rendered) = math::rendered_span(raw, paint.macros) else {
         return;
     };
-    let line_height = paint.line_height;
+    let entry = paint.entry;
     let (Some(from), Some(to)) = (
-        wrapped.position_for_index(seg.display.start, line_height),
-        wrapped.position_for_index(seg.display.end, line_height),
+        wrapped.position_for_index(seg.display.start, entry.row),
+        wrapped.position_for_index(seg.display.end, entry.row),
     ) else {
         return;
     };
     if from.y != to.y {
         return;
     }
+    let (from, line_height) = entry.place(from);
     let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));
     // GPUI centres a row's text in the line height; the baseline follows.
     let pad = (line_height - (wrapped.ascent() + wrapped.descent())) / 2.;

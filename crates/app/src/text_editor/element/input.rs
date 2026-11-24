@@ -500,7 +500,9 @@ pub(super) fn hit_in_line(
             let relative_x =
                 (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
             let local_y = (relative_y - y).max(px(0.));
-            let row = (local_y / line_height) as usize;
+            let row = entry.row_at(local_y);
+            // GPUI laid the rows `line_height` apart, however tall they are painted.
+            let local_y = entry.layout_y(local_y);
             let relative_x = justify::unshift_x(
                 (state, wrapped, display_line),
                 results.len(),

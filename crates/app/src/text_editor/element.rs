@@ -23,8 +23,9 @@ use super::doc::DocumentCache;
 use super::editor::ColumnMenu;
 use super::image::{self, Cache as ImageCache, Info as ImageInfo};
 use super::layout::{
-    LineState, MathPart, TableLineKind, char_budget, entry_heights, indent_px, is_table_active,
-    line_runs, mono_char_width, shape_display_line, shape_entry, shaped_height, table_line_kind,
+    EntryHeight, LineState, MathPart, TableLineKind, char_budget, entry_heights, indent_px,
+    is_table_active, line_runs, mono_char_width, shape_display_line, shape_entry, shaped_height,
+    table_line_kind,
 };
 use super::link_table::LinkTable;
 use super::paint_trace::{FrameInfo, PaintTrace};
@@ -279,10 +280,11 @@ pub(super) fn caret_rect(
                     line_height,
                 )
                 .unwrap_or(point(px(0.), px(0.)));
+                let (pos, caret_height) = entry.place(pos);
                 let x = pos.x + indent_px(display_line.indent.level());
                 return Some(Bounds {
                     origin: point(bounds.origin.x + x, anchor + y_offset + pos.y),
-                    size: size(px(1.), line_height),
+                    size: size(px(1.), caret_height),
                 });
             }
             y_offset += height;

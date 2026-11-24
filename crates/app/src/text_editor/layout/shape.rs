@@ -17,7 +17,7 @@ use crate::text_editor::preview::{
 
 /// What a shaped line occupies, the one place its heights are decided: for
 /// each entry of `results` (more than one only for a wrapped table row) its
-/// row height and its height. Painting, the caret, clicks and the row counts
+/// row heights and its height. Painting, the caret, clicks and the row counts
 /// all read the line through this, so they cannot disagree.
 pub(in crate::text_editor) fn entry_heights<'a>(
     results: &'a [(WrappedLine, DisplayLine)],
@@ -27,20 +27,91 @@ pub(in crate::text_editor) fn entry_heights<'a>(
 ) -> impl Iterator<Item = EntryHeight> + 'a {
     results.iter().map(move |(wrapped, display_line)| {
         let line = (display_line, line_text);
-        let row = tall_row_height(results.len(), line, wrapped, metrics, macros);
-        EntryHeight {
-            row,
-            height: wrapped.size(row).height,
-        }
+        row_heights(results.len(), line, wrapped, metrics, macros)
     })
 }
 
-/// One shaped entry's row height (`line_height`, or a whole multiple of it
-/// under a tall formula) and its total height, a whole number of rows.
-#[derive(Clone, Copy)]
+/// One shaped entry's rows. Every row has the same height (`row`: `line_height`,
+/// or a whole multiple of it under a tall formula) unless `varied` says
+/// otherwise; `height` is the total, a whole number of editor rows.
+#[derive(Clone, Debug, PartialEq)]
 pub(in crate::text_editor) struct EntryHeight {
+    /// The height of every row, or, when `varied` is not empty, of one unit.
     pub row: Pixels,
+    /// How many units each wrapped row is, when they differ (a formula taller
+    /// than a row makes only the rows it sits on taller, #32); empty when all
+    /// rows are `row`. GPUI lays the text out at `row` per row, so its y values
+    /// need [`place`](Self::place) to land where the rows are painted.
+    pub varied: Vec<u8>,
     pub height: Pixels,
+}
+
+impl EntryHeight {
+    /// One row of `row`: what a line with nothing tall in it is, and the
+    /// stand-in where a line has no entry.
+    pub fn uniform(row: Pixels) -> Self {
+        EntryHeight {
+            row,
+            varied: Vec::new(),
+            height: row,
+        }
+    }
+
+    fn unit(&self, row: usize) -> f32 {
+        f32::from(self.varied.get(row).copied().unwrap_or(1))
+    }
+
+    /// The height of wrapped row `row`.
+    pub fn row_height(&self, row: usize) -> Pixels {
+        if self.varied.is_empty() {
+            self.row
+        } else {
+            self.row * self.unit(row)
+        }
+    }
+
+    /// Where wrapped row `row` starts, from the entry's top.
+    pub fn top(&self, row: usize) -> Pixels {
+        if self.varied.is_empty() {
+            return self.row * row as f32;
+        }
+        self.row * (0..row).map(|r| self.unit(r)).sum::<f32>()
+    }
+
+    /// The wrapped row at `y` below the entry's top (the last for a `y` below it).
+    pub fn row_at(&self, y: Pixels) -> usize {
+        if self.varied.is_empty() {
+            return (f32::from(y) / f32::from(self.row)).max(0.0) as usize;
+        }
+        let mut top = px(0.);
+        for (row, &units) in self.varied.iter().enumerate() {
+            top += self.row * f32::from(units);
+            if y < top {
+                return row;
+            }
+        }
+        self.varied.len().saturating_sub(1)
+    }
+
+    /// A y of GPUI's own layout of the line (every row `self.row`) for the row
+    /// holding `y` as painted: what `closest_index_for_position` wants.
+    pub fn layout_y(&self, y: Pixels) -> Pixels {
+        if self.varied.is_empty() {
+            y
+        } else {
+            self.row * self.row_at(y) as f32
+        }
+    }
+
+    /// A position GPUI's layout gave (rows `self.row` apart) moved to where the
+    /// row is painted, with that row's height.
+    pub fn place(&self, layout: Point<Pixels>) -> (Point<Pixels>, Pixels) {
+        if self.varied.is_empty() {
+            return (layout, self.row);
+        }
+        let row = (f32::from(layout.y) / f32::from(self.row)).round().max(0.0) as usize;
+        (point(layout.x, self.top(row)), self.row_height(row))
+    }
 }
 
 /// The height of the whole shaped line, and how many editor rows (of
@@ -57,24 +128,72 @@ pub(in crate::text_editor) fn shaped_height(
     (height, (height / metrics.1).round() as usize)
 }
 
-/// The height of each row of a shaped line: `line_height`, or a whole multiple
-/// of it when a drawn formula on the line reaches past one row (the formula is
+/// The height of each row of a line: `line_height`, or a whole multiple of it
+/// for a row holding a drawn formula that reaches past one (the formula is
 /// painted on the text baseline, which a taller row keeps centred). Whole rows
 /// keep the row counts integral. `entries` is how many shaped entries the line has.
-fn tall_row_height(
+fn row_heights(
     entries: usize,
     (display_line, line_text): (&DisplayLine, &str),
     wrapped: &WrappedLine,
     (font_size, line_height): (Pixels, Pixels),
     macros: &Macros,
-) -> Pixels {
+) -> EntryHeight {
+    let uniform = |units: usize| EntryHeight {
+        row: line_height * units as f32,
+        varied: Vec::new(),
+        height: wrapped.size(line_height * units as f32).height,
+    };
     // Several entries are a wrapped table row, which never holds a drawn formula.
-    if entries != 1 {
-        return line_height;
+    if entries != 1
+        || !display_line
+            .segments
+            .iter()
+            .any(|s| s.style == InlineStyle::Math)
+    {
+        return uniform(1);
     }
-    let reach = formula_reach(display_line, line_text, macros);
+    let rows = wrapped.wrap_boundaries().len() + 1;
     let text = (f32::from(wrapped.ascent()), f32::from(wrapped.descent()));
-    line_height * tall_rows(reach, (font_size, line_height), text) as f32
+    let mut reach = vec![(0.0f32, 0.0f32); rows];
+    for seg in display_line
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+    {
+        // The row of each end, as `paint_math` finds them: a formula the wrap
+        // splits is not drawn and makes no row tall.
+        let (Some(from), Some(to)) = (
+            wrapped.position_for_index(seg.display.start, px(1.)),
+            wrapped.position_for_index(seg.display.end, px(1.)),
+        ) else {
+            continue;
+        };
+        if from.y != to.y {
+            continue;
+        }
+        let Some(rendered) = line_text
+            .get(seg.raw.clone())
+            .and_then(|span| math::rendered_span(span, macros))
+        else {
+            continue;
+        };
+        let at = (f32::from(from.y).round() as usize).min(rows - 1);
+        reach[at].0 = reach[at].0.max(rendered.layout.ascent);
+        reach[at].1 = reach[at].1.max(rendered.layout.descent);
+    }
+    let units: Vec<usize> = reach
+        .iter()
+        .map(|&r| tall_rows(r, (font_size, line_height), text))
+        .collect();
+    if units.iter().all(|&u| u == units[0]) {
+        return uniform(units[0]);
+    }
+    EntryHeight {
+        row: line_height,
+        varied: units.iter().map(|&u| u.min(255) as u8).collect(),
+        height: line_height * units.iter().sum::<usize>() as f32,
+    }
 }
 
 /// How far the drawn formulas of `display_line` reach above and below the
