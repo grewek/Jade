@@ -40,6 +40,9 @@ pub enum Align {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
     pub width: usize,
+    /// The longest word of any cell, in characters (a `<br>` ends a word): the
+    /// least width at which no word is broken (#46).
+    pub word: usize,
     pub align: Align,
 }
 
@@ -337,6 +340,48 @@ fn cell_width(line: &str, raw: Range<usize>) -> usize {
     }
 }
 
+/// The longest word of `text`, in characters: a run without whitespace, where a
+/// `<br>` also ends a word and an escaped pipe (`\|`) is one character. One
+/// pass over the bytes, no allocation: this runs for every cell of a table.
+fn longest_word(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let (mut best, mut run, mut i) = (0, 0, 0);
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'<' && bytes[i..].starts_with(b"<br>") {
+            best = best.max(run);
+            run = 0;
+            i += 4;
+        } else if byte == b'\\' && bytes.get(i + 1) == Some(&b'|') {
+            run += 1;
+            i += 2;
+        } else if byte < 0x80 {
+            if (byte as char).is_whitespace() {
+                best = best.max(run);
+                run = 0;
+            } else {
+                run += 1;
+            }
+            i += 1;
+        } else {
+            let c = text[i..].chars().next().unwrap_or(' ');
+            if c.is_whitespace() {
+                best = best.max(run);
+                run = 0;
+            } else {
+                run += 1;
+            }
+            i += c.len_utf8();
+        }
+    }
+    best.max(run)
+}
+
+/// [`longest_word`] of the cell at `raw` in `line`.
+fn cell_word(line: &str, raw: Range<usize>) -> usize {
+    longest_word(&line[raw])
+}
+
 fn make_cell(line: &str, raw: Range<usize>) -> Cell {
     Cell {
         text: line[raw].replace("\\|", "|").trim().to_string(),
@@ -450,6 +495,7 @@ pub(in crate::text_editor) fn classify_table_list_from<'a>(
             .zip(aligns)
             .map(|(cell, align)| Column {
                 width: cell.text.chars().count().max(3),
+                word: longest_word(&cell.text),
                 align,
             })
             .collect();
@@ -460,6 +506,7 @@ pub(in crate::text_editor) fn classify_table_list_from<'a>(
             let mut index = 0;
             for_each_cell_range(row, |raw| {
                 if let Some(column) = columns.get_mut(index) {
+                    column.word = column.word.max(cell_word(row, raw.clone()));
                     column.width = column.width.max(cell_width(row, raw));
                 }
                 index += 1;
@@ -514,11 +561,13 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
             .zip(aligns)
             .map(|(cell, align)| Column {
                 width: cell.text.chars().count().max(3),
+                word: longest_word(&cell.text),
                 align,
             })
             .collect();
         for &line in &lines[start + 2..end] {
             for (column, cell) in columns.iter_mut().zip(scan_row(line).cells.iter()) {
+                column.word = column.word.max(longest_word(&cell.text));
                 column.width = column.width.max(cell.text.chars().count());
             }
         }
@@ -581,26 +630,72 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
             .collect();
     }
 
-    // Water-filling: a column narrower than an equal share of what is left
-    // keeps its natural width; the wider ones split the rest equally. So a cell
-    // that grows takes space from columns that have some to spare, and only
-    // wraps once every column is down to the shared width.
+    // Whole words first (#46): no column goes below its longest word (nor
+    // `MIN_COLUMN_WIDTH`, nor its natural width) while the words of all
+    // columns fit together; only when they do not is a word broken.
+    let floors: Vec<usize> = columns
+        .iter()
+        .map(|c| c.word.max(MIN_COLUMN_WIDTH).min(c.width))
+        .collect();
+    if floors.iter().sum::<usize>() <= content_budget {
+        return fill_above(&natural, &floors, content_budget, false);
+    }
+    // Not all words fit: the longest words are shortened to a common length,
+    // so breaking is spread over the columns (a column's word count is not
+    // known here, and one column holding many long words would suffer most).
+    let minimum = vec![MIN_COLUMN_WIDTH; floors.len()];
+    fill_above(&floors, &minimum, content_budget, true)
+}
+
+/// Widths between `floors` and `natural` using `budget` characters, water-filled:
+/// a column narrower than the common level keeps its natural width, the wider
+/// ones share the rest equally (the widest take the odd characters), none
+/// below its floor. `floors` must sum to at most `budget`.
+fn fill_above(
+    natural: &[usize],
+    floors: &[usize],
+    budget: usize,
+    nearest_first: bool,
+) -> Vec<usize> {
+    let at = |level: usize| -> Vec<usize> {
+        natural
+            .iter()
+            .zip(floors)
+            .map(|(&n, &f)| level.clamp(f, n.max(f)))
+            .collect()
+    };
+    // The highest level whose widths still fit.
+    let (mut low, mut high) = (0, natural.iter().copied().max().unwrap_or(0));
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        if at(mid).iter().sum::<usize>() <= budget {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let mut widths = at(low);
+    let mut spare = budget - widths.iter().sum::<usize>();
+    // The odd characters go to the widest columns still below their natural
+    // width; with `nearest_first` to those nearest it, where one more may make a
+    // word fit.
     let mut order: Vec<usize> = (0..natural.len()).collect();
-    order.sort_by_key(|&i| natural[i]);
-    let mut widths = natural.clone();
-    let mut left = content_budget;
-    for (k, &i) in order.iter().enumerate() {
-        let remaining = order.len() - k;
-        if natural[i] <= left / remaining {
-            left -= natural[i];
-            continue;
+    order.sort_by_key(|&i| {
+        let gap = if nearest_first {
+            natural[i] - widths[i]
+        } else {
+            0
+        };
+        (gap, std::cmp::Reverse((natural[i], i)))
+    });
+    for i in order {
+        if spare == 0 {
+            break;
         }
-        let (each, extra) = (left / remaining, left % remaining);
-        for (j, &wide) in order[k..].iter().enumerate() {
-            // The widest take the odd characters.
-            widths[wide] = each + usize::from(j >= remaining - extra);
+        if widths[i] < natural[i] {
+            widths[i] += 1;
+            spare -= 1;
         }
-        break;
     }
     widths
 }
@@ -812,8 +907,54 @@ mod tests {
     fn col(width: usize) -> Column {
         Column {
             width,
+            word: 1,
             align: Align::Left,
         }
+    }
+
+    fn col_with_word(width: usize, word: usize) -> Column {
+        Column { word, ..col(width) }
+    }
+
+    #[test]
+    fn a_column_never_shrinks_below_its_longest_word_while_all_words_fit() {
+        // #46: an equal share (here 12 each) would cut the 14-letter word.
+        let columns = vec![col_with_word(40, 14), col_with_word(40, 5)];
+        let widths = cap_column_widths(&columns, 7 + 24);
+        assert_eq!(widths.iter().sum::<usize>(), 24);
+        assert!(widths[0] >= 14 && widths[1] >= 5, "{widths:?}");
+        assert_eq!(widths, vec![14, 10]);
+    }
+
+    #[test]
+    fn short_columns_keep_their_natural_width_and_long_words_the_rest() {
+        let columns = vec![
+            col_with_word(4, 4),
+            col_with_word(30, 9),
+            col_with_word(30, 9),
+        ];
+        // Overhead 10; 28 of content: 4 stays, the others share 24.
+        assert_eq!(cap_column_widths(&columns, 10 + 28), vec![4, 12, 12]);
+    }
+
+    #[test]
+    fn when_words_do_not_all_fit_the_longest_are_shortened_to_a_common_length() {
+        // Words 5, 10, 9, 5 want 29; 27 fit: the two long ones give a character each.
+        let columns = vec![
+            col_with_word(5, 5),
+            col_with_word(10, 10),
+            col_with_word(20, 9),
+            col_with_word(5, 5),
+        ];
+        // The odd character goes to the 9-letter word's column, where it makes it whole.
+        assert_eq!(cap_column_widths(&columns, 13 + 27), vec![5, 8, 9, 5]);
+    }
+
+    #[test]
+    fn words_that_cannot_all_fit_fall_back_to_an_equal_share() {
+        let columns = vec![col_with_word(40, 20), col_with_word(40, 20)];
+        let widths = cap_column_widths(&columns, 7 + 20);
+        assert_eq!(widths, vec![10, 10]);
     }
 
     #[test]
@@ -1035,6 +1176,31 @@ mod fast_path_tests {
         "",
         "| --- | :-: | --: |",
     ];
+
+    #[test]
+    fn cell_word_is_the_longest_word_of_the_cell_text() {
+        for line in ROWS {
+            let row = scan_row(line);
+            let mut words = Vec::new();
+            for_each_cell_range(line, |raw| words.push(cell_word(line, raw)));
+            let expected: Vec<usize> = row
+                .cells
+                .iter()
+                .map(|c| {
+                    c.text
+                        .split("<br>")
+                        .flat_map(str::split_whitespace)
+                        .map(|w| w.chars().count())
+                        .max()
+                        .unwrap_or(0)
+                })
+                .collect();
+            assert_eq!(words, expected, "{line:?}");
+        }
+        assert_eq!(longest_word("one<br>three two"), 5);
+        assert_eq!(longest_word("a \\| bc"), 2);
+        assert_eq!(longest_word("héllo wörld!"), 6);
+    }
 
     #[test]
     fn cell_width_and_cell_count_match_scan_row() {
