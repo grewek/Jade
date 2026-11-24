@@ -3789,3 +3789,38 @@ fn backspace_while_typing_in_search_does_not_delete_the_selected_note(cx: &mut T
     assert_eq!(selected, Some("Note".to_string()));
     assert!(dir.path().join("Note.md").exists());
 }
+
+#[gpui_kit::test]
+fn pixel_commands_on_a_window_that_cannot_render_say_how_to_get_pixels(cx: &mut TestAppContext) {
+    use jade_debug_protocol::{Answer, Command, Fact};
+    let dir = temp_vault();
+    let (mut client, sock, window, _app) = open_app_with_debug_client(cx, dir.path().to_path_buf());
+    cx.update_window(window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let ask = |target: &str| Command::Facts {
+        target: target.into(),
+        facts: vec![Fact::Bbox],
+        rect: None,
+        tolerance: 8,
+    };
+    let Answer::Error { message } = call_on_main(cx, &mut client, ask("no-such-element")) else {
+        panic!("an unknown element must be an error");
+    };
+    assert!(message.contains("no element named"), "{message}");
+
+    // This window has no renderer behind it, like the live one.
+    for command in [
+        ask("sidebar"),
+        Command::Capture {
+            target: "sidebar".into(),
+            rect: None,
+            scale: None,
+        },
+    ] {
+        let Answer::Error { message } = call_on_main(cx, &mut client, command) else {
+            panic!("a window that cannot render must be an error");
+        };
+        assert!(message.contains("--headless"), "{message}");
+    }
+    std::fs::remove_file(&sock).unwrap();
+}

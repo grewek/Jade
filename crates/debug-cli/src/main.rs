@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use args::{Action, parse_action, parse_cli, split_words};
 use client::Connection;
-use jade_debug_protocol::{Command, Event, Message, Query, Topic};
+use jade_debug_protocol::{Answer, Command, Event, Message, Query, Topic};
 
 fn main() -> ExitCode {
     match run() {
@@ -47,6 +47,7 @@ fn print_events(events: &[Event]) {
 fn execute(conn: &mut Connection, action: Action) -> Result<(), String> {
     match action {
         Action::Send(command) => send(conn, command),
+        Action::Capture { command, out } => capture(conn, command, &out),
         Action::Frames { raw: false } => send(
             conn,
             Command::Query {
@@ -76,6 +77,33 @@ fn send(conn: &mut Connection, command: Command) -> Result<(), String> {
     let (answer, events) = conn.call(command)?;
     print_events(&events);
     println!("{}", render::answer_text(&answer)?);
+    Ok(())
+}
+
+/// Sends a `Capture`, reads the PNG that follows and writes it to `out`.
+fn capture(conn: &mut Connection, command: Command, out: &std::path::Path) -> Result<(), String> {
+    let (answer, events) = conn.call(command)?;
+    print_events(&events);
+    let Answer::Capture(info) = answer else {
+        return render::answer_text(&answer).map(|text| println!("{text}"));
+    };
+    let (png, events) = conn.read_chunks(info.chunks)?;
+    print_events(&events);
+    if png.len() != info.bytes {
+        return Err(format!("expected {} bytes, got {}", info.bytes, png.len()));
+    }
+    std::fs::write(out, &png).map_err(|e| format!("{}: {e}", out.display()))?;
+    println!(
+        "wrote {} ({}x{} px, {} bytes) of the region at {:.1},{:.1} {:.1}x{:.1}",
+        out.display(),
+        info.width,
+        info.height,
+        info.bytes,
+        info.bounds.x,
+        info.bounds.y,
+        info.bounds.w,
+        info.bounds.h
+    );
     Ok(())
 }
 

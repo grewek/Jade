@@ -3,6 +3,8 @@
 //! same `req` id and pushes [`Message::Event`]s to subscribed clients. No GPUI
 //! dependency, so the app, test harness and CLI clients share these types.
 
+pub mod base64;
+
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -145,6 +147,32 @@ pub enum Command {
         modifiers: Modifiers,
     },
     ListTargets,
+    /// Measures `facts` on the pixels of the element `target` (or `rect` of it)
+    /// as last painted. Needs the headless mode (see `jade-debug launch`).
+    Facts {
+        target: String,
+        facts: Vec<Fact>,
+        #[serde(default)]
+        rect: Option<Rect>,
+        #[serde(default = "default_tolerance")]
+        tolerance: u8,
+    },
+    /// Checks the `checks` against the pixels of the element `target`.
+    Expect {
+        target: String,
+        checks: Vec<Check>,
+        #[serde(default = "default_tolerance")]
+        tolerance: u8,
+    },
+    /// A PNG of the element `target` (or `rect` of it), optionally scaled by
+    /// `scale` (0 < scale <= 1), sent as chunks after the reply.
+    Capture {
+        target: String,
+        #[serde(default)]
+        rect: Option<Rect>,
+        #[serde(default)]
+        scale: Option<f32>,
+    },
     /// Reads up to `MAX_TEXT_BYTES` of the open note's text from byte `start`
     /// (rounded down to a character boundary; `len` counts from the rounded
     /// start and is cut at one too), to check what typing produced.
@@ -186,6 +214,162 @@ pub struct Request {
     pub req: ReqId,
     #[serde(flatten)]
     pub command: Command,
+}
+
+/// A rectangle in logical pixels. Relative to an element's top-left in
+/// `Facts` and `Expect`, in window coordinates in `CaptureInfo::bounds`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct Rect {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+}
+
+/// Default per-channel difference above which a pixel counts as ink.
+pub const DEFAULT_TOLERANCE: u8 = 8;
+
+fn default_tolerance() -> u8 {
+    DEFAULT_TOLERANCE
+}
+
+/// Most cells an `InkGrid` may ask for; bounds the reply.
+pub const MAX_GRID_CELLS: u32 = 4096;
+/// Longest row or column profile a reply carries (logical pixels).
+pub const MAX_PROFILE_LEN: u32 = 4096;
+/// Palette entries a reply carries at most.
+pub const MAX_PALETTE: u8 = 32;
+/// Raw bytes in one capture chunk; base64 makes the line about a third longer,
+/// still far below `MAX_LINE_BYTES`.
+pub const CHUNK_BYTES: usize = 32 * 1024;
+/// Largest PNG a capture sends; a bigger one is an error that says to crop or
+/// scale.
+pub const MAX_CAPTURE_BYTES: usize = 8 * 1024 * 1024;
+
+/// One fact the app computes from an element's rendered pixels. "Ink" is a
+/// pixel that differs from the region's background (its most common colour) by
+/// more than the request's tolerance in any channel.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "fact", rename_all = "snake_case")]
+pub enum Fact {
+    /// Ink coverage (0..=255) of each cell of a `cols` x `rows` grid laid over
+    /// the region, row by row: a thumbnail of the layout.
+    InkGrid { cols: u16, rows: u16 },
+    /// Ink pixels in each logical-pixel row: text lines, gaps, overlap.
+    RowProfile,
+    /// Ink pixels in each logical-pixel column.
+    ColProfile,
+    /// Bounds of all the ink, relative to the region.
+    Bbox,
+    /// The most common colours (each channel quantized to 4 bits).
+    Palette { max: u8 },
+    /// The colour at one point of the region.
+    Pixel { x: f32, y: f32 },
+}
+
+/// The measured value of one [`Fact`], in the same order as asked.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "fact", rename_all = "snake_case")]
+pub enum FactValue {
+    InkGrid {
+        cols: u16,
+        rows: u16,
+        cells: Vec<u8>,
+    },
+    RowProfile {
+        counts: Vec<u32>,
+    },
+    ColProfile {
+        counts: Vec<u32>,
+    },
+    /// `None` when the region has no ink.
+    Bbox {
+        rect: Option<Rect>,
+    },
+    Palette {
+        colors: Vec<PaletteEntry>,
+    },
+    Pixel {
+        color: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PaletteEntry {
+    /// `#rrggbb`.
+    pub color: String,
+    /// Share of the region's pixels, 0..=100.
+    pub percent: f32,
+}
+
+/// Something the client expects of an element's pixels, written as geometry
+/// so no renderer is needed to state it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "check", rename_all = "snake_case")]
+pub enum Check {
+    /// At least `min_percent` of `rect` is ink: something is drawn there.
+    InkIn {
+        rect: Rect,
+        #[serde(default = "default_min_percent")]
+        min_percent: f32,
+    },
+    /// At most `max_percent` of `rect` is ink: it is empty.
+    Empty {
+        rect: Rect,
+        #[serde(default)]
+        max_percent: f32,
+    },
+    /// The pixel at (`x`, `y`) is `color` (`#rrggbb`) within `tolerance`.
+    Color {
+        x: f32,
+        y: f32,
+        color: String,
+        #[serde(default = "default_tolerance")]
+        tolerance: u8,
+    },
+    /// All the ink lies inside `rect`.
+    BboxWithin { rect: Rect },
+}
+
+fn default_min_percent() -> f32 {
+    0.1
+}
+
+/// The verdict on one [`Check`].
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CheckResult {
+    pub passed: bool,
+    /// What was measured, so a failure says why.
+    pub detail: String,
+}
+
+/// What a `Facts` request measured.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FactsReply {
+    /// The element's size in logical pixels.
+    pub width: f32,
+    pub height: f32,
+    /// Device pixels per logical pixel of the image the facts come from.
+    pub scale: f32,
+    /// The region's background colour, `#rrggbb`.
+    pub background: String,
+    pub facts: Vec<FactValue>,
+}
+
+/// What a `Capture` request produced; the PNG follows as `chunks`
+/// [`Message::Chunk`]s, base64, to be joined in order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CaptureInfo {
+    /// Size of the PNG in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Device pixels per logical pixel of the app's frame.
+    pub scale: f32,
+    /// The captured region in window coordinates (logical pixels).
+    pub bounds: Rect,
+    /// PNG size in bytes (before base64).
+    pub bytes: usize,
+    pub chunks: u32,
 }
 
 /// A named element and its last-painted bounds (window coordinates).
@@ -318,6 +502,13 @@ pub enum Answer {
         width: f32,
         height: f32,
     },
+    Facts(FactsReply),
+    /// Reply to `Expect`: `passed` is true when every check did.
+    Expect {
+        passed: bool,
+        results: Vec<CheckResult>,
+    },
+    Capture(CaptureInfo),
     /// Reply to `Await`: the event that arrived.
     Event {
         event: Event,
@@ -354,8 +545,21 @@ impl Event {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Message {
-    Response { req: ReqId, answer: Answer },
-    Event { event: Event },
+    Response {
+        req: ReqId,
+        answer: Answer,
+    },
+    Event {
+        event: Event,
+    },
+    /// Part `index` of `total` of a capture's PNG (base64), sent right after
+    /// the `Capture` reply to the same `req`.
+    Chunk {
+        req: ReqId,
+        index: u32,
+        total: u32,
+        data: String,
+    },
 }
 
 #[derive(Debug)]
@@ -661,5 +865,154 @@ mod tests {
             decode_line::<Request>(&long),
             Err(LineError::TooLong(_))
         ));
+    }
+
+    #[test]
+    fn pixel_commands_round_trip() {
+        let rect = Rect {
+            x: 1.0,
+            y: 2.0,
+            w: 30.0,
+            h: 4.5,
+        };
+        round_trip_commands(vec![
+            Command::Facts {
+                target: "editor".into(),
+                facts: vec![
+                    Fact::InkGrid { cols: 32, rows: 8 },
+                    Fact::RowProfile,
+                    Fact::ColProfile,
+                    Fact::Bbox,
+                    Fact::Palette { max: 4 },
+                    Fact::Pixel { x: 3.0, y: 4.0 },
+                ],
+                rect: Some(rect),
+                tolerance: 6,
+            },
+            Command::Expect {
+                target: "editor".into(),
+                checks: vec![
+                    Check::InkIn {
+                        rect,
+                        min_percent: 0.5,
+                    },
+                    Check::Empty {
+                        rect,
+                        max_percent: 0.0,
+                    },
+                    Check::Color {
+                        x: 1.0,
+                        y: 1.0,
+                        color: "#1e1e2e".into(),
+                        tolerance: 4,
+                    },
+                    Check::BboxWithin { rect },
+                ],
+                tolerance: DEFAULT_TOLERANCE,
+            },
+            Command::Capture {
+                target: "editor".into(),
+                rect: None,
+                scale: Some(0.5),
+            },
+        ]);
+    }
+
+    #[test]
+    fn omitted_pixel_options_take_their_defaults() {
+        let facts: Command =
+            serde_json::from_str(r#"{"cmd":"facts","target":"t","facts":[{"fact":"bbox"}]}"#)
+                .unwrap();
+        assert!(matches!(
+            facts,
+            Command::Facts {
+                rect: None,
+                tolerance: DEFAULT_TOLERANCE,
+                ..
+            }
+        ));
+        let check: Check =
+            serde_json::from_str(r#"{"check":"empty","rect":{"x":0,"y":0,"w":1,"h":1}}"#).unwrap();
+        assert!(matches!(check, Check::Empty { max_percent, .. } if max_percent == 0.0));
+    }
+
+    #[test]
+    fn pixel_answers_and_chunks_round_trip() {
+        let rect = Rect {
+            x: 0.0,
+            y: 1.0,
+            w: 2.0,
+            h: 3.0,
+        };
+        roundtrip(Message::Response {
+            req: 1,
+            answer: Answer::Facts(FactsReply {
+                width: 10.0,
+                height: 20.0,
+                scale: 2.0,
+                background: "#ffffff".into(),
+                facts: vec![
+                    FactValue::InkGrid {
+                        cols: 2,
+                        rows: 1,
+                        cells: vec![0, 255],
+                    },
+                    FactValue::RowProfile { counts: vec![1, 2] },
+                    FactValue::ColProfile { counts: vec![3] },
+                    FactValue::Bbox { rect: Some(rect) },
+                    FactValue::Bbox { rect: None },
+                    FactValue::Palette {
+                        colors: vec![PaletteEntry {
+                            color: "#000000".into(),
+                            percent: 12.5,
+                        }],
+                    },
+                    FactValue::Pixel {
+                        color: "#102030".into(),
+                    },
+                ],
+            }),
+        });
+        roundtrip(Message::Response {
+            req: 2,
+            answer: Answer::Expect {
+                passed: false,
+                results: vec![CheckResult {
+                    passed: false,
+                    detail: "ink 0.0%".into(),
+                }],
+            },
+        });
+        roundtrip(Message::Response {
+            req: 3,
+            answer: Answer::Capture(CaptureInfo {
+                width: 4,
+                height: 5,
+                scale: 2.0,
+                bounds: rect,
+                bytes: 100,
+                chunks: 1,
+            }),
+        });
+        roundtrip(Message::Chunk {
+            req: 3,
+            index: 0,
+            total: 1,
+            data: "AAAA".into(),
+        });
+    }
+
+    #[test]
+    fn a_full_chunk_fits_a_line_with_room_to_spare() {
+        let data = base64::encode(&vec![0xAB; CHUNK_BYTES]);
+        let line = encode_line(&Message::Chunk {
+            req: u64::MAX,
+            index: u32::MAX,
+            total: u32::MAX,
+            data,
+        })
+        .unwrap();
+        assert!(line.len() < MAX_LINE_BYTES, "{} bytes", line.len());
+        assert!(line.len() < MAX_LINE_BYTES - 1024);
     }
 }

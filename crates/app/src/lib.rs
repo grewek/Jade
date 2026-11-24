@@ -3,8 +3,6 @@
 
 mod app;
 mod assets;
-#[cfg(test)]
-mod capture_spike;
 // Without the `debug-socket` feature (and outside tests) a no-op stub with the
 // same names replaces the socket server, so the shipped binary has none.
 #[cfg(any(test, feature = "debug-socket"))]

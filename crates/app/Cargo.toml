@@ -6,8 +6,10 @@ edition = "2024"
 [features]
 # The Unix-socket debug server (`debug_server/`) that `jade-debug` drives.
 # Off by default so the shipped binary has no input-injecting socket; tests
-# always include it.
-debug-socket = ["dep:jade-debug-protocol"]
+# always include it. It needs GPUI's test support for the headless mode, whose
+# window can render itself to pixels (`JADE_DEBUG_HEADLESS`, see
+# `debug_server/headless.rs`).
+debug-socket = ["dep:jade-debug-protocol", "gpui-kit/test-support"]
 # Headless GPUI harness (`headless.rs`) and allocation counting for the
 # layout and allocation benches; they need gpui-kit's test platform.
 bench-support = ["gpui-kit/test-support"]
