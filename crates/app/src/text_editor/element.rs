@@ -932,7 +932,12 @@ mod tests {
             .repeat(8);
         let text: &'static str = Box::leak(text.trim_end().to_owned().into_boxed_str());
         let (window, editor) = open_editor(cx, text);
-        cx.update(|cx| cx.set_global(crate::text_editor::TextSettings { justify: true }));
+        cx.update(|cx| {
+            cx.set_global(crate::text_editor::TextSettings {
+                justify: true,
+                ..Default::default()
+            })
+        });
         let (bounds, target, x) = cx
             .update_window(window, |_, window, cx| {
                 window.render_frame(cx);
