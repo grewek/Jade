@@ -377,6 +377,46 @@ fn longest_word(text: &str) -> usize {
     best.max(run)
 }
 
+/// A cell's natural width and longest word in characters, with each formula it
+/// draws counted at its drawn width (#47: a short formula with long source takes
+/// the room it needs, a long one no more). Only a cell with a `$` is looked at
+/// for formulas. The classifier knows no macros, so a formula that needs one is
+/// counted as its source, which is also how it is shown without them.
+fn text_metrics(text: &str) -> (usize, usize) {
+    let plain = || (text.chars().count(), longest_word(text));
+    if !text.contains('$') {
+        return plain();
+    }
+    let text = text.trim();
+    let (mut width, mut word, mut drawn) = (0, 0, false);
+    for part in text.split(LINE_BREAK) {
+        let formulas = super::super::preview::cell_formulas(part, &NO_MACROS);
+        drawn |= !formulas.is_empty();
+        let (mut line, mut run) = (0, 0);
+        for (k, chunk) in chunks(part, &formulas, usize::MAX).iter().enumerate() {
+            if !chunk.glued {
+                word = word.max(run);
+                run = 0;
+                line += usize::from(k > 0);
+            }
+            run += chunk.len;
+            line += chunk.len;
+        }
+        word = word.max(run);
+        width = width.max(line);
+    }
+    if drawn { (width, word) } else { plain() }
+}
+
+/// [`text_metrics`] of the cell at `raw` in `line`, cheap for one without a `$`.
+fn cell_metrics(line: &str, raw: Range<usize>) -> (usize, usize) {
+    if line[raw.clone()].contains('$') {
+        text_metrics(line[raw].replace("\\|", "|").trim())
+    } else {
+        (cell_width(line, raw.clone()), cell_word(line, raw))
+    }
+}
+
 /// [`longest_word`] of the cell at `raw` in `line`.
 fn cell_word(line: &str, raw: Range<usize>) -> usize {
     longest_word(&line[raw])
@@ -493,10 +533,13 @@ pub(in crate::text_editor) fn classify_table_list_from<'a>(
             .cells
             .iter()
             .zip(aligns)
-            .map(|(cell, align)| Column {
-                width: cell.text.chars().count().max(3),
-                word: longest_word(&cell.text),
-                align,
+            .map(|(cell, align)| {
+                let (width, word) = text_metrics(&cell.text);
+                Column {
+                    width: width.max(3),
+                    word,
+                    align,
+                }
             })
             .collect();
         while let Some(&(i, row)) = lines.peek() {
@@ -506,8 +549,9 @@ pub(in crate::text_editor) fn classify_table_list_from<'a>(
             let mut index = 0;
             for_each_cell_range(row, |raw| {
                 if let Some(column) = columns.get_mut(index) {
-                    column.word = column.word.max(cell_word(row, raw.clone()));
-                    column.width = column.width.max(cell_width(row, raw));
+                    let (width, word) = cell_metrics(row, raw);
+                    column.word = column.word.max(word);
+                    column.width = column.width.max(width);
                 }
                 index += 1;
             });
@@ -559,16 +603,20 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
             .cells
             .iter()
             .zip(aligns)
-            .map(|(cell, align)| Column {
-                width: cell.text.chars().count().max(3),
-                word: longest_word(&cell.text),
-                align,
+            .map(|(cell, align)| {
+                let (width, word) = text_metrics(&cell.text);
+                Column {
+                    width: width.max(3),
+                    word,
+                    align,
+                }
             })
             .collect();
         for &line in &lines[start + 2..end] {
             for (column, cell) in columns.iter_mut().zip(scan_row(line).cells.iter()) {
-                column.word = column.word.max(longest_word(&cell.text));
-                column.width = column.width.max(cell.text.chars().count());
+                let (width, word) = text_metrics(&cell.text);
+                column.word = column.word.max(word);
+                column.width = column.width.max(width);
             }
         }
 
@@ -1176,6 +1224,33 @@ mod fast_path_tests {
         "",
         "| --- | :-: | --: |",
     ];
+
+    #[test]
+    fn a_cell_with_a_formula_is_as_wide_as_the_formula_is_drawn() {
+        // #47: the source is 31 characters, the drawn fraction a few.
+        let source = "| a | b |\n|---|---|\n| $\\frac{numerator}{denominator}$ | x |";
+        let drawn = crate::text_editor::preview::cell_formulas(
+            "$\\frac{numerator}{denominator}$",
+            &NO_MACROS,
+        );
+        assert_eq!(drawn.len(), 1);
+        let columns = &classify_tables(source).1[0].columns;
+        assert_eq!(columns[0].width, drawn[0].1.max(3));
+        assert!(columns[0].width < 31, "{columns:?}");
+        // One formula is one word, however long its source.
+        assert_eq!(columns[0].word, drawn[0].1);
+        // The streaming classifier agrees.
+        assert_eq!(classify_table_list(source)[0].columns, *columns);
+    }
+
+    #[test]
+    fn text_around_a_formula_counts_its_words_and_spaces() {
+        let drawn = crate::text_editor::preview::cell_formulas("$x$", &NO_MACROS)[0].1;
+        // "ab" glued to the formula is one word; the space separates "cd".
+        assert_eq!(text_metrics("ab$x$ cd"), (2 + drawn + 1 + 2, 2 + drawn));
+        // A formula that cannot be drawn is its source, as before.
+        assert_eq!(text_metrics("$\\foo{x}$ y"), ("$\\foo{x}$ y".len(), 9));
+    }
 
     #[test]
     fn cell_word_is_the_longest_word_of_the_cell_text() {
