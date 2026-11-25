@@ -226,3 +226,21 @@ impl Index {
         self.0.find(target)
     }
 }
+
+/// Fenced-code highlighting over a folder of definitions (#99).
+pub struct Syntaxes(super::highlight::Highlighter);
+
+impl Syntaxes {
+    /// Loads the folder; the count is how many files gave a notice.
+    pub fn load(dir: &std::path::Path) -> (Self, usize) {
+        let loaded = super::highlight::Highlighter::load_dir(dir);
+        (Self(loaded.highlighter), loaded.notices.len())
+    }
+
+    /// The number of coloured spans in `text`, or 0 for an unknown language.
+    pub fn highlight(&self, language: &str, text: &str) -> usize {
+        self.0
+            .highlight(language, text)
+            .map_or(0, |h| h.lines.iter().map(Vec::len).sum())
+    }
+}

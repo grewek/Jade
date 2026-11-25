@@ -2,5 +2,10 @@
 //! the frame.
 
 mod scope;
+mod syntax;
 
+// Unused in the test build until the block cache (step 9) consumes them.
+#[cfg_attr(test, allow(unused_imports))]
 pub(super) use scope::{role_for_scope, role_for_stack};
+#[cfg_attr(test, allow(unused_imports))]
+pub(super) use syntax::{Highlighted, Highlighter, Loaded, Span};
