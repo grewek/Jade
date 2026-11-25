@@ -117,15 +117,32 @@ fn spawn_parse(
 ) {
     cx.spawn(async move |this, cx| {
         let cancelled = Arc::clone(&token);
+        let word = language.clone();
         let spans = cx
             .background_spawn(async move {
-                highlighter.highlight_until(&language, &code, &|| cancelled.load(Ordering::Relaxed))
+                highlighter.highlight_until(&word, &code, &|| cancelled.load(Ordering::Relaxed))
             })
             .await;
+        report_if_stopped(&store, &language, spans.as_ref());
         store.0.borrow_mut().finish(key, &token, spans);
         this.update(cx, |_, cx| cx.notify()).ok();
     })
     .detach();
+}
+
+/// A definition that refers to a file the folder lacks stops the parse at the
+/// first line that needs it; say so once per language, not per block or frame.
+fn report_if_stopped(store: &SyntaxStore, language: &str, spans: Option<&Highlighted>) {
+    let Some(line) = spans.and_then(|s| s.stopped_at) else {
+        return;
+    };
+    if store.0.borrow_mut().first_report(language) {
+        eprintln!(
+            "syntax: the {language} definition refers to a file that is not in the syntax \
+             folder; a block stops being coloured at its line {} (the rest is plain)",
+            line + 1
+        );
+    }
 }
 
 /// The blocks near `shown`: those with spans ready, and those without.
@@ -145,7 +162,7 @@ fn scan_blocks(
     };
     let mut i = near.start;
     while i < near.end {
-        if matches!(roles[i], LineRole::Plain) || doc.side_by_side(i).is_some() {
+        if matches!(roles[i], LineRole::Plain) {
             i += 1;
             continue;
         }
@@ -157,12 +174,20 @@ fn scan_blocks(
         match syntaxes.lookup(language, &text[code.clone()]) {
             Lookup::Plain => {}
             Lookup::Hit(spans) => scan.ready.push((content, spans)),
-            Lookup::Miss(key) => scan.misses.push(Miss {
-                distance: content.start.abs_diff(middle),
-                key,
-                language: language.to_owned(),
-                code,
-            }),
+            Lookup::Miss(key) => {
+                // Until the new spans arrive an edited block keeps the old
+                // ones, where its text did not change, instead of going plain.
+                if let Some(before) = doc.view.code_block_at(content.start) {
+                    let carried = before.carried_over(&text[code.clone()]);
+                    scan.ready.push((content.clone(), Arc::new(carried)));
+                }
+                scan.misses.push(Miss {
+                    distance: content.start.abs_diff(middle),
+                    key,
+                    language: language.to_owned(),
+                    code,
+                });
+            }
         }
     }
     scan
@@ -314,9 +339,10 @@ mod tests {
         env.cx.update(|cx| {
             env.editor.update(cx, |e, cx| e.sync_code_spans(cx));
         });
-        assert!(
-            env.coloured().is_empty(),
-            "the new text shows plain until its spans arrive"
+        assert_eq!(
+            env.coloured(),
+            [1],
+            "the edited block keeps its old colours until the new ones arrive"
         );
         for _ in 0..3 {
             env.sync();
@@ -354,5 +380,70 @@ mod tests {
         );
         env.sync();
         assert_eq!(env.coloured(), [1]);
+    }
+
+    /// The lines with spans right after an edit's sync, before any task ran.
+    fn coloured_while_pending(env: &mut Env, at: usize, typed: &str) -> Vec<usize> {
+        env.type_at(at, typed);
+        env.sync_only();
+        env.coloured()
+    }
+
+    #[gpui_kit::test]
+    fn an_edit_does_not_flash_the_block_plain(cx: &mut TestAppContext) {
+        let mut env = open(cx, "```tiny\nlet a\nplain\nfn b\n```\n", true);
+        for _ in 0..3 {
+            env.sync();
+        }
+        assert_eq!(env.coloured(), [1, 3]);
+        // Typing in the middle line stays coloured; a new line `x` in front
+        // is plain and the two keyword lines move down with their colours.
+        assert_eq!(coloured_while_pending(&mut env, 14, "z"), [1, 3]);
+        assert_eq!(coloured_while_pending(&mut env, 8, "x\n"), [2, 4]);
+        env.cx.run_until_parked();
+    }
+
+    #[gpui_kit::test]
+    fn the_case_of_the_fence_language_does_not_matter(cx: &mut TestAppContext) {
+        let mut env = open(cx, "```TINY\nlet a\n```\n```Tiny\nfn b\n```\n", true);
+        for _ in 0..3 {
+            env.sync();
+        }
+        assert_eq!(env.coloured(), [1, 4]);
+    }
+
+    #[gpui_kit::test]
+    fn an_unclosed_fence_over_the_limits_stays_plain_and_starts_nothing(cx: &mut TestAppContext) {
+        let text = format!("```tiny\n{}", "let a\n".repeat(3_000));
+        let mut env = open(cx, &text, true);
+        for _ in 0..3 {
+            env.sync();
+        }
+        assert!(env.coloured().is_empty());
+        assert_eq!(env.cached(), 0);
+    }
+
+    #[gpui_kit::test]
+    fn code_in_a_column_is_coloured_too(cx: &mut TestAppContext) {
+        let note = "::: columns\n\n```tiny\nlet a\n```\n\n---\n\n```tiny\nfn b\n```\n\n:::\n";
+        let mut env = open(cx, note, true);
+        // The layout sets a width; without one every region is stacked.
+        env.cx.read(|cx| {
+            let editor = env.editor.read(cx);
+            editor
+                .document_cache
+                .borrow_mut()
+                .view
+                .set_column_width(Some(900.));
+        });
+        for _ in 0..3 {
+            env.sync();
+        }
+        let in_region = env.cx.read(|cx| {
+            let doc = env.editor.read(cx).document_cache.borrow();
+            doc.side_by_side(3).is_some() && doc.side_by_side(9).is_some()
+        });
+        assert!(in_region, "the test note must really be a columns region");
+        assert_eq!(env.coloured(), [3, 9]);
     }
 }

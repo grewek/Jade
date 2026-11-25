@@ -167,7 +167,10 @@ fn line_count(text: &str) -> usize {
 
 fn key_of(language: &str, text: &str) -> Key {
     let mut hasher = DefaultHasher::new();
-    language.hash(&mut hasher);
+    // `Rust` and `rust` are one language, so they share the block's spans.
+    for byte in language.bytes() {
+        hasher.write_u8(byte.to_ascii_lowercase());
+    }
     text.hash(&mut hasher);
     Key {
         hash: hasher.finish(),
@@ -226,11 +229,12 @@ mod tests {
     }
 
     #[test]
-    fn the_language_is_part_of_the_key() {
+    fn the_case_of_the_language_does_not_matter() {
         let (_dir, h, mut c) = cache(Limits::default());
         let a = c.spans(&h, "tiny", "let a\n").unwrap();
-        let b = c.spans(&h, "TINY", "let a\n").unwrap();
-        assert!(!Arc::ptr_eq(&a, &b));
+        let b = c.spans(&h, "TiNy", "let a\n").unwrap();
+        assert!(Arc::ptr_eq(&a, &b));
+        assert_eq!(c.len(), 1);
     }
 
     #[test]

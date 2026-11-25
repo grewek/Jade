@@ -116,6 +116,15 @@ impl ViewState {
         }
     }
 
+    /// The spans last set for the block whose content starts at line `start`.
+    pub(in crate::text_editor) fn code_block_at(&self, start: usize) -> Option<Arc<Highlighted>> {
+        let at = self.code.partition_point(|(lines, _)| lines.start < start);
+        self.code
+            .get(at)
+            .filter(|(lines, _)| lines.start == start)
+            .map(|(_, spans)| Arc::clone(spans))
+    }
+
     /// Sets the highlighted blocks (sorted, not overlapping); `true` when they
     /// differ, so the caller repaints.
     pub(in crate::text_editor) fn set_code(

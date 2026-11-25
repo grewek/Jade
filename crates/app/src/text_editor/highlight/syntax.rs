@@ -29,13 +29,90 @@ pub(in crate::text_editor) struct Span {
     pub role: Role,
 }
 
+/// A line longer than this is not parsed and stays plain: parsing costs about
+/// 6 µs per byte, so one minified or data line would hold a block for seconds,
+/// and it would add thousands of runs to shape.
+const MAX_LINE_BYTES: usize = 2_000;
+
 /// The spans of a block, one list per line; text with no role has no span.
 #[derive(Debug, Default)]
 pub(in crate::text_editor) struct Highlighted {
     pub lines: Vec<Vec<Span>>,
+    /// A hash of each line's text, to tell which lines an edit left alone.
+    hashes: Vec<u64>,
     /// The line where the parser gave up (a definition that refers to a file
     /// the folder lacks). Lines before it are coloured, it and the rest plain.
     pub stopped_at: Option<usize>,
+}
+
+impl Highlighted {
+    /// Stand-in spans for `text`, a new version of the block `self` was made
+    /// for, shown until the real ones arrive so an edit does not flash the
+    /// block plain: lines before and after the edit keep their spans, the
+    /// edited lines keep theirs as they were (a token may be a character off
+    /// for a moment), and extra new lines are plain.
+    pub fn carried_over(&self, text: &str) -> Highlighted {
+        let new: Vec<(u64, usize)> = text
+            .split_inclusive('\n')
+            .map(|l| {
+                let body = l.strip_suffix('\n').unwrap_or(l);
+                (hash_line(body), body.len())
+            })
+            .collect();
+        let (old_n, new_n) = (self.lines.len(), new.len());
+        let same_len = self.hashes.len() == old_n;
+        let common = old_n.min(new_n);
+        let at = |i: usize| self.hashes[i];
+        let prefix = if same_len {
+            (0..common).take_while(|&i| at(i) == new[i].0).count()
+        } else {
+            0
+        };
+        let suffix = if same_len {
+            (0..common - prefix)
+                .take_while(|&k| at(old_n - 1 - k) == new[new_n - 1 - k].0)
+                .count()
+        } else {
+            0
+        };
+        let middle_old = old_n - prefix - suffix;
+        let lines = (0..new_n)
+            .map(|i| {
+                let from = if i < prefix {
+                    Some(i)
+                } else if i >= new_n - suffix {
+                    Some(old_n - (new_n - i))
+                } else {
+                    (i - prefix < middle_old).then_some(i)
+                };
+                from.map_or_else(Vec::new, |f| clamp_spans(&self.lines[f], new[i].1))
+            })
+            .collect();
+        Highlighted {
+            lines,
+            stopped_at: None,
+            hashes: new.iter().map(|&(h, _)| h).collect(),
+        }
+    }
+}
+
+fn hash_line(line: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    line.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// `spans` cut to a line of `len` bytes.
+fn clamp_spans(spans: &[Span], len: usize) -> Vec<Span> {
+    spans
+        .iter()
+        .filter(|s| s.range.start < len)
+        .map(|s| Span {
+            range: s.range.start..s.range.end.min(len),
+            role: s.role,
+        })
+        .collect()
 }
 
 /// The definitions of one folder, linked into a single set (a definition may
@@ -102,7 +179,8 @@ impl Highlighter {
                 return None;
             }
             let body = text_line.strip_suffix('\n').unwrap_or(text_line);
-            if out.stopped_at.is_some() {
+            out.hashes.push(hash_line(body));
+            if out.stopped_at.is_some() || body.len() > MAX_LINE_BYTES {
                 out.lines.push(Vec::new());
                 continue;
             }
@@ -333,6 +411,60 @@ contexts:
         assert!(got.is_none());
         assert_eq!(polled.get(), 3);
         assert!(h.highlight_until("tiny", "let\n", &|| false).is_some());
+    }
+
+    #[test]
+    fn a_very_long_line_is_not_parsed_and_its_neighbours_are() {
+        let (_dir, h) = tiny();
+        let long = format!("let {}\n", "x ".repeat(2_000));
+        let text = format!("let\n{long}let\n");
+        let started = std::time::Instant::now();
+        let got = h.highlight("tiny", &text).unwrap();
+        assert!(started.elapsed() < std::time::Duration::from_millis(500));
+        assert_eq!(got.lines.len(), 3);
+        assert_eq!(got.lines[0], [span(0..3, Role::SyntaxKeyword)]);
+        assert!(got.lines[1].is_empty(), "over the line limit");
+        assert_eq!(got.lines[2], [span(0..3, Role::SyntaxKeyword)]);
+        assert_eq!(got.stopped_at, None);
+    }
+
+    fn lines_of(h: &Highlighter, text: &str) -> super::Highlighted {
+        h.highlight("tiny", text).unwrap()
+    }
+
+    #[test]
+    fn carried_over_keeps_lines_an_edit_left_alone_and_shifts_with_them() {
+        let (_dir, h) = tiny();
+        let old = lines_of(&h, "let a\nplain\nfn b\n");
+        // Unchanged text: the same spans.
+        assert_eq!(old.carried_over("let a\nplain\nfn b\n").lines, old.lines);
+        // A line inserted in the middle: the ones around it keep theirs.
+        let inserted = old.carried_over("let a\nnew\nplain\nfn b\n");
+        assert_eq!(inserted.lines.len(), 4);
+        assert_eq!(inserted.lines[0], old.lines[0]);
+        assert_eq!(inserted.lines[2], old.lines[1]);
+        assert_eq!(inserted.lines[3], old.lines[2]);
+        // The first line is gone: the rest moves up.
+        let removed = old.carried_over("plain\nfn b\n");
+        assert_eq!(removed.lines, old.lines[1..]);
+    }
+
+    #[test]
+    fn carried_over_keeps_an_edited_lines_spans_cut_to_its_new_length() {
+        let (_dir, h) = tiny();
+        let old = lines_of(&h, "let a\nfn b\n");
+        let edited = old.carried_over("let a\nfn\n");
+        assert_eq!(edited.lines[0], old.lines[0]);
+        assert_eq!(edited.lines[1], [span(0..2, Role::SyntaxKeyword)]);
+        let longer = old.carried_over("let a\nfn bcd\n");
+        assert_eq!(longer.lines[1], old.lines[1], "kept as they were");
+        // More new lines than old ones in the changed middle: the extra is plain.
+        let split = old.carried_over("let a\nfn b\nmore\n");
+        assert_eq!(split.lines.len(), 3);
+        assert!(split.lines[2].is_empty());
+        // Nothing to carry from.
+        let none = super::Highlighted::default().carried_over("let a\n");
+        assert_eq!(none.lines, [Vec::<Span>::new()]);
     }
 
     #[test]
