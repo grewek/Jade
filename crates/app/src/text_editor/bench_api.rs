@@ -237,10 +237,30 @@ impl Syntaxes {
         (Self(loaded.highlighter), loaded.notices.len())
     }
 
+    /// The block cache over the same folder, for the per-block lookups.
+    pub fn into_cache(self) -> BlockSpans {
+        BlockSpans(super::highlight::BlockCache::new(
+            self.0,
+            super::highlight::Limits::default(),
+        ))
+    }
+
     /// The number of coloured spans in `text`, or 0 for an unknown language.
     pub fn highlight(&self, language: &str, text: &str) -> usize {
         self.0
             .highlight(language, text)
+            .map_or(0, |h| h.lines.iter().map(Vec::len).sum())
+    }
+}
+
+/// [`Syntaxes`] behind the per-block cache (#99).
+pub struct BlockSpans(super::highlight::BlockCache);
+
+impl BlockSpans {
+    /// The number of coloured spans of the block, 0 when it is plain.
+    pub fn spans(&mut self, language: &str, text: &str) -> usize {
+        self.0
+            .spans(language, text)
             .map_or(0, |h| h.lines.iter().map(Vec::len).sum())
     }
 }
