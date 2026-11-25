@@ -8,7 +8,9 @@ use std::time::{Duration, Instant};
 use std::hint::black_box;
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use jade_app::bench_api::{Cache, Counts, EditorBuffer, Index, Links, Toggle, line_strides};
+use jade_app::bench_api::{
+    Cache, Counts, EditorBuffer, Index, Links, Syntaxes, Toggle, line_strides,
+};
 
 const TYPICAL_BYTES: usize = 150 * 1024;
 
@@ -237,8 +239,46 @@ fn bench_buffer(c: &mut Criterion) {
     });
 }
 
+/// Fenced-code highlighting (#99). No definitions ship, so this needs a folder
+/// with a Rust one: `JADE_SYNTAX_DIR=/path cargo bench -p jade-app --bench
+/// editor -- highlight`; without it the group is skipped.
+fn bench_highlight(c: &mut Criterion) {
+    let Some(dir) = std::env::var_os("JADE_SYNTAX_DIR") else {
+        eprintln!("highlight: JADE_SYNTAX_DIR not set, skipped");
+        return;
+    };
+    let dir = std::path::Path::new(&dir);
+    let (syntaxes, notices) = Syntaxes::load(dir);
+    assert_eq!(
+        notices,
+        0,
+        "a definition in {} failed to load",
+        dir.display()
+    );
+    let stress = stress_text();
+    // The first fenced rust block of the fixture, then a 1000-line one.
+    let start = stress
+        .find(
+            "```rust
+",
+        )
+        .map_or(0, |i| i + 8);
+    let block = &stress[start..start + stress[start..].find("```").unwrap_or(0)];
+    let large = block.repeat(1000 / block.lines().count().max(1));
+    let mut group = c.benchmark_group("highlight");
+    group.bench_function("load_dir", |b| b.iter(|| Syntaxes::load(black_box(dir))));
+    group.bench_function("block_6_lines", |b| {
+        b.iter(|| syntaxes.highlight("rust", black_box(block)))
+    });
+    group.bench_function("block_1000_lines", |b| {
+        b.iter(|| syntaxes.highlight("rust", black_box(large.as_str())))
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
+    bench_highlight,
     bench_cache_build,
     bench_passes,
     bench_counts,

@@ -12,10 +12,13 @@ mod doc_stats;
 mod editor;
 mod element;
 mod headings;
-#[expect(
-    dead_code,
-    unused_imports,
-    reason = "first used by the highlighter (#99 step 7)"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "only tests use the highlighter until the block cache (#99 step 9)"
+    )
 )]
 mod highlight;
 mod image;
