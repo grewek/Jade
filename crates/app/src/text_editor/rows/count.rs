@@ -18,7 +18,9 @@ use crate::text_editor::lines::Fenwick;
 use crate::text_editor::math::{self, Macros};
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
-use crate::text_editor::preview::{DisplayLine, InlineStyle, LineContext, line_indent};
+use crate::text_editor::preview::{
+    DisplayLine, InlineStyle, LineContext, heading_prefix, line_indent,
+};
 use crate::text_editor::table::Table;
 use jade_core::math_scan;
 
@@ -333,6 +335,16 @@ fn estimate_row_count(
     {
         return image::rows(line, &embed, Some(doc.images), available_width, line_height);
     }
+    // A plain `#` heading: wider characters, several body rows per row (#58).
+    // One in a quote or list item is left to the in-view verify.
+    if !has_dollar
+        && line.as_bytes().first() == Some(&b'#')
+        && matches!(doc.roles[i], LineRole::Plain)
+        && matches!(doc.contexts[i], LineContext::Plain)
+        && let Some((level, prefix)) = heading_prefix(line)
+    {
+        return heading_row_estimate(&line[prefix..], level, available_width, char_width);
+    }
     // A line with no context of its own that doesn't start with `>` is
     // indented at most one level (a list marker; blockquotes need a `>`), so
     // if even that narrower width holds its bytes it is a single row — most
@@ -371,6 +383,20 @@ fn estimate_row_count(
         return rows + tall_extra_rows(&formulas, per_row, (font_size, line_height), text);
     }
     wrapped_row_count(line, wrap_width, char_width).max(1)
+}
+
+/// The rows of a heading's `text` (its `#` prefix hidden) at `level`: the rows
+/// its wider characters wrap to, each `settings::heading_rows` body rows tall.
+fn heading_row_estimate(
+    text: &str,
+    level: u8,
+    available_width: Pixels,
+    char_width: Pixels,
+) -> usize {
+    let scale = crate::settings::heading_scale(level);
+    let units = crate::settings::heading_rows(scale);
+    let wide = char_width * scale;
+    rows_for_chars(text.chars().count(), Some(available_width), wide) * units
 }
 
 /// A drawn formula as the row estimate sees it: the display character it starts

@@ -34,6 +34,12 @@ fn fixture() -> String {
         text.push_str(&words.join(" "));
         text.push('\n');
     }
+    // Headings of every level and length, for the scaled counts (#58).
+    for k in 1..60_usize {
+        let level = "#".repeat(k % 6 + 1);
+        let words: Vec<String> = (0..k).map(|w| "y".repeat(w * 5 % 9 + 1)).collect();
+        text.push_str(&format!("{level} {}\n", words.join(" ")));
+    }
     text
 }
 
@@ -270,4 +276,27 @@ fn the_cold_count_of_a_math_block_equals_shaping(cx: &mut TestAppContext) {
         })
         .unwrap();
     }
+}
+
+/// With heading sizes on, the cold estimate of a plain heading counts its wider
+/// characters and its rows of several body rows: a short one exactly, a wrapped
+/// one within the slack of word wrap (#58 C3).
+#[gpui_kit::test]
+fn the_cold_estimate_of_a_heading_follows_its_size(cx: &mut TestAppContext) {
+    let mut t = crate::settings::Typography::default();
+    t.heading.scale = [2.0, 1.75, 1.5, 1.25, 1.1, 1.0];
+    crate::settings::set_body(&t);
+    let off = disagreements(cx, |_, _, _, _, _| {}, 0..usize::MAX);
+    crate::settings::set_body(&crate::settings::Typography::default());
+    let text = fixture();
+    let lines: Vec<&str> = text.lines().collect();
+    let headings: Vec<_> = off
+        .iter()
+        .filter(|&&(i, ..)| lines[i].starts_with('#') && lines[i].contains(' '))
+        .filter(|&&(i, cached, shaped)| {
+            let units = shaped as i64 / 2;
+            lines[i].len() < 20 || (cached - shaped as i64).abs() > units.max(2) * 2
+        })
+        .collect();
+    assert!(headings.is_empty(), "headings off: {headings:?}");
 }

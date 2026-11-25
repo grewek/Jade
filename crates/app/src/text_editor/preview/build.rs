@@ -374,7 +374,7 @@ pub fn build_display_line_in_context_with(
 /// starts with one. CommonMark's allowance for up to 3 leading spaces before
 /// the `#`s isn't handled — a line's own leading whitespace isn't something
 /// this editor strips elsewhere either.
-pub(super) fn heading_prefix(line: &str) -> Option<(u8, usize)> {
+pub(in crate::text_editor) fn heading_prefix(line: &str) -> Option<(u8, usize)> {
     let hashes = line.bytes().take_while(|&b| b == b'#').count();
     if hashes == 0 || hashes > 6 {
         return None;

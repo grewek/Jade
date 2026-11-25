@@ -75,6 +75,7 @@ mod line;
 
 // What the rest of the editor uses. Everything else in the sibling files is
 // `pub(super)`: visible to `preview` and its tests, not beyond.
+pub(in crate::text_editor) use build::heading_prefix;
 #[cfg(test)]
 pub(in crate::text_editor) use build::{
     build_callout_header_line, build_cell_line, build_display_line_in_context,
