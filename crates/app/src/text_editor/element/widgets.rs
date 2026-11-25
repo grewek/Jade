@@ -3,8 +3,9 @@
 
 #[allow(unused_imports)]
 use super::*;
+use crate::settings::BulletShape;
 use crate::text_editor::math::{self, Macros};
-use crate::text_editor::preview::DisplaySegment;
+use crate::text_editor::preview::{DisplaySegment, LineIndent};
 
 /// Colors of the controls drawn over a line's widget columns.
 pub(super) struct WidgetColors {
@@ -30,6 +31,25 @@ pub(super) struct WidgetPaint<'a> {
     pub(super) macros: &'a Macros,
     /// The corners of a task checkbox (`task.checkbox_radius`).
     pub(super) checkbox_radius: crate::settings::Radius,
+}
+
+/// Thickness of a ring bullet's line.
+const RING_WIDTH: Pixels = px(1.5);
+
+/// Draws one bullet of `shape` filling `dot`.
+fn paint_bullet(dot: Bounds<Pixels>, shape: BulletShape, color: Hsla, window: &mut Window) {
+    let side = dot.size.width;
+    let (radius, fill, edge) = match shape {
+        BulletShape::Disc => (side / 2., color, Hsla::transparent_black()),
+        BulletShape::Ring => (side / 2., Hsla::transparent_black(), color),
+        BulletShape::Square => (px(0.), color, Hsla::transparent_black()),
+    };
+    let width = if shape == BulletShape::Ring {
+        RING_WIDTH
+    } else {
+        px(0.)
+    };
+    window.paint_quad(quad(dot, radius, fill, width, edge, BorderStyle::Solid));
 }
 
 /// Paints a bundled Lucide icon (`path`) filling `bounds`.
@@ -103,14 +123,16 @@ pub(super) fn paint_widgets(
                         ),
                     size: size(side, side),
                 };
-                window.paint_quad(quad(
+                let depth = match display_line.indent {
+                    LineIndent::List(depth) => depth,
+                    _ => 1,
+                };
+                paint_bullet(
                     dot,
-                    side / 2.,
+                    crate::settings::bullet_shape(depth),
                     inline.subtle,
-                    px(0.),
-                    Hsla::transparent_black(),
-                    BorderStyle::Solid,
-                ));
+                    window,
+                );
             }
             Widget::Checkbox { checked } => {
                 let boxed = square((font_size * 0.9).round());

@@ -40,6 +40,10 @@ static CELL_PADDING: AtomicU32 = AtomicU32::new(0.0f32.to_bits());
 static DONE_STYLE: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(DoneStyle::None as u8);
 static QUOTE_INDENT: AtomicU32 = AtomicU32::new(1.25f32.to_bits());
+static LIST_INDENT: AtomicU32 = AtomicU32::new(1.25f32.to_bits());
+static LIST_GAP: AtomicU32 = AtomicU32::new(0);
+static BULLET_SHAPES: [std::sync::atomic::AtomicU8; 3] =
+    [const { std::sync::atomic::AtomicU8::new(BulletShape::Disc as u8) }; 3];
 static QUOTE_BAR: AtomicU32 = AtomicU32::new(2.0f32.to_bits());
 static QUOTE_ITALIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static CODE_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
@@ -116,6 +120,24 @@ pub fn quote_indent_px() -> f32 {
     f32::from_bits(QUOTE_INDENT.load(Ordering::Relaxed)) * body_font_size()
 }
 
+/// `list.indent` in px: one list level, em of the body font.
+pub fn list_indent_px() -> f32 {
+    f32::from_bits(LIST_INDENT.load(Ordering::Relaxed)) * body_font_size()
+}
+
+/// The whole body rows left empty below a list item (`list.item_gap`,
+/// rounded: row heights stay whole rows, as for a heading's spacing).
+pub fn list_item_gap() -> usize {
+    LIST_GAP.load(Ordering::Relaxed) as usize
+}
+
+/// The `list.bullet_shapes` shape of a list at `depth` (1 = top level);
+/// deeper levels repeat the last.
+pub fn bullet_shape(depth: u8) -> BulletShape {
+    let i = usize::from(depth.max(1) - 1).min(BULLET_SHAPES.len() - 1);
+    BulletShape::from_u8(BULLET_SHAPES[i].load(Ordering::Relaxed))
+}
+
 /// `blockquote.bar_width` in px.
 pub fn quote_bar_width() -> f32 {
     f32::from_bits(QUOTE_BAR.load(Ordering::Relaxed))
@@ -151,6 +173,14 @@ pub fn set_body(typography: &Typography) {
     MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
     CELL_PADDING.store(typography.table.cell_padding.to_bits(), Ordering::Relaxed);
     DONE_STYLE.store(typography.task.done_style as u8, Ordering::Relaxed);
+    LIST_INDENT.store(typography.list.indent.to_bits(), Ordering::Relaxed);
+    LIST_GAP.store(
+        typography.list.item_gap.round().max(0.0) as u32,
+        Ordering::Relaxed,
+    );
+    for (slot, shape) in BULLET_SHAPES.iter().zip(typography.list.bullet_shapes) {
+        slot.store(shape as u8, Ordering::Relaxed);
+    }
     QUOTE_INDENT.store(typography.blockquote.indent.to_bits(), Ordering::Relaxed);
     QUOTE_BAR.store(typography.blockquote.bar_width.to_bits(), Ordering::Relaxed);
     QUOTE_ITALIC.store(typography.blockquote.italic, Ordering::Relaxed);

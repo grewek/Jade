@@ -1514,3 +1514,18 @@ mod is_blank_tests {
         }
     }
 }
+
+#[test]
+fn a_list_item_leaves_the_item_gap_below_and_other_lines_none() {
+    let mut t = crate::settings::Typography::default();
+    t.list.item_gap = 2.0;
+    crate::settings::set_body(&t);
+    let rows = |line: &str| build_display_line(line, false).space_rows();
+    assert_eq!(rows("- item"), (0, 2));
+    assert_eq!(rows("3. item"), (0, 2));
+    assert_eq!(rows("- [x] task"), (0, 2));
+    assert_eq!(rows("plain text"), (0, 0));
+    assert_eq!(rows("> - quoted"), (0, 0), "a quote is not a list level");
+    crate::settings::set_body(&crate::settings::Typography::default());
+    assert_eq!(rows("- item"), (0, 0), "today's look");
+}

@@ -334,6 +334,41 @@ fn the_cold_estimate_of_a_spaced_heading_matches_shaping(cx: &mut TestAppContext
     );
 }
 
+/// `list.item_gap` and `list.indent` add rows to the estimate and to the shaped
+/// count alike, and the in-view verify agrees with both (#58 G2).
+#[gpui_kit::test]
+fn the_cold_estimate_of_a_spaced_list_matches_shaping(cx: &mut TestAppContext) {
+    let mut t = crate::settings::Typography::default();
+    t.list.item_gap = 1.0;
+    t.list.indent = 2.0;
+    crate::settings::set_body(&t);
+    let off = disagreements(cx, |_, _, _, _, _| {}, 0..usize::MAX);
+    let verified = disagreements(
+        cx,
+        |text, doc, cache, range, window| {
+            let (font, size, color) = style_of(window);
+            rows::verify_for_test(cache, text, doc, range, (&font, size, color), window);
+        },
+        0..usize::MAX,
+    );
+    crate::settings::set_body(&crate::settings::Typography::default());
+    let text = fixture();
+    let lines: Vec<&str> = text.lines().collect();
+    let short: Vec<_> = off
+        .iter()
+        .filter(|&&(i, ..)| {
+            let line = lines[i].trim_start();
+            (line.starts_with("- ") || line.starts_with("1. ")) && line.len() < 20
+        })
+        .collect();
+    assert!(short.is_empty(), "short list items off: {short:?}");
+    assert!(
+        verified.is_empty(),
+        "verify disagrees: {:?}",
+        &verified[..verified.len().min(5)]
+    );
+}
+
 /// The line the caret is in is drawn raw, with its `#`s, which a cold rebuild
 /// must count too: a long heading that wraps is as tall as shaping says (#74).
 #[gpui_kit::test]
