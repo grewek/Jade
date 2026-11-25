@@ -45,6 +45,8 @@ pub(super) struct InlineColors {
     /// Heading text, per level 1..=6.
     pub(in crate::text_editor) heading: [Hsla; HEADING_LEVELS],
     callouts: [Hsla; CALLOUT_ROLES.len()],
+    /// Tokens of highlighted fenced code, in `Role::SYNTAX` order.
+    pub(in crate::text_editor) syntax: [Hsla; Role::SYNTAX.len()],
 }
 
 impl InlineColors {
@@ -58,12 +60,21 @@ impl InlineColors {
             subtle: palette.color(Role::TextSubtle),
             heading: std::array::from_fn(|i| palette.color(Role::heading_level(i as u8 + 1))),
             callouts: CALLOUT_ROLES.map(|role| palette.color(role)),
+            syntax: Role::SYNTAX.map(|role| palette.color(role)),
         }
     }
 
     /// The color of a level's heading text (1..=6, clamped).
     pub fn heading(&self, level: u8) -> Hsla {
         self.heading[usize::from(level.clamp(1, HEADING_LEVELS as u8)) - 1]
+    }
+
+    /// The colour of syntax token `index` (`Role::SYNTAX`); text when out of range.
+    pub fn syntax(&self, index: u8) -> Hsla {
+        self.syntax
+            .get(usize::from(index))
+            .copied()
+            .unwrap_or(self.text)
     }
 
     pub fn callout(&self, kind: CalloutType) -> Hsla {
@@ -88,6 +99,7 @@ impl From<Hsla> for InlineColors {
             subtle: color,
             heading: [color; HEADING_LEVELS],
             callouts: [color; CALLOUT_ROLES.len()],
+            syntax: [color; Role::SYNTAX.len()],
         }
     }
 }

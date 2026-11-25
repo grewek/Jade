@@ -4,6 +4,10 @@
 //! embedded images' sizes. Setters return whether the change alters row counts,
 //! so the caller knows when to re-measure.
 
+use std::ops::Range;
+use std::sync::Arc;
+
+use crate::text_editor::highlight::{Highlighted, Span};
 use crate::text_editor::image::Sizes as ImageSizes;
 
 #[derive(Default)]
@@ -26,6 +30,9 @@ pub(in crate::text_editor) struct ViewState {
     justify: bool,
     /// Natural sizes of the images the note embeds, read off the main thread.
     images: ImageSizes,
+    /// Highlighted code blocks near the viewport as `(content lines, spans)`,
+    /// sorted; colour only, so setting them never changes a row count.
+    code: Vec<(Range<usize>, Arc<Highlighted>)>,
 }
 
 impl ViewState {
@@ -96,6 +103,33 @@ impl ViewState {
 
     pub(in crate::text_editor) fn set_justify(&mut self, on: bool) {
         self.justify = on;
+    }
+
+    /// The coloured tokens of code line `i`; empty when it has none.
+    pub(in crate::text_editor) fn code_line(&self, i: usize) -> &[Span] {
+        let at = self.code.partition_point(|(lines, _)| lines.end <= i);
+        match self.code.get(at) {
+            Some((lines, spans)) if lines.start <= i => {
+                spans.lines.get(i - lines.start).map_or(&[], Vec::as_slice)
+            }
+            _ => &[],
+        }
+    }
+
+    /// Sets the highlighted blocks (sorted, not overlapping); `true` when they
+    /// differ, so the caller repaints.
+    pub(in crate::text_editor) fn set_code(
+        &mut self,
+        blocks: Vec<(Range<usize>, Arc<Highlighted>)>,
+    ) -> bool {
+        debug_assert!(blocks.windows(2).all(|w| w[0].0.end <= w[1].0.start));
+        let same = blocks.len() == self.code.len()
+            && blocks
+                .iter()
+                .zip(&self.code)
+                .all(|(a, b)| a.0 == b.0 && Arc::ptr_eq(&a.1, &b.1));
+        self.code = blocks;
+        !same
     }
 
     pub(in crate::text_editor) fn images(&self) -> &ImageSizes {

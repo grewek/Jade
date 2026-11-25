@@ -4,6 +4,7 @@ use std::ops::Range;
 use gpui_kit::*;
 
 use crate::text_editor::doc::DocumentCache;
+use crate::text_editor::highlight::Span;
 use crate::text_editor::image::Sizes as ImageSizes;
 use crate::text_editor::math::Macros;
 use crate::text_editor::preview::LineContext;
@@ -50,6 +51,9 @@ pub(in crate::text_editor) struct LineState<'a> {
     pub math: MathPart,
     /// The note's macros, which its formulas are expanded with.
     pub macros: &'a Macros,
+    /// The coloured tokens of this line when it is fenced code that is
+    /// highlighted; empty otherwise (#99).
+    pub code: &'a [Span],
 }
 
 /// Where a line is in a `$$` block that is shown as a formula (the caret is not
@@ -111,6 +115,7 @@ impl<'a> LineState<'a> {
             justify: doc.view.justify(),
             math,
             macros: doc.macros(),
+            code: doc.view.code_line(i),
         }
     }
 
@@ -157,6 +162,7 @@ impl<'a> LineState<'a> {
             justify: false,
             math: MathPart::None,
             macros: &crate::text_editor::math::NO_MACROS,
+            code: &[],
         }
     }
 }

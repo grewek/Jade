@@ -6,6 +6,7 @@ use gpui_kit::*;
 
 use super::state::{LineState, MathPart, TableLineKind, indent_px};
 use crate::text_editor::colors::InlineColors;
+use crate::text_editor::highlight::Span;
 use crate::text_editor::image;
 use crate::text_editor::math::{self, Macros};
 use crate::text_editor::preview::LineRole;
@@ -364,6 +365,7 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
         | InlineStyle::ListMarker
         | InlineStyle::CodeFence
         | InlineStyle::CodeBlock
+        | InlineStyle::Syntax(_)
         | InlineStyle::Widget(_)
         | InlineStyle::Math => {}
     }
@@ -389,6 +391,7 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
         InlineStyle::CalloutTitle => callout.map_or(base, |c| colors.callout(c.kind)),
         InlineStyle::Heading(level) => colors.heading(level),
         InlineStyle::CodeFence => colors.subtle,
+        InlineStyle::Syntax(index) => colors.syntax(index),
         InlineStyle::Strikethrough if crate::settings::strike_muted() => colors.subtle,
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => {
             if callout.is_some() {
@@ -574,7 +577,7 @@ pub(in crate::text_editor) fn build_display_lines(
         LineRole::Plain if let MathPart::Head(rows) = state.math => vec![hidden_line(line); rows],
         // A block is `rows` stacked empty rows; `paint_lines` draws the box over them.
         LineRole::Plain if let Some(rows) = block_rows => vec![hidden_line(line); rows],
-        LineRole::FenceContent => vec![fence_content_line(line)],
+        LineRole::FenceContent => vec![fence_content_line(line, state.code)],
         LineRole::FenceDelimiter if !active => vec![hidden_line(line)],
         LineRole::FenceDelimiter => vec![raw_fence_line(line, active)],
         LineRole::Plain if table_active && !matches!(table_kind, TableLineKind::None) => {
@@ -827,14 +830,24 @@ fn code_indent() -> LineIndent {
 }
 
 /// A line inside a fence: literal text, styled as code-block text.
-fn fence_content_line(line: &str) -> DisplayLine {
+/// `code` colours its tokens; the text and what maps to what stay as they are.
+fn fence_content_line(line: &str, code: &[Span]) -> DisplayLine {
     let mut content = build_display_line(line, true);
     for seg in &mut content.segments {
         if seg.style == InlineStyle::Plain {
             seg.style = InlineStyle::CodeBlock;
         }
     }
-    content
+    if code.is_empty() {
+        return content;
+    }
+    let runs = code.iter().filter_map(|span| {
+        let index = crate::theme::Role::SYNTAX
+            .iter()
+            .position(|r| *r == span.role)?;
+        Some((span.range.clone(), u8::try_from(index).ok()?))
+    });
+    content.with_syntax_runs(runs)
 }
 
 /// An opening or closing fence line shown raw (the caret is on it), in the fence colour.
@@ -981,6 +994,47 @@ mod heading_style_tests {
             [heading, heading, heading, heading, heading, colors.code]
         );
         assert_ne!(heading, text);
+    }
+}
+
+#[cfg(test)]
+mod syntax_style_tests {
+    // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
+    use super::{InlineColors, InlineStyle, fence_content_line, line_runs};
+    use crate::text_editor::highlight::Span;
+    use crate::theme::Role;
+
+    fn span(range: std::ops::Range<usize>, role: Role) -> Span {
+        Span { range, role }
+    }
+
+    #[test]
+    fn tokens_are_coloured_and_the_text_and_mapping_are_untouched() {
+        let mut colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.5, 1.));
+        let keyword = gpui_kit::hsla(0.6, 0.9, 0.5, 1.);
+        colors.syntax[Role::SYNTAX
+            .iter()
+            .position(|r| *r == Role::SyntaxKeyword)
+            .unwrap()] = keyword;
+        let plain = fence_content_line("let x = 1", &[]);
+        let line = fence_content_line("let x = 1", &[span(0..3, Role::SyntaxKeyword)]);
+        assert_eq!(line.display_text, plain.display_text);
+        let covered: Vec<_> = line
+            .segments
+            .iter()
+            .map(|s| (s.raw.clone(), s.display.clone()))
+            .collect();
+        assert_eq!(covered, [(0..3, 0..3), (3..9, 3..9)]);
+        assert_eq!(line.segments[0].style, InlineStyle::Syntax(3));
+        assert_eq!(line.segments[1].style, InlineStyle::CodeBlock);
+        let base = gpui_kit::Font::default();
+        let runs = line_runs(&line, (&base, &colors), (&[], None), false);
+        assert_eq!(
+            runs.iter().map(|r| (r.len, r.color)).collect::<Vec<_>>(),
+            [(3, keyword), (6, colors.text)]
+        );
+        // Same size as an uncoloured code line, so no row changes.
+        assert_eq!(line.font_scale(), plain.font_scale());
     }
 }
 
