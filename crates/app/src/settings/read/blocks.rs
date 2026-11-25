@@ -10,7 +10,8 @@ use crate::settings::typography::{BulletShape, DoneStyle, Radius, Typography, Un
 const EM: Range = (0.0, 4.0);
 const BAR: Range = (0.0, 16.0);
 const INDENT: Range = (0.0, 8.0);
-const FONT_SCALE: Range = (0.5, 2.0);
+/// A code row is a body row, so code can shrink but not grow.
+const CODE_SCALE: Range = (0.5, 1.0);
 const GAP: Range = (0.0, 8.0);
 
 impl Reader {
@@ -105,7 +106,7 @@ impl Reader {
         c.border = self.boolean(at, "border", c.border);
         c.radius = self.own_radius(at, c.radius);
         c.language_label = self.boolean(at, "language_label", c.language_label);
-        c.font_scale = self.number(at, "font_scale", FONT_SCALE, c.font_scale);
+        c.font_scale = self.number(at, "font_scale", CODE_SCALE, c.font_scale);
     }
 
     fn callout_table_image(&mut self, root: &Table, t: &mut Typography) {

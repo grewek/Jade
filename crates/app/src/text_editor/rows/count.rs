@@ -357,8 +357,15 @@ fn estimate_row_count(
     {
         return 1;
     }
-    let indent_level = if matches!(doc.roles[i], LineRole::FenceContent) {
-        0
+    let is_code = matches!(doc.roles[i], LineRole::FenceContent);
+    // Fenced code is inset into its box and set at its own size.
+    let char_width = if is_code {
+        char_width * crate::settings::code_font_scale()
+    } else {
+        char_width
+    };
+    let indent_level = if is_code {
+        u8::from(crate::settings::code_inset())
     } else {
         match doc.contexts[i] {
             LineContext::Plain => line_indent(line).level(),

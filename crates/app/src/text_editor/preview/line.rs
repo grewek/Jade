@@ -37,6 +37,9 @@ pub enum InlineStyle {
     CalloutTitle,
     /// A code fence line shown raw (the caret is on it): ```` ```rust ````.
     CodeFence,
+    /// A line of a fenced code block (never inline-scanned): drawn like plain
+    /// text at `code_block.font_scale`.
+    CodeBlock,
     /// A control drawn as a 2D element over blank columns, never as a glyph
     /// from a font: see [`Widget`].
     Widget(Widget),
@@ -163,8 +166,15 @@ impl DisplayLine {
     }
 
     /// The factor the line's font size is scaled by: the `heading.scale` of its
-    /// level, 1 for any other line.
+    /// level, `code_block.font_scale` for a fenced code line, 1 for any other.
     pub fn font_scale(&self) -> f32 {
+        if self
+            .segments
+            .first()
+            .is_some_and(|s| matches!(s.style, InlineStyle::CodeBlock | InlineStyle::CodeFence))
+        {
+            return crate::settings::code_font_scale();
+        }
         self.heading_level()
             .map_or(1.0, crate::settings::heading_scale)
     }

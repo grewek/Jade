@@ -50,6 +50,10 @@ pub(super) fn paint_lines(
             }),
             radius: typography.radius_of(crate::settings::Boxed::CodeBlock),
             padding: typography.code_block.padding,
+            label: typography
+                .code_block
+                .language_label
+                .then(|| palette.color(Role::TextSubtle)),
         });
     let chip_look = typography
         .inline_code
@@ -147,7 +151,7 @@ pub(super) fn paint_lines(
     }
 
     if let Some(look) = &code_box_look {
-        code_box::paint_code_boxes(&range, view, doc, look, window);
+        code_box::paint_code_boxes(&range, (view, doc, text), look, (window, cx));
     }
 
     if range.is_empty() {
