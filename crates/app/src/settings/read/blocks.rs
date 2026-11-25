@@ -199,6 +199,10 @@ impl Reader {
                     self.radius("task.checkbox_radius", v, t.task.checkbox_radius);
             }
         }
+        if let Some(table) = self.section(root, "strikethrough", &["muted"]) {
+            let muted = t.strikethrough.muted;
+            t.strikethrough.muted = self.boolean((table, "strikethrough"), "muted", muted);
+        }
         if let Some(table) = self.section(root, "spacing", &["block_gap"]) {
             let gap = t.spacing.block_gap;
             t.spacing.block_gap = self.number((table, "spacing"), "block_gap", GAP, gap);
@@ -228,6 +232,7 @@ mod tests {
              [blockquote]\nitalic = false\nbar_width = 3\nindent = 1.5\n\
              [list]\nindent = 2\nitem_gap = 0.25\nbullet_shapes = [\"disc\", \"ring\"]\nnumber_style = \"decimal\"\n\
              [task]\ndone_style = \"both\"\ncheckbox_radius = 5\n\
+             [strikethrough]\nmuted = true\n\
              [spacing]\nblock_gap = 1.5\n",
         );
         assert_eq!(r.notices, Vec::<String>::new());
@@ -254,6 +259,7 @@ mod tests {
             t.list.bullet_shapes,
             [BulletShape::Disc, BulletShape::Ring, BulletShape::Ring]
         );
+        assert!(t.strikethrough.muted);
         assert_eq!(t.task.done_style, DoneStyle::Both);
         assert_eq!(t.task.checkbox_radius, Radius::Px(5.0));
         assert_eq!(t.spacing.block_gap, 1.5);

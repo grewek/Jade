@@ -389,6 +389,7 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
         InlineStyle::CalloutTitle => callout.map_or(base, |c| colors.callout(c.kind)),
         InlineStyle::Heading(level) => colors.heading(level),
         InlineStyle::CodeFence => colors.subtle,
+        InlineStyle::Strikethrough if crate::settings::strike_muted() => colors.subtle,
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => {
             if callout.is_some() {
                 base
@@ -942,6 +943,28 @@ mod heading_style_tests {
             gpui_kit::FontWeight::BOLD,
             "the default weight is bold"
         );
+    }
+
+    #[test]
+    fn struck_text_is_muted_only_when_configured() {
+        let colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.2, 1.));
+        let struck = InlineStyle::Strikethrough;
+        let mut t = Typography::default();
+        settings::set_body(&t);
+        assert_eq!(color_for_style(struck, &colors, None), colors.text);
+        t.strikethrough.muted = true;
+        settings::set_body(&t);
+        assert_eq!(color_for_style(struck, &colors, None), colors.subtle);
+        let line = crate::text_editor::preview::build_display_line("a ~~b~~", false);
+        let base = gpui_kit::Font::default();
+        let runs = super::line_runs(&line, (&base, &colors), (&[], None), false);
+        let line_color = runs.iter().find_map(|r| r.strikethrough.as_ref()).unwrap();
+        assert_eq!(
+            line_color.color,
+            Some(colors.subtle),
+            "the line is muted too"
+        );
+        settings::set_body(&Typography::default());
     }
 
     #[test]
