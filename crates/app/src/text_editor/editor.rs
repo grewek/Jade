@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 
+mod code_spans;
 mod column_edit;
 pub(super) use column_edit::ColumnMenu;
 mod table_edit;
@@ -137,6 +138,8 @@ pub struct Editor {
     pub(super) link_table: LinkTable,
     /// The mouse is over a link a click would follow: paint shows a pointer.
     pub(super) hovering_link: bool,
+    /// The link under the pointer (line, byte span in the line), for hover underlines.
+    pub(super) hover_link: Option<(usize, std::ops::Range<usize>)>,
     /// The table Ctrl+/ asked to show raw; it stays raw while the caret is in it.
     raw_pinned: Option<usize>,
     /// The columns region Ctrl+/ asked to show as source, while the caret is in it.
@@ -181,6 +184,7 @@ impl Editor {
             doc_stats,
             link_table,
             hovering_link: false,
+            hover_link: None,
             raw_pinned: None,
             raw_region_pinned: None,
             table_hover: None,
@@ -226,6 +230,18 @@ impl Editor {
             new_end_byte: mark + 1,
         };
         self.record_edit(edit, window, cx);
+        self.keep_view_off_caret();
+    }
+
+    /// Stops the first paint after a click from scrolling to the caret. The
+    /// view follows the caret once per caret position, and the first click on a
+    /// note not yet focused (a fold marker, a task checkbox) acts on text far
+    /// from a caret that is still at the top: that click must not send the view there.
+    fn keep_view_off_caret(&mut self) {
+        if self.last_autoscrolled_cursor.get().is_none() {
+            self.last_autoscrolled_cursor
+                .set(Some(self.buffer.cursor()));
+        }
     }
 
     /// Folds callout `index` if it is open, else opens it. Only the view: the
@@ -259,13 +275,7 @@ impl Editor {
             self.row_height_cache
                 .borrow_mut()
                 .invalidate(Invalidate::Lines(lines));
-            // The caret stays put, wherever it is: folding must not scroll back
-            // to it (a first click on a fold marker in a note not yet focused
-            // would send the view to a caret at the top).
-            if self.last_autoscrolled_cursor.get().is_none() {
-                self.last_autoscrolled_cursor
-                    .set(Some(self.buffer.cursor()));
-            }
+            self.keep_view_off_caret();
             cx.notify();
         }
     }
@@ -370,6 +380,15 @@ impl Editor {
     #[cfg(test)]
     pub fn is_hovering_link(&self) -> bool {
         self.hovering_link
+    }
+
+    /// The link under byte `offset`: its line and byte span within the line.
+    pub(super) fn link_span_at(&self, offset: usize) -> Option<(usize, std::ops::Range<usize>)> {
+        let doc = self.document_cache.borrow();
+        let line = doc.line_at(offset);
+        let column = offset - doc.line_start_byte(line);
+        let link = self.link_table.at(line, column)?;
+        Some((line, link.start as usize..link.end as usize))
     }
 
     /// Whether a click at `offset` would follow a link (see `on_cursor_line`;
@@ -854,6 +873,7 @@ impl Render for Editor {
         self.unfold_at_cursor();
         self.sync_table_view(window);
         self.sync_column_view(window, cx);
+        self.sync_code_spans(cx);
         self.document_cache
             .borrow_mut()
             .view

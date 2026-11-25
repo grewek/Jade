@@ -39,13 +39,19 @@
 
 use super::table;
 use std::ops::Range;
+use std::sync::Arc;
+
+use super::math::Macros;
 
 mod edit;
+mod macros;
+mod math;
 mod patch;
 mod view;
 
 use edit::EditSpan;
 pub(in crate::text_editor) use edit::{EditPatch, TextEdit};
+pub(in crate::text_editor) use math::MathLines;
 use patch::*;
 pub(in crate::text_editor) use view::ViewState;
 
@@ -81,6 +87,12 @@ pub(super) struct DocumentCache {
     /// `line_roles`.
     open_block_states: Vec<OpenBlock>,
     tables: Vec<Table>,
+    /// The `$$` blocks, in line order.
+    math_blocks: Vec<MathLines>,
+    /// Lines holding a macro definition (`\newcommand`…), in order.
+    macro_lines: Vec<usize>,
+    /// The macros those lines define.
+    macros: Arc<Macros>,
     callouts: Vec<Callout>,
     /// Reused by `patch_callouts` to hold the callouts the walk re-derives
     /// before they are spliced into `callouts`.
@@ -111,6 +123,9 @@ impl DocumentCache {
             block_contexts: Vec::new(),
             open_block_states: Vec::new(),
             tables: Vec::new(),
+            math_blocks: Vec::new(),
+            macro_lines: Vec::new(),
+            macros: Arc::new(Macros::default()),
             callouts: Vec::new(),
             callout_states: Vec::new(),
             callout_scratch: Vec::new(),
@@ -124,6 +139,11 @@ impl DocumentCache {
 
     pub(super) fn line_roles(&self) -> &[LineRole] {
         &self.line_roles
+    }
+
+    /// Whether a code fence is open entering line `i`.
+    pub(super) fn fence_open_before(&self, i: usize) -> bool {
+        self.fence_states.get(i).is_some_and(|&s| s != 0)
     }
 
     pub(super) fn block_contexts(&self) -> &[LineContext] {
@@ -211,8 +231,10 @@ impl DocumentCache {
         self.recompute_block_context(text, &strides);
         self.recompute_tables(text, &strides);
         self.recompute_columns(text, &strides);
+        self.recompute_math(text);
         self.line_index = Fenwick::from_vec(strides);
         // Reads lines through the index, so only now.
+        self.recompute_macros(text);
         self.cap_tails(text);
         // Spare room for Enter to grow into without reallocating.
         reserve_line_slack(self);
@@ -234,6 +256,7 @@ impl DocumentCache {
         };
 
         let table_pre = self.table_pre(&span);
+        let math_pre = self.math_pre(&span);
         self.resize_lines(&span);
 
         // Every line the edit's new text actually spans has different raw
@@ -250,11 +273,16 @@ impl DocumentCache {
         let r4 = self.patch_tables(text, &span, &table_pre);
         // Needs `r1`: a code fence opened or closed changes what is code below.
         let r5 = self.patch_columns(text, &span, &r1);
+        let r6 = self.patch_math(text, &span, &math_pre, &r1);
 
-        let touched = [minimal, r1, r2, r3, r4, r5]
+        let mut touched = [minimal, r1, r2, r3, r4, r5, r6]
             .into_iter()
             .reduce(union_ranges)
             .unwrap();
+        // A changed macro changes any formula of the note.
+        if self.patch_macros(text, &span, &touched) {
+            touched = 0..self.line_roles.len();
+        }
         Some(EditPatch {
             touched: touched.start..touched.end.min(self.line_roles.len()),
             splice_at: span.splice_at(),
@@ -372,12 +400,8 @@ impl DocumentCache {
     /// `starts[i]..starts[i + 1] - 1` (without its `\n`), except the last
     /// line, which runs to `starts[line_count()]`. Far cheaper than scanning
     /// the text for newlines or calling [`Self::line_start_byte`] per line.
-    pub(super) fn line_start_offsets(&self) -> Vec<usize> {
-        self.line_index
-            .prefix_sums()
-            .into_iter()
-            .map(|offset| offset as usize)
-            .collect()
+    pub(super) fn line_index(&self) -> &Fenwick {
+        &self.line_index
     }
 
     /// The byte offset right after line `line`'s own content, excluding

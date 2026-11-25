@@ -1,17 +1,345 @@
+use crate::text_editor::settings::body_row_height;
 use crate::text_editor::table;
 use std::ops::Range;
 
 use gpui_kit::*;
 
-use super::state::{LineState, TableLineKind, indent_px};
+use super::state::{LineState, MathPart, TableLineKind, indent_px};
 use crate::text_editor::colors::InlineColors;
+use crate::text_editor::highlight::Span;
 use crate::text_editor::image;
+use crate::text_editor::math::{self, Macros};
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::Callout;
 use crate::text_editor::preview::{
-    DisplayLine, InlineStyle, LineIndent, build_callout_header_line, build_display_line,
-    build_display_line_in_context, hidden_line, is_thematic_break,
+    DisplayLine, InlineStyle, LineIndent, build_callout_header_line_with, build_cell_line_with,
+    build_display_line, build_display_line_in_context_with, hidden_line, is_thematic_break,
+    show_wide_formulas,
 };
+
+/// What a shaped line occupies, the one place its heights are decided: for
+/// each entry of `results` (more than one only for a wrapped table row) its
+/// row heights and its height. Painting, the caret, clicks and the row counts
+/// all read the line through this, so they cannot disagree.
+pub(in crate::text_editor) fn entry_heights<'a>(
+    results: &'a [(WrappedLine, DisplayLine)],
+    line_text: &'a str,
+    metrics: (Pixels, Pixels),
+    macros: &'a Macros,
+) -> impl Iterator<Item = EntryHeight> + 'a {
+    results.iter().map(move |(wrapped, display_line)| {
+        let line = (display_line, line_text);
+        row_heights(results.len(), line, wrapped, metrics, macros)
+    })
+}
+
+/// One shaped entry's rows. Every row has the same height (`row`: `line_height`,
+/// or a whole multiple of it under a tall formula) unless `varied` says
+/// otherwise; `height` is the total, a whole number of editor rows.
+#[derive(Clone, Debug, PartialEq)]
+pub(in crate::text_editor) struct EntryHeight {
+    /// The height of every row, or, when `varied` is not empty, of one unit.
+    pub row: Pixels,
+    /// How many units each wrapped row is, when they differ (a formula taller
+    /// than a row makes only the rows it sits on taller, #32); empty when all
+    /// rows are `row`. GPUI lays the text out at `row` per row, so its y values
+    /// need [`place`](Self::place) to land where the rows are painted.
+    pub varied: Vec<u8>,
+    /// Empty rows above and below the text (a heading's `space_above` and
+    /// `space_below`, #58); `height` includes both, the text is painted
+    /// `pad_top` down, so everything that places text goes through `place`/`top`.
+    pub pad: (Pixels, Pixels),
+    pub height: Pixels,
+}
+
+impl EntryHeight {
+    /// One row of `row`: what a line with nothing tall in it is, and the
+    /// stand-in where a line has no entry.
+    pub fn uniform(row: Pixels) -> Self {
+        EntryHeight {
+            row,
+            varied: Vec::new(),
+            pad: (px(0.), px(0.)),
+            height: row,
+        }
+    }
+
+    /// This entry with `above` and `below` empty body rows (of `body`) around it.
+    fn padded(mut self, body: Pixels, (above, below): (usize, usize)) -> Self {
+        let pad = (body * above as f32, body * below as f32);
+        self.pad = pad;
+        self.height += pad.0 + pad.1;
+        self
+    }
+
+    fn unit(&self, row: usize) -> f32 {
+        f32::from(self.varied.get(row).copied().unwrap_or(1))
+    }
+
+    /// The height of wrapped row `row`.
+    pub fn row_height(&self, row: usize) -> Pixels {
+        if self.varied.is_empty() {
+            self.row
+        } else {
+            self.row * self.unit(row)
+        }
+    }
+
+    /// Where wrapped row `row` starts, from the entry's top.
+    pub fn top(&self, row: usize) -> Pixels {
+        if self.varied.is_empty() {
+            return self.pad.0 + self.row * row as f32;
+        }
+        self.pad.0 + self.row * (0..row).map(|r| self.unit(r)).sum::<f32>()
+    }
+
+    /// The wrapped row at `y` below the entry's top (the last for a `y` below it).
+    pub fn row_at(&self, y: Pixels) -> usize {
+        let y = (y - self.pad.0).max(px(0.));
+        if self.varied.is_empty() {
+            return (f32::from(y) / f32::from(self.row)).max(0.0) as usize;
+        }
+        let mut top = px(0.);
+        for (row, &units) in self.varied.iter().enumerate() {
+            top += self.row * f32::from(units);
+            if y < top {
+                return row;
+            }
+        }
+        self.varied.len().saturating_sub(1)
+    }
+
+    /// A y of GPUI's own layout of the line (every row `self.row`) for the row
+    /// holding `y` as painted: what `closest_index_for_position` wants.
+    pub fn layout_y(&self, y: Pixels) -> Pixels {
+        if self.varied.is_empty() {
+            (y - self.pad.0).max(px(0.))
+        } else {
+            self.row * self.row_at(y) as f32
+        }
+    }
+
+    /// A position GPUI's layout gave (rows `self.row` apart) moved to where the
+    /// row is painted, with that row's height.
+    pub fn place(&self, layout: Point<Pixels>) -> (Point<Pixels>, Pixels) {
+        if self.varied.is_empty() {
+            return (point(layout.x, layout.y + self.pad.0), self.row);
+        }
+        let row = (f32::from(layout.y) / f32::from(self.row)).round().max(0.0) as usize;
+        (point(layout.x, self.top(row)), self.row_height(row))
+    }
+}
+
+/// The height of the whole shaped line, and how many editor rows (of
+/// `line_height`) it is.
+pub(in crate::text_editor) fn shaped_height(
+    results: &[(WrappedLine, DisplayLine)],
+    line_text: &str,
+    metrics: (Pixels, Pixels),
+    macros: &Macros,
+) -> (Pixels, usize) {
+    let height: Pixels = entry_heights(results, line_text, metrics, macros)
+        .map(|e| e.height)
+        .sum();
+    (height, (height / metrics.1).round() as usize)
+}
+
+/// The height of each row of a line: `line_height`, or a whole multiple of it
+/// for a row holding a drawn formula that reaches past one (the formula is
+/// painted on the text baseline, which a taller row keeps centred). Whole rows
+/// keep the row counts integral. `entries` is how many shaped entries the line has.
+fn row_heights(
+    entries: usize,
+    (display_line, line_text): (&DisplayLine, &str),
+    wrapped: &WrappedLine,
+    (font_size, line_height): (Pixels, Pixels),
+    macros: &Macros,
+) -> EntryHeight {
+    let space = if entries == 1 {
+        display_line.space_rows()
+    } else {
+        (0, 0)
+    };
+    let uniform = |units: usize| {
+        EntryHeight {
+            row: line_height * units as f32,
+            varied: Vec::new(),
+            pad: (px(0.), px(0.)),
+            height: wrapped.size(line_height * units as f32).height,
+        }
+        .padded(line_height, space)
+    };
+    // A heading's rows are whole multiples of the body row (#58).
+    let base = display_line.row_units();
+    // Several entries are a wrapped table row, which never holds a drawn formula.
+    if entries != 1
+        || !display_line
+            .segments
+            .iter()
+            .any(|s| s.style == InlineStyle::Math)
+    {
+        return uniform(base);
+    }
+    let rows = wrapped.wrap_boundaries().len() + 1;
+    let text = (f32::from(wrapped.ascent()), f32::from(wrapped.descent()));
+    let mut reach = vec![(0.0f32, 0.0f32); rows];
+    for seg in display_line
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+    {
+        // The row of each end, as `paint_math` finds them: a formula the wrap
+        // splits is not drawn and makes no row tall.
+        let (Some(from), Some(to)) = (
+            wrapped.position_for_index(seg.display.start, px(1.)),
+            wrapped.position_for_index(seg.display.end, px(1.)),
+        ) else {
+            continue;
+        };
+        if from.y != to.y {
+            continue;
+        }
+        let Some(rendered) = line_text
+            .get(seg.raw.clone())
+            .and_then(|span| math::rendered_span(span, macros))
+        else {
+            continue;
+        };
+        let at = (f32::from(from.y).round() as usize).min(rows - 1);
+        reach[at].0 = reach[at].0.max(rendered.layout.ascent);
+        reach[at].1 = reach[at].1.max(rendered.layout.descent);
+    }
+    // A heading's formulas are drawn at its size.
+    let em_size = font_size * display_line.font_scale();
+    let units: Vec<usize> = reach
+        .iter()
+        .map(|&r| tall_rows(r, (em_size, line_height), text).max(base))
+        .collect();
+    if units.iter().all(|&u| u == units[0]) {
+        return uniform(units[0]);
+    }
+    EntryHeight {
+        row: line_height,
+        varied: units.iter().map(|&u| u.min(255) as u8).collect(),
+        pad: (px(0.), px(0.)),
+        height: line_height * units.iter().sum::<usize>() as f32,
+    }
+    .padded(line_height, space)
+}
+
+/// How far the drawn formulas of `display_line` reach above and below the
+/// text baseline, in em; `(0, 0)` when it draws none.
+pub(in crate::text_editor) fn formula_reach(
+    display_line: &DisplayLine,
+    line_text: &str,
+    macros: &Macros,
+) -> (f32, f32) {
+    let mut reach = (0.0f32, 0.0f32);
+    for seg in display_line
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+    {
+        if let Some(rendered) = line_text
+            .get(seg.raw.clone())
+            .and_then(|span| math::rendered_span(span, macros))
+        {
+            reach.0 = reach.0.max(rendered.layout.ascent);
+            reach.1 = reach.1.max(rendered.layout.descent);
+        }
+    }
+    reach
+}
+
+/// How many rows of `line_height` each row of a line needs for formulas
+/// reaching `reach` (em): 1 when there is none. `text` is the row font's
+/// (ascent, descent) in px.
+pub(in crate::text_editor) fn tall_rows(
+    reach: (f32, f32),
+    (font_size, line_height): (Pixels, Pixels),
+    text: (f32, f32),
+) -> usize {
+    if reach == (0.0, 0.0) {
+        return 1;
+    }
+    let em = f32::from(font_size) * math::scale();
+    math::rows_to_fit((reach.0 * em, reach.1 * em), text, f32::from(line_height))
+}
+
+/// How many rows each line of a table row takes: more than one when a drawn
+/// formula in one of its cells reaches past a row. All lines of all cells grow
+/// together, as the rows of a wrapped paragraph do. The cell being edited shows
+/// its source and does not count.
+fn table_row_scale(
+    line: &str,
+    widths: &[usize],
+    state: &LineState,
+    (font, font_size): (&Font, Pixels),
+    window: &mut Window,
+) -> usize {
+    if !line.contains('$') {
+        return 1;
+    }
+    let mut reach = (0.0f32, 0.0f32);
+    for (column, cell) in table::layout_row_in(line, widths, state.editing_cell, state.macros)
+        .iter()
+        .enumerate()
+        .filter(|(c, _)| state.editing_cell != Some(*c))
+    {
+        for range in &cell.lines {
+            let text = &line[range.clone()];
+            let shown = build_cell_line_with(text, state.macros, widths[column]);
+            let (up, down) = formula_reach(&shown, text, state.macros);
+            reach = (reach.0.max(up), reach.1.max(down));
+        }
+    }
+    let text = mono_ascent_descent(font, font_size, window);
+    tall_rows(reach, (font_size, body_row_height()), text)
+}
+
+/// What the row estimates need to know about the editor font at one size,
+/// measured from the font once so nothing downstream hard-codes a typeface:
+/// the advance of one character (the estimates treat the text as monospace;
+/// they are approximations of the off-screen rows, checked against shaping in
+/// `height_agreement_tests`), and the ascent and descent in px. Comparable, so
+/// a cache can tell that the font or its size changed.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(in crate::text_editor) struct RowFontMetrics {
+    pub char_width: Pixels,
+    pub ascent: f32,
+    pub descent: f32,
+}
+
+impl RowFontMetrics {
+    pub(in crate::text_editor) fn measure(
+        font: &Font,
+        font_size: Pixels,
+        text_color: Hsla,
+        window: &mut Window,
+    ) -> Self {
+        let (ascent, descent) = mono_ascent_descent(font, font_size, window);
+        RowFontMetrics {
+            char_width: mono_char_width(font, font_size, text_color, window),
+            ascent,
+            descent,
+        }
+    }
+}
+
+/// The (ascent, descent) in px of the editor font at `font_size`, as the
+/// shaped lines report them, from the font's metrics without shaping anything.
+pub(in crate::text_editor) fn mono_ascent_descent(
+    font: &Font,
+    font_size: Pixels,
+    window: &mut Window,
+) -> (f32, f32) {
+    let system = window.text_system();
+    let id = system.resolve_font(font);
+    (
+        f32::from(system.ascent(id, font_size)),
+        f32::from(system.descent(id, font_size)),
+    )
+}
 
 /// The `Font` to paint a [`DisplaySegment`](super::preview::DisplaySegment)'s
 /// visible text in, derived from `base` (the editor's ambient mono font) —
@@ -20,17 +348,26 @@ use crate::text_editor::preview::{
 fn font_for_style(style: InlineStyle, base: &Font) -> Font {
     let mut font = base.clone();
     match style {
-        InlineStyle::Bold | InlineStyle::Heading(_) | InlineStyle::CalloutTitle => {
-            font.weight = FontWeight::BOLD
+        InlineStyle::Bold | InlineStyle::CalloutTitle => font.weight = FontWeight::BOLD,
+        InlineStyle::Heading(level) => {
+            font.weight = FontWeight(f32::from(crate::settings::heading_weight(level)));
         }
-        InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
+        InlineStyle::Italic => font.style = FontStyle::Italic,
+        InlineStyle::Blockquote(_) if crate::settings::quote_italic() => {
+            font.style = FontStyle::Italic;
+        }
         InlineStyle::Plain
+        | InlineStyle::Blockquote(_)
         | InlineStyle::Code
         | InlineStyle::Strikethrough
         | InlineStyle::WikiLink
         | InlineStyle::Link
         | InlineStyle::ListMarker
-        | InlineStyle::Widget(_) => {}
+        | InlineStyle::CodeFence
+        | InlineStyle::CodeBlock
+        | InlineStyle::Syntax(_)
+        | InlineStyle::Widget(_)
+        | InlineStyle::Math => {}
     }
     font
 }
@@ -52,6 +389,10 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
         InlineStyle::WikiLink => colors.wikilink,
         InlineStyle::Link => colors.link,
         InlineStyle::CalloutTitle => callout.map_or(base, |c| colors.callout(c.kind)),
+        InlineStyle::Heading(level) => colors.heading(level),
+        InlineStyle::CodeFence => colors.subtle,
+        InlineStyle::Syntax(index) => colors.syntax(index),
+        InlineStyle::Strikethrough if crate::settings::strike_muted() => colors.subtle,
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => {
             if callout.is_some() {
                 base
@@ -60,11 +401,12 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
             }
         }
         InlineStyle::Plain
+        | InlineStyle::CodeBlock
         | InlineStyle::Bold
         | InlineStyle::Italic
-        | InlineStyle::Heading(_)
         | InlineStyle::Strikethrough
-        | InlineStyle::Widget(_) => base,
+        | InlineStyle::Widget(_)
+        | InlineStyle::Math => base,
     }
 }
 
@@ -80,6 +422,57 @@ fn strikethrough_for_style(style: InlineStyle, color: Hsla) -> Option<Strikethro
     }
 }
 
+/// How the text of a checked task is drawn (`task.done_style`): the muted
+/// colour, a strike line, or both.
+#[derive(Clone, Copy)]
+struct DoneLook {
+    dim: Option<Hsla>,
+    strike: bool,
+}
+
+impl DoneLook {
+    /// The colour and strike line of a segment of `style` on a done line:
+    /// controls, markers and links keep theirs.
+    fn apply(self, style: InlineStyle, color: Hsla) -> (Hsla, Option<StrikethroughStyle>) {
+        if matches!(
+            style,
+            InlineStyle::Widget(_)
+                | InlineStyle::ListMarker
+                | InlineStyle::Link
+                | InlineStyle::WikiLink
+        ) {
+            return (color, None);
+        }
+        let color = self.dim.unwrap_or(color);
+        let strike = self.strike.then_some(StrikethroughStyle {
+            thickness: px(1.),
+            color: Some(color),
+        });
+        (color, strike)
+    }
+}
+
+/// The look of a line that is a checked task, `None` for any other line or
+/// when `task.done_style` is `none`.
+fn done_look(line: &DisplayLine, colors: &InlineColors) -> Option<DoneLook> {
+    use crate::settings::DoneStyle;
+    let style = crate::settings::done_style();
+    if style == DoneStyle::None
+        || !line.segments.iter().any(|s| {
+            s.style
+                == InlineStyle::Widget(crate::text_editor::preview::Widget::Checkbox {
+                    checked: true,
+                })
+        })
+    {
+        return None;
+    }
+    Some(DoneLook {
+        dim: matches!(style, DoneStyle::Dim | DoneStyle::Both).then_some(colors.subtle),
+        strike: matches!(style, DoneStyle::Strike | DoneStyle::Both),
+    })
+}
+
 /// The wrap width to shape a line at, given how much horizontal space
 /// `available_width` actually leaves it once its own [`indent_px`] shift is
 /// accounted for — `None` (no wrapping at all) for a table row/rule
@@ -93,13 +486,13 @@ fn wrap_width_for(
     table_kind: &TableLineKind,
     table_active: bool,
     available_width: Pixels,
-    indent_level: u8,
+    indent: LineIndent,
 ) -> Option<Pixels> {
     if table_active {
-        return Some((available_width - indent_px(indent_level)).max(px(1.)));
+        return Some((available_width - indent_px(indent)).max(px(1.)));
     }
     match table_kind {
-        TableLineKind::None => Some((available_width - indent_px(indent_level)).max(px(1.))),
+        TableLineKind::None => Some((available_width - indent_px(indent)).max(px(1.))),
         TableLineKind::Delimiter | TableLineKind::Row(_) => None,
     }
 }
@@ -177,32 +570,48 @@ pub(in crate::text_editor) fn build_display_lines(
     }
     let block_rows = image::embed(line, state).map(|embed| {
         let sizes = state.images;
-        image::rows(line, &embed, sizes, available_width, window.line_height())
+        image::rows(line, &embed, sizes, available_width, body_row_height())
     });
     let mut display_lines: Vec<DisplayLine> = match role {
+        // The formula is drawn over `rows` empty rows.
+        LineRole::Plain if let MathPart::Head(rows) = state.math => vec![hidden_line(line); rows],
         // A block is `rows` stacked empty rows; `paint_lines` draws the box over them.
         LineRole::Plain if let Some(rows) = block_rows => vec![hidden_line(line); rows],
-        LineRole::FenceContent => vec![build_display_line(line, true)],
+        LineRole::FenceContent => vec![fence_content_line(line, state.code)],
         LineRole::FenceDelimiter if !active => vec![hidden_line(line)],
-        LineRole::FenceDelimiter => vec![build_display_line(line, active)],
+        LineRole::FenceDelimiter => vec![raw_fence_line(line, active)],
         LineRole::Plain if table_active && !matches!(table_kind, TableLineKind::None) => {
             vec![build_display_line(line, true)]
         }
         LineRole::Plain if state.column_frame && !active => vec![hidden_line(line)],
-        LineRole::Plain if callout_is_header => vec![build_callout_header_line(line, active)],
+        LineRole::Plain if callout_is_header => {
+            vec![build_callout_header_line_with(line, active, state.macros)]
+        }
         LineRole::Plain => match table_kind {
             TableLineKind::None if !active && is_thematic_break(line) => vec![hidden_line(line)],
-            TableLineKind::None => vec![build_display_line_in_context(line, active, block_ctx)],
+            TableLineKind::None => {
+                let mut display_line =
+                    build_display_line_in_context_with(line, active, block_ctx, state.macros);
+                if line.contains('$') {
+                    // A formula wider than a row cannot be drawn (#49).
+                    // A heading's characters are wider, so its row fits fewer.
+                    let char_width = mono_char_width(font, font_size, text_color, window)
+                        * display_line.font_scale();
+                    let fit = fit_with_indent(available_width, char_width, display_line.indent);
+                    show_wide_formulas(&mut display_line, line, fit);
+                }
+                vec![display_line]
+            }
             TableLineKind::Delimiter => vec![hidden_line(line)],
             // `paint_table_row` draws the cells over these empty rows.
             TableLineKind::Row(table) => {
                 let max_chars =
                     table_row_char_budget(available_width, font, font_size, text_color, window);
                 let widths = table::resolve_widths(&table.columns, max_chars);
-                vec![
-                    hidden_line(line);
-                    table::row_line_count_editing(line, &widths, state.editing_cell)
-                ]
+                let lines =
+                    table::row_line_count_in(line, &widths, state.editing_cell, state.macros);
+                let scale = table_row_scale(line, &widths, state, (font, font_size), window);
+                vec![hidden_line(line); lines * scale]
             }
         },
     };
@@ -212,7 +621,7 @@ pub(in crate::text_editor) fn build_display_lines(
     // that's not a real blockquote/list line and shouldn't indent as one.
     if matches!(role, LineRole::FenceContent) {
         for display_line in &mut display_lines {
-            display_line.indent = LineIndent::None;
+            display_line.indent = code_indent();
         }
     }
 
@@ -224,7 +633,7 @@ pub(in crate::text_editor) fn build_display_lines(
         table_kind,
         table_active,
         available_width,
-        display_lines[0].indent.level(),
+        display_lines[0].indent,
     );
     (display_lines, wrap_width)
 }
@@ -316,6 +725,8 @@ pub(in crate::text_editor) fn line_runs(
     bold: bool,
 ) -> Vec<TextRun> {
     let text_color = colors.text;
+    let heading = display_line.heading_level();
+    let done = done_look(display_line, colors);
     let mut runs: Vec<TextRun> = display_line
         .segments
         .iter()
@@ -327,6 +738,13 @@ pub(in crate::text_editor) fn line_runs(
                     .any(|r| r.start <= seg.raw.start && seg.raw.end <= r.end);
             let color = if is_broken {
                 colors.broken
+            } else if let (
+                Some(level),
+                InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Strikethrough,
+            ) = (heading, seg.style)
+            {
+                // Emphasis inside a heading keeps the heading's color.
+                colors.heading(level)
             } else {
                 color_for_style(seg.style, colors, callout)
             };
@@ -334,13 +752,14 @@ pub(in crate::text_editor) fn line_runs(
             if bold {
                 font.weight = FontWeight::BOLD;
             }
+            let (color, done_strike) = done.map_or((color, None), |d| d.apply(seg.style, color));
             TextRun {
                 len: seg.display.len(),
                 font,
                 color,
                 background_color: None,
                 underline: None,
-                strikethrough: strikethrough_for_style(seg.style, color),
+                strikethrough: strikethrough_for_style(seg.style, color).or(done_strike),
             }
         })
         .collect();
@@ -368,6 +787,8 @@ pub(in crate::text_editor) fn shape_entry(
     window: &mut Window,
 ) -> WrappedLine {
     let runs = line_runs(display_line, (font, colors), (broken, callout), bold);
+    // A heading is shaped at its own size, whole line at once.
+    let font_size = font_size * display_line.font_scale();
     window
         .text_system()
         .shape_text(
@@ -393,6 +814,51 @@ pub(in crate::text_editor) fn shape_entry(
 /// call. Shared by `table_row_char_budget` (converts it to a *character*
 /// budget) and `paint_table_grid_lines` (converts a *character offset* to
 /// an actual pixel x) — both need the same measurement to agree.
+/// A fenced code line, inset when a box is drawn behind it.
+fn code_inset(mut line: DisplayLine) -> DisplayLine {
+    line.indent = code_indent();
+    line
+}
+
+/// The indent of a fenced code line: in by one level when a box is drawn behind it.
+fn code_indent() -> LineIndent {
+    if crate::settings::code_inset() {
+        LineIndent::Code
+    } else {
+        LineIndent::None
+    }
+}
+
+/// A line inside a fence: literal text, styled as code-block text.
+/// `code` colours its tokens; the text and what maps to what stay as they are.
+fn fence_content_line(line: &str, code: &[Span]) -> DisplayLine {
+    let mut content = build_display_line(line, true);
+    for seg in &mut content.segments {
+        if seg.style == InlineStyle::Plain {
+            seg.style = InlineStyle::CodeBlock;
+        }
+    }
+    if code.is_empty() {
+        return content;
+    }
+    let runs = code.iter().filter_map(|span| {
+        let index = crate::theme::Role::SYNTAX
+            .iter()
+            .position(|r| *r == span.role)?;
+        Some((span.range.clone(), u8::try_from(index).ok()?))
+    });
+    content.with_syntax_runs(runs)
+}
+
+/// An opening or closing fence line shown raw (the caret is on it), in the fence colour.
+fn raw_fence_line(line: &str, active: bool) -> DisplayLine {
+    let mut raw = build_display_line(line, active);
+    if let Some(seg) = raw.segments.first_mut() {
+        seg.style = InlineStyle::CodeFence;
+    }
+    code_inset(raw)
+}
+
 pub(in crate::text_editor) fn mono_char_width(
     font: &Font,
     font_size: Pixels,
@@ -434,18 +900,18 @@ fn table_row_char_budget(
     )
 }
 
-/// How many monospace characters fit on a row indented `level` levels
+/// How many monospace characters fit on a row indented by `indent`
 /// (zero if `char_width` is not positive); the wrap width is floored at 1px
 /// like [`wrap_width_for`].
 pub(in crate::text_editor) fn fit_with_indent(
     available_width: Pixels,
     char_width: Pixels,
-    level: u8,
+    indent: LineIndent,
 ) -> usize {
     if char_width <= px(0.) {
         return 0;
     }
-    ((available_width - indent_px(level)).max(px(1.)) / char_width) as usize
+    ((available_width - indent_px(indent)).max(px(1.)) / char_width) as usize
 }
 
 /// How many monospace characters of `char_width` fit in `available_width`;
@@ -459,4 +925,168 @@ pub(in crate::text_editor) fn char_budget(
         return None;
     }
     Some((available_width / char_width) as usize)
+}
+
+#[cfg(test)]
+mod heading_style_tests {
+    // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
+    use super::{InlineColors, InlineStyle, color_for_style, font_for_style};
+    use crate::settings::{self, HEADING_LEVELS, Typography};
+
+    #[test]
+    fn a_heading_takes_its_levels_weight_and_color() {
+        let mut t = Typography::default();
+        t.heading.weight = [900, 800, 700, 600, 500, 400];
+        settings::set_body(&t);
+        let mut colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.5, 1.));
+        colors.heading = std::array::from_fn(|i| gpui_kit::hsla(i as f32 / 8., 0.5, 0.5, 1.));
+        let base = gpui_kit::Font::default();
+        for level in 1..=HEADING_LEVELS as u8 {
+            let style = InlineStyle::Heading(level);
+            let font = font_for_style(style, &base);
+            assert_eq!(
+                font.weight.0,
+                t.heading.weight[usize::from(level) - 1] as f32
+            );
+            assert_eq!(color_for_style(style, &colors, None), colors.heading(level));
+        }
+        settings::set_body(&Typography::default());
+        assert_eq!(
+            font_for_style(InlineStyle::Heading(3), &base).weight,
+            gpui_kit::FontWeight::BOLD,
+            "the default weight is bold"
+        );
+    }
+
+    #[test]
+    fn struck_text_is_muted_only_when_configured() {
+        let colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.2, 1.));
+        let struck = InlineStyle::Strikethrough;
+        let mut t = Typography::default();
+        settings::set_body(&t);
+        assert_eq!(color_for_style(struck, &colors, None), colors.text);
+        t.strikethrough.muted = true;
+        settings::set_body(&t);
+        assert_eq!(color_for_style(struck, &colors, None), colors.subtle);
+        let line = crate::text_editor::preview::build_display_line("a ~~b~~", false);
+        let base = gpui_kit::Font::default();
+        let runs = super::line_runs(&line, (&base, &colors), (&[], None), false);
+        let line_color = runs.iter().find_map(|r| r.strikethrough.as_ref()).unwrap();
+        assert_eq!(
+            line_color.color,
+            Some(colors.subtle),
+            "the line is muted too"
+        );
+        settings::set_body(&Typography::default());
+    }
+
+    #[test]
+    fn emphasis_inside_a_heading_keeps_the_headings_color() {
+        let mut colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.5, 1.));
+        colors.heading = [gpui_kit::hsla(0.6, 0.5, 0.5, 1.); HEADING_LEVELS];
+        let base = gpui_kit::Font::default();
+        let line = crate::text_editor::preview::build_display_line("## a **b** *c* `d`", false);
+        let runs = super::line_runs(&line, (&base, &colors), (&[], None), false);
+        let ink: Vec<_> = runs.iter().map(|r| r.color).collect();
+        let (heading, text) = (colors.heading(2), colors.text);
+        assert_eq!(
+            ink,
+            [heading, heading, heading, heading, heading, colors.code]
+        );
+        assert_ne!(heading, text);
+    }
+}
+
+#[cfg(test)]
+mod syntax_style_tests {
+    // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
+    use super::{InlineColors, InlineStyle, fence_content_line, line_runs};
+    use crate::text_editor::highlight::Span;
+    use crate::theme::Role;
+
+    fn span(range: std::ops::Range<usize>, role: Role) -> Span {
+        Span { range, role }
+    }
+
+    #[test]
+    fn tokens_are_coloured_and_the_text_and_mapping_are_untouched() {
+        let mut colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.5, 1.));
+        let keyword = gpui_kit::hsla(0.6, 0.9, 0.5, 1.);
+        colors.syntax[Role::SYNTAX
+            .iter()
+            .position(|r| *r == Role::SyntaxKeyword)
+            .unwrap()] = keyword;
+        let plain = fence_content_line("let x = 1", &[]);
+        let line = fence_content_line("let x = 1", &[span(0..3, Role::SyntaxKeyword)]);
+        assert_eq!(line.display_text, plain.display_text);
+        let covered: Vec<_> = line
+            .segments
+            .iter()
+            .map(|s| (s.raw.clone(), s.display.clone()))
+            .collect();
+        assert_eq!(covered, [(0..3, 0..3), (3..9, 3..9)]);
+        assert_eq!(line.segments[0].style, InlineStyle::Syntax(3));
+        assert_eq!(line.segments[1].style, InlineStyle::CodeBlock);
+        let base = gpui_kit::Font::default();
+        let runs = line_runs(&line, (&base, &colors), (&[], None), false);
+        assert_eq!(
+            runs.iter().map(|r| (r.len, r.color)).collect::<Vec<_>>(),
+            [(3, keyword), (6, colors.text)]
+        );
+        // Same size as an uncoloured code line, so no row changes.
+        assert_eq!(line.font_scale(), plain.font_scale());
+    }
+}
+
+#[cfg(test)]
+mod done_task_tests {
+    // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
+    use super::{InlineColors, line_runs};
+    use crate::settings::{self, DoneStyle, Typography};
+
+    /// The runs of `line` under `style`, restoring the default afterwards.
+    fn runs(line: &str, style: DoneStyle) -> (Vec<gpui_kit::TextRun>, InlineColors) {
+        let mut t = Typography::default();
+        t.task.done_style = style;
+        settings::set_body(&t);
+        let colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.2, 1.));
+        let base = gpui_kit::Font::default();
+        let line = crate::text_editor::preview::build_display_line(line, false);
+        let runs = line_runs(&line, (&base, &colors), (&[], None), false);
+        settings::set_body(&Typography::default());
+        (runs, colors)
+    }
+
+    #[test]
+    fn a_checked_task_is_dimmed_and_struck_as_configured() {
+        // Runs: the checkbox (blank, a widget), then the text.
+        let (dim, colors) = runs("- [x] done", DoneStyle::Dim);
+        let text = dim.last().unwrap();
+        assert_eq!(text.color, colors.subtle);
+        assert!(text.strikethrough.is_none());
+
+        let (strike, colors) = runs("- [x] done", DoneStyle::Strike);
+        let text = strike.last().unwrap();
+        assert_eq!(text.color, colors.text);
+        assert!(text.strikethrough.is_some());
+
+        let (both, colors) = runs("- [x] done", DoneStyle::Both);
+        let text = both.last().unwrap();
+        assert_eq!(text.color, colors.subtle);
+        assert!(text.strikethrough.is_some());
+    }
+
+    #[test]
+    fn open_tasks_and_plain_lines_and_none_are_untouched() {
+        for (line, style) in [
+            ("- [ ] open", DoneStyle::Both),
+            ("plain text", DoneStyle::Both),
+            ("- [x] done", DoneStyle::None),
+        ] {
+            let (runs, colors) = runs(line, style);
+            let text = runs.last().unwrap();
+            assert_eq!(text.color, colors.text, "{line}");
+            assert!(text.strikethrough.is_none(), "{line}");
+        }
+    }
 }

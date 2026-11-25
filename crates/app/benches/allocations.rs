@@ -71,8 +71,13 @@ fn middle_line_start(text: &str) -> usize {
 
 fn cache_edits(report: &mut Report, stress: &str) {
     let header = stress.find("\n> [!").map_or(0, |i| i + 1);
+    // The first line inside a `$$` block of the fixture's math section.
+    let in_math = stress
+        .find("# Stress: Math")
+        .and_then(|at| stress[at..].find("\n$$\n").map(|i| at + i + 4));
     let cases = [
         ("record_edit char", None, "x", 64),
+        ("record_edit char inside a math block", in_math, "x", 4096),
         ("record_edit newline", None, "\n", 64),
         (
             "record_edit char on a callout header",

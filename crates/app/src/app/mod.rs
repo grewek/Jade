@@ -68,8 +68,12 @@ fn install_fonts(cx: &mut App) {
                 include_bytes!("../../assets/fonts/ibm-plex-mono/IBMPlexMono-BoldItalic.ttf")
                     .as_slice(),
             ),
+            Cow::Borrowed(
+                include_bytes!("../../assets/fonts/latin-modern-math/latinmodern-math.otf")
+                    .as_slice(),
+            ),
         ])
-        .expect("failed to load bundled IBM Plex fonts");
+        .expect("failed to load bundled fonts");
 
     let theme = Theme::global_mut(cx);
     theme.font_family = IBM_PLEX_SANS.into();
@@ -109,6 +113,14 @@ pub(crate) struct JadeApp {
     pub(crate) backlinks_width: Pixels,
     resize_start: Option<ResizeStart>,
     pub(crate) search: Search,
+    /// Scroll state of the three sidebar lists (vault tree, search results,
+    /// backlinks); the fixed parts above each list stay put.
+    vault_scroll: ScrollHandle,
+    search_scroll: ScrollHandle,
+    backlinks_scroll: ScrollHandle,
+    /// The note the vault tree was last scrolled to, so a wheel scroll is not
+    /// undone on every frame.
+    vault_scrolled_to: Option<String>,
 }
 
 /// The vault at `path`; when it cannot be read, an empty one at that path and
@@ -180,6 +192,10 @@ impl JadeApp {
             backlinks_width: SIDEBAR_WIDTH_DEFAULT,
             resize_start: None,
             search: Search::new(window, cx),
+            vault_scroll: ScrollHandle::new(),
+            search_scroll: ScrollHandle::new(),
+            backlinks_scroll: ScrollHandle::new(),
+            vault_scrolled_to: None,
         }
     }
 }
@@ -201,10 +217,23 @@ impl Render for JadeApp {
         // of erasing a character.
         let sidebar_content: AnyElement = match self.sidebar_tab {
             SidebarTab::Vault => {
-                let tree_rows = self.render_tree_level(None, 0, cx);
+                let mut tree_rows = Vec::new();
+                let mut selected_row = None;
+                self.render_tree_level(None, 0, &mut tree_rows, &mut selected_row, cx);
+                // Scroll to the open note when it changes (a new tab, a link
+                // followed), not on every frame, so the wheel stays in charge.
+                let selected = self.selected_id().map(str::to_string);
+                if selected != self.vault_scrolled_to {
+                    if let Some(row) = selected_row {
+                        self.vault_scroll.scroll_to_item(row);
+                    }
+                    self.vault_scrolled_to = selected;
+                }
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h_0()
                     .gap_1()
                     .key_context("NoteList")
                     .track_focus(&self.sidebar_focus)
@@ -235,7 +264,7 @@ impl Render for JadeApp {
                                     .debug_name("new-folder"),
                             ),
                     )
-                    .children(tree_rows)
+                    .child(scroll_list("vault-scroll", &self.vault_scroll, tree_rows))
                     .into_any_element()
             }
             SidebarTab::Search => self.render_search_panel(cx),
@@ -361,6 +390,7 @@ impl Render for JadeApp {
             .gap_1()
             .w(self.backlinks_width)
             .flex_none()
+            .min_h_0()
             .p_2()
             .bg(secondary)
             .border_l_1()
@@ -412,6 +442,11 @@ impl Render for JadeApp {
 pub fn run() {
     let cli_vault = std::env::args().nth(1).map(PathBuf::from);
 
+    #[cfg(feature = "debug-socket")]
+    if debug_server::headless::requested() {
+        return debug_server::headless::run(cli_vault);
+    }
+
     debug_server::start_if_enabled();
 
     // Registers the bundled Lucide icon SVGs (`Dialog`'s own close "x",
@@ -421,24 +456,7 @@ pub fn run() {
     gpui_kit::application()
         .with_assets(crate::assets::JadeAssets)
         .run(move |cx| {
-            gpui_kit::init(cx);
-            install_fonts(cx);
-            let config_dirs = ConfigDirs::from_environment();
-            let mut notices = ThemeEngine::install(config_dirs.clone(), cx);
-            crate::text_editor::TextSettings::install(config_dirs.as_ref(), cx);
-            if let Some(dirs) = config_dirs.clone() {
-                notices.extend(crate::theme::watch(dirs, cx));
-            }
-            for notice in notices {
-                eprintln!("jade: {notice}");
-            }
-            cx.bind_keys([
-                KeyBinding::new("f2", RenameNote, Some("NoteList")),
-                KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
-                KeyBinding::new("ctrl-p", OpenCommandPalette, None),
-            ]);
-            cx.bind_keys(crate::text_editor::key_bindings());
-            bind_open_command_palette(cx);
+            let config_dirs = setup(cx);
             // Wayland picks the window icon from the desktop entry whose name
             // is this id (`packaging/jade.desktop`); the compositor ignores
             // any icon the app sends.
@@ -467,6 +485,42 @@ pub fn run() {
             }
             debug_server::install(&app, cx);
         });
+}
+
+/// Registers what a window needs before it opens: components, fonts, the theme
+/// and editor settings (with their file watcher), and the key bindings. Shared
+/// by [`run`] and the debug server's headless mode, so both start the same app.
+pub(crate) fn setup(cx: &mut App) -> Option<ConfigDirs> {
+    gpui_kit::init(cx);
+    install_fonts(cx);
+    let config_dirs = ConfigDirs::from_environment();
+    let mut notices = ThemeEngine::install(config_dirs.clone(), cx);
+    notices.extend(crate::text_editor::TextSettings::install(
+        config_dirs.as_ref(),
+        cx,
+    ));
+    if let Some(dirs) = config_dirs.clone() {
+        let reload = |dirs: &ConfigDirs, cx: &mut App| {
+            crate::text_editor::TextSettings::reload(Some(dirs), cx)
+        };
+        notices.extend(crate::theme::watch(dirs, reload, cx));
+    }
+    // A file that does not parse is reported by every reader of it, once.
+    let mut seen = Vec::new();
+    for notice in notices {
+        if !seen.contains(&notice) {
+            eprintln!("jade: {notice}");
+            seen.push(notice);
+        }
+    }
+    cx.bind_keys([
+        KeyBinding::new("f2", RenameNote, Some("NoteList")),
+        KeyBinding::new("backspace", DeleteNote, Some("NoteList")),
+        KeyBinding::new("ctrl-p", OpenCommandPalette, None),
+    ]);
+    cx.bind_keys(crate::text_editor::key_bindings());
+    bind_open_command_palette(cx);
+    config_dirs
 }
 
 /// Registers `OpenCommandPalette`'s handler globally (`cx.on_action`, not an

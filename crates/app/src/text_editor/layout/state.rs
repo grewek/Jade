@@ -1,9 +1,12 @@
+use crate::text_editor::preview::LineIndent;
 use std::ops::Range;
 
 use gpui_kit::*;
 
 use crate::text_editor::doc::DocumentCache;
+use crate::text_editor::highlight::Span;
 use crate::text_editor::image::Sizes as ImageSizes;
+use crate::text_editor::math::Macros;
 use crate::text_editor::preview::LineContext;
 use crate::text_editor::preview::LineRole;
 use crate::text_editor::preview::callout::{Callout, callout_index_at};
@@ -44,6 +47,34 @@ pub(in crate::text_editor) struct LineState<'a> {
     pub column_frame: bool,
     /// Prose rows are stretched to the wrap width (see `justify.rs`).
     pub justify: bool,
+    /// The line's part in a `$$` block shown as a formula.
+    pub math: MathPart,
+    /// The note's macros, which its formulas are expanded with.
+    pub macros: &'a Macros,
+    /// The coloured tokens of this line when it is fenced code that is
+    /// highlighted; empty otherwise (#99).
+    pub code: &'a [Span],
+}
+
+/// Where a line is in a `$$` block that is shown as a formula (the caret is not
+/// in it): the first line holds the whole block's rows and the rest none, like
+/// a folded callout. A block with the caret in it is plain lines.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::text_editor) enum MathPart {
+    None,
+    /// The first line, over this many rows.
+    Head(usize),
+    Tail,
+}
+
+/// A drawn table's delimiter line (`| --- |`) has nothing to show and no row:
+/// the header is as tall as its cells (#48). An active table is raw text, where
+/// it is a line like the others.
+pub(in crate::text_editor) fn is_hidden_delimiter(
+    kind: &TableLineKind,
+    table_active: bool,
+) -> bool {
+    matches!(kind, TableLineKind::Delimiter) && !table_active
 }
 
 impl<'a> LineState<'a> {
@@ -55,20 +86,26 @@ impl<'a> LineState<'a> {
     ) -> Self {
         let line_range = doc.line_start_byte(i)..doc.line_end_byte(i);
         let callout = callout_at_line(doc.callouts(), i);
+        let math = math_part(doc, i, cursor, focused);
         let column_hidden = doc
             .side_by_side(i)
             .is_some_and(|(region, _)| i != region.start_line);
+        let table_kind = table_line_kind(doc.tables(), i);
+        let table_active = is_table_active(doc, i, focused);
         LineState {
             role: doc.line_roles()[i],
             block_ctx: doc.block_contexts()[i],
-            table_kind: table_line_kind(doc.tables(), i),
-            table_active: is_table_active(doc, i, focused),
+            table_active,
             callout,
             callout_is_header: callout.is_some_and(|c| c.is_header(i)),
             active: is_active_line(&line_range, cursor, focused),
             broken: &[],
             images: Some(doc.view.images()),
-            hidden: column_hidden || callout.is_some_and(|c| c.hides(i)),
+            hidden: column_hidden
+                || callout.is_some_and(|c| c.hides(i))
+                || math == MathPart::Tail
+                || is_hidden_delimiter(&table_kind, table_active),
+            table_kind,
             editing_cell: doc
                 .view
                 .editing_cell()
@@ -76,6 +113,9 @@ impl<'a> LineState<'a> {
                 .map(|(_, column)| column),
             column_frame: doc.is_column_frame(i),
             justify: doc.view.justify(),
+            math,
+            macros: doc.macros(),
+            code: doc.view.code_line(i),
         }
     }
 
@@ -88,8 +128,17 @@ impl<'a> LineState<'a> {
         focused: bool,
     ) -> Self {
         let state = Self::of(doc, i, cursor, focused);
+        // A block that runs over a divider is not one formula: its source.
+        let math = if block_in_one_column(doc, i) {
+            state.math
+        } else {
+            MathPart::None
+        };
         LineState {
-            hidden: state.callout.is_some_and(|c| c.hides(i)),
+            hidden: state.callout.is_some_and(|c| c.hides(i))
+                || math == MathPart::Tail
+                || is_hidden_delimiter(&state.table_kind, state.table_active),
+            math,
             ..state
         }
     }
@@ -111,6 +160,9 @@ impl<'a> LineState<'a> {
             editing_cell: None,
             column_frame: false,
             justify: false,
+            math: MathPart::None,
+            macros: &crate::text_editor::math::NO_MACROS,
+            code: &[],
         }
     }
 }
@@ -166,11 +218,15 @@ pub(in crate::text_editor) fn is_table_active(
 /// math always agree.
 const INDENT_UNIT: Pixels = px(20.);
 
-/// The pixel x-offset `level` structural indent levels shifts a line's
-/// content by — `level` is [`LineIndent::level`], `0` for a line with no
-/// indent.
-pub(in crate::text_editor) fn indent_px(level: u8) -> Pixels {
-    INDENT_UNIT * level as f32
+/// The pixel x-offset `indent` shifts a line's content by: a quote level is
+/// `blockquote.indent` em, a list level `list.indent` em, any other level a
+/// fixed unit.
+pub(in crate::text_editor) fn indent_px(indent: LineIndent) -> Pixels {
+    match indent {
+        LineIndent::Blockquote(depth) => px(crate::settings::quote_indent_px()) * f32::from(depth),
+        LineIndent::List(depth) => px(crate::settings::list_indent_px()) * f32::from(depth),
+        other => INDENT_UNIT * f32::from(other.level()),
+    }
 }
 
 /// Whether the line spanning `line_range` should render raw/unstyled rather
@@ -187,4 +243,63 @@ pub(in crate::text_editor) fn is_active_line(
     focused: bool,
 ) -> bool {
     focused && cursor >= line_range.start && cursor <= line_range.end
+}
+
+/// Whether the `$$` block holding line `i` (if any) lies in one column of its
+/// region, from its first line to its last.
+fn block_in_one_column(doc: &DocumentCache, i: usize) -> bool {
+    let Some(block) = doc.math_block_at(i) else {
+        return true;
+    };
+    let Some((region, _)) = doc.side_by_side(i) else {
+        return true;
+    };
+    let column = region.column_of(block.first_line);
+    column.is_some() && column == region.column_of(block.last_line)
+}
+
+/// Line `i`'s part in a `$$` block shown as a formula.
+fn math_part(doc: &DocumentCache, i: usize, cursor: usize, focused: bool) -> MathPart {
+    match doc.math_block_at(i) {
+        Some(b) if doc.math_block_active(b, cursor, focused) => MathPart::None,
+        Some(b) => match b.rows() {
+            Some(rows) if b.first_line == i => MathPart::Head(rows),
+            Some(_) => MathPart::Tail,
+            // Not a formula (yet): its source, as typed.
+            None => MathPart::None,
+        },
+        None => MathPart::None,
+    }
+}
+
+#[cfg(test)]
+mod indent_tests {
+    // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
+    use super::indent_px;
+    use crate::settings::{self, Typography};
+    use crate::text_editor::preview::LineIndent;
+    use gpui_kit::px;
+
+    #[test]
+    fn a_quote_or_list_level_follows_the_config_and_code_stays_a_unit() {
+        let mut t = Typography::default();
+        settings::set_body(&t);
+        assert_eq!(
+            indent_px(LineIndent::Blockquote(2)),
+            px(40.),
+            "today's look"
+        );
+        assert_eq!(indent_px(LineIndent::List(1)), px(20.));
+        assert_eq!(indent_px(LineIndent::Code), px(20.));
+        assert_eq!(indent_px(LineIndent::None), px(0.));
+        t.blockquote.indent = 2.0;
+        settings::set_body(&t);
+        assert_eq!(indent_px(LineIndent::Blockquote(2)), px(64.));
+        assert_eq!(indent_px(LineIndent::List(1)), px(20.));
+        t.list.indent = 2.0;
+        settings::set_body(&t);
+        assert_eq!(indent_px(LineIndent::List(3)), px(96.));
+        assert_eq!(indent_px(LineIndent::Code), px(20.));
+        settings::set_body(&Typography::default());
+    }
 }

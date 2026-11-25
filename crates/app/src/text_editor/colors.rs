@@ -5,6 +5,7 @@
 use gpui_kit::Hsla;
 
 use super::preview::callout::CalloutType;
+use crate::settings::HEADING_LEVELS;
 use crate::theme::{Palette, Role};
 
 /// One entry per callout color group, in `callouts` order.
@@ -41,7 +42,11 @@ pub(super) struct InlineColors {
     pub broken: Hsla,
     /// Blockquote and list-marker text.
     pub subtle: Hsla,
+    /// Heading text, per level 1..=6.
+    pub(in crate::text_editor) heading: [Hsla; HEADING_LEVELS],
     callouts: [Hsla; CALLOUT_ROLES.len()],
+    /// Tokens of highlighted fenced code, in `Role::SYNTAX` order.
+    pub(in crate::text_editor) syntax: [Hsla; Role::SYNTAX.len()],
 }
 
 impl InlineColors {
@@ -53,8 +58,23 @@ impl InlineColors {
             link: palette.color(Role::Link),
             broken: palette.color(Role::Error),
             subtle: palette.color(Role::TextSubtle),
+            heading: std::array::from_fn(|i| palette.color(Role::heading_level(i as u8 + 1))),
             callouts: CALLOUT_ROLES.map(|role| palette.color(role)),
+            syntax: Role::SYNTAX.map(|role| palette.color(role)),
         }
+    }
+
+    /// The color of a level's heading text (1..=6, clamped).
+    pub fn heading(&self, level: u8) -> Hsla {
+        self.heading[usize::from(level.clamp(1, HEADING_LEVELS as u8)) - 1]
+    }
+
+    /// The colour of syntax token `index` (`Role::SYNTAX`); text when out of range.
+    pub fn syntax(&self, index: u8) -> Hsla {
+        self.syntax
+            .get(usize::from(index))
+            .copied()
+            .unwrap_or(self.text)
     }
 
     pub fn callout(&self, kind: CalloutType) -> Hsla {
@@ -77,7 +97,9 @@ impl From<Hsla> for InlineColors {
             link: color,
             broken: color,
             subtle: color,
+            heading: [color; HEADING_LEVELS],
             callouts: [color; CALLOUT_ROLES.len()],
+            syntax: [color; Role::SYNTAX.len()],
         }
     }
 }
@@ -141,5 +163,33 @@ mod tests {
         let color = mocha().color(Role::Text);
         let colors = InlineColors::from(color);
         assert!(colors.link == color && colors.callout(CalloutType::Bug) == color);
+    }
+}
+
+#[cfg(test)]
+mod heading_tests {
+    use super::*;
+    use crate::theme::{Defaults, ResolvedTheme};
+
+    #[test]
+    fn heading_colors_follow_each_levels_role() {
+        let defaults = Defaults::parse(include_str!("../../assets/themes/roles.toml")).unwrap();
+        let mocha = include_str!("../../assets/themes/catppuccin-mocha.toml");
+        let theme = mocha.replacen(
+            "[overrides]\n",
+            "[overrides]\nheading = \"#112233\"\nheading_5 = \"#445566\"\n",
+            1,
+        );
+        let palette = Palette::from_resolved(&ResolvedTheme::parse(&defaults, &theme).unwrap());
+        let colors = InlineColors::from_palette(&palette);
+        for level in 1..=6 {
+            assert_eq!(
+                colors.heading(level),
+                palette.color(Role::heading_level(level))
+            );
+        }
+        assert_ne!(colors.heading(5), colors.heading(4), "a level can differ");
+        assert_eq!(colors.heading(0), colors.heading(1), "clamped");
+        assert_eq!(colors.heading(9), colors.heading(6), "clamped");
     }
 }

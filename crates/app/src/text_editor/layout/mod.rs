@@ -6,12 +6,16 @@
 mod shape;
 mod state;
 
+#[cfg(test)]
+pub(super) use shape::mono_ascent_descent;
 pub(super) use shape::{
-    build_display_lines, char_budget, fit_with_indent, line_runs, mono_char_width,
-    shape_display_line, shape_entry, wrapped_row_count,
+    EntryHeight, RowFontMetrics, build_display_lines, char_budget, entry_heights, fit_with_indent,
+    line_runs, mono_char_width, shape_display_line, shape_entry, shaped_height, tall_rows,
+    wrapped_row_count,
 };
 pub(super) use state::{
-    LineState, TableLineKind, callout_at_line, indent_px, is_table_active, table_line_kind,
+    LineState, MathPart, TableLineKind, callout_at_line, indent_px, is_table_active,
+    table_line_kind,
 };
 
 #[cfg(test)]

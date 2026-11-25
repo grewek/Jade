@@ -25,6 +25,9 @@ pub(super) enum ConstructKind {
     /// extended autolinks) — a one-shot match, resolved directly in
     /// `scan_inline` since there's no closer to search for.
     BareUrl,
+    /// `$x$` / `$$x$$`: opaque, its LaTeX is not Markdown. Drawn as the plain
+    /// source until math layout exists (#13).
+    Math,
 }
 
 pub(super) struct Construct {
@@ -122,6 +125,13 @@ pub(super) fn find_construct(rest: &str) -> Option<Construct> {
                     kind: ConstructKind::BareUrl,
                 });
             }
+            b'$' => {
+                return Some(Construct {
+                    offset: i,
+                    opener_len: opener_len(rest, i, rest.len()),
+                    kind: ConstructKind::Math,
+                });
+            }
             _ => i += 1,
         }
     }
@@ -207,9 +217,33 @@ pub(super) fn parse_entity(line: &str, start: usize, end: usize) -> Option<(Rang
 /// its non-bold text at heading size/color.
 pub(super) fn scan_inline(
     line: &str,
+    pos: usize,
+    end: usize,
+    default_style: InlineStyle,
+    macros: &Macros,
+    segments: &mut Vec<DisplaySegment>,
+    display_text: &mut String,
+) {
+    scan_inline_in(
+        line,
+        pos,
+        end,
+        default_style,
+        Some(macros),
+        segments,
+        display_text,
+    );
+}
+
+/// [`scan_inline`], where `math` is the macros a formula is expanded with, or
+/// `None` when a formula may not become a drawn [`InlineStyle::Math`] segment:
+/// a table cell paints its own text and cannot.
+pub(super) fn scan_inline_in(
+    line: &str,
     mut pos: usize,
     end: usize,
     default_style: InlineStyle,
+    math: Option<&Macros>,
     segments: &mut Vec<DisplaySegment>,
     display_text: &mut String,
 ) {
@@ -344,6 +378,28 @@ pub(super) fn scan_inline(
                     link.span.end
                 })
             }
+            ConstructKind::Math => parse_math(line, construct_start, end).map(|found| {
+                let drawn = math.and_then(|m| rendered_span(&line[found.span.clone()], m));
+                if let Some(drawn) = drawn {
+                    let blank = " ".repeat(drawn.columns);
+                    push_replaced(
+                        segments,
+                        display_text,
+                        found.span.clone(),
+                        &blank,
+                        InlineStyle::Math,
+                    );
+                } else {
+                    push_visible(
+                        line,
+                        segments,
+                        display_text,
+                        found.span.clone(),
+                        default_style,
+                    );
+                }
+                found.span.end
+            }),
             ConstructKind::BareUrl => {
                 let url_end = parse_bare_url(line, construct_start, end).span.end;
                 push_visible(

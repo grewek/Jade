@@ -82,7 +82,7 @@ pub(in crate::text_editor) fn render_params(
     font.family = gpui_kit::component::Theme::global(cx)
         .mono_font_family
         .clone();
-    let font_size = text_style.font_size.to_pixels(window.rem_size());
+    let font_size = crate::text_editor::settings::body_font_size();
     let text_color = ThemeEngine::color(cx, Role::Text);
     // The editor's own on-screen width isn't known yet before the first
     // layout — `scroll_handle`'s tracked container bounds (the same "last
@@ -93,7 +93,7 @@ pub(in crate::text_editor) fn render_params(
         let width = editor.scroll_handle.bounds().size.width;
         if width > px(0.) { width } else { Pixels::MAX }
     };
-    let line_height = window.line_height();
+    let line_height = crate::text_editor::settings::body_row_height();
     RenderParams {
         font,
         font_size,
@@ -254,6 +254,7 @@ pub(in crate::text_editor) fn render_editor(
             canvas(
                 move |_, _, _| {},
                 move |bounds, _, window, cx| {
+                    let mut bounds = bounds;
                     let frame_clock = crate::debug_server::frames::start();
                     let focused = focus_handle.is_focused(window);
                     // Only snap the view back to the cursor the first time
@@ -293,20 +294,34 @@ pub(in crate::text_editor) fn render_editor(
                     // rows, and `notify` so the next render sizes the scroll extent.
                     let real_width = viewport.size.width;
                     if real_width > px(0.) {
-                        let rebuilt = editor_entity.update(cx, |editor, _| {
-                            layout.update_rows(
-                                &Inputs {
-                                    text: editor.buffer().text(),
-                                    cursor,
-                                    focused,
-                                    width: real_width,
-                                    font: &font,
-                                    font_size,
-                                    text_color,
-                                },
-                                window,
-                            )
+                        let (rebuilt, shift) = editor_entity.update(cx, |editor, _| {
+                            let inp = Inputs {
+                                text: editor.buffer().text(),
+                                cursor,
+                                focused,
+                                width: real_width,
+                                font: &font,
+                                font_size,
+                                text_color,
+                            };
+                            let rebuilt = layout.update_rows(&inp, window);
+                            // Making the lines in view exact can move the content
+                            // (rows corrected above it): keep it where the reader
+                            // had it, for this frame and the scroll offset.
+                            let shift = if viewport.size.height > px(0.) {
+                                layout.verify_anchored((bounds, viewport), &inp, window)
+                            } else {
+                                px(0.)
+                            };
+                            (rebuilt, shift)
                         });
+                        if shift != px(0.) {
+                            bounds.origin.y -= shift;
+                            let mut offset = scroll_handle.offset();
+                            offset.y =
+                                (offset.y - shift).clamp(-scroll_handle.max_offset().y, px(0.));
+                            scroll_handle.set_offset(offset);
+                        }
                         if rebuilt {
                             // A `notify` made while painting is dropped; defer it.
                             let entity = editor_entity.clone();
@@ -327,6 +342,7 @@ pub(in crate::text_editor) fn render_editor(
                         table_drag: editor_entity.read(cx).table_drag,
                         column_hover: editor_entity.read(cx).column_hover,
                         column_drag: editor_entity.read(cx).column_drag.clone(),
+                        hover_link: editor_entity.read(cx).hover_link.clone(),
                         float_spots: editor_entity.read(cx).float_spots.clone(),
                     });
                     editor_entity.update(cx, |editor, cx| {

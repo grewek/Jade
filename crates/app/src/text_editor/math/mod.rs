@@ -1,0 +1,31 @@
+//! LaTeX math (`$…$`, `$$…$$`): parsing a formula's source into a tree. GPUI-free
+//! like the rest of the pure editor logic; layout and painting build on the
+//! tree and the bundled Latin Modern Math font (#13).
+
+// The renderer that uses it follows in #13; until then only tests do.
+#![allow(dead_code, unused_imports)]
+
+mod alphabet;
+mod ast;
+mod cache;
+mod font;
+mod layout;
+#[cfg(test)]
+mod layout_tests;
+mod lex;
+mod macros;
+mod parse;
+mod symbols;
+pub use symbols::channels;
+#[cfg(test)]
+mod tests;
+
+pub use ast::*;
+pub use cache::{
+    MATH_SCALE, MONO_ADVANCE_EM, Rendered, block_rows, rendered, rendered_span, rows_to_fit, scale,
+    span_body,
+};
+pub use font::MathFont;
+pub use layout::{Item, Layout, layout};
+pub use macros::{Macros, NO_MACROS, TooDeep, definition_starts, may_define};
+pub use parse::{Formula, MAX_DEPTH, MAX_SOURCE, parse};

@@ -7,8 +7,12 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
+mod boxes;
+mod code_box;
+mod code_chip;
 mod input;
 pub(super) mod justify;
+mod link_underline;
 mod paint;
 pub(in crate::text_editor) mod region;
 mod render;
@@ -23,25 +27,28 @@ use super::doc::DocumentCache;
 use super::editor::ColumnMenu;
 use super::image::{self, Cache as ImageCache, Info as ImageInfo};
 use super::layout::{
-    LineState, TableLineKind, char_budget, indent_px, is_table_active, line_runs, mono_char_width,
-    shape_display_line, shape_entry, table_line_kind,
+    EntryHeight, LineState, MathPart, TableLineKind, char_budget, entry_heights, indent_px,
+    is_table_active, line_runs, mono_char_width, shape_display_line, shape_entry, shaped_height,
+    table_line_kind,
 };
 use super::link_table::LinkTable;
 use super::paint_trace::{FrameInfo, PaintTrace};
 use super::preview::LineRole;
 use super::preview::callout::{Callout, callout_index_at};
 use super::preview::{
-    DisplayLine, InlineStyle, LineIndent, Widget, build_cell_line, is_thematic_break, raw_cell_line,
+    DisplayLine, InlineStyle, LineIndent, Widget, build_cell_line_with, is_thematic_break,
+    raw_cell_line,
 };
 use super::rows::{Change, Inputs, RowCache};
 use super::table::Align;
 use super::table::handles::{Grid, Handle, TableDrag};
-use super::table::layout_row_editing;
 use super::table::ops::Op;
 use super::table::{Table, table_index_at};
 use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
+use boxes::{BoxShape, corners_of, paint_box, paint_box_corners, paint_strip};
 #[allow(unused_imports)]
+pub(in crate::text_editor) use code_box::{block_lines, fence_language};
 pub(super) use input::*;
 #[allow(unused_imports)]
 pub(super) use paint::*;
@@ -53,15 +60,9 @@ pub(super) use table_paint::*;
 #[allow(unused_imports)]
 pub(super) use widgets::*;
 
-/// Pixel width of a callout's left accent bar — thicker than a plain
-/// blockquote's own `QUOTE_BAR_WIDTH`, so a callout reads as a distinct,
-/// heavier element even before its background tint is noticed.
-const CALLOUT_BAR_WIDTH: Pixels = px(3.);
-
 /// The left inset, within an indent level's own lane, that a blockquote's
 /// quote bar is painted at — see `paint_lines`.
 const QUOTE_BAR_INSET: Pixels = px(4.);
-const QUOTE_BAR_WIDTH: Pixels = px(2.);
 
 /// The thickness of a table's grid lines — see `paint_table_grid_lines`.
 const TABLE_LINE_WIDTH: Pixels = px(1.);
@@ -72,6 +73,12 @@ const TABLE_LINE_WIDTH: Pixels = px(1.);
 /// correctness (every line still gets exactly one entry in [`LineLayout`]
 /// regardless).
 const OVERSCAN_LINES: usize = 20;
+
+/// `origin_y` plus `rows` rows of `line_height`, summed in `f64`.
+fn window_y(origin_y: Pixels, line_height: Pixels, rows: i64) -> Pixels {
+    let doc = f64::from(f32::from(line_height)) * rows as f64;
+    px((f64::from(f32::from(origin_y)) + doc) as f32)
+}
 
 /// Per-document, per-paint layout data that lets `measure_document`/
 /// `paint_lines`/`offset_for_position`/`input_handler::bounds_for_range`
@@ -119,6 +126,19 @@ impl LineLayout {
         self.line_height * self.row_cache.borrow().prefix_sum(i) as f32
     }
 
+    /// The window y of line `i`'s top, with the editor's top at `origin_y`.
+    /// Both are huge in a huge note (a 105 MB one is 57M px tall, where `f32`
+    /// steps are 4px), so the sum is done in `f64`: the result is a small number
+    /// and exact. Adding `origin_y` to [`Self::cumulative_at`] in `f32` lands
+    /// each box and each line on a different 4px step (#21).
+    pub(super) fn screen_y(&self, origin_y: Pixels, i: usize) -> Pixels {
+        window_y(
+            origin_y,
+            self.line_height,
+            self.row_cache.borrow().prefix_sum(i),
+        )
+    }
+
     /// For the paint trace; see [`RowCache::trace_state`].
     pub(super) fn trace_state(&self) -> (Option<Pixels>, std::ops::Range<usize>, usize) {
         self.row_cache.borrow().trace_state()
@@ -142,6 +162,34 @@ impl LineLayout {
         self.row_cache
             .borrow_mut()
             .verify(&self.doc_cache.borrow(), range, inp, window);
+    }
+
+    /// [`Self::verify_rows`] for the lines in view, and how far that moved the
+    /// content under the reader: the rows of lines above the first visible one
+    /// are corrected when they enter the window, which moves everything below
+    /// them. Subtracting the result from the editor's origin and the scroll
+    /// offset keeps the content where it was (#24). Zero when the window had
+    /// no such corrections.
+    pub(super) fn verify_anchored(
+        &self,
+        (bounds, viewport): (Bounds<Pixels>, Bounds<Pixels>),
+        inp: &Inputs,
+        window: &mut Window,
+    ) -> Pixels {
+        let range = visible_line_range(self, bounds, viewport);
+        if range.is_empty() {
+            return px(0.);
+        }
+        let doc_top = viewport.origin.y - bounds.origin.y;
+        let first = self
+            .partition_point_cumulative(|c| c <= doc_top)
+            .saturating_sub(1);
+        let before = self.row_cache.borrow().prefix_sum(first);
+        self.verify_rows(range, inp, window);
+        let after = self.row_cache.borrow().prefix_sum(first);
+        // `f64`: the rows times the row height is exact where `f32` cumulative
+        // heights are not (see `window_y`).
+        px((f64::from(f32::from(self.line_height)) * (after - before) as f64) as f32)
     }
 
     /// The line containing buffer byte offset `cursor`.
@@ -204,7 +252,8 @@ pub(super) fn caret_rect(
     ) {
         return Some(found);
     }
-    let mut y_offset = layout.cumulative_at(range.start);
+    let anchor = layout.screen_y(bounds.origin.y, range.start);
+    let mut y_offset = px(0.);
     for i in range {
         let line_range = layout.line_range(i);
         let line_text = &text[line_range.clone()];
@@ -219,8 +268,9 @@ pub(super) fn caret_rect(
             window,
         );
         // More than one entry only for a table row whose cells wrapped.
-        for (wrapped, display_line) in &results {
-            let height = wrapped.size(line_height).height;
+        let heights = entry_heights(&results, line_text, (font_size, line_height), state.macros);
+        for ((wrapped, display_line), entry) in results.iter().zip(heights) {
+            let (line_height, height) = (entry.row, entry.height);
             if offset <= line_range.end {
                 let display_offset = display_line.display_offset_for_raw(offset - line_range.start);
                 let pos = justify::position_for_index(
@@ -230,10 +280,11 @@ pub(super) fn caret_rect(
                     line_height,
                 )
                 .unwrap_or(point(px(0.), px(0.)));
-                let x = pos.x + indent_px(display_line.indent.level());
+                let (pos, caret_height) = entry.place(pos);
+                let x = pos.x + indent_px(display_line.indent);
                 return Some(Bounds {
-                    origin: bounds.origin + point(x, y_offset + pos.y),
-                    size: size(px(1.), line_height),
+                    origin: point(bounds.origin.x + x, anchor + y_offset + pos.y),
+                    size: size(px(1.), caret_height),
                 });
             }
             y_offset += height;
@@ -285,7 +336,8 @@ pub(super) fn move_by_row(
         _ => caret.origin.x,
     };
     let lh = view.line_height;
-    let y = caret.origin.y + lh * 0.5 + if down { lh } else { -lh };
+    // The row below starts under the caret's own (possibly tall) row.
+    let y = caret.origin.y + lh * 0.5 + if down { caret.size.height } else { -lh };
     let (top, bottom) = (
         view.bounds.origin.y,
         view.bounds.origin.y + view.bounds.size.height,
@@ -328,14 +380,21 @@ pub(super) fn caret_in_column(
     window: &mut Window,
 ) -> Option<Bounds<Pixels>> {
     let (region, _) = doc.side_by_side(doc.line_at(offset))?;
-    let top = layout.cumulative_at(region.start_line);
+    // The region's top as a window y, so nothing here adds two huge numbers.
+    let at_top = Bounds {
+        origin: point(
+            bounds.origin.x,
+            layout.screen_y(bounds.origin.y, region.start_line),
+        ),
+        size: bounds.size,
+    };
     region::caret_bounds(
         text,
         doc,
         offset,
         (cursor, focused),
         metrics,
-        (colors, top, bounds),
+        (colors, px(0.), at_top),
         window,
     )
 }
@@ -413,8 +472,17 @@ pub(super) struct FrameView {
     /// The columns region whose controls show, and the divider being dragged.
     column_hover: Option<usize>,
     column_drag: Option<ColumnDrag>,
+    /// The link under the pointer, for `link.underline = "hover"`.
+    hover_link: Option<link_underline::HoverLink>,
     /// See `Editor::float_spots`.
     float_spots: Rc<RefCell<Vec<(usize, Vec<region::FloatSpot>)>>>,
+}
+
+impl FrameView {
+    /// The lines that were painted, with their overscan.
+    pub(super) fn visible_lines(&self) -> std::ops::Range<usize> {
+        visible_line_range(&self.layout, self.bounds, self.viewport)
+    }
 }
 
 /// What painting a table needs about the columns it is drawn with.
@@ -496,14 +564,14 @@ fn table_grid(
         let column = region::column_with_line(&shaped, table.start_line)?;
         // The table is as wide as the line that opens it.
         let first = column.lines.iter().find(|sl| sl.line == table.start_line)?;
-        let region_top = bounds.origin.y + layout.cumulative_at(region.start_line);
+        let region_top = layout.screen_y(bounds.origin.y, region.start_line);
         let columns = TableColumns::of(table, first.width, cfg, window);
         let at = |line: usize| region::line_top(column, region_top, line);
         let (grid, top) = grid_for(table, &columns, &at);
         return Some((grid, point(bounds.origin.x + first.x, top)));
     }
     let columns = TableColumns::of(table, bounds.size.width, cfg, window);
-    let at = |line: usize| bounds.origin.y + layout.cumulative_at(line);
+    let at = |line: usize| layout.screen_y(bounds.origin.y, line);
     let (grid, top) = grid_for(table, &columns, &at);
     Some((grid, point(bounds.origin.x, top)))
 }
@@ -532,6 +600,24 @@ fn grid_for(table: &Table, columns: &TableColumns, at: &dyn Fn(usize) -> Pixels)
 // shadows plain `#[test]` and makes `#[gpui_kit::test]`'s own expansion
 // recurse infinitely (see the project-wide note on this in `app.rs`).
 #[cfg(test)]
+mod math_rows_tests;
+
+#[cfg(test)]
+mod anchoring_tests;
+#[cfg(test)]
+mod code_chip_tests;
+#[cfg(test)]
+mod formula_context_tests;
+#[cfg(test)]
+mod heading_size_tests;
+#[cfg(test)]
+mod heading_spike_tests;
+#[cfg(test)]
+mod height_agreement_tests;
+#[cfg(test)]
+mod task_toggle_tests;
+
+#[cfg(test)]
 mod tests {
     use super::super::Editor;
     use super::super::preview::LineIndent;
@@ -539,6 +625,7 @@ mod tests {
     use super::super::table::classify_tables;
     use super::super::test_support::apply_edit;
     use super::LineState;
+    use super::window_y;
     use super::{TableLineKind, shape_display_line};
     use crate::text_editor::layout::is_active_line;
     use crate::text_editor::rows::{self as rowcache, Change, Inputs, Invalidate};
@@ -577,6 +664,18 @@ mod tests {
             })
             .unwrap();
         }
+    }
+
+    #[test]
+    fn window_y_stays_exact_in_a_note_millions_of_pixels_tall() {
+        // 1,358,363 rows of 26px end at y=35,317,438, which `f32` (4px steps
+        // up here) cannot hold: summing in `f32` gives -8 instead of -10.
+        let (origin, lh, rows) = (px(-35_317_448.), px(26.), 1_358_363);
+        assert_eq!(window_y(origin, lh, rows), px(-10.));
+        assert_ne!(origin + lh * rows as f32, px(-10.));
+        // Neighbouring lines keep their whole-row spacing.
+        let step = window_y(origin, lh, rows + 1) - window_y(origin, lh, rows);
+        assert_eq!(step, lh);
     }
 
     #[gpui_kit::test]
@@ -850,7 +949,12 @@ mod tests {
             .repeat(8);
         let text: &'static str = Box::leak(text.trim_end().to_owned().into_boxed_str());
         let (window, editor) = open_editor(cx, text);
-        cx.update(|cx| cx.set_global(crate::text_editor::TextSettings { justify: true }));
+        cx.update(|cx| {
+            cx.set_global(crate::text_editor::TextSettings {
+                justify: true,
+                ..Default::default()
+            })
+        });
         let (bounds, target, x) = cx
             .update_window(window, |_, window, cx| {
                 window.render_frame(cx);
@@ -1748,6 +1852,7 @@ mod tests {
                 table_drag: None,
                 column_hover: None,
                 column_drag: None,
+                hover_link: None,
                 float_spots: Default::default(),
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;
@@ -2300,6 +2405,7 @@ mod tests {
                 table_drag: None,
                 column_hover: None,
                 column_drag: None,
+                hover_link: None,
                 float_spots: Default::default(),
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;
@@ -3374,6 +3480,7 @@ mod tests {
                 window,
             );
 
+            let mut previous = 0;
             // Move the cursor onto the bold line (line 1), then off it again
             // onto line 2 — each a pure cursor move, no edit at all.
             for cursor in [
@@ -3390,7 +3497,25 @@ mod tests {
                     window,
                 );
 
-                let expected = exact_row_counts(
+                // A patched line is shaped, so it equals what painting sees (this
+                // short note's other lines are estimated right).
+                let expected: Vec<usize> = (0..doc_cache.line_count())
+                    .map(|i| {
+                        rowcache::shaped_count_for_test(
+                            &text,
+                            &doc_cache,
+                            i,
+                            (cursor, true),
+                            available_width,
+                            (&font, font_size, text_color),
+                            window,
+                        )
+                    })
+                    .collect();
+                // The two lines the caret moved between are shaped; the rest
+                // keep the cold count (it can be a row short of the shaped one
+                // for a wrapped line: `verify` makes the window exact).
+                let cold = exact_row_counts(
                     &text,
                     &doc_cache,
                     (cursor, true),
@@ -3398,8 +3523,13 @@ mod tests {
                     (&font, font_size, text_color),
                     window,
                 );
-
-                assert_eq!(row_counts(&row_cache), expected, "cursor at {cursor}");
+                let now = doc_cache.line_at(cursor);
+                let mut want = cold;
+                for line in [previous, now] {
+                    want[line] = expected[line] as i64;
+                }
+                previous = now;
+                assert_eq!(row_counts(&row_cache), want, "cursor at {cursor}");
             }
         })
         .unwrap();
@@ -4164,10 +4294,10 @@ mod tests {
             cx.update_window(window, |_, window, cx| {
                 window.render_frame(cx);
                 let bounds = window.find("editor").bounds();
-                // The body row is the third line, below the (one-row) header.
+                // The body row is the second row, below the (one-row) header.
                 let position = point(
                     bounds.origin.x + px(20.),
-                    bounds.origin.y + window.line_height() * 2.5,
+                    bounds.origin.y + window.line_height() * 1.5,
                 );
                 let (button, modifiers) = (MouseButton::Right, Default::default());
                 let down = MouseDownEvent {
@@ -4221,8 +4351,8 @@ mod tests {
                 let col_x = (0..=columns.widths.len())
                     .map(|c| f32::from(columns.x(table::column_left(&columns.widths, c))))
                     .collect();
-                // The header and the delimiter band are 2 lines, then 1 per row.
-                let row_y = [0.0, 2.0, 3.0, 4.0, 5.0].map(|n| n * line).to_vec();
+                // The header is one line (its delimiter has no row), then 1 per row.
+                let row_y = [0.0, 1.0, 2.0, 3.0, 4.0].map(|n| n * line).to_vec();
                 (bounds.origin, Grid { col_x, row_y })
             })
             .unwrap()
@@ -4290,6 +4420,32 @@ mod tests {
                 origin + point(px(10.0), px(grid.row_y[4] + 120.0)),
             );
             assert_eq!(hover(cx), None, "gone below the table");
+        }
+
+        /// Rows of each line as the row cache holds them.
+        fn rows_of_lines(cx: &mut TestAppContext, editor: &Entity<Editor>) -> Vec<i64> {
+            editor.read_with(cx, |e, _| {
+                let rows = e.row_height_cache.borrow();
+                (0..rows.line_count())
+                    .map(|l| rows.prefix_sum(l + 1) - rows.prefix_sum(l))
+                    .collect()
+            })
+        }
+
+        #[gpui_kit::test]
+        fn a_drawn_tables_header_is_one_row_and_its_delimiter_has_none(cx: &mut TestAppContext) {
+            // #48: the header was as tall as its text plus the hidden delimiter's row.
+            let (window, editor) = open_at(cx, TABLE, TABLE.len());
+            assert_eq!(rows_of_lines(cx, &editor), [1, 0, 1, 1, 1]);
+            assert_rows_are_exact(cx, window, &editor);
+            // A caret in a cell leaves it drawn.
+            let (window, editor) = open_at(cx, TABLE, 2);
+            assert_eq!(rows_of_lines(cx, &editor), [1, 0, 1, 1, 1]);
+            assert_rows_are_exact(cx, window, &editor);
+            // On the delimiter line the table is raw text: every line has its row.
+            let (window, editor) = open_at(cx, TABLE, TABLE.find("|---").unwrap() + 1);
+            assert_eq!(rows_of_lines(cx, &editor), [1, 1, 1, 1, 1]);
+            assert_rows_are_exact(cx, window, &editor);
         }
 
         #[gpui_kit::test]

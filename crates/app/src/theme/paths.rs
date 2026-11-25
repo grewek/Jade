@@ -53,7 +53,28 @@ impl ConfigDirs {
         self.base.join("theme")
     }
 
+    /// Where `.sublime-syntax` files are read from: `setting` (the
+    /// `code_block.syntax_folder` text; a relative one is under the config
+    /// folder), else `syntaxes/`. A vault is never searched.
+    pub fn syntax_dir(&self, setting: Option<&str>) -> PathBuf {
+        self.base.join(setting.unwrap_or("syntaxes"))
+    }
+
     pub fn config_file(&self) -> PathBuf {
         self.base.join("config.toml")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ConfigDirs;
+    use std::path::PathBuf;
+
+    #[test]
+    fn the_syntax_folder_defaults_to_syntaxes_and_a_setting_is_relative_or_absolute() {
+        let dirs = ConfigDirs::new(PathBuf::from("/cfg"));
+        assert_eq!(dirs.syntax_dir(None), PathBuf::from("/cfg/syntaxes"));
+        assert_eq!(dirs.syntax_dir(Some("langs")), PathBuf::from("/cfg/langs"));
+        assert_eq!(dirs.syntax_dir(Some("/opt/s")), PathBuf::from("/opt/s"));
     }
 }

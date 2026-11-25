@@ -25,6 +25,8 @@
 
 use std::ops::Range;
 
+use super::super::math::{Macros, NO_MACROS};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
     Left,
@@ -38,6 +40,9 @@ pub enum Align {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Column {
     pub width: usize,
+    /// The longest word of any cell, in characters (a `<br>` ends a word): the
+    /// least width at which no word is broken (#46).
+    pub word: usize,
     pub align: Align,
 }
 
@@ -135,12 +140,18 @@ pub const LINE_BREAK: &str = "<br>";
 /// with fewer cells than `widths` counts the missing ones as one empty line;
 /// extra cells are ignored.
 pub fn row_line_count(line: &str, widths: &[usize]) -> usize {
-    row_line_count_editing(line, widths, None)
+    row_line_count_in(line, widths, None, &NO_MACROS)
 }
 
 /// [`row_line_count`] for a row whose cell `editing` is being edited: that cell
-/// shows its text verbatim (see `table::geometry::wrap_raw`), so it wraps differently.
-pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usize>) -> usize {
+/// shows its text verbatim (see `table::geometry::wrap_raw`), so it wraps
+/// differently. The other cells draw their formulas, expanded with `macros`.
+pub fn row_line_count_in(
+    line: &str,
+    widths: &[usize],
+    editing: Option<usize>,
+    macros: &Macros,
+) -> usize {
     let mut lines = 1;
     let mut column = 0;
     for_each_cell_range(line, |raw| {
@@ -151,14 +162,129 @@ pub fn row_line_count_editing(line: &str, widths: &[usize], editing: Option<usiz
             } else {
                 let cell = line[raw].trim();
                 // Bytes are never fewer than characters.
-                if cell.len() > width || cell.contains(LINE_BREAK) {
-                    lines = lines.max(wrapped_line_count(cell, width));
+                if cell.len() > width || cell.contains(LINE_BREAK) || cell.contains('$') {
+                    lines = lines.max(wrapped_line_count_in(cell, width, macros));
                 }
             }
         }
         column += 1;
     });
     lines
+}
+
+/// How many rows each line of the row takes when it is shaped as `entries`
+/// rows: more than one when a drawn formula in a cell is taller than a row.
+pub fn row_scale(
+    line: &str,
+    widths: &[usize],
+    (editing, macros): (Option<usize>, &Macros),
+    entries: usize,
+) -> usize {
+    (entries / row_line_count_in(line, widths, editing, macros)).max(1)
+}
+
+/// A run of a cell that the wrapping places whole.
+#[derive(Debug, PartialEq, Eq)]
+pub(in crate::text_editor) struct Chunk {
+    /// Where it is in the cell text.
+    pub range: Range<usize>,
+    /// Characters it takes on a line (`\|` shows as one, a drawn formula as
+    /// many as it reserves).
+    pub len: usize,
+    /// It follows the chunk before it with no space between.
+    pub glued: bool,
+}
+
+/// Characters `word` takes once `\|` shows as `|`.
+pub(in crate::text_editor) fn shown_len(word: &str) -> usize {
+    word.chars().count() - word.matches("\\|").count()
+}
+
+/// `text` as the runs the greedy fill places. Spaces separate them, except
+/// inside a drawn formula (`formulas`: raw range and reserved characters, in
+/// order): it is one run of its drawn width, so it is never cut. A word that
+/// touches a formula is cut at the formula's edges into glued runs. A formula
+/// wider than `width` is not kept whole (it shows as the text it is, which
+/// wraps as text).
+pub(in crate::text_editor) fn chunks(
+    text: &str,
+    formulas: &[(Range<usize>, usize)],
+    width: usize,
+) -> Vec<Chunk> {
+    let kept: Vec<_> = formulas
+        .iter()
+        .filter(|(_, w)| *w <= width.max(1))
+        .collect();
+    let (mut out, mut next, mut at) = (Vec::new(), 0, 0);
+    let mut prev_end = None;
+    while at < text.len() {
+        if let Some((range, len)) = kept.get(next).filter(|(r, _)| r.start == at) {
+            out.push(Chunk {
+                range: range.clone(),
+                len: *len,
+                glued: prev_end == Some(at),
+            });
+            (at, next, prev_end) = (range.end, next + 1, Some(range.end));
+            continue;
+        }
+        let Some(c) = text[at..].chars().next() else {
+            break;
+        };
+        if c.is_whitespace() {
+            at += c.len_utf8();
+            continue;
+        }
+        let start = at;
+        let stop = kept.get(next).map_or(text.len(), |(r, _)| r.start);
+        while at < stop
+            && text[at..]
+                .chars()
+                .next()
+                .is_some_and(|c| !c.is_whitespace())
+        {
+            at += text[at..].chars().next().map_or(1, char::len_utf8);
+        }
+        out.push(Chunk {
+            range: start..at,
+            len: shown_len(&text[start..at]),
+            glued: prev_end == Some(start),
+        });
+        prev_end = Some(at);
+    }
+    out
+}
+
+/// [`wrapped_line_count`] with the cell's formulas drawn (see [`chunks`]).
+pub fn wrapped_line_count_in(cell: &str, width: usize, macros: &Macros) -> usize {
+    if cell.contains(LINE_BREAK) {
+        return cell
+            .split(LINE_BREAK)
+            .map(|part| wrapped_line_count_in(part, width, macros))
+            .sum();
+    }
+    if !cell.contains('$') {
+        return wrapped_line_count(cell, width);
+    }
+    let formulas = super::super::preview::cell_formulas(cell, macros);
+    if formulas.is_empty() {
+        return wrapped_line_count(cell, width);
+    }
+    let width = width.max(1);
+    let (mut lines, mut used) = (0, 0);
+    for chunk in chunks(cell, &formulas, width) {
+        let len = chunk.len;
+        let separator = usize::from(used > 0 && !chunk.glued);
+        if used + separator + len <= width {
+            used += separator + len;
+        } else if len <= width {
+            lines += 1;
+            used = len;
+        } else {
+            lines += usize::from(used > 0) + (len - 1) / width;
+            used = len - (len - 1) / width * width;
+        }
+    }
+    lines + usize::from(used > 0 || lines == 0)
 }
 
 /// `wrap_cell_text(&cell.replace("\\|", "|"), width).len()` without building a
@@ -212,6 +338,88 @@ fn cell_width(line: &str, raw: Range<usize>) -> usize {
     } else {
         cell.trim().chars().count()
     }
+}
+
+/// The longest word of `text`, in characters: a run without whitespace, where a
+/// `<br>` also ends a word and an escaped pipe (`\|`) is one character. One
+/// pass over the bytes, no allocation: this runs for every cell of a table.
+fn longest_word(text: &str) -> usize {
+    let bytes = text.as_bytes();
+    let (mut best, mut run, mut i) = (0, 0, 0);
+    while i < bytes.len() {
+        let byte = bytes[i];
+        if byte == b'<' && bytes[i..].starts_with(b"<br>") {
+            best = best.max(run);
+            run = 0;
+            i += 4;
+        } else if byte == b'\\' && bytes.get(i + 1) == Some(&b'|') {
+            run += 1;
+            i += 2;
+        } else if byte < 0x80 {
+            if (byte as char).is_whitespace() {
+                best = best.max(run);
+                run = 0;
+            } else {
+                run += 1;
+            }
+            i += 1;
+        } else {
+            let c = text[i..].chars().next().unwrap_or(' ');
+            if c.is_whitespace() {
+                best = best.max(run);
+                run = 0;
+            } else {
+                run += 1;
+            }
+            i += c.len_utf8();
+        }
+    }
+    best.max(run)
+}
+
+/// A cell's natural width and longest word in characters, with each formula it
+/// draws counted at its drawn width (#47: a short formula with long source takes
+/// the room it needs, a long one no more). Only a cell with a `$` is looked at
+/// for formulas. The classifier knows no macros, so a formula that needs one is
+/// counted as its source, which is also how it is shown without them.
+fn text_metrics(text: &str) -> (usize, usize) {
+    let plain = || (text.chars().count(), longest_word(text));
+    if !text.contains('$') {
+        return plain();
+    }
+    let text = text.trim();
+    let (mut width, mut word, mut drawn) = (0, 0, false);
+    for part in text.split(LINE_BREAK) {
+        let formulas = super::super::preview::cell_formulas(part, &NO_MACROS);
+        drawn |= !formulas.is_empty();
+        let (mut line, mut run) = (0, 0);
+        for (k, chunk) in chunks(part, &formulas, usize::MAX).iter().enumerate() {
+            if !chunk.glued {
+                word = word.max(run);
+                run = 0;
+                line += usize::from(k > 0);
+            }
+            run += chunk.len;
+            line += chunk.len;
+        }
+        word = word.max(run);
+        width = width.max(line);
+    }
+    if drawn { (width, word) } else { plain() }
+}
+
+/// [`text_metrics`] of the cell at `raw` in `line`, cheap for one without a `$`.
+fn cell_metrics(line: &str, raw: Range<usize>) -> (usize, usize) {
+    if line[raw.clone()].contains('$') {
+        text_metrics(line[raw].replace("\\|", "|").trim())
+    } else {
+        (cell_width(line, raw.clone()), cell_word(line, raw))
+    }
+}
+
+/// [`longest_word`] of the cell at `raw` in `line`.
+fn cell_word(line: &str, raw: Range<usize>) -> usize {
+    longest_word(&line[raw])
 }
 
 fn make_cell(line: &str, raw: Range<usize>) -> Cell {
@@ -325,9 +533,13 @@ pub(in crate::text_editor) fn classify_table_list_from<'a>(
             .cells
             .iter()
             .zip(aligns)
-            .map(|(cell, align)| Column {
-                width: cell.text.chars().count().max(3),
-                align,
+            .map(|(cell, align)| {
+                let (width, word) = text_metrics(&cell.text);
+                Column {
+                    width: width.max(3),
+                    word,
+                    align,
+                }
             })
             .collect();
         while let Some(&(i, row)) = lines.peek() {
@@ -337,7 +549,9 @@ pub(in crate::text_editor) fn classify_table_list_from<'a>(
             let mut index = 0;
             for_each_cell_range(row, |raw| {
                 if let Some(column) = columns.get_mut(index) {
-                    column.width = column.width.max(cell_width(row, raw));
+                    let (width, word) = cell_metrics(row, raw);
+                    column.word = column.word.max(word);
+                    column.width = column.width.max(width);
                 }
                 index += 1;
             });
@@ -389,14 +603,20 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
             .cells
             .iter()
             .zip(aligns)
-            .map(|(cell, align)| Column {
-                width: cell.text.chars().count().max(3),
-                align,
+            .map(|(cell, align)| {
+                let (width, word) = text_metrics(&cell.text);
+                Column {
+                    width: width.max(3),
+                    word,
+                    align,
+                }
             })
             .collect();
         for &line in &lines[start + 2..end] {
             for (column, cell) in columns.iter_mut().zip(scan_row(line).cells.iter()) {
-                column.width = column.width.max(cell.text.chars().count());
+                let (width, word) = text_metrics(&cell.text);
+                column.word = column.word.max(word);
+                column.width = column.width.max(width);
             }
         }
 
@@ -419,13 +639,20 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
 /// that a many-column table doesn't collapse every column to nothing.
 pub const MIN_COLUMN_WIDTH: usize = 3;
 
+/// The characters `columns` columns spend on gaps: `3 * columns + 1`, plus the
+/// space `table.cell_padding` adds on both sides of every cell.
+fn border_overhead(columns: usize) -> usize {
+    let extra = 2.0 * crate::settings::cell_padding() / super::super::math::MONO_ADVANCE_EM;
+    3 * columns + 1 + (extra * columns as f32).ceil() as usize
+}
+
 /// Whether `columns` keep their natural widths within `max_total_chars`
 /// (or there is no cap). Then every cell fits its column, so no row wraps.
 pub fn fits_unshrunk(columns: &[Column], max_total_chars: impl Into<Option<usize>>) -> bool {
     let Some(max) = max_total_chars.into() else {
         return true;
     };
-    let content_budget = max.saturating_sub(3 * columns.len() + 1);
+    let content_budget = max.saturating_sub(border_overhead(columns.len()));
     columns.iter().map(|c| c.width).sum::<usize>() <= content_budget
 }
 
@@ -444,7 +671,7 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
     if columns.is_empty() || fits_unshrunk(columns, max_total_chars) {
         return natural;
     }
-    let content_budget = max_total_chars.saturating_sub(3 * columns.len() + 1);
+    let content_budget = max_total_chars.saturating_sub(border_overhead(columns.len()));
 
     let floor_total = MIN_COLUMN_WIDTH * columns.len();
     if content_budget <= floor_total {
@@ -458,26 +685,72 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
             .collect();
     }
 
-    // Water-filling: a column narrower than an equal share of what is left
-    // keeps its natural width; the wider ones split the rest equally. So a cell
-    // that grows takes space from columns that have some to spare, and only
-    // wraps once every column is down to the shared width.
+    // Whole words first (#46): no column goes below its longest word (nor
+    // `MIN_COLUMN_WIDTH`, nor its natural width) while the words of all
+    // columns fit together; only when they do not is a word broken.
+    let floors: Vec<usize> = columns
+        .iter()
+        .map(|c| c.word.max(MIN_COLUMN_WIDTH).min(c.width))
+        .collect();
+    if floors.iter().sum::<usize>() <= content_budget {
+        return fill_above(&natural, &floors, content_budget, false);
+    }
+    // Not all words fit: the longest words are shortened to a common length,
+    // so breaking is spread over the columns (a column's word count is not
+    // known here, and one column holding many long words would suffer most).
+    let minimum = vec![MIN_COLUMN_WIDTH; floors.len()];
+    fill_above(&floors, &minimum, content_budget, true)
+}
+
+/// Widths between `floors` and `natural` using `budget` characters, water-filled:
+/// a column narrower than the common level keeps its natural width, the wider
+/// ones share the rest equally (the widest take the odd characters), none
+/// below its floor. `floors` must sum to at most `budget`.
+fn fill_above(
+    natural: &[usize],
+    floors: &[usize],
+    budget: usize,
+    nearest_first: bool,
+) -> Vec<usize> {
+    let at = |level: usize| -> Vec<usize> {
+        natural
+            .iter()
+            .zip(floors)
+            .map(|(&n, &f)| level.clamp(f, n.max(f)))
+            .collect()
+    };
+    // The highest level whose widths still fit.
+    let (mut low, mut high) = (0, natural.iter().copied().max().unwrap_or(0));
+    while low < high {
+        let mid = (low + high).div_ceil(2);
+        if at(mid).iter().sum::<usize>() <= budget {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let mut widths = at(low);
+    let mut spare = budget - widths.iter().sum::<usize>();
+    // The odd characters go to the widest columns still below their natural
+    // width; with `nearest_first` to those nearest it, where one more may make a
+    // word fit.
     let mut order: Vec<usize> = (0..natural.len()).collect();
-    order.sort_by_key(|&i| natural[i]);
-    let mut widths = natural.clone();
-    let mut left = content_budget;
-    for (k, &i) in order.iter().enumerate() {
-        let remaining = order.len() - k;
-        if natural[i] <= left / remaining {
-            left -= natural[i];
-            continue;
+    order.sort_by_key(|&i| {
+        let gap = if nearest_first {
+            natural[i] - widths[i]
+        } else {
+            0
+        };
+        (gap, std::cmp::Reverse((natural[i], i)))
+    });
+    for i in order {
+        if spare == 0 {
+            break;
         }
-        let (each, extra) = (left / remaining, left % remaining);
-        for (j, &wide) in order[k..].iter().enumerate() {
-            // The widest take the odd characters.
-            widths[wide] = each + usize::from(j >= remaining - extra);
+        if widths[i] < natural[i] {
+            widths[i] += 1;
+            spare -= 1;
         }
-        break;
     }
     widths
 }
@@ -686,11 +959,73 @@ mod tests {
         assert_eq!(tables.len(), 2);
     }
 
+    /// Padding takes characters of the budget, so a table that just fit no longer does.
+    #[test]
+    fn cell_padding_costs_budget() {
+        let columns = [col(10), col(10)];
+        // 7 characters of gaps and 20 of text.
+        assert!(fits_unshrunk(&columns, 27));
+        let mut t = crate::settings::Typography::default();
+        t.table.cell_padding = 0.6;
+        crate::settings::set_body(&t);
+        let (still, wider) = (fits_unshrunk(&columns, 27), fits_unshrunk(&columns, 31));
+        let shrunk = resolve_widths(&columns, Some(27));
+        crate::settings::set_body(&crate::settings::Typography::default());
+        assert!(!still && wider, "4 more characters of gaps");
+        assert!(shrunk.iter().sum::<usize>() <= 16, "{shrunk:?}");
+    }
+
     fn col(width: usize) -> Column {
         Column {
             width,
+            word: 1,
             align: Align::Left,
         }
+    }
+
+    fn col_with_word(width: usize, word: usize) -> Column {
+        Column { word, ..col(width) }
+    }
+
+    #[test]
+    fn a_column_never_shrinks_below_its_longest_word_while_all_words_fit() {
+        // #46: an equal share (here 12 each) would cut the 14-letter word.
+        let columns = vec![col_with_word(40, 14), col_with_word(40, 5)];
+        let widths = cap_column_widths(&columns, 7 + 24);
+        assert_eq!(widths.iter().sum::<usize>(), 24);
+        assert!(widths[0] >= 14 && widths[1] >= 5, "{widths:?}");
+        assert_eq!(widths, vec![14, 10]);
+    }
+
+    #[test]
+    fn short_columns_keep_their_natural_width_and_long_words_the_rest() {
+        let columns = vec![
+            col_with_word(4, 4),
+            col_with_word(30, 9),
+            col_with_word(30, 9),
+        ];
+        // Overhead 10; 28 of content: 4 stays, the others share 24.
+        assert_eq!(cap_column_widths(&columns, 10 + 28), vec![4, 12, 12]);
+    }
+
+    #[test]
+    fn when_words_do_not_all_fit_the_longest_are_shortened_to_a_common_length() {
+        // Words 5, 10, 9, 5 want 29; 27 fit: the two long ones give a character each.
+        let columns = vec![
+            col_with_word(5, 5),
+            col_with_word(10, 10),
+            col_with_word(20, 9),
+            col_with_word(5, 5),
+        ];
+        // The odd character goes to the 9-letter word's column, where it makes it whole.
+        assert_eq!(cap_column_widths(&columns, 13 + 27), vec![5, 8, 9, 5]);
+    }
+
+    #[test]
+    fn words_that_cannot_all_fit_fall_back_to_an_equal_share() {
+        let columns = vec![col_with_word(40, 20), col_with_word(40, 20)];
+        let widths = cap_column_widths(&columns, 7 + 20);
+        assert_eq!(widths, vec![10, 10]);
     }
 
     #[test]
@@ -912,6 +1247,58 @@ mod fast_path_tests {
         "",
         "| --- | :-: | --: |",
     ];
+
+    #[test]
+    fn a_cell_with_a_formula_is_as_wide_as_the_formula_is_drawn() {
+        // #47: the source is 31 characters, the drawn fraction a few.
+        let source = "| a | b |\n|---|---|\n| $\\frac{numerator}{denominator}$ | x |";
+        let drawn = crate::text_editor::preview::cell_formulas(
+            "$\\frac{numerator}{denominator}$",
+            &NO_MACROS,
+        );
+        assert_eq!(drawn.len(), 1);
+        let columns = &classify_tables(source).1[0].columns;
+        assert_eq!(columns[0].width, drawn[0].1.max(3));
+        assert!(columns[0].width < 31, "{columns:?}");
+        // One formula is one word, however long its source.
+        assert_eq!(columns[0].word, drawn[0].1);
+        // The streaming classifier agrees.
+        assert_eq!(classify_table_list(source)[0].columns, *columns);
+    }
+
+    #[test]
+    fn text_around_a_formula_counts_its_words_and_spaces() {
+        let drawn = crate::text_editor::preview::cell_formulas("$x$", &NO_MACROS)[0].1;
+        // "ab" glued to the formula is one word; the space separates "cd".
+        assert_eq!(text_metrics("ab$x$ cd"), (2 + drawn + 1 + 2, 2 + drawn));
+        // A formula that cannot be drawn is its source, as before.
+        assert_eq!(text_metrics("$\\foo{x}$ y"), ("$\\foo{x}$ y".len(), 9));
+    }
+
+    #[test]
+    fn cell_word_is_the_longest_word_of_the_cell_text() {
+        for line in ROWS {
+            let row = scan_row(line);
+            let mut words = Vec::new();
+            for_each_cell_range(line, |raw| words.push(cell_word(line, raw)));
+            let expected: Vec<usize> = row
+                .cells
+                .iter()
+                .map(|c| {
+                    c.text
+                        .split("<br>")
+                        .flat_map(str::split_whitespace)
+                        .map(|w| w.chars().count())
+                        .max()
+                        .unwrap_or(0)
+                })
+                .collect();
+            assert_eq!(words, expected, "{line:?}");
+        }
+        assert_eq!(longest_word("one<br>three two"), 5);
+        assert_eq!(longest_word("a \\| bc"), 2);
+        assert_eq!(longest_word("héllo wörld!"), 6);
+    }
 
     #[test]
     fn cell_width_and_cell_count_match_scan_row() {

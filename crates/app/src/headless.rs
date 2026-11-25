@@ -166,7 +166,11 @@ impl HeadlessApp {
     /// Turns justified text on or off (not saved), then renders the frame.
     pub fn set_justify_and_frame(&mut self, on: bool) -> AllocSnapshot {
         self.measured(|window, cx| {
-            cx.set_global(crate::text_editor::TextSettings { justify: on });
+            let typography = crate::text_editor::TextSettings::typography(cx);
+            cx.set_global(crate::text_editor::TextSettings {
+                justify: on,
+                typography,
+            });
             window.render_frame(cx);
         })
     }

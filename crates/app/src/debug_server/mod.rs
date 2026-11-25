@@ -4,10 +4,14 @@
 //! the app pushes matching events, so a tool can drive and observe the live app
 //! without scraping a terminal. Nothing is sent until a client subscribes.
 
+mod capture;
 mod client;
 mod commands;
 pub(crate) mod frames;
+#[cfg(feature = "debug-socket")]
+pub(crate) mod headless;
 mod input;
+mod pixels;
 mod pump;
 pub(crate) mod targets;
 #[cfg(test)]

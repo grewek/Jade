@@ -13,6 +13,7 @@ use std::path::Path;
 
 use crate::fence::{FenceRole, lines_with_roles};
 use crate::link_scan::{LinkKind, scan_line};
+use crate::math_scan::BlockLines;
 use crate::note_name::split_md;
 use crate::resolve::{Destination, percent_decode, split_fragment};
 use crate::vault::Vault;
@@ -145,11 +146,12 @@ fn rewrite_text(
 ) -> Option<String> {
     let mut out = String::new();
     let mut changed = false;
+    let mut math = BlockLines::of(text);
     for (n, line, role) in lines_with_roles(text) {
         if n > 0 {
             out.push('\n');
         }
-        let edits = if role == FenceRole::Plain {
+        let edits = if role == FenceRole::Plain && !math.contains(n) {
             edits_for(line)
         } else {
             Vec::new()
@@ -525,5 +527,15 @@ mod tests {
             v.backlinks().get("New").map(Vec::as_slice),
             Some(&["A".to_string()][..])
         );
+    }
+
+    #[test]
+    fn a_link_inside_a_math_block_is_not_rewritten() {
+        let (dir, mut v) = vault(&[
+            ("Old.md", "# Old"),
+            ("A.md", "[[Old]]\n$$\n[[Old]]\nx\n$$\n[[Old]]"),
+        ]);
+        v.rename_note_updating_links("Old", "New").unwrap();
+        assert_eq!(read(&dir, "A.md"), "[[New]]\n$$\n[[Old]]\nx\n$$\n[[New]]");
     }
 }

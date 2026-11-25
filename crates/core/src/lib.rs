@@ -2,6 +2,7 @@ mod context;
 pub mod fence;
 pub mod link_scan;
 mod links;
+pub mod math_scan;
 mod note;
 mod note_name;
 mod rename;

@@ -226,3 +226,41 @@ impl Index {
         self.0.find(target)
     }
 }
+
+/// Fenced-code highlighting over a folder of definitions (#99).
+pub struct Syntaxes(super::highlight::Highlighter);
+
+impl Syntaxes {
+    /// Loads the folder; the count is how many files gave a notice.
+    pub fn load(dir: &std::path::Path) -> (Self, usize) {
+        let loaded = super::highlight::Highlighter::load_dir(dir);
+        (Self(loaded.highlighter), loaded.notices.len())
+    }
+
+    /// The block cache over the same definitions, for the per-block lookups.
+    pub fn into_cache(self) -> BlockSpans {
+        BlockSpans(
+            self.0,
+            super::highlight::BlockCache::new(super::highlight::Limits::default()),
+        )
+    }
+
+    /// The number of coloured spans in `text`, or 0 for an unknown language.
+    pub fn highlight(&self, language: &str, text: &str) -> usize {
+        self.0
+            .highlight(language, text)
+            .map_or(0, |h| h.lines.iter().map(Vec::len).sum())
+    }
+}
+
+/// [`Syntaxes`] behind the per-block cache (#99).
+pub struct BlockSpans(super::highlight::Highlighter, super::highlight::BlockCache);
+
+impl BlockSpans {
+    /// The number of coloured spans of the block, 0 when it is plain.
+    pub fn spans(&mut self, language: &str, text: &str) -> usize {
+        self.1
+            .spans(&self.0, language, text)
+            .map_or(0, |h| h.lines.iter().map(Vec::len).sum())
+    }
+}

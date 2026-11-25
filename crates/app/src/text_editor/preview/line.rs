@@ -35,9 +35,21 @@ pub enum InlineStyle {
     /// [`callout::Callout`](super::callout::Callout), keeping this module
     /// GPUI-free.
     CalloutTitle,
+    /// A code fence line shown raw (the caret is on it): ```` ```rust ````.
+    CodeFence,
+    /// A line of a fenced code block (never inline-scanned): drawn like plain
+    /// text at `code_block.font_scale`.
+    CodeBlock,
+    /// A coloured token of a fenced code line (#99): an index into
+    /// `Role::SYNTAX`. Same size and font as [`InlineStyle::CodeBlock`].
+    Syntax(u8),
     /// A control drawn as a 2D element over blank columns, never as a glyph
     /// from a font: see [`Widget`].
     Widget(Widget),
+    /// A `$…$` formula `element.rs` draws from the bundled math font over the
+    /// blank columns the segment reserves (see [`math::rendered_span`]); the
+    /// segment's raw range is the span with its delimiters.
+    Math,
 }
 
 /// A control `element.rs` paints with vector shapes or an icon over the
@@ -115,6 +127,9 @@ pub enum LineIndent {
     /// [`classify_block_context`]'s whole-document pass, via
     /// [`build_display_line_in_context`].
     List(u8),
+    /// A line of a fenced code block drawn on a box (`code_block.background`):
+    /// one level in, so the text clears the box's edge.
+    Code,
 }
 
 impl LineIndent {
@@ -123,6 +138,7 @@ impl LineIndent {
     pub fn level(self) -> u8 {
         match self {
             LineIndent::None => 0,
+            LineIndent::Code => 1,
             LineIndent::Blockquote(depth) | LineIndent::List(depth) => depth,
         }
     }
@@ -143,6 +159,108 @@ pub struct DisplayLine {
 }
 
 impl DisplayLine {
+    /// Splits a fenced code line that is one verbatim `CodeBlock` run into
+    /// runs of `Syntax` styles (`(byte range, index)`, in order) and the
+    /// `CodeBlock` text between them. The text and the raw/display mapping do
+    /// not change. A run that overlaps the previous one, is empty, runs past
+    /// the line or cuts a character is skipped.
+    pub fn with_syntax_runs(mut self, runs: impl Iterator<Item = (Range<usize>, u8)>) -> Self {
+        let len = self.display_text.len();
+        let whole = 0..len;
+        let [only] = self.segments.as_slice() else {
+            return self;
+        };
+        if only.style != InlineStyle::CodeBlock || only.raw != whole || only.display != whole {
+            return self;
+        }
+        let verbatim = |range: Range<usize>, style| DisplaySegment {
+            raw: range.clone(),
+            display: range,
+            style,
+            replaced: false,
+        };
+        let text = &self.display_text;
+        let mut out = Vec::new();
+        let mut at = 0;
+        for (range, index) in runs {
+            let fits = range.start >= at && range.start < range.end && range.end <= len;
+            if !fits || !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) {
+                continue;
+            }
+            if range.start > at {
+                out.push(verbatim(at..range.start, InlineStyle::CodeBlock));
+            }
+            at = range.end;
+            out.push(verbatim(range, InlineStyle::Syntax(index)));
+        }
+        if out.is_empty() {
+            return self;
+        }
+        if at < len {
+            out.push(verbatim(at..len, InlineStyle::CodeBlock));
+        }
+        self.segments = out;
+        self
+    }
+
+    /// The heading level this line is shown as (a `#` heading, also inside a
+    /// quote or list item), if it is one.
+    pub fn heading_level(&self) -> Option<u8> {
+        self.segments.iter().find_map(|s| match s.style {
+            InlineStyle::Heading(level) => Some(level),
+            _ => None,
+        })
+    }
+
+    /// The factor the line's font size is scaled by: the `heading.scale` of its
+    /// level, `code_block.font_scale` for a fenced code line, 1 for any other.
+    pub fn font_scale(&self) -> f32 {
+        if self.segments.first().is_some_and(|s| {
+            matches!(
+                s.style,
+                InlineStyle::CodeBlock | InlineStyle::CodeFence | InlineStyle::Syntax(_)
+            )
+        }) {
+            return crate::settings::code_font_scale();
+        }
+        self.heading_level()
+            .map_or(1.0, crate::settings::heading_scale)
+    }
+
+    /// How many body rows one row of this line takes (1 unless a heading).
+    pub fn row_units(&self) -> usize {
+        self.heading_level().map_or(1, |l| {
+            crate::settings::heading_rows(crate::settings::heading_scale(l))
+        })
+    }
+
+    /// Whether this line starts a list item: its marker is a bullet, a number
+    /// or a checkbox.
+    pub fn is_list_item(&self) -> bool {
+        matches!(self.indent, LineIndent::List(_))
+            && self.segments.iter().any(|s| {
+                matches!(
+                    s.style,
+                    InlineStyle::ListMarker
+                        | InlineStyle::Widget(Widget::Bullet | Widget::Checkbox { .. })
+                )
+            })
+    }
+
+    /// The body rows left empty above and below this line: a heading's
+    /// `space_above`/`space_below`, plus `list.item_gap` below a list item.
+    pub fn space_rows(&self) -> (usize, usize) {
+        let (above, below) = self
+            .heading_level()
+            .map_or((0, 0), crate::settings::heading_space_rows);
+        let gap = if self.is_list_item() {
+            crate::settings::list_item_gap()
+        } else {
+            0
+        };
+        (above, below + gap)
+    }
+
     /// Cuts the line at display byte `at` into the part before and the part
     /// from there on, and the raw byte where the second begins. Each part's
     /// raw and display ranges start at 0, so each reads as a line of its own.

@@ -15,6 +15,7 @@ mod debug_server;
 pub mod headless;
 #[cfg(any(test, feature = "debug-socket"))]
 mod memory_probe;
+pub mod settings;
 #[cfg(any(test, feature = "bench-support"))]
 mod test_alloc;
 mod text_editor;

@@ -24,6 +24,22 @@ pub struct Rgb {
 }
 
 impl Rgb {
+    /// `#rrggbb` or `#rrggbbaa` (alpha 255 when absent).
+    pub(super) fn parse_hex_alpha(s: &str) -> Option<(Rgb, u8)> {
+        match s.len() {
+            7 => Some((Rgb::parse_hex(s)?, 255)),
+            9 => {
+                let rgb = Rgb::parse_hex(&s[..7])?;
+                let alpha = s.get(7..)?;
+                let ok = alpha.bytes().all(|b| b.is_ascii_hexdigit());
+                ok.then(|| u8::from_str_radix(alpha, 16).ok())
+                    .flatten()
+                    .map(|a| (rgb, a))
+            }
+            _ => None,
+        }
+    }
+
     /// Exactly `#rrggbb`.
     fn parse_hex(s: &str) -> Option<Rgb> {
         let digits = s.strip_prefix('#')?;
@@ -195,12 +211,19 @@ fn check_alpha(name: &str, value: f32, errors: &mut Vec<ThemeError>) -> Option<A
 /// The shared role assignments from `roles.toml`.
 #[derive(Clone, Debug)]
 pub struct Defaults {
-    /// Per role: a palette name or `#rrggbb`.
-    roles: Vec<String>,
+    /// Per role: a palette name or `#rrggbb`; `None` for a role that takes its
+    /// [`Role::fallback`].
+    roles: Vec<Option<String>>,
     alphas: [f32; Alpha::COUNT],
 }
 
 impl Defaults {
+    /// Whether roles.toml names a value for `role` itself.
+    #[cfg(test)]
+    pub(super) fn assigns(&self, role: Role) -> bool {
+        self.roles[role.index()].is_some()
+    }
+
     pub fn parse(src: &str) -> Result<Defaults, Vec<ThemeError>> {
         let mut errors = Vec::new();
         let Some(file) = parse_toml::<DefaultsFile>(src, &mut errors) else {
@@ -224,7 +247,7 @@ impl Defaults {
             }
         }
         for role in Role::ALL {
-            if roles[role.index()].is_none() {
+            if roles[role.index()].is_none() && role.fallback().is_none() {
                 errors.push(ThemeError::MissingDefault { name: role.name() });
             }
         }
@@ -236,9 +259,9 @@ impl Defaults {
         if !errors.is_empty() {
             return Err(errors);
         }
-        assert!(roles.iter().all(Option::is_some) && alphas.iter().all(Option::is_some));
+        assert!(alphas.iter().all(Option::is_some));
         Ok(Defaults {
-            roles: roles.into_iter().flatten().collect(),
+            roles,
             alphas: alphas.map(|a| a.unwrap_or(0.0)),
         })
     }
@@ -256,6 +279,19 @@ pub struct ResolvedTheme {
 impl ResolvedTheme {
     pub fn color(&self, role: Role) -> Rgb {
         self.colors[role.index()]
+    }
+
+    pub(super) fn colors(&self) -> &[Rgb; Role::COUNT] {
+        &self.colors
+    }
+
+    /// The same theme with other colors; the warnings follow the new ones.
+    pub(super) fn with_colors(&self, colors: [Rgb; Role::COUNT]) -> ResolvedTheme {
+        ResolvedTheme {
+            warnings: contrast::check(&colors),
+            colors,
+            ..self.clone()
+        }
     }
 
     pub fn alpha(&self, alpha: Alpha) -> f32 {
@@ -328,22 +364,41 @@ fn merge_alphas(
     alphas
 }
 
+/// What `role` is assigned: its own value, else its fallback's (chains are
+/// short; the bound makes a cycle in `Role::fallback` fail loudly).
+fn chosen_value<'a>(role: Role, set: &[Option<&'a str>]) -> &'a str {
+    let mut current = role;
+    for _ in 0..Role::COUNT {
+        if let Some(value) = set[current.index()] {
+            return value;
+        }
+        current = current
+            .fallback()
+            .unwrap_or_else(|| panic!("role {} has no value and no fallback", current.name()));
+    }
+    panic!("the fallbacks of role {} form a cycle", role.name());
+}
+
 fn resolve_roles(
     defaults: &Defaults,
     overrides: &BTreeMap<String, String>,
     palette: &BTreeMap<String, Rgb>,
     errors: &mut Vec<ThemeError>,
 ) -> [Rgb; Role::COUNT] {
-    let mut chosen: Vec<&str> = defaults.roles.iter().map(String::as_str).collect();
+    let mut set: Vec<Option<&str>> = defaults.roles.iter().map(|r| r.as_deref()).collect();
     for (name, value) in overrides {
         match Role::from_name(name) {
-            Some(role) => chosen[role.index()] = value,
+            Some(role) => set[role.index()] = Some(value),
             None => errors.push(ThemeError::UnknownRole {
                 section: "overrides",
                 name: name.clone(),
             }),
         }
     }
+    let chosen: Vec<&str> = Role::ALL
+        .iter()
+        .map(|&role| chosen_value(role, &set))
+        .collect();
     let mut colors = [Rgb { r: 0, g: 0, b: 0 }; Role::COUNT];
     let mut missing: BTreeMap<&str, Vec<Role>> = BTreeMap::new();
     for &role in Role::ALL {

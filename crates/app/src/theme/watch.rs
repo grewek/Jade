@@ -34,7 +34,14 @@ impl Debounce {
 
 /// Starts watching and reloading. Returns the messages to show the user
 /// (watching can fail, e.g. no inotify watches left); the app still runs.
-pub fn start(dirs: ConfigDirs, cx: &mut App) -> Vec<String> {
+/// `on_change` runs after the theme reload with the same directory, for the
+/// other readers of `config.toml` (it returns their notices); the theme module
+/// does not know them.
+pub fn start(
+    dirs: ConfigDirs,
+    on_change: fn(&ConfigDirs, &mut App) -> Vec<String>,
+    cx: &mut App,
+) -> Vec<String> {
     let (tx, rx) = channel();
     let watcher = notify::recommended_watcher(move |event: notify::Result<notify::Event>| {
         // Reading a theme raises access events; counting them would make
@@ -64,8 +71,15 @@ pub fn start(dirs: ConfigDirs, cx: &mut App) -> Vec<String> {
             cx.background_executor().timer(QUIET).await;
             if debounce.tick(drain(&rx)) {
                 cx.update(|cx| {
-                    for notice in ThemeEngine::reload(Some(&dirs), cx) {
-                        eprintln!("jade: {notice}");
+                    let mut notices = ThemeEngine::reload(Some(&dirs), cx);
+                    notices.extend(on_change(&dirs, cx));
+                    // A file that does not parse is reported by every reader.
+                    let mut seen = Vec::new();
+                    for notice in notices {
+                        if !seen.contains(&notice) {
+                            eprintln!("jade: {notice}");
+                            seen.push(notice);
+                        }
                     }
                 });
             }

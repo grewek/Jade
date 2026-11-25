@@ -1,0 +1,100 @@
+# Jade config.toml: every key, at its built-in value (the editor looks the
+# same with this file as with none). Copy what you want to change into
+# ~/.config/jade/config.toml (Linux; the OS config folder + "jade" elsewhere)
+# and see CONFIG.md for what each key does and its range.
+#
+# Every key is optional: delete a line or a table to get the built-in value
+# back. A bad value is reported on stderr and that key falls back; nothing
+# else breaks. Edits are picked up while the app runs. Text size, heading
+# size, corner radius, theme and justify can also be set in Settings.
+
+# --- Application -----------------------------------------------------------
+justify = false                # stretch wrapped prose rows to the full width
+# theme = "catppuccin-macchiato"   # a theme id; Settings writes it
+# vault = "/home/you/Notes"        # the vault folder; written on first start
+
+# --- Text ------------------------------------------------------------------
+[font]
+family      = "IBM Plex Mono"  # the only family bundled; others fall back to it
+code_family = "IBM Plex Mono"
+size        = 16               # px, 8..40; every other size is a multiple of it
+line_height = 1.625            # multiple of size, 1..3: one editor row
+math_scale  = 1.0              # formulas relative to the text, 0.5..3
+
+# --- Corners and lines -----------------------------------------------------
+[shape]
+radius       = 0               # px, or "full"; for boxes that set none of their own
+border_width = 1               # px, 0..8
+
+# --- Headings (H1..H6; a short array repeats its last value) -----------------
+[heading]
+scale       = [1.0, 1.0, 1.0, 1.0, 1.0, 1.0]   # x font.size, 0.5..4; a row is round(scale) body rows
+weight      = [700, 700, 700, 700, 700, 700]   # 100..900; only Regular and Bold are bundled
+space_above = [0, 0, 0, 0, 0, 0]               # empty body rows, 0..4 (rounded)
+space_below = [0, 0, 0, 0, 0, 0]
+rule        = [false, false, false, false, false, false]   # a line under the heading
+
+# --- Code ------------------------------------------------------------------
+[inline_code]
+background = false             # a painted chip behind `code`
+padding    = 0.0               # em, 0..4
+# radius   = 4                 # px or "full"; omitted: follows [shape]
+
+[code_block]
+background     = false         # a box behind fenced code
+padding        = 0.0           # em above and below the lines
+border         = false
+language_label = false         # the fence's language in the box corner (needs background)
+font_scale     = 1.0           # 0.5..1; code can shrink, not grow
+highlight      = false         # colour fenced code by language (needs .sublime-syntax files, see CONFIG.md)
+# syntax_folder = "syntaxes"   # relative to this folder, or absolute; default: syntaxes/
+# radius       = 8
+
+# --- Boxes -----------------------------------------------------------------
+[callout]
+bar_width = 3                  # px, 0..16
+# radius  = 8
+
+[table]
+radius       = 6               # px or "full"
+cell_padding = 0.0             # em, 0..4
+zebra        = false           # alternate row tint
+header_bold  = true
+
+[image]
+# radius = 6                   # px or "full"; omitted: follows [shape]
+
+# --- Links and quotes ------------------------------------------------------
+[link]
+underline          = "never"   # "always" | "hover" | "never"
+wikilink_underline = "never"
+
+[blockquote]
+italic    = true
+bar_width = 2                  # px, 0..16
+indent    = 1.25               # em per level, 0..8
+
+# --- Lists and tasks -------------------------------------------------------
+[list]
+indent        = 1.25           # em per level, 0..8
+item_gap      = 0              # empty body rows below each item, 0..8 (rounded)
+bullet_shapes = ["disc", "disc", "disc"]   # "disc" | "ring" | "square", by depth; deeper repeats the last
+number_style  = "decimal"      # the only style for now
+
+[task]
+done_style      = "none"       # "dim" | "strike" | "both" | "none"
+checkbox_radius = 3            # px or "full"
+
+[strikethrough]
+muted = false                  # ~~struck~~ text and its line in the muted colour
+
+[spacing]
+block_gap = 1.0                # 0..8; read, but nothing uses it yet (reserved)
+
+# --- Colours (optional) ------------------------------------------------------
+# Recolor single roles on top of the active theme; stays when the theme changes.
+# A value is #rrggbb, #rrggbbaa or another role's name. See CONFIG.md.
+# [colors]
+# heading_1       = "#c0392b"
+# code_background = "#10203040"
+# quote_bar       = "accent"

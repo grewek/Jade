@@ -58,10 +58,12 @@
 use std::ops::Range;
 use std::rc::Rc;
 
+use super::math::{Macros, rendered_span};
 use callout::{CalloutType, callout_header_prefix};
 use jade_core::link_scan::{
     find_closing, parse_autolink, parse_bare_url, parse_inline_link, parse_wikilink,
 };
+use jade_core::math_scan::{opener_len, parse_inline as parse_math};
 
 pub(in crate::text_editor) mod callout;
 pub(in crate::text_editor) mod fence;
@@ -73,9 +75,15 @@ mod line;
 
 // What the rest of the editor uses. Everything else in the sibling files is
 // `pub(super)`: visible to `preview` and its tests, not beyond.
+pub(in crate::text_editor) use build::heading_prefix;
+#[cfg(test)]
 pub(in crate::text_editor) use build::{
-    build_callout_header_line, build_cell_line, build_display_line, build_display_line_in_context,
-    hidden_line, is_thematic_break, raw_cell_line,
+    build_callout_header_line, build_cell_line, build_display_line_in_context,
+};
+pub(in crate::text_editor) use build::{
+    build_callout_header_line_with, build_cell_line_with, build_display_line,
+    build_display_line_in_context_with, cell_formulas, hidden_line, is_thematic_break,
+    raw_cell_line, show_wide_formulas,
 };
 pub(in crate::text_editor) use context::{LineContext, OpenBlock, block_context_step, line_indent};
 pub(in crate::text_editor) use fence::LineRole;

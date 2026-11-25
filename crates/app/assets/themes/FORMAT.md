@@ -22,9 +22,13 @@ link = "#1761f5"
 selection = 0.35
 ```
 
-A role resolves to its `[overrides]` value if the theme has one, else to `roles.toml`'s. Validation (enforced by `theme::ResolvedTheme::parse`, which reports every problem at once): `format_version` is 1, no unknown keys or roles, name 1-64 bytes, at most 256 palette entries, file at most 64 KiB, hex is `#rrggbb`, alpha is 0..=1, and every name a resolved role uses exists in the theme's `[palette]` (a theme that overrides a role does not need the palette name `roles.toml` would have used).
+A role resolves to its `[overrides]` value if the theme has one, else to `roles.toml`'s. A role with a *fallback* (`heading`, `heading_1`..`heading_6`, `quote_bar`, `link_underline`, `code_background`, `syntax_*`) is not required in `roles.toml`: without a value anywhere it takes the color of the role it follows, so a theme that sets `heading` colors every level, and one that also sets `heading_5` changes just that level. Validation (enforced by `theme::ResolvedTheme::parse`, which reports every problem at once): `format_version` is 1, no unknown keys or roles, name 1-64 bytes, at most 256 palette entries, file at most 64 KiB, hex is `#rrggbb`, alpha is 0..=1, and every name a resolved role uses exists in the theme's `[palette]` (a theme that overrides a role does not need the palette name `roles.toml` would have used).
 
 Use an override for a real difference (contrast, a palette that lacks the default color), not to restyle one element: that breaks "same role, same look" across themes.
+
+## User colors
+
+`config.toml` may hold a `[colors]` table that recolors single roles on top of whatever theme is active, and stays when the theme is switched: `heading_5 = "#c0392b"`. A value is `#rrggbb`, `#rrggbbaa` (the alpha applies to Jade's own painting; widgets ignore it) or another role's name (`quote_bar = "accent"`, that role's color in the theme). An entry that is not a role or not a color is reported and skipped. A role that follows another (`heading_3` follows `heading`) follows the user's color unless the theme colored it itself. New contrast warnings are printed. Per-theme tables come later. The rest of `config.toml` is documented in `CONFIG.md` at the repository root.
 
 ## Roles
 
@@ -50,6 +54,27 @@ Use an override for a real difference (contrast, a palette that lacks the defaul
 | `link` | `[text](url)`, autolinks | `LINK_COLOR` |
 | `wikilink` | `[[wikilink]]` | `WIKILINK_COLOR` |
 | `code` | inline code | `CODE_COLOR` |
+| `heading` | all headings; follows `text` | (new) |
+| `heading_1` | heading level 1; follows `heading` | (new) |
+| `heading_2` | heading level 2; follows `heading` | (new) |
+| `heading_3` | heading level 3; follows `heading` | (new) |
+| `heading_4` | heading level 4; follows `heading` | (new) |
+| `heading_5` | heading level 5; follows `heading` | (new) |
+| `heading_6` | heading level 6; follows `heading` | (new) |
+| `quote_bar` | the bar beside a quote; follows `border_strong` | (new) |
+| `link_underline` | the underline of a link; follows `link` | (new) |
+| `code_background` | the box behind code; follows `surface` | (new) |
+| `highlight` | `==highlight==` (not drawn yet) | (new) |
+| `syntax_comment` | comments in highlighted fenced code (`code_block.highlight`, #99); follows `text`, the built-in themes set it | (new) |
+| `syntax_string` | string and character literals; follows `text` | (new) |
+| `syntax_number` | numeric literals; follows `text` | (new) |
+| `syntax_keyword` | keywords and storage words (`fn`, `if`, `const`); follows `text` | (new) |
+| `syntax_function` | function and method names; follows `text` | (new) |
+| `syntax_type` | type and class names; follows `text` | (new) |
+| `syntax_constant` | named constants and language constants (`true`, `None`); follows `text` | (new) |
+| `syntax_operator` | operators; follows `text` | (new) |
+| `syntax_punctuation` | brackets, separators; follows `text` | (new) |
+| `syntax_variable` | variables and parameters; follows `text` | (new) |
 | `info` | callouts Note, Info | `callout_color` |
 | `summary` | callout Summary | `callout_color` |
 | `tip` | callout Tip | `callout_color` |
@@ -81,6 +106,8 @@ Catppuccin's guide gives no ratios, so these were measured on the resolved theme
 - **Latte**: its pastels fell to 2.3 to 4.4, so it overrides 11 roles (`text_muted`, `text_subtle`, `link`, `wikilink`, `code`, `info`, `tip`, `success`, `warning`, `neutral`, `accent`) with darkened versions of the same hues; all measured roles now reach 4.5.
 - **Jade Neon, Jade Neon Light**: no overrides for contrast and no warnings; every measured role reaches 4.5 (the light one gets there by deepening each hue in its palette).
 - **Jade Light** reproduces today's colors as they are; several are low (`link` 1.8, `tip` 1.9, `success` 2.2, `warning` 2.5).
+
+**Syntax roles (#99).** The built-in themes use the Catppuccin editor scheme by hue name (comment `overlay2`, string `green`, number `peach`, keyword `mauve`, function `blue`, type `yellow`, constant `sapphire`, operator `sky`, punctuation `subtext0`, variable `flamingo`), set in each theme's `[overrides]` so a user theme without those palette names stays valid and just follows `text`. Every shipped theme reaches 4.5 on `background` (test `every_shipped_theme_has_a_readable_and_varied_syntax_scheme`, which also requires at least 8 distinct colors): Mocha, Macchiato, Frappe and both Neon themes with their hues as they are; Latte replaces nine roles with darkened versions of the same hues (all but `syntax_keyword`), and Jade Light, whose palette has no hue names, sets all ten as the same darkened Latte colors.
 
 ## Mapping to gpui-component (`Theme::apply_config`)
 

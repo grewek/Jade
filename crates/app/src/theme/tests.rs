@@ -567,6 +567,53 @@ mod engine_setup {
         });
     }
 
+    #[gpui_kit::test]
+    fn colors_override_the_theme_and_survive_a_theme_switch(cx: &mut TestAppContext) {
+        let tmp = tempdir().expect("tmp");
+        let dirs = dirs_in(&tmp);
+        write(
+            &dirs.config_file(),
+            "[colors]\nheading_5 = \"#c0392b\"\nheading = \"#102030\"\ncode_background = \"#11223340\"\nquote_bar = \"accent\"\nbogus = \"#fff000\"\n",
+        );
+        cx.update(|cx| {
+            gpui_kit::init(cx);
+            let notices = ThemeEngine::install(Some(dirs.clone()), cx);
+            assert!(
+                notices.iter().any(|n| n.contains("colors.bogus")),
+                "{notices:?}"
+            );
+            let red: gpui_kit::Hsla = gpui_kit::rgb(0xc0392b).into();
+            let navy: gpui_kit::Hsla = gpui_kit::rgb(0x102030).into();
+            assert_eq!(ThemeEngine::color(cx, Role::Heading5), red);
+            // Levels follow the overridden heading, except the one set itself.
+            assert_eq!(ThemeEngine::color(cx, Role::Heading2), navy);
+            assert_eq!(ThemeEngine::color(cx, Role::Heading), navy);
+            // Alpha rides along; an alias reads the theme's color of that role.
+            assert!(
+                (ThemeEngine::color(cx, Role::CodeBackground).a - 0x40 as f32 / 255.0).abs() < 1e-3
+            );
+            assert_eq!(
+                ThemeEngine::color(cx, Role::QuoteBar),
+                ThemeEngine::color(cx, Role::Accent)
+            );
+            // Text itself is untouched.
+            assert_ne!(ThemeEngine::color(cx, Role::Text), navy);
+
+            ThemeEngine::set("catppuccin-mocha", cx).expect("switches");
+            assert_eq!(ThemeEngine::color(cx, Role::Heading5), red);
+            assert_eq!(ThemeEngine::color(cx, Role::Heading3), navy);
+
+            // Removing the table and reloading goes back to the theme's colors.
+            write(&dirs.config_file(), "theme = \"catppuccin-mocha\"\n");
+            ThemeEngine::reload(Some(&dirs), cx);
+            assert_eq!(
+                ThemeEngine::color(cx, Role::Heading5),
+                ThemeEngine::color(cx, Role::Text)
+            );
+            let _ = cx.new(|_| ());
+        });
+    }
+
     #[test]
     fn available_lists_built_ins_then_user_themes() {
         let tmp = tempdir().expect("tmp");
@@ -809,5 +856,196 @@ fn ui_code_has_no_color_literals() {
                 );
             }
         }
+    }
+}
+
+fn resolved(extra: &str) -> ResolvedTheme {
+    ResolvedTheme::parse(&defaults(), &mini(extra)).expect("valid")
+}
+
+#[test]
+fn a_style_role_follows_its_fallback_until_set() {
+    let t = resolved("");
+    let c = |role| t.color(role);
+    assert_eq!(c(Role::Heading), c(Role::Text));
+    for level in 1..=6 {
+        assert_eq!(
+            c(Role::heading_level(level)),
+            c(Role::Text),
+            "level {level}"
+        );
+    }
+    assert_eq!(c(Role::QuoteBar), c(Role::BorderStrong));
+    assert_eq!(c(Role::LinkUnderline), c(Role::Link));
+    assert_eq!(c(Role::CodeBackground), c(Role::Surface));
+}
+
+#[test]
+fn every_syntax_role_follows_text_until_set() {
+    let t = resolved("");
+    for role in Role::SYNTAX {
+        assert!(role.is_syntax());
+        assert_eq!(t.color(role), t.color(Role::Text), "{}", role.name());
+    }
+    assert!(!Role::Text.is_syntax() && !Role::Code.is_syntax());
+    let t = resolved("\n[overrides]\nsyntax_keyword = \"#aa0000\"\ntext = \"#102030\"\n");
+    assert_eq!(t.color(Role::SyntaxKeyword), rgb("aa0000"));
+    assert_eq!(
+        t.color(Role::SyntaxString),
+        rgb("102030"),
+        "the others follow text"
+    );
+}
+
+#[test]
+fn a_low_contrast_syntax_role_is_reported() {
+    let t = resolved("\n[overrides]\nsyntax_comment = \"#fefefe\"\n");
+    let bad: Vec<_> = t.warnings.iter().map(|w| w.foreground).collect();
+    assert!(bad.contains(&Role::SyntaxComment), "{bad:?}");
+}
+
+#[test]
+fn heading_colors_cascade_from_heading_to_a_level() {
+    let t = resolved("\n[overrides]\nheading = \"#112233\"\nheading_5 = \"#445566\"\n");
+    assert_eq!(t.color(Role::Heading), rgb("112233"));
+    assert_eq!(t.color(Role::Heading1), rgb("112233"));
+    assert_eq!(t.color(Role::Heading6), rgb("112233"));
+    assert_eq!(t.color(Role::Heading5), rgb("445566"));
+    // Text is untouched.
+    assert_ne!(t.color(Role::Text), rgb("112233"));
+}
+
+#[test]
+fn an_overridden_fallback_carries_to_the_roles_that_follow_it() {
+    let t = resolved("\n[overrides]\nlink = \"#abcdef\"\ntext = \"#102030\"\n");
+    assert_eq!(t.color(Role::LinkUnderline), rgb("abcdef"));
+    assert_eq!(t.color(Role::Heading3), rgb("102030"));
+}
+
+#[test]
+fn roles_toml_may_assign_a_role_that_has_a_fallback() {
+    let with = ROLES.replace("[alpha]", "[roles_extra]\n[alpha]");
+    assert!(
+        Defaults::parse(&with).is_err(),
+        "an unknown section is rejected"
+    );
+    let with = ROLES.replacen("[roles]\n", "[roles]\nheading = \"lavender\"\n", 1);
+    let d = Defaults::parse(&with).expect("valid");
+    let t = ResolvedTheme::parse(&d, &mini("")).expect("valid");
+    assert_eq!(t.color(Role::Heading), t.color(Role::Accent));
+    assert_eq!(t.color(Role::Heading2), t.color(Role::Accent));
+}
+
+#[test]
+fn a_role_without_a_value_or_fallback_is_still_required() {
+    let without = ROLES.replace("highlight = \"yellow\"", "");
+    let errors = Defaults::parse(&without).expect_err("highlight is required");
+    assert_eq!(
+        errors,
+        vec![ThemeError::MissingDefault { name: "highlight" }]
+    );
+}
+
+#[test]
+fn every_fallback_chain_ends_at_a_role_roles_toml_assigns() {
+    let d = defaults();
+    for &role in Role::ALL {
+        let (mut current, mut steps) = (role, 0);
+        while let Some(next) = current.fallback() {
+            current = next;
+            steps += 1;
+            assert!(steps <= 3, "{} loops or is too deep", role.name());
+        }
+        assert!(
+            d.assigns(current),
+            "{} ends at {}, which roles.toml must assign",
+            role.name(),
+            current.name()
+        );
+    }
+}
+
+#[test]
+fn a_low_contrast_heading_warns_once_not_once_per_level() {
+    let t = resolved("\n[overrides]\nheading = \"#f0f0f0\"\nheading_3 = \"#f1f1f1\"\n");
+    let headings: Vec<Role> = t
+        .warnings
+        .iter()
+        .map(|w| w.foreground)
+        .filter(|r| r.name().starts_with("heading"))
+        .collect();
+    assert_eq!(headings, vec![Role::Heading, Role::Heading3]);
+}
+
+#[test]
+fn heading_level_maps_one_to_six_and_clamps() {
+    assert_eq!(Role::heading_level(1), Role::Heading1);
+    assert_eq!(Role::heading_level(6), Role::Heading6);
+    assert_eq!(Role::heading_level(0), Role::Heading1);
+    assert_eq!(Role::heading_level(9), Role::Heading6);
+}
+
+#[test]
+fn overrides_apply_to_a_theme_and_leave_the_original() {
+    use super::overrides::{ColorOverrides, new_warnings};
+    let theme = resolved("");
+    let (o, _) = ColorOverrides::parse("[colors]\ntext = \"#f8f8f8\"\nheading_2 = \"link\"\n");
+    let applied = o.apply_to(&theme);
+    assert_eq!(applied.theme.color(Role::Text), rgb("f8f8f8"));
+    assert_eq!(
+        applied.theme.color(Role::Heading),
+        rgb("f8f8f8"),
+        "follows text"
+    );
+    assert_eq!(applied.theme.color(Role::Heading2), theme.color(Role::Link));
+    assert_eq!(
+        theme.color(Role::Text),
+        rgb("000000"),
+        "the theme itself is unchanged"
+    );
+    // A near-white text on the white background is a new warning, once.
+    let fresh = new_warnings(&theme, &applied.theme);
+    assert!(
+        fresh.iter().any(|w| w.contains("text on background")),
+        "{fresh:?}"
+    );
+    assert!(new_warnings(&applied.theme, &applied.theme).is_empty());
+    let (none, _) = ColorOverrides::parse("");
+    assert_eq!(
+        none.apply_to(&theme).theme.color(Role::Text),
+        theme.color(Role::Text)
+    );
+}
+
+#[test]
+fn a_role_the_theme_colored_itself_does_not_follow_the_override() {
+    use super::overrides::ColorOverrides;
+    let theme = resolved("\n[overrides]\nheading_3 = \"#445566\"\n");
+    let (o, _) = ColorOverrides::parse("[colors]\nheading = \"#102030\"\n");
+    let t = o.apply_to(&theme).theme;
+    assert_eq!(t.color(Role::Heading3), rgb("445566"));
+    assert_eq!(t.color(Role::Heading4), rgb("102030"));
+}
+
+#[test]
+fn every_shipped_theme_has_a_readable_and_varied_syntax_scheme() {
+    for (name, _) in SHIPPED {
+        let t = load(name);
+        let bad: Vec<_> = t
+            .warnings
+            .iter()
+            .filter(|w| w.foreground.is_syntax())
+            .map(ToString::to_string)
+            .collect();
+        assert!(bad.is_empty(), "{name}: {bad:?}");
+        let mut colors: Vec<_> = Role::SYNTAX.iter().map(|&r| t.color(r)).collect();
+        colors.sort_by_key(|c| (c.r, c.g, c.b));
+        colors.dedup();
+        assert!(
+            colors.len() >= 8,
+            "{name}: only {} distinct colors",
+            colors.len()
+        );
+        assert_ne!(t.color(Role::SyntaxKeyword), t.color(Role::Text), "{name}");
     }
 }

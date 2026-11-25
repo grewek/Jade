@@ -104,10 +104,8 @@ pub(in crate::text_editor) fn shape_region(
             let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
             let results =
                 shape_display_line(line_text, &state, font, font_size, colors, width, window);
-            let height: Pixels = results
-                .iter()
-                .map(|(wrapped, _)| wrapped.size(line_height).height)
-                .sum();
+            let (height, _) =
+                shaped_height(&results, line_text, (font_size, line_height), state.macros);
             lines.push(ShapedLine {
                 line: i,
                 y,
@@ -151,10 +149,12 @@ fn shape_at(
     let state = column_state(doc, i, (cursor, focused), &broken);
     let line_text = &text[doc.line_start_byte(i)..doc.line_end_byte(i)];
     let results = shape_display_line(line_text, &state, font, font_size, colors, width, window);
-    let height = results
-        .iter()
-        .map(|(w, _)| w.size(window.line_height()).height)
-        .sum();
+    let (height, _) = shaped_height(
+        &results,
+        line_text,
+        (font_size, crate::text_editor::settings::body_row_height()),
+        state.macros,
+    );
     (results, broken, height)
 }
 
@@ -473,12 +473,18 @@ fn shape_aside(
                 } else {
                     whole
                 };
-                let h = wrapped.size(line_height).height;
+                let results = vec![(wrapped, piece)];
+                let (h, _) = shaped_height(
+                    &results,
+                    &line_text[raw.clone()],
+                    (font_size, line_height),
+                    state.macros,
+                );
                 flow_lines.push(ShapedLine {
                     line: i,
                     y,
                     height: h,
-                    results: vec![(wrapped, piece)],
+                    results,
                     broken: piece_broken,
                     x: bx,
                     width: bw,
@@ -619,15 +625,25 @@ pub(super) fn paint_region(
                 } else {
                     range.end
                 };
+                let line_text = &env.text[range.clone()];
+                let entry = entry_heights(
+                    &sl.results,
+                    line_text,
+                    (env.font_size, env.line_height),
+                    env.doc.macros(),
+                )
+                .next()
+                .unwrap_or_else(|| EntryHeight::uniform(env.line_height));
                 let slot = LineSlot {
                     i: sl.line,
-                    line_text: &env.text[range.clone()],
+                    line_text,
                     line_range: range.start..end,
                     state: &state,
                     results: &sl.results,
                     bounds: sl.frame(bounds),
                     y_offset: top + sl.y,
                     total_height: sl.height,
+                    entry: &entry,
                 };
                 paint_line(env, &slot, &mut tables, window, cx);
             }
@@ -788,7 +804,7 @@ fn paint_column_blocks(
             // A block is as wide as the line that opens it (text beside a float
             // is narrower than text below it).
             let span = (bounds.origin.x + sl.x, sl.width);
-            paint_callout_band(callout, (band_top, bottom), span, env.palette, window);
+            paint_callout_band(callout, (band_top, bottom), span, env.band_style(), window);
         }
         if let Some(index) = table_index_at(doc.tables(), sl.line)
             && last_table != Some(index)
@@ -819,7 +835,7 @@ fn paint_column_blocks(
                 table_left,
                 &table_at,
                 rows,
-                env.palette,
+                (env.palette, env.table_shape),
                 window,
             );
             let hovered = env.table_hover.filter(|(t, _)| *t == index);
@@ -952,22 +968,30 @@ pub(super) fn caret_bounds(
     let sl = pieces()
         .find(|sl| sl.raw.start <= within && within < sl.raw.end)
         .or_else(|| pieces().last())?;
-    for (wrapped, display) in &sl.results {
+    let line_text = &text[doc.line_start_byte(line)..doc.line_end_byte(line)];
+    let heights = entry_heights(
+        &sl.results,
+        line_text,
+        (font_size, line_height),
+        doc.macros(),
+    );
+    for ((wrapped, display), entry) in sl.results.iter().zip(heights) {
         let at = display.display_offset_for_raw(within.saturating_sub(sl.raw.start));
         let state = LineState::in_column(doc, line, cursor, focused);
         let Some(pos) = justify::position_for_index(
             (&state, wrapped, display),
             sl.results.len(),
             at,
-            line_height,
+            entry.row,
         ) else {
             continue;
         };
-        let x = pos.x + indent_px(display.indent.level());
+        let (pos, caret_height) = entry.place(pos);
+        let x = pos.x + indent_px(display.indent);
         let origin = bounds.origin + point(sl.x + x, region_top + sl.y + pos.y);
         return Some(Bounds {
             origin,
-            size: size(px(1.), line_height),
+            size: size(px(1.), caret_height),
         });
     }
     None
@@ -1065,7 +1089,9 @@ pub(super) fn restore_pill(
         return None;
     }
     let percent = columns::restored(&region, doc.view.column_width()?)?;
-    let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
+    let top = view
+        .layout
+        .screen_y(view.bounds.origin.y, region.start_line);
     let (w, h) = (px(24.), px(18.));
     let origin = point(
         view.bounds.origin.x + view.bounds.size.width - w - px(4.),
@@ -1099,8 +1125,10 @@ pub(super) fn paint_stacked_controls(
         if doc.side_by_side(region.start_line).is_some() {
             return;
         }
-        let top = view.bounds.origin.y + view.layout.cumulative_at(region.start_line);
-        let bottom = view.bounds.origin.y + view.layout.cumulative_at(region.end_line);
+        let top = view
+            .layout
+            .screen_y(view.bounds.origin.y, region.start_line);
+        let bottom = view.layout.screen_y(view.bounds.origin.y, region.end_line);
         let x = view.bounds.origin.x
             + px(columns::divider_x_unchecked(
                 total,

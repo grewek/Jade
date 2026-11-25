@@ -2,7 +2,8 @@
 //! own encoder so there is one definition of the wire format).
 
 use jade_debug_protocol::{
-    Answer, Event, FRAME_BUDGET_US, FrameSample, Message, Target, encode_line,
+    Answer, Event, FRAME_BUDGET_US, FactValue, FactsReply, FrameSample, Message, Target,
+    encode_line,
 };
 
 /// An encoded protocol line without its newline.
@@ -39,8 +40,78 @@ pub(crate) fn answer_text(answer: &Answer) -> Result<String, String> {
             };
             format!("{text}{more}")
         }
+        Answer::Facts(reply) => facts_text(reply),
+        Answer::Expect { passed, results } => {
+            let lines: Vec<String> = results
+                .iter()
+                .map(|r| format!("{} {}", if r.passed { "PASS" } else { "FAIL" }, r.detail))
+                .collect();
+            let text = lines.join("\n");
+            if *passed {
+                text
+            } else {
+                let failed = results.iter().filter(|r| !r.passed).count();
+                return Err(format!(
+                    "{failed} of {} checks failed\n{text}",
+                    results.len()
+                ));
+            }
+        }
         other => trimmed(encode_line(other)),
     })
+}
+
+/// Greys for an ink grid cell, darkest ink last.
+const SHADES: &[u8] = b" .:-=+*#%@";
+
+fn facts_text(reply: &FactsReply) -> String {
+    let mut out = format!(
+        "region {:.1}x{:.1} px at {}x, background {}",
+        reply.width, reply.height, reply.scale, reply.background
+    );
+    for fact in &reply.facts {
+        out.push('\n');
+        match fact {
+            FactValue::InkGrid { cols, cells, .. } => {
+                out.push_str(&format!(
+                    "ink grid {cols}x{}:",
+                    cells.len() / usize::from(*cols).max(1)
+                ));
+                for row in cells.chunks(usize::from(*cols).max(1)) {
+                    let line: String = row
+                        .iter()
+                        .map(|&c| SHADES[usize::from(c) * (SHADES.len() - 1) / 255] as char)
+                        .collect();
+                    out.push_str(&format!("\n  |{line}|"));
+                }
+            }
+            FactValue::RowProfile { counts } => out.push_str(&format!("rows: {}", join(counts))),
+            FactValue::ColProfile { counts } => out.push_str(&format!("cols: {}", join(counts))),
+            FactValue::Bbox { rect: Some(r) } => {
+                out.push_str(&format!(
+                    "bbox: {:.1},{:.1} {:.1}x{:.1}",
+                    r.x, r.y, r.w, r.h
+                ));
+            }
+            FactValue::Bbox { rect: None } => out.push_str("bbox: no ink"),
+            FactValue::Palette { colors } => {
+                out.push_str("palette:");
+                for c in colors {
+                    out.push_str(&format!("\n  {} {:.1}%", c.color, c.percent));
+                }
+            }
+            FactValue::Pixel { color } => out.push_str(&format!("pixel: {color}")),
+        }
+    }
+    out
+}
+
+fn join(counts: &[u32]) -> String {
+    counts
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 fn targets_table(targets: &[Target]) -> String {
@@ -159,5 +230,71 @@ mod tests {
             .unwrap()
             .contains("window_size")
         );
+    }
+
+    #[test]
+    fn facts_print_as_a_thumbnail_and_numbers() {
+        use jade_debug_protocol::{PaletteEntry, Rect};
+        let reply = FactsReply {
+            width: 100.0,
+            height: 20.0,
+            scale: 2.0,
+            background: "#ffffff".into(),
+            facts: vec![
+                FactValue::InkGrid {
+                    cols: 3,
+                    rows: 2,
+                    cells: vec![0, 128, 255, 255, 0, 0],
+                },
+                FactValue::RowProfile { counts: vec![0, 4] },
+                FactValue::Bbox {
+                    rect: Some(Rect {
+                        x: 1.0,
+                        y: 2.0,
+                        w: 3.0,
+                        h: 4.0,
+                    }),
+                },
+                FactValue::Bbox { rect: None },
+                FactValue::Palette {
+                    colors: vec![PaletteEntry {
+                        color: "#f8f8f8".into(),
+                        percent: 70.0,
+                    }],
+                },
+            ],
+        };
+        let text = answer_text(&Answer::Facts(reply)).unwrap();
+        assert!(
+            text.contains("region 100.0x20.0 px at 2x, background #ffffff"),
+            "{text}"
+        );
+        assert!(text.contains("| =@|"), "{text}");
+        assert!(text.contains("|@  |"), "{text}");
+        assert!(text.contains("rows: 0 4"), "{text}");
+        assert!(text.contains("bbox: 1.0,2.0 3.0x4.0"), "{text}");
+        assert!(text.contains("bbox: no ink"), "{text}");
+        assert!(text.contains("#f8f8f8 70.0%"), "{text}");
+    }
+
+    #[test]
+    fn a_failed_expectation_is_an_error_naming_what_failed() {
+        use jade_debug_protocol::CheckResult;
+        let result = |passed, detail: &str| CheckResult {
+            passed,
+            detail: detail.into(),
+        };
+        let ok = Answer::Expect {
+            passed: true,
+            results: vec![result(true, "fine")],
+        };
+        assert_eq!(answer_text(&ok).unwrap(), "PASS fine");
+        let bad = Answer::Expect {
+            passed: false,
+            results: vec![result(true, "fine"), result(false, "0% ink")],
+        };
+        let message = answer_text(&bad).unwrap_err();
+        assert!(message.contains("1 of 2 checks failed"), "{message}");
+        assert!(message.contains("FAIL 0% ink"), "{message}");
     }
 }

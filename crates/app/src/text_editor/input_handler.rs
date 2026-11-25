@@ -163,7 +163,7 @@ impl EntityInputHandler for Editor {
         let text = self.buffer.text();
         let byte_offset = utf16_to_utf8(text, range_utf16.start);
         let cursor = self.buffer.cursor();
-        let line_height = window.line_height();
+        let line_height = crate::text_editor::settings::body_row_height();
         let text_style = window.text_style();
         // Must match `render_editor`'s mono-family override, or the IME
         // candidate window lands slightly off.
@@ -171,7 +171,7 @@ impl EntityInputHandler for Editor {
         font.family = gpui_kit::component::Theme::global(cx)
             .mono_font_family
             .clone();
-        let font_size = text_style.font_size.to_pixels(window.rem_size());
+        let font_size = crate::text_editor::settings::body_font_size();
         let text_color = text_style.color;
         let focused = self.focus_handle.is_focused(window);
 

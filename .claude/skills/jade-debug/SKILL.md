@@ -25,6 +25,18 @@ $J quit
 
 `jade-debug help` lists every command. Targets are names like `note-Big`, `new-note`, `editor`; mouse commands also take `x,y`.
 
+## Looking at pixels (headless mode)
+
+`$J launch VAULT --headless [--size 1100x700]` runs the app without a window, on a GPU-rendered headless frame, so these work and the desktop does not matter:
+
+```sh
+$J capture editor-pane --out /tmp/x.png     # a PNG; read it with the Read tool to see the screen
+$J facts editor-pane grid:48x14 bbox rows    # small numbers instead of an image
+$J expect editor-pane empty:0,40,530,25 ink:0,0,130,25 color:5,100,#24273a
+```
+
+Coordinates are logical px relative to the element. Prefer `expect` once you know what should be there (it exits non-zero and prints what it measured); use `capture` to look when you do not, `facts rows`/`grid` to see layout, gaps and overlap without an image. `--rect X,Y,W,H` crops, `--scale 0.5` shrinks a capture. On a live window these commands error and say to use `--headless`. The app must be built with `--features debug-socket`.
+
 ## Rules that save time
 
 - **Never debug on the real vault.** Typing autosaves. `launch` copies by default; keep it that way.

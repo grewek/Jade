@@ -6,8 +6,8 @@ use crate::theme::{Role, ThemeEngine};
 use gpui_kit::component::WindowExt;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AnyWindowHandle, AppContext, Entity, Focusable, KeyBinding, TestAppContext, WindowOptions,
-    point, px,
+    AnyWindowHandle, AppContext, Entity, Focusable, KeyBinding, ScrollDelta, TestAppContext,
+    WindowOptions, point, px,
 };
 use std::path::PathBuf;
 use tempfile::{TempDir, tempdir};
@@ -166,6 +166,95 @@ fn clicking_sidebar_note_opens_it(cx: &mut TestAppContext) {
 
     let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
     assert_eq!(selected, Some("Note B".to_string()));
+}
+
+/// A vault of `n` notes, each linking to `Hub` and holding the word `findme`.
+fn crowded_vault(n: usize) -> TempDir {
+    let dir = temp_vault();
+    for i in 0..n {
+        let text = format!("See [[Hub]] and findme {i}.");
+        std::fs::write(dir.path().join(format!("Note {i:03}.md")), text).unwrap();
+    }
+    std::fs::write(dir.path().join("Hub.md"), "The hub.").unwrap();
+    dir
+}
+
+fn wheel_down(window: &mut gpui_kit::Window, list: &'static str, cx: &mut gpui_kit::App) {
+    window.render_frame(cx);
+    window.scroll(list, ScrollDelta::Pixels(point(px(0.), px(-1e5))), cx);
+    window.render_frame(cx);
+}
+
+#[gpui_kit::test]
+fn a_vault_taller_than_the_sidebar_scrolls_and_follows_the_open_note(cx: &mut TestAppContext) {
+    let dir = crowded_vault(120);
+    let (window, app) = open_app(cx, dir.path().to_path_buf());
+    cx.update_window(window, |_, window, cx| {
+        wheel_down(window, "vault-scroll", cx)
+    })
+    .unwrap();
+    let wheeled = app.read_with(cx, |app, _| app.vault_scroll.offset().y);
+    assert!(
+        wheeled < px(-1000.),
+        "the wheel scrolls the tree: {wheeled:?}"
+    );
+
+    // Back at the top, the last note is below the fold; the tree follows it
+    // once it opens.
+    app.read_with(cx, |app, _| {
+        app.vault_scroll.set_offset(point(px(0.), px(0.)))
+    });
+    cx.update_window(window, |_, window, cx| {
+        app.update(cx, |app, cx| {
+            app.open_note("Note 119".to_string(), window, cx);
+        });
+        window.render_frame(cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let offset = app.read_with(cx, |app, _| app.vault_scroll.offset().y);
+    assert!(offset < px(-1000.), "scrolled to the open note: {offset:?}");
+}
+
+#[gpui_kit::test]
+fn many_backlinks_scroll_and_the_last_one_is_reachable(cx: &mut TestAppContext) {
+    let dir = crowded_vault(120);
+    let (window, app) = open_app(cx, dir.path().to_path_buf());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("Hub", cx);
+        wheel_down(window, "backlinks-scroll", cx);
+    })
+    .unwrap();
+    let wheeled = app.read_with(cx, |app, _| app.backlinks_scroll.offset().y);
+    assert!(wheeled < px(-1000.), "the wheel scrolls: {wheeled:?}");
+    cx.update_window(window, |_, window, cx| {
+        window.click("backlink-Note 119", cx);
+    })
+    .unwrap();
+    let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
+    assert_eq!(selected.as_deref(), Some("Note 119"));
+}
+
+#[gpui_kit::test]
+fn many_search_results_scroll(cx: &mut TestAppContext) {
+    let dir = crowded_vault(120);
+    let (window, app) = open_app(cx, dir.path().to_path_buf());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("sidebar-tab-search", cx);
+        window.render_frame(cx);
+        window.click("search-input", cx);
+        window.input("findme", cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    cx.update_window(window, |_, window, cx| {
+        wheel_down(window, "search-scroll", cx)
+    })
+    .unwrap();
+    let wheeled = app.read_with(cx, |app, _| app.search_scroll.offset().y);
+    assert!(wheeled < px(-1000.), "the wheel scrolls: {wheeled:?}");
 }
 
 #[gpui_kit::test]
@@ -3788,4 +3877,39 @@ fn backspace_while_typing_in_search_does_not_delete_the_selected_note(cx: &mut T
     let selected = app.read_with(cx, |app, _| app.selected_id().map(str::to_string));
     assert_eq!(selected, Some("Note".to_string()));
     assert!(dir.path().join("Note.md").exists());
+}
+
+#[gpui_kit::test]
+fn pixel_commands_on_a_window_that_cannot_render_say_how_to_get_pixels(cx: &mut TestAppContext) {
+    use jade_debug_protocol::{Answer, Command, Fact};
+    let dir = temp_vault();
+    let (mut client, sock, window, _app) = open_app_with_debug_client(cx, dir.path().to_path_buf());
+    cx.update_window(window, |_, window, cx| window.render_frame(cx))
+        .unwrap();
+    let ask = |target: &str| Command::Facts {
+        target: target.into(),
+        facts: vec![Fact::Bbox],
+        rect: None,
+        tolerance: 8,
+    };
+    let Answer::Error { message } = call_on_main(cx, &mut client, ask("no-such-element")) else {
+        panic!("an unknown element must be an error");
+    };
+    assert!(message.contains("no element named"), "{message}");
+
+    // This window has no renderer behind it, like the live one.
+    for command in [
+        ask("sidebar"),
+        Command::Capture {
+            target: "sidebar".into(),
+            rect: None,
+            scale: None,
+        },
+    ] {
+        let Answer::Error { message } = call_on_main(cx, &mut client, command) else {
+            panic!("a window that cannot render must be an error");
+        };
+        assert!(message.contains("--headless"), "{message}");
+    }
+    std::fs::remove_file(&sock).unwrap();
 }

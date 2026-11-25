@@ -37,6 +37,10 @@ link     = "blue"                  # [text](url), autolinks
 wikilink = "sapphire"              # [[wikilink]]
 code     = "green"                 # inline code
 
+# Element styling: each of these follows another role until a theme sets it (see
+# FORMAT.md); only highlight has no role to follow.
+highlight = "yellow"               # ==highlighted text== (with an alpha, later)
+
 # Semantic: callout accents, later diagnostics
 info    = "blue"                   # Note, Info
 summary = "mauve"                  # Summary

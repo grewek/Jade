@@ -130,6 +130,7 @@ impl Fenwick {
     /// `prefix_sum(i)` for every `i` in `0..=len`, in one O(n) sweep (each
     /// node's prefix is its parent-in-the-prefix-chain's prefix plus its own
     /// partial sum) instead of `len` separate O(log n) queries.
+    #[cfg(test)]
     pub(in crate::text_editor) fn prefix_sums(&self) -> Vec<i64> {
         let n = self.len();
         let mut sums = Vec::with_capacity(n + 1);

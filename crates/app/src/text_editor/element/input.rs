@@ -251,11 +251,22 @@ pub(super) fn register_mouse_handling(
                 let probe = !dialog
                     && bounds.contains(&event.position)
                     && editor_entity.read(cx).link_count() > 0;
-                let hovering = probe && {
+                let (hovering, over_link) = if probe {
                     let editor = editor_entity.read(cx);
                     let offset = offset_for_position(editor, &view, event.position, window);
-                    editor.follows_link_at(offset, event.modifiers.secondary())
+                    (
+                        editor.follows_link_at(offset, event.modifiers.secondary()),
+                        editor.link_span_at(offset),
+                    )
+                } else {
+                    (false, None)
                 };
+                if editor_entity.read(cx).hover_link != over_link {
+                    editor_entity.update(cx, |editor, cx| {
+                        editor.hover_link = over_link;
+                        cx.notify();
+                    });
+                }
                 if editor_entity.read(cx).hovering_link != hovering {
                     editor_entity.update(cx, |editor, cx| {
                         editor.hovering_link = hovering;
@@ -358,14 +369,24 @@ pub(super) fn hit_for_position(
         text_color,
         ..
     } = view;
-    let relative_y = (position.y - bounds.origin.y).max(px(0.));
     let range = visible_line_range(layout, bounds, viewport);
     if range.is_empty() {
         return Hit::at(0);
     }
+    // Lines are measured from the first visible one, whose window y is exact
+    // (`LineLayout::screen_y`); a click above the document's top lands on line 0.
+    let anchor = layout.screen_y(bounds.origin.y, range.start);
+    let relative_y = if range.start == 0 {
+        (position.y - anchor).max(px(0.))
+    } else {
+        position.y - anchor
+    };
 
     let frame = region::HitFrame {
-        bounds,
+        bounds: Bounds {
+            origin: point(bounds.origin.x, anchor),
+            size: bounds.size,
+        },
         relative_y,
         position,
         line_height,
@@ -373,7 +394,7 @@ pub(super) fn hit_for_position(
         font_size,
         text_color,
     };
-    let mut y_offset = layout.cumulative_at(range.start);
+    let mut y_offset = px(0.);
     for i in range.clone() {
         if let Some((region, split)) = doc.side_by_side(i)
             && i == region.start_line
@@ -464,7 +485,13 @@ pub(super) fn hit_in_line(
             (font, font_size, text_color),
             window,
         );
-        let row = ((relative_y - y_offset) / line_height) as usize;
+        let scale = table::row_scale(
+            line_text,
+            &columns.widths,
+            (state.editing_cell, state.macros),
+            results.len(),
+        );
+        let row = ((relative_y - y_offset) / (line_height * scale as f32)) as usize;
         let x = (position.x - bounds.origin.x) / columns.char_width;
         let offset = table::offset_at_editing(
             line_text,
@@ -472,18 +499,21 @@ pub(super) fn hit_in_line(
             &columns.aligns,
             x,
             row,
-            state.editing_cell,
+            (state.editing_cell, state.macros),
         );
         return Ok(Hit::at(line_start + offset));
     }
     let mut y = y_offset;
-    for (wrapped, display_line) in results {
-        let height = wrapped.size(line_height).height;
+    let heights = entry_heights(results, line_text, (font_size, line_height), doc.macros());
+    for ((wrapped, display_line), entry) in results.iter().zip(heights) {
+        let (line_height, height) = (entry.row, entry.height);
         if relative_y < y + height {
             let relative_x =
-                (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
+                (position.x - bounds.origin.x - indent_px(display_line.indent)).max(px(0.));
             let local_y = (relative_y - y).max(px(0.));
-            let row = (local_y / line_height) as usize;
+            let row = entry.row_at(local_y);
+            // GPUI laid the rows `line_height` apart, however tall they are painted.
+            let local_y = entry.layout_y(local_y);
             let relative_x = justify::unshift_x(
                 (state, wrapped, display_line),
                 results.len(),

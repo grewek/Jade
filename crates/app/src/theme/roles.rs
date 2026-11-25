@@ -53,7 +53,83 @@ named_enum!(Role {
     Warning => "warning",
     Error => "error",
     Neutral => "neutral",
+    // Element styling (#58). Each has a `fallback`, so roles.toml need not name it.
+    Heading => "heading",
+    Heading1 => "heading_1",
+    Heading2 => "heading_2",
+    Heading3 => "heading_3",
+    Heading4 => "heading_4",
+    Heading5 => "heading_5",
+    Heading6 => "heading_6",
+    QuoteBar => "quote_bar",
+    LinkUnderline => "link_underline",
+    CodeBackground => "code_background",
+    Highlight => "highlight",
+    // Syntax highlighting of fenced code (#99); each follows `text`.
+    SyntaxComment => "syntax_comment",
+    SyntaxString => "syntax_string",
+    SyntaxNumber => "syntax_number",
+    SyntaxKeyword => "syntax_keyword",
+    SyntaxFunction => "syntax_function",
+    SyntaxType => "syntax_type",
+    SyntaxConstant => "syntax_constant",
+    SyntaxOperator => "syntax_operator",
+    SyntaxPunctuation => "syntax_punctuation",
+    SyntaxVariable => "syntax_variable",
 });
+
+impl Role {
+    /// The role this one takes its color from when neither the theme nor
+    /// roles.toml assigns it, so the look is unchanged until a theme (or the
+    /// user's `[colors]`) says otherwise. `None`: roles.toml must assign it.
+    pub fn fallback(self) -> Option<Role> {
+        match self {
+            Role::Heading => Some(Role::Text),
+            Role::Heading1
+            | Role::Heading2
+            | Role::Heading3
+            | Role::Heading4
+            | Role::Heading5
+            | Role::Heading6 => Some(Role::Heading),
+            Role::QuoteBar => Some(Role::BorderStrong),
+            Role::LinkUnderline => Some(Role::Link),
+            Role::CodeBackground => Some(Role::Surface),
+            role if role.is_syntax() => Some(Role::Text),
+            _ => None,
+        }
+    }
+
+    /// The roles that color the tokens of highlighted code.
+    pub const SYNTAX: [Role; 10] = [
+        Role::SyntaxComment,
+        Role::SyntaxString,
+        Role::SyntaxNumber,
+        Role::SyntaxKeyword,
+        Role::SyntaxFunction,
+        Role::SyntaxType,
+        Role::SyntaxConstant,
+        Role::SyntaxOperator,
+        Role::SyntaxPunctuation,
+        Role::SyntaxVariable,
+    ];
+
+    pub fn is_syntax(self) -> bool {
+        Self::SYNTAX.contains(&self)
+    }
+
+    /// `heading_1`..`heading_6` for level 1..=6 (anything else is clamped).
+    pub fn heading_level(level: u8) -> Role {
+        const LEVELS: [Role; 6] = [
+            Role::Heading1,
+            Role::Heading2,
+            Role::Heading3,
+            Role::Heading4,
+            Role::Heading5,
+            Role::Heading6,
+        ];
+        LEVELS[usize::from(level.clamp(1, 6)) - 1]
+    }
+}
 
 named_enum!(Alpha {
     CalloutBackground => "callout_background",

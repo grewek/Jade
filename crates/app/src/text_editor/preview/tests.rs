@@ -63,6 +63,9 @@ fn link_scan_agrees_with_rendering_on_hand_written_lines() {
         "[[ ]] [[]] [[a|]] [[#h]]",
         "[x](y)(z) [[a]](b)",
         "é [[Ünï|ä]] ✓ [日本](ü.md)",
+        "$[[a]]$ [[b]] $x$ $5 [[c]] $10",
+        "$a [b](c) d$ [e](f)",
+        "$$[[a]]$$ and `$` [[b]] $",
     ] {
         assert_scanner_matches_rendering(line);
     }
@@ -97,6 +100,10 @@ fn link_scan_agrees_with_rendering_on_random_inline_soup() {
         "[[a]]",
         "[t](u)",
         "<https://z>",
+        "$",
+        "$$",
+        "$x$",
+        "\\$",
     ];
     let mut state = 0x9e37_79b9_u32;
     let mut next = || {
@@ -125,6 +132,182 @@ fn link_scan_agrees_with_rendering_on_the_stress_fixture() {
     for line in text.lines().take(20_000) {
         assert_scanner_matches_rendering(line);
     }
+}
+
+#[test]
+fn math_is_opaque_to_emphasis_and_links() {
+    // The LaTeX is one drawn segment: no italic from `*`, no link from `[[`.
+    let line = "a $x*y*z$ b $[[n]]$ c";
+    let dl = build_display_line(line, false);
+    let math: Vec<_> = dl
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .collect();
+    assert_eq!(math.len(), 2);
+    assert!(math.iter().all(|s| s.is_replaced() && !s.is_hidden()));
+    assert!(
+        dl.segments
+            .iter()
+            .all(|s| !matches!(s.style, InlineStyle::Italic | InlineStyle::WikiLink))
+    );
+    // Currency is not math: the emphasis after it still renders.
+    let dl = build_display_line("$5 and *x*", false);
+    assert_eq!(dl.display_text, "$5 and x");
+}
+
+#[test]
+fn a_formula_reserves_blank_columns_and_the_active_line_shows_source() {
+    let line = "see $x^2$ now";
+    let dl = build_display_line(line, false);
+    let seg = dl
+        .segments
+        .iter()
+        .find(|s| s.style == InlineStyle::Math)
+        .expect("a math segment");
+    assert_eq!(&line[seg.raw.clone()], "$x^2$");
+    assert!(
+        dl.display_text[seg.display.clone()]
+            .chars()
+            .all(|c| c == ' ')
+    );
+    assert!(!seg.display.is_empty());
+    // The caret line renders raw, like every construct.
+    let active = build_display_line(line, true);
+    assert_eq!(active.display_text, line);
+}
+
+#[test]
+fn a_formula_that_does_not_parse_stays_source() {
+    let line = "a $\\frac{a$ b";
+    let dl = build_display_line(line, false);
+    assert_eq!(dl.display_text, line);
+    assert!(dl.segments.iter().all(|s| s.style != InlineStyle::Math));
+}
+
+#[test]
+fn a_formula_is_drawn_once_the_notes_macro_defines_it() {
+    let line = "let $f: \\R \\to \\R$ here";
+    let unknown = build_display_line(line, false);
+    assert!(
+        unknown
+            .segments
+            .iter()
+            .all(|s| s.style != InlineStyle::Math)
+    );
+    let macros = Macros::collect(["\\newcommand{\\R}{\\mathbb{R}}"]);
+    let dl = build_display_line_with(line, false, &macros);
+    assert_eq!(
+        dl.segments
+            .iter()
+            .filter(|s| s.style == InlineStyle::Math)
+            .count(),
+        1
+    );
+    // A macro that never ends is source, not a hang.
+    let looping = Macros::collect(["\\newcommand{\\R}{\\R}"]);
+    let dl = build_display_line_with(line, false, &looping);
+    assert_eq!(dl.display_text, line);
+}
+
+#[test]
+fn a_formula_wider_than_a_row_is_shown_as_its_source() {
+    let macros = Macros::default();
+    let line = "a $x^2$ b $\\frac{a}{b} + \\frac{c}{d} + \\frac{e}{f}$ c";
+    let drawn = build_display_line_with(line, false, &macros);
+    let wide = drawn
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .map(|s| s.display.len())
+        .max()
+        .unwrap();
+    let narrow = drawn
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .map(|s| s.display.len())
+        .min()
+        .unwrap();
+    assert!(narrow < wide);
+    // A row that holds the wide one changes nothing.
+    let mut same = drawn.clone();
+    show_wide_formulas(&mut same, line, wide);
+    assert_eq!(same, drawn);
+    // One that holds only the narrow one shows the wide one's source.
+    let mut shown = drawn.clone();
+    show_wide_formulas(&mut shown, line, narrow);
+    let source = "$\\frac{a}{b} + \\frac{c}{d} + \\frac{e}{f}$";
+    assert!(
+        shown.display_text.contains(source),
+        "{}",
+        shown.display_text
+    );
+    assert_eq!(
+        shown.display_text.len(),
+        drawn.display_text.len() - wide + source.len()
+    );
+    let math: Vec<_> = shown
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math)
+        .collect();
+    assert_eq!(math.len(), 1, "only the narrow formula is still drawn");
+    // Every segment still points at its own text, in order.
+    let mut end = 0;
+    for seg in &shown.segments {
+        assert_eq!(seg.display.start, end);
+        end = seg.display.end;
+    }
+    assert_eq!(end, shown.display_text.len());
+    let at = shown
+        .segments
+        .iter()
+        .find(|s| shown.display_text[s.display.clone()] == *source)
+        .unwrap();
+    assert_eq!(at.style, InlineStyle::Plain);
+    assert!(!at.is_replaced());
+    // Unknown width leaves it alone.
+    let mut unknown = drawn.clone();
+    show_wide_formulas(&mut unknown, line, 0);
+    assert_eq!(unknown, drawn);
+}
+
+#[test]
+fn a_table_cell_draws_a_formula_that_fits_its_column() {
+    let none = Macros::default();
+    let dl = build_cell_line_with("a $x^2$ b", &none, 12);
+    assert_eq!(
+        dl.segments
+            .iter()
+            .filter(|s| s.style == InlineStyle::Math)
+            .count(),
+        1
+    );
+    // Wider than the column once drawn: shown as typed.
+    let dl = build_cell_line_with("$WWWWWWWW$", &none, 10);
+    assert_eq!(dl.display_text, "$WWWWWWWW$");
+    let macros = Macros::collect(["\\newcommand{\\R}{\\mathbb{R}}"]);
+    let dl = build_cell_line_with("$\\R$", &macros, 5);
+    assert!(dl.segments.iter().any(|s| s.style == InlineStyle::Math));
+}
+
+#[test]
+fn a_table_cell_without_the_notes_macros_never_gets_a_drawn_formula() {
+    let dl = build_cell_line("$x^2$");
+    assert_eq!(dl.display_text, "$x^2$");
+}
+
+#[test]
+fn a_failed_double_dollar_does_not_open_a_span_with_its_second_dollar() {
+    // `$$ x$` would be inline math `x` if the second `$` could open one; it
+    // must read as text so rendering and the link scan agree.
+    let dl = build_display_line("$$ *x*$ [[a]]", false);
+    assert!(
+        visible_styles(&dl)
+            .iter()
+            .any(|(_, style)| *style == InlineStyle::WikiLink)
+    );
 }
 
 fn visible_styles(dl: &DisplayLine) -> Vec<(String, InlineStyle)> {
@@ -158,18 +341,37 @@ fn assert_contiguous(dl: &DisplayLine, raw_len: usize) {
 
 #[test]
 fn active_line_is_shown_verbatim_and_unstyled() {
-    let line = "# **bold** [[Link]]";
-    let dl = build_display_line(line, true);
-    assert_eq!(dl.display_text, line);
-    assert_eq!(
-        dl.segments,
-        vec![DisplaySegment {
-            raw: 0..line.len(),
-            display: 0..line.len(),
-            style: InlineStyle::Plain,
-            replaced: false
-        }]
-    );
+    for line in ["plain **bold** [[Link]]", "#nospace", "a # b"] {
+        let dl = build_display_line(line, true);
+        assert_eq!(dl.display_text, line);
+        assert_eq!(
+            dl.segments,
+            vec![DisplaySegment {
+                raw: 0..line.len(),
+                display: 0..line.len(),
+                style: InlineStyle::Plain,
+                replaced: false
+            }]
+        );
+    }
+}
+
+/// The raw line of a heading keeps its level, so it is not resized when the
+/// caret enters it (#58 C7); the text itself is still verbatim.
+#[test]
+fn the_active_line_of_a_heading_keeps_its_level() {
+    for (line, level) in [
+        ("# **bold** [[Link]]", 1),
+        ("### Title", 3),
+        ("> ## quoted", 2),
+        ("- # item", 1),
+    ] {
+        let dl = build_display_line(line, true);
+        assert_eq!(dl.display_text, line);
+        assert_eq!(dl.heading_level(), Some(level), "{line}");
+        assert_eq!(dl.segments.len(), 1);
+        assert_contiguous(&dl, line.len());
+    }
 }
 
 #[test]
@@ -257,6 +459,28 @@ fn heading_hides_its_marker_and_styles_the_rest() {
         vec![("Section Title".to_string(), InlineStyle::Heading(2))]
     );
     assert_contiguous(&dl, line.len());
+}
+
+/// A heading whose whole text is another construct has no heading-styled
+/// visible run, but is still a heading (it takes its size, #58).
+#[test]
+fn a_heading_made_only_of_another_construct_keeps_its_level() {
+    for (line, level) in [
+        ("## **bold**", 2),
+        ("# [[note]]", 1),
+        ("### `code`", 3),
+        ("# $x^2$", 1),
+        ("> # **quoted**", 1),
+        ("- ## **item**", 2),
+    ] {
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.heading_level(), Some(level), "{line}");
+        assert_contiguous(&dl, line.len());
+    }
+    assert_eq!(
+        build_display_line("plain **bold**", false).heading_level(),
+        None
+    );
 }
 
 #[test]
@@ -1289,4 +1513,81 @@ mod is_blank_tests {
             assert_eq!(is_blank(line), line.trim().is_empty(), "{line:?}");
         }
     }
+}
+
+#[test]
+fn a_list_item_leaves_the_item_gap_below_and_other_lines_none() {
+    let mut t = crate::settings::Typography::default();
+    t.list.item_gap = 2.0;
+    crate::settings::set_body(&t);
+    let rows = |line: &str| build_display_line(line, false).space_rows();
+    assert_eq!(rows("- item"), (0, 2));
+    assert_eq!(rows("3. item"), (0, 2));
+    assert_eq!(rows("- [x] task"), (0, 2));
+    assert_eq!(rows("plain text"), (0, 0));
+    assert_eq!(rows("> - quoted"), (0, 0), "a quote is not a list level");
+    crate::settings::set_body(&crate::settings::Typography::default());
+    assert_eq!(rows("- item"), (0, 0), "today's look");
+}
+
+#[test]
+fn syntax_runs_split_a_code_line_without_touching_its_text() {
+    let code = |line: &str| {
+        let mut l = build_display_line(line, true);
+        l.segments[0].style = InlineStyle::CodeBlock;
+        l
+    };
+    let split = code("let é = 1").with_syntax_runs([(0..3, 3u8), (4..6, 5), (9..9, 1)].into_iter());
+    let shape: Vec<_> = split
+        .segments
+        .iter()
+        .map(|s| (s.raw.clone(), s.display.clone(), s.style))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (0..3, 0..3, InlineStyle::Syntax(3)),
+            (3..4, 3..4, InlineStyle::CodeBlock),
+            (4..6, 4..6, InlineStyle::Syntax(5)),
+            (6..10, 6..10, InlineStyle::CodeBlock),
+        ],
+        "the empty run is dropped"
+    );
+    assert_eq!(split.display_text, "let é = 1");
+}
+
+#[test]
+fn bad_syntax_runs_are_skipped_and_other_lines_are_left_alone() {
+    let mut code = build_display_line("héllo", true);
+    code.segments[0].style = InlineStyle::CodeBlock;
+    // Two cut the é, one overlaps the run before it, one runs past the end.
+    let runs = [
+        (2..3, 1u8),
+        (0..2, 2),
+        (0..1, 6),
+        (0..1, 7),
+        (1..3, 3),
+        (4..9, 4),
+    ];
+    let split = code.clone().with_syntax_runs(runs.into_iter());
+    let styles: Vec<_> = split
+        .segments
+        .iter()
+        .map(|s| (s.raw.clone(), s.style))
+        .collect();
+    assert_eq!(
+        styles,
+        [
+            (0..1, InlineStyle::Syntax(6)),
+            (1..3, InlineStyle::Syntax(3)),
+            (3..6, InlineStyle::CodeBlock),
+        ]
+    );
+    // Not a code line, or a line with nothing coloured: unchanged.
+    let prose = build_display_line("let x", true);
+    assert_eq!(
+        prose.clone().with_syntax_runs([(0..3, 1u8)].into_iter()),
+        prose
+    );
+    assert_eq!(code.clone().with_syntax_runs(std::iter::empty()), code);
 }

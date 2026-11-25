@@ -12,11 +12,21 @@ mod doc_stats;
 mod editor;
 mod element;
 mod headings;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        unused_imports,
+        reason = "only tests use the highlighter until the block cache (#99 step 9)"
+    )
+)]
+mod highlight;
 mod image;
 mod input_handler;
 mod layout;
 mod lines;
 mod link_table;
+mod math;
 #[cfg(any(test, feature = "debug-socket"))]
 mod paint_trace;
 #[cfg(not(any(test, feature = "debug-socket")))]

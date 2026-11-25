@@ -22,15 +22,29 @@ use super::*;
 /// scope (list-in-list compounding on one line, e.g. unindented `- - x`;
 /// and compounding more than one level deep).
 pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
+    build_display_line_with(line, active, &Macros::default())
+}
+
+/// [`build_display_line`], its formulas expanded with the note's `macros`.
+pub fn build_display_line_with(line: &str, active: bool, macros: &Macros) -> DisplayLine {
     let indent = line_indent(line);
 
     if active || line.is_empty() {
+        // The raw line of a heading keeps its size, weight and colour, so
+        // entering it moves nothing (#58 C7).
+        let style = if active && line.contains('#') {
+            build_display_line_with(line, false, macros)
+                .heading_level()
+                .map_or(InlineStyle::Plain, InlineStyle::Heading)
+        } else {
+            InlineStyle::Plain
+        };
         return DisplayLine {
             display_text: line.to_string(),
             segments: vec![DisplaySegment {
                 raw: 0..line.len(),
                 display: 0..line.len(),
-                style: InlineStyle::Plain,
+                style,
                 replaced: false,
             }],
             indent,
@@ -41,12 +55,13 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
     let mut display_text = String::new();
 
     if let Some((level, prefix_len)) = heading_prefix(line) {
-        push_hidden(&mut segments, &display_text, 0..prefix_len);
+        push_hidden_heading(&mut segments, &display_text, level, 0..prefix_len);
         scan_inline(
             line,
             prefix_len,
             line.len(),
             InlineStyle::Heading(level),
+            macros,
             &mut segments,
             &mut display_text,
         );
@@ -73,6 +88,7 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
             content_start,
             line.len(),
             style,
+            macros,
             &mut segments,
             &mut display_text,
         );
@@ -107,6 +123,7 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
             content_start,
             line.len(),
             style,
+            macros,
             &mut segments,
             &mut display_text,
         );
@@ -122,6 +139,7 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
         0,
         line.len(),
         InlineStyle::Plain,
+        macros,
         &mut segments,
         &mut display_text,
     );
@@ -150,14 +168,88 @@ pub fn raw_cell_line(text: &str) -> DisplayLine {
 /// A table cell's text with its inline markup applied (bold, code, links), as
 /// one line. Unlike [`build_display_line`] it never reads a leading `>`, `-` or
 /// `#` as a block: inside a cell they are just characters.
+#[cfg(test)]
 pub fn build_cell_line(text: &str) -> DisplayLine {
+    build_cell_line_in(text, None)
+}
+
+/// [`build_cell_line`] with the formulas of `text` drawn (expanded with the
+/// note's `macros`), as long as the line still fits `width` characters: a cell
+/// is laid out on its raw text, and a formula can reserve more columns than
+/// its source has characters, in which case the line is shown as typed.
+pub fn build_cell_line_with(text: &str, macros: &Macros, width: usize) -> DisplayLine {
+    let drawn = build_cell_line_in(text, Some(macros));
+    if drawn.display_text.chars().count() <= width {
+        return drawn;
+    }
+    build_cell_line_in(text, None)
+}
+
+/// The formulas of a cell `text` that are drawn, in order: each one's raw range
+/// and the characters it reserves. What the table's wrapping keeps whole.
+pub fn cell_formulas(text: &str, macros: &Macros) -> Vec<(std::ops::Range<usize>, usize)> {
+    build_cell_line_in(text, Some(macros))
+        .segments
+        .iter()
+        .filter(|s| s.style == InlineStyle::Math && s.replaced)
+        .map(|s| (s.raw.clone(), s.display.len()))
+        .collect()
+}
+
+/// Shows every drawn formula of `display_line` that reserves more than
+/// `max_columns` blank columns (more than a row holds) as its source, so it
+/// wraps as text instead of being split across rows and left blank (#49). The
+/// source takes the style of the text before it (after it, if it starts the
+/// line). `max_columns == 0` means the width is unknown: nothing changes.
+pub fn show_wide_formulas(display_line: &mut DisplayLine, line: &str, max_columns: usize) {
+    let wide = |s: &DisplaySegment| {
+        s.style == InlineStyle::Math && s.replaced && s.display.len() > max_columns
+    };
+    if max_columns == 0 || !display_line.segments.iter().any(wide) {
+        return;
+    }
+    let plain_style = |s: &DisplaySegment| {
+        !s.is_hidden()
+            && !matches!(
+                s.style,
+                InlineStyle::Math | InlineStyle::Widget(_) | InlineStyle::ListMarker
+            )
+    };
+    let styles: Vec<InlineStyle> = (0..display_line.segments.len())
+        .map(|k| {
+            let segments = &display_line.segments;
+            segments[..k]
+                .iter()
+                .rev()
+                .chain(&segments[k + 1..])
+                .find(|s| plain_style(s))
+                .map_or(InlineStyle::Plain, |s| s.style)
+        })
+        .collect();
+    let mut text = String::with_capacity(display_line.display_text.len());
+    for (k, seg) in display_line.segments.iter_mut().enumerate() {
+        let start = text.len();
+        if wide(seg) {
+            text.push_str(&line[seg.raw.clone()]);
+            seg.style = styles[k];
+            seg.replaced = false;
+        } else {
+            text.push_str(&display_line.display_text[seg.display.clone()]);
+        }
+        seg.display = start..text.len();
+    }
+    display_line.display_text = text;
+}
+
+fn build_cell_line_in(text: &str, math: Option<&Macros>) -> DisplayLine {
     let mut segments = Vec::new();
     let mut display_text = String::new();
-    scan_inline(
+    scan_inline_in(
         text,
         0,
         text.len(),
         InlineStyle::Plain,
+        math,
         &mut segments,
         &mut display_text,
     );
@@ -200,7 +292,7 @@ pub(super) fn compound_inner(
     let rest = &line[offset..];
 
     if let Some((level, inner_len)) = heading_prefix(rest) {
-        push_hidden(segments, display_text, offset..offset + inner_len);
+        push_hidden_heading(segments, display_text, level, offset..offset + inner_len);
         return (offset + inner_len, InlineStyle::Heading(level));
     }
 
@@ -230,11 +322,22 @@ pub(super) fn compound_inner(
 ///   its *entire* text styled as that block's content (`Blockquote(depth)`,
 ///   or `Plain` for a list continuation, matching what a real prefix line's
 ///   own content would be styled as).
+#[cfg(test)]
 pub fn build_display_line_in_context(line: &str, active: bool, ctx: LineContext) -> DisplayLine {
+    build_display_line_in_context_with(line, active, ctx, &Macros::default())
+}
+
+/// [`build_display_line_in_context`], its formulas expanded with `macros`.
+pub fn build_display_line_in_context_with(
+    line: &str,
+    active: bool,
+    ctx: LineContext,
+    macros: &Macros,
+) -> DisplayLine {
     match ctx {
-        LineContext::Plain => build_display_line(line, active),
+        LineContext::Plain => build_display_line_with(line, active, macros),
         LineContext::ListMarkerLine(depth) => {
-            let mut display_line = build_display_line(line, active);
+            let mut display_line = build_display_line_with(line, active, macros);
             display_line.indent = LineIndent::List(depth);
             display_line
         }
@@ -253,11 +356,19 @@ pub fn build_display_line_in_context(line: &str, active: bool, ctx: LineContext)
             }
             let style = match indent {
                 LineIndent::Blockquote(depth) => InlineStyle::Blockquote(depth),
-                LineIndent::List(_) | LineIndent::None => InlineStyle::Plain,
+                LineIndent::List(_) | LineIndent::Code | LineIndent::None => InlineStyle::Plain,
             };
             let mut segments = Vec::new();
             let mut display_text = String::new();
-            scan_inline(line, 0, line.len(), style, &mut segments, &mut display_text);
+            scan_inline(
+                line,
+                0,
+                line.len(),
+                style,
+                macros,
+                &mut segments,
+                &mut display_text,
+            );
             DisplayLine {
                 display_text,
                 segments,
@@ -272,7 +383,7 @@ pub fn build_display_line_in_context(line: &str, active: bool, ctx: LineContext)
 /// starts with one. CommonMark's allowance for up to 3 leading spaces before
 /// the `#`s isn't handled — a line's own leading whitespace isn't something
 /// this editor strips elsewhere either.
-pub(super) fn heading_prefix(line: &str) -> Option<(u8, usize)> {
+pub(in crate::text_editor) fn heading_prefix(line: &str) -> Option<(u8, usize)> {
     let hashes = line.bytes().take_while(|&b| b == b'#').count();
     if hashes == 0 || hashes > 6 {
         return None;
@@ -286,6 +397,24 @@ pub(super) fn heading_prefix(line: &str) -> Option<(u8, usize)> {
         end += 1;
     }
     Some((hashes as u8, end))
+}
+
+/// Hides a heading's `#` prefix. The hidden segment carries the level, so a
+/// heading whose text is all bold, a link or a formula still reads as one
+/// (`DisplayLine::heading_level`).
+fn push_hidden_heading(
+    segments: &mut Vec<DisplaySegment>,
+    display_text: &str,
+    level: u8,
+    raw: Range<usize>,
+) {
+    let at = display_text.len();
+    segments.push(DisplaySegment {
+        raw,
+        display: at..at,
+        style: InlineStyle::Heading(level),
+        replaced: false,
+    });
 }
 
 /// Whether `line` is a thematic break (`---`, `***`, `___`, optionally with
@@ -333,7 +462,13 @@ pub fn is_thematic_break(line: &str) -> bool {
 /// blockquote prefix or a callout header after it (shouldn't happen for a
 /// line `callout::classify_callouts` identified as a header, but cheaper
 /// and simpler than unwrapping).
+#[cfg(test)]
 pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
+    build_callout_header_line_with(line, active, &Macros::default())
+}
+
+/// [`build_callout_header_line`], its title's formulas expanded with `macros`.
+pub fn build_callout_header_line_with(line: &str, active: bool, macros: &Macros) -> DisplayLine {
     let indent = line_indent(line);
 
     if active || line.is_empty() {
@@ -350,11 +485,11 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
     }
 
     let Some((_, prefix_len)) = blockquote_prefix(line) else {
-        return build_display_line(line, active);
+        return build_display_line_with(line, active, macros);
     };
     let content = &line[prefix_len..];
     let Some(header) = callout_header_prefix(content) else {
-        return build_display_line(line, active);
+        return build_display_line_with(line, active, macros);
     };
 
     let mut segments = Vec::new();
@@ -386,6 +521,7 @@ pub fn build_callout_header_line(line: &str, active: bool) -> DisplayLine {
                 title_start,
                 line.len(),
                 InlineStyle::CalloutTitle,
+                macros,
                 &mut segments,
                 &mut display_text,
             );

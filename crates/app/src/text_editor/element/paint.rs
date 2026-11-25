@@ -31,7 +31,51 @@ pub(super) fn paint_lines(
     for freed in cx.default_global::<ImageCache>().begin_frame() {
         window.drop_image(freed).ok();
     }
+    let typography = crate::text_editor::TextSettings::typography(cx);
+    let callout_shape = (
+        typography.radius_of(crate::settings::Boxed::Callout),
+        typography.callout.bar_width,
+    );
     let palette = ThemeEngine::global(cx).palette().clone();
+    let code_box_look = typography
+        .code_block
+        .background
+        .then(|| code_box::CodeBoxLook {
+            fill: palette.color(Role::CodeBackground),
+            border: typography.code_block.border.then(|| {
+                (
+                    px(typography.shape.border_width),
+                    palette.color(Role::Border),
+                )
+            }),
+            radius: typography.radius_of(crate::settings::Boxed::CodeBlock),
+            padding: typography.code_block.padding,
+            label: typography
+                .code_block
+                .language_label
+                .then(|| palette.color(Role::TextSubtle)),
+        });
+    let underline_look = {
+        use crate::settings::Underline::Never;
+        let link = typography.link;
+        (link.underline != Never || link.wikilink_underline != Never).then(|| {
+            link_underline::UnderlineLook {
+                color: palette.color(Role::LinkUnderline),
+                links: link.underline,
+                wikilinks: link.wikilink_underline,
+                char_width: mono_char_width(font, font_size, text_color, window),
+            }
+        })
+    };
+    let chip_look = typography
+        .inline_code
+        .background
+        .then(|| code_chip::ChipLook {
+            fill: palette.color(Role::CodeBackground),
+            padding: typography.inline_code.padding,
+            radius: typography.radius_of(crate::settings::Boxed::InlineCode),
+            char_width: mono_char_width(font, font_size, text_color, window),
+        });
     let inline = InlineColors::from_palette(&palette);
     let rule = palette.color(Role::BorderStrong);
     let selection_fill = palette.with_alpha(Role::Selection, Alpha::Selection);
@@ -98,29 +142,44 @@ pub(super) fn paint_lines(
         // Past the verified window the heights are estimates; the band is
         // off-screen there anyway, so stop where they begin.
         let (top, bottom) = (
-            layout.cumulative_at(callout.start_line),
-            layout.cumulative_at(callout.end_line.min(range.end)),
+            layout.screen_y(bounds.origin.y, callout.start_line),
+            layout.screen_y(bounds.origin.y, callout.end_line.min(range.end)),
         );
         if let Some(trace) = trace.as_mut() {
             trace.band(
                 callout.start_line..callout.end_line.min(range.end),
-                f32::from(top),
-                f32::from(bottom),
+                (f32::from(top), f32::from(bottom)),
                 callout.kind,
             );
         }
-        let top = bounds.origin.y + top;
-        let bottom = bounds.origin.y + bottom;
         let span = (bounds.origin.x, bounds.size.width);
-        paint_callout_band(callout, (top, bottom), span, &palette, window);
+        paint_callout_band(
+            callout,
+            (top, bottom),
+            span,
+            (&palette, callout_shape),
+            window,
+        );
+    }
+
+    if let Some(look) = &code_box_look {
+        code_box::paint_code_boxes(&range, (view, doc, text), look, (window, cx));
     }
 
     if range.is_empty() {
         return;
     }
 
-    let mut y_offset = layout.cumulative_at(range.start);
-    paint_table_boxes(&range, view, doc, &palette, (window, cx));
+    paint_table_boxes(&range, view, doc, &palette, (window, cx, trace.as_mut()));
+    // Lines are placed from the first visible one: its window y comes from
+    // `screen_y` and everything after it is a small offset, not a sum of
+    // numbers in the millions (see `LineLayout::screen_y`).
+    let anchor = layout.screen_y(bounds.origin.y, range.start);
+    let mut y_offset = px(0.);
+    let bounds = Bounds {
+        origin: point(bounds.origin.x, anchor),
+        size: bounds.size,
+    };
     let mut columns: Option<(usize, TableColumns)> = None;
     let env = PaintEnv {
         text,
@@ -142,6 +201,16 @@ pub(super) fn paint_lines(
         selection_fill,
         widget_colors,
         cursor_color,
+        table_shape: BoxShape {
+            radius: typography.radius_of(crate::settings::Boxed::Table),
+            border_width: typography.shape.border_width,
+        },
+        checkbox_radius: typography.task.checkbox_radius,
+        image_radius: typography.radius_of(crate::settings::Boxed::Image),
+        chip_look,
+        underline_look,
+        hover_link: view.hover_link.as_ref(),
+        callout_shape,
     };
 
     for i in range.clone() {
@@ -170,7 +239,7 @@ pub(super) fn paint_lines(
                 let line = &text[first];
                 trace.line(
                     i,
-                    f32::from(y_offset),
+                    f32::from(anchor + y_offset),
                     shaped.rows,
                     f32::from(height),
                     "columns",
@@ -199,10 +268,11 @@ pub(super) fn paint_lines(
         );
         // Usually one entry; more than one only for a table row whose
         // cells had to wrap (see `shape_display_line`'s own doc comment).
-        let total_height: Pixels = results
-            .iter()
-            .map(|(wrapped, _)| wrapped.size(line_height).height)
-            .sum();
+        let entry = entry_heights(&results, line_text, (font_size, line_height), state.macros)
+            .next()
+            .unwrap_or_else(|| EntryHeight::uniform(line_height));
+        let (total_height, rows) =
+            shaped_height(&results, line_text, (font_size, line_height), state.macros);
         // Upgrades a cold-rebuild estimate (see `RowCache::rebuild`)
         // to the truth using the real shaping this line's painting already
         // needed — zero extra cost, and idempotent (a no-op once this line
@@ -210,12 +280,13 @@ pub(super) fn paint_lines(
         // edit). `.round()` because `total_height` is always an exact
         // multiple of `line_height` in principle, but float division can
         // land a hair off either side of the actual integer.
-        layout.correct_row_count(i, (total_height / line_height).round() as usize);
+        layout.correct_row_count(i, rows);
         if results.is_empty() {
             continue;
         }
         if let Some(trace) = trace.as_mut() {
             let tag = match (callout, table_line_kind(tables, i), line_roles[i]) {
+                _ if matches!(state.math, MathPart::Head(_)) => "math",
                 _ if image::embed(line_text, &state).is_some() => "image",
                 (Some(c), ..) if c.is_header(i) => "callout-header",
                 (Some(_), ..) => "callout",
@@ -225,8 +296,8 @@ pub(super) fn paint_lines(
             };
             trace.line(
                 i,
-                f32::from(y_offset),
-                (total_height / line_height).round() as usize,
+                f32::from(anchor + y_offset),
+                rows,
                 f32::from(total_height),
                 tag,
                 line_text,
@@ -242,6 +313,7 @@ pub(super) fn paint_lines(
             bounds,
             y_offset,
             total_height,
+            entry: &entry,
         };
         paint_line(&env, &slot, &mut columns, window, cx);
 
@@ -257,25 +329,26 @@ pub(super) fn paint_callout_band(
     callout: &Callout,
     (top, bottom): (Pixels, Pixels),
     (left, width): (Pixels, Pixels),
-    palette: &crate::theme::Palette,
+    (palette, (radius, bar_width)): (&crate::theme::Palette, (crate::settings::Radius, f32)),
     window: &mut Window,
 ) {
     let color = palette.color(callout_role(callout.kind));
     let background = palette.with_alpha(callout_role(callout.kind), Alpha::CalloutBackground);
-    window.paint_quad(fill(
-        Bounds {
-            origin: point(left, top),
-            size: size(width, bottom - top),
-        },
-        background,
-    ));
-    window.paint_quad(fill(
-        Bounds {
-            origin: point(left + QUOTE_BAR_INSET, top),
-            size: size(CALLOUT_BAR_WIDTH, bottom - top),
-        },
-        color,
-    ));
+    let band = Bounds {
+        origin: point(left, top),
+        size: size(width, bottom - top),
+    };
+    paint_box(band, radius, background, None, window);
+    if bar_width > 0.0 {
+        // Rounded, the bar is the box's own left edge; square, it keeps its inset.
+        let x0 = if matches!(radius, crate::settings::Radius::Px(r) if r <= 0.0) {
+            QUOTE_BAR_INSET
+        } else {
+            px(0.)
+        };
+        let x1 = (x0 + px(bar_width)).min(width);
+        paint_strip(band, radius, (x0, x1), color, window);
+    }
 }
 
 /// What painting any line of a frame needs, whichever column it is in.
@@ -300,6 +373,26 @@ pub(super) struct PaintEnv<'a> {
     pub(super) selection_fill: Hsla,
     pub(super) widget_colors: WidgetColors,
     pub(super) cursor_color: Hsla,
+    /// Outline and corners of a rendered table's box.
+    pub(super) table_shape: BoxShape,
+    /// Corners of a task checkbox.
+    pub(super) checkbox_radius: crate::settings::Radius,
+    /// Corners of an image and of its placeholder.
+    pub(super) image_radius: crate::settings::Radius,
+    /// The chip behind inline code, when `inline_code.background` is on.
+    pub(super) chip_look: Option<code_chip::ChipLook>,
+    /// How links are underlined, and the link under the pointer.
+    pub(super) underline_look: Option<link_underline::UnderlineLook>,
+    pub(super) hover_link: Option<&'a link_underline::HoverLink>,
+    /// Corners and accent bar width of a callout's band.
+    pub(super) callout_shape: (crate::settings::Radius, f32),
+}
+
+impl<'a> PaintEnv<'a> {
+    /// The palette and the (corners, bar width) a callout's band is painted with.
+    pub(super) fn band_style(&self) -> (&'a crate::theme::Palette, (crate::settings::Radius, f32)) {
+        (self.palette, self.callout_shape)
+    }
 }
 
 /// One shaped line and where it goes: `bounds` is the frame it is painted
@@ -314,6 +407,9 @@ pub(super) struct LineSlot<'a> {
     pub(super) bounds: Bounds<Pixels>,
     pub(super) y_offset: Pixels,
     pub(super) total_height: Pixels,
+    /// The heights of this line's rows: the editor's, or a whole multiple of
+    /// it where a tall formula sits (see `entry_heights`).
+    pub(super) entry: &'a EntryHeight,
 }
 
 /// Paints one shaped line (selection, text, widgets, caret, rules, images,
@@ -330,7 +426,6 @@ pub(super) fn paint_line(
         doc,
         show_cursor,
         cursor,
-        line_height,
         font,
         font_size,
         text_color,
@@ -340,6 +435,11 @@ pub(super) fn paint_line(
         selection_fill,
         ref widget_colors,
         cursor_color,
+        checkbox_radius,
+        image_radius,
+        ref chip_look,
+        ref underline_look,
+        hover_link,
         ..
     } = *env;
     let selection = env.selection.clone();
@@ -353,19 +453,21 @@ pub(super) fn paint_line(
         bounds,
         y_offset,
         total_height,
+        entry,
     } = *slot;
+    let line_height = entry.row;
     let line_range = line_range.clone();
     let callout = state.callout;
 
     // Every entry of one raw line shares the same indent (a table's is
     // always `None` across all of them, same as the common one-entry
     // case) — fine to read it off the first.
-    let indent_level = results[0].1.indent.level();
-    let line_origin = bounds.origin + point(indent_px(indent_level), y_offset);
+    let indent = results[0].1.indent;
+    let line_origin = bounds.origin + point(indent_px(indent), y_offset);
     // The width a wrapped row should be highlighted to when a
     // selection continues past it onto the next row — the same budget
     // `wrap_width_for` gave this line to wrap within.
-    let full_row_width = bounds.size.width - indent_px(indent_level);
+    let full_row_width = bounds.size.width - indent_px(indent);
 
     // A thematic break (`---`/`***`/`___`) renders as a real vector
     // line, same "quad over a blank `hidden_line` gap" technique a
@@ -416,6 +518,22 @@ pub(super) fn paint_line(
         );
     }
 
+    if let (MathPart::Head(_), Some(block)) = (state.math, doc.math_block_at(i)) {
+        let area = Bounds {
+            origin: point(bounds.origin.x, bounds.origin.y + y_offset),
+            size: size(bounds.size.width, total_height),
+        };
+        let body = doc.math_body(env.text, block);
+        paint_math_block(
+            body,
+            area,
+            font_size,
+            (inline.text, inline.broken),
+            doc.macros(),
+            (window, cx),
+        );
+    }
+
     if let Some(embed) = image::embed(line_text, &state) {
         let area = Bounds {
             origin: point(bounds.origin.x, bounds.origin.y + y_offset),
@@ -426,14 +544,14 @@ pub(super) fn paint_line(
         let wiki = line_text.trim_start().starts_with("![[");
         let drawn = doc.view.images().info(target).is_some_and(|info| {
             let requested = image::requested_width(alt, wiki);
-            paint_image(info, requested, area, window, cx)
+            paint_image(info, requested, area, image_radius, window, cx)
         });
         if !drawn {
             paint_image_placeholder(
                 target,
                 area,
                 (font, font_size),
-                (rule, inline.subtle),
+                (rule, inline.subtle, image_radius),
                 (window, cx),
             );
         }
@@ -453,13 +571,19 @@ pub(super) fn paint_line(
             *columns = Some((index, boxed));
         }
         if let Some((_, columns)) = &columns {
+            let scale = table::row_scale(
+                line_text,
+                &columns.widths,
+                (state.editing_cell, state.macros),
+                results.len(),
+            );
             paint_table_row(
                 line_text,
                 columns,
                 bounds.origin + point(px(0.), y_offset),
-                (table.is_first_row(i), state.editing_cell),
+                (table.is_first_row(i), state.editing_cell, scale),
                 (font, font_size, line_height),
-                &inline,
+                (&inline, widget_colors, state.macros),
                 window,
                 cx,
             );
@@ -470,6 +594,8 @@ pub(super) fn paint_line(
                     column,
                     origin: bounds.origin + point(px(0.), y_offset),
                     line_height,
+                    scale,
+                    macros: state.macros,
                 };
                 let (selection, caret) = (selection.as_ref(), show_cursor.then_some(cursor));
                 paint_editing_cell(
@@ -490,12 +616,18 @@ pub(super) fn paint_line(
     if callout.is_none()
         && let LineIndent::Blockquote(depth) = results[0].1.indent
     {
+        let (unit, bar) = (
+            crate::settings::quote_indent_px(),
+            crate::settings::quote_bar_width(),
+        );
+        // The bar sits inside its level's indent, a little in from the edge.
+        let inset = px(((unit - bar) / 2.).clamp(0., f32::from(QUOTE_BAR_INSET)));
         for level in 0..depth {
-            let bar_x = bounds.origin.x + indent_px(level) + QUOTE_BAR_INSET;
+            let bar_x = bounds.origin.x + indent_px(LineIndent::Blockquote(level)) + inset;
             window.paint_quad(fill(
                 Bounds {
                     origin: point(bar_x, bounds.origin.y + y_offset),
-                    size: size(QUOTE_BAR_WIDTH, total_height),
+                    size: size(px(bar), total_height),
                 },
                 rule,
             ));
@@ -525,7 +657,7 @@ pub(super) fn paint_line(
         let mut row_y = y_offset;
         for (wrapped, _) in results {
             let _ = wrapped.paint(
-                bounds.origin + point(indent_px(indent_level), row_y),
+                bounds.origin + point(indent_px(indent), row_y),
                 line_height,
                 TextAlign::Left,
                 None,
@@ -549,6 +681,22 @@ pub(super) fn paint_line(
         }
     } else {
         let (wrapped, display_line) = &results[0];
+        if let Some(look) = underline_look {
+            link_underline::paint_link_underlines(
+                (state, wrapped, display_line),
+                (entry, line_origin),
+                (look, i, hover_link),
+                window,
+            );
+        }
+        if let Some(look) = &chip_look {
+            code_chip::paint_code_chips(
+                (state, wrapped, display_line),
+                (entry, line_origin),
+                look,
+                window,
+            );
+        }
 
         if let Some(selection) = &selection {
             let start = selection.start.max(line_range.start);
@@ -567,14 +715,20 @@ pub(super) fn paint_line(
                     display_line.display_offset_for_raw(end - line_range.start),
                     line_height,
                 )
-                .unwrap_or(point(full_row_width, total_height - line_height));
-                let start_row = (start_pos.y / line_height) as i32;
-                let end_row = (end_pos.y / line_height) as i32;
+                .unwrap_or(point(
+                    full_row_width,
+                    total_height - entry.pad.0 - entry.pad.1 - line_height,
+                ));
+                // Rows are `line_height` apart in the layout, however tall they are painted.
+                let row_of = |y: Pixels| (f32::from(y) / f32::from(line_height)).round() as usize;
+                let (start_row, end_row) = (row_of(start_pos.y), row_of(end_pos.y));
+                let (start_pos, start_height) = entry.place(start_pos);
+                let (end_pos, _) = entry.place(end_pos);
                 if start_row == end_row {
                     window.paint_quad(fill(
                         Bounds {
                             origin: line_origin + start_pos,
-                            size: size(end_pos.x - start_pos.x, line_height),
+                            size: size(end_pos.x - start_pos.x, start_height),
                         },
                         selection_fill,
                     ));
@@ -596,8 +750,8 @@ pub(super) fn paint_line(
                         if x1 > x0 {
                             window.paint_quad(fill(
                                 Bounds {
-                                    origin: line_origin + point(x0, line_height * row as f32),
-                                    size: size(x1 - x0, line_height),
+                                    origin: line_origin + point(x0, entry.top(row)),
+                                    size: size(x1 - x0, entry.row_height(row)),
                                 },
                                 selection_fill,
                             ));
@@ -607,9 +761,8 @@ pub(super) fn paint_line(
             }
         }
 
-        if justify::eligible(state, display_line, results.len())
-            && !wrapped.wrap_boundaries().is_empty()
-        {
+        let stretch = justify::eligible(state, display_line, results.len());
+        if (stretch && !wrapped.wrap_boundaries().is_empty()) || !entry.varied.is_empty() {
             let runs = line_runs(
                 display_line,
                 (font, &inline),
@@ -618,7 +771,8 @@ pub(super) fn paint_line(
             );
             let row_paint = justify::RowPaint {
                 origin: line_origin,
-                line_height,
+                entry,
+                stretch,
                 font_size,
                 runs: &runs,
             };
@@ -629,13 +783,32 @@ pub(super) fn paint_line(
                 (window, cx),
             );
         } else {
-            let _ = wrapped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
+            let text_origin = line_origin + point(px(0.), entry.pad.0);
+            let _ = wrapped.paint(text_origin, line_height, TextAlign::Left, None, window, cx);
+        }
+        if display_line
+            .heading_level()
+            .is_some_and(crate::settings::heading_rule)
+        {
+            // Under the text rows, above the space below the heading.
+            let y = line_origin.y + entry.height - entry.pad.1 - px(1.);
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(line_origin.x, y),
+                    size: size(full_row_width, px(1.)),
+                },
+                rule,
+            ));
         }
         let widgets = WidgetPaint {
             colors: &widget_colors,
             inline: &inline,
             font_size,
-            line_height,
+            entry,
+            line_text,
+            row_width: full_row_width,
+            macros: state.macros,
+            checkbox_radius,
         };
         paint_widgets(display_line, wrapped, line_origin, &widgets, (window, cx));
 
@@ -647,10 +820,11 @@ pub(super) fn paint_line(
                 line_height,
             )
             .unwrap_or(point(px(0.), px(0.)));
+            let (pos, height) = entry.place(pos);
             window.paint_quad(fill(
                 Bounds {
                     origin: line_origin + pos,
-                    size: size(px(1.), line_height),
+                    size: size(px(1.), height),
                 },
                 cursor_color,
             ));
