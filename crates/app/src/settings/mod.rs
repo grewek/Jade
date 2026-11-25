@@ -37,6 +37,8 @@ static BODY_SIZE: AtomicU32 = AtomicU32::new(16.0f32.to_bits());
 static BODY_ROW: AtomicU32 = AtomicU32::new(26.0f32.to_bits());
 static MATH_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static CELL_PADDING: AtomicU32 = AtomicU32::new(0.0f32.to_bits());
+static DONE_STYLE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(DoneStyle::None as u8);
 static CODE_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static CODE_INSET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static HEADING_SCALE: [AtomicU32; HEADING_LEVELS] =
@@ -96,6 +98,16 @@ pub fn code_inset() -> bool {
     CODE_INSET.load(Ordering::Relaxed)
 }
 
+/// `task.done_style`: how the text of a checked task is drawn.
+pub fn done_style() -> DoneStyle {
+    match DONE_STYLE.load(Ordering::Relaxed) {
+        x if x == DoneStyle::Dim as u8 => DoneStyle::Dim,
+        x if x == DoneStyle::Strike as u8 => DoneStyle::Strike,
+        x if x == DoneStyle::Both as u8 => DoneStyle::Both,
+        _ => DoneStyle::None,
+    }
+}
+
 /// `code_block.font_scale`: the size of fenced code relative to the body.
 pub fn code_font_scale() -> f32 {
     f32::from_bits(CODE_SCALE.load(Ordering::Relaxed))
@@ -120,6 +132,7 @@ pub fn set_body(typography: &Typography) {
     BODY_ROW.store(typography.line_height_px().to_bits(), Ordering::Relaxed);
     MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
     CELL_PADDING.store(typography.table.cell_padding.to_bits(), Ordering::Relaxed);
+    DONE_STYLE.store(typography.task.done_style as u8, Ordering::Relaxed);
     CODE_SCALE.store(
         typography.code_block.font_scale.to_bits(),
         Ordering::Relaxed,

@@ -414,6 +414,57 @@ fn strikethrough_for_style(style: InlineStyle, color: Hsla) -> Option<Strikethro
     }
 }
 
+/// How the text of a checked task is drawn (`task.done_style`): the muted
+/// colour, a strike line, or both.
+#[derive(Clone, Copy)]
+struct DoneLook {
+    dim: Option<Hsla>,
+    strike: bool,
+}
+
+impl DoneLook {
+    /// The colour and strike line of a segment of `style` on a done line:
+    /// controls, markers and links keep theirs.
+    fn apply(self, style: InlineStyle, color: Hsla) -> (Hsla, Option<StrikethroughStyle>) {
+        if matches!(
+            style,
+            InlineStyle::Widget(_)
+                | InlineStyle::ListMarker
+                | InlineStyle::Link
+                | InlineStyle::WikiLink
+        ) {
+            return (color, None);
+        }
+        let color = self.dim.unwrap_or(color);
+        let strike = self.strike.then_some(StrikethroughStyle {
+            thickness: px(1.),
+            color: Some(color),
+        });
+        (color, strike)
+    }
+}
+
+/// The look of a line that is a checked task, `None` for any other line or
+/// when `task.done_style` is `none`.
+fn done_look(line: &DisplayLine, colors: &InlineColors) -> Option<DoneLook> {
+    use crate::settings::DoneStyle;
+    let style = crate::settings::done_style();
+    if style == DoneStyle::None
+        || !line.segments.iter().any(|s| {
+            s.style
+                == InlineStyle::Widget(crate::text_editor::preview::Widget::Checkbox {
+                    checked: true,
+                })
+        })
+    {
+        return None;
+    }
+    Some(DoneLook {
+        dim: matches!(style, DoneStyle::Dim | DoneStyle::Both).then_some(colors.subtle),
+        strike: matches!(style, DoneStyle::Strike | DoneStyle::Both),
+    })
+}
+
 /// The wrap width to shape a line at, given how much horizontal space
 /// `available_width` actually leaves it once its own [`indent_px`] shift is
 /// accounted for — `None` (no wrapping at all) for a table row/rule
@@ -668,6 +719,7 @@ pub(in crate::text_editor) fn line_runs(
 ) -> Vec<TextRun> {
     let text_color = colors.text;
     let heading = display_line.heading_level();
+    let done = done_look(display_line, colors);
     let mut runs: Vec<TextRun> = display_line
         .segments
         .iter()
@@ -693,13 +745,14 @@ pub(in crate::text_editor) fn line_runs(
             if bold {
                 font.weight = FontWeight::BOLD;
             }
+            let (color, done_strike) = done.map_or((color, None), |d| d.apply(seg.style, color));
             TextRun {
                 len: seg.display.len(),
                 font,
                 color,
                 background_color: None,
                 underline: None,
-                strikethrough: strikethrough_for_style(seg.style, color),
+                strikethrough: strikethrough_for_style(seg.style, color).or(done_strike),
             }
         })
         .collect();
@@ -902,5 +955,58 @@ mod heading_style_tests {
             [heading, heading, heading, heading, heading, colors.code]
         );
         assert_ne!(heading, text);
+    }
+}
+
+#[cfg(test)]
+mod done_task_tests {
+    // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
+    use super::{InlineColors, line_runs};
+    use crate::settings::{self, DoneStyle, Typography};
+
+    /// The runs of `line` under `style`, restoring the default afterwards.
+    fn runs(line: &str, style: DoneStyle) -> (Vec<gpui_kit::TextRun>, InlineColors) {
+        let mut t = Typography::default();
+        t.task.done_style = style;
+        settings::set_body(&t);
+        let colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.2, 1.));
+        let base = gpui_kit::Font::default();
+        let line = crate::text_editor::preview::build_display_line(line, false);
+        let runs = line_runs(&line, (&base, &colors), (&[], None), false);
+        settings::set_body(&Typography::default());
+        (runs, colors)
+    }
+
+    #[test]
+    fn a_checked_task_is_dimmed_and_struck_as_configured() {
+        // Runs: the checkbox (blank, a widget), then the text.
+        let (dim, colors) = runs("- [x] done", DoneStyle::Dim);
+        let text = dim.last().unwrap();
+        assert_eq!(text.color, colors.subtle);
+        assert!(text.strikethrough.is_none());
+
+        let (strike, colors) = runs("- [x] done", DoneStyle::Strike);
+        let text = strike.last().unwrap();
+        assert_eq!(text.color, colors.text);
+        assert!(text.strikethrough.is_some());
+
+        let (both, colors) = runs("- [x] done", DoneStyle::Both);
+        let text = both.last().unwrap();
+        assert_eq!(text.color, colors.subtle);
+        assert!(text.strikethrough.is_some());
+    }
+
+    #[test]
+    fn open_tasks_and_plain_lines_and_none_are_untouched() {
+        for (line, style) in [
+            ("- [ ] open", DoneStyle::Both),
+            ("plain text", DoneStyle::Both),
+            ("- [x] done", DoneStyle::None),
+        ] {
+            let (runs, colors) = runs(line, style);
+            let text = runs.last().unwrap();
+            assert_eq!(text.color, colors.text, "{line}");
+            assert!(text.strikethrough.is_none(), "{line}");
+        }
     }
 }
