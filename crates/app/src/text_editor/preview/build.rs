@@ -30,12 +30,21 @@ pub fn build_display_line_with(line: &str, active: bool, macros: &Macros) -> Dis
     let indent = line_indent(line);
 
     if active || line.is_empty() {
+        // The raw line of a heading keeps its size, weight and colour, so
+        // entering it moves nothing (#58 C7).
+        let style = if active && line.contains('#') {
+            build_display_line_with(line, false, macros)
+                .heading_level()
+                .map_or(InlineStyle::Plain, InlineStyle::Heading)
+        } else {
+            InlineStyle::Plain
+        };
         return DisplayLine {
             display_text: line.to_string(),
             segments: vec![DisplaySegment {
                 raw: 0..line.len(),
                 display: 0..line.len(),
-                style: InlineStyle::Plain,
+                style,
                 replaced: false,
             }],
             indent,
