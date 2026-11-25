@@ -19,6 +19,12 @@ fn corner(radius: Radius, bounds: Bounds<Pixels>) -> Pixels {
     px(radius.px(shorter))
 }
 
+/// All four corners of `bounds` rounded by `radius`, for a quad that takes its
+/// corners separately (an image).
+pub(super) fn corners_of(bounds: Bounds<Pixels>, radius: Radius) -> Corners<Pixels> {
+    Corners::all(corner(radius, bounds))
+}
+
 /// Paints `bounds` filled with `fill`, outlined with `border` (width px,
 /// colour) when there is one, all four corners rounded by `radius`.
 pub(super) fn paint_box(
@@ -115,7 +121,7 @@ pub(super) fn paint_strip(
 #[cfg(test)]
 mod tests {
     // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
-    use super::{Radius, corner, strip_outline};
+    use super::{Radius, corner, corners_of, strip_outline};
     use gpui_kit::{Bounds, Pixels, point, px, size};
 
     fn square(side: f32) -> Bounds<Pixels> {
@@ -142,6 +148,16 @@ mod tests {
         assert!(past.iter().all(|&(_, y)| y == 0. || y == 50.));
         // A strip inside the corner never leaves the box.
         assert!(round.iter().all(|&(_, y)| (0.0..=50.0).contains(&y)));
+    }
+
+    #[test]
+    fn an_image_gets_the_same_clamped_corner_on_every_side() {
+        let c = corners_of(square(40.), Radius::Px(100.));
+        assert_eq!(c, gpui_kit::Corners::all(px(20.)));
+        assert_eq!(
+            corners_of(square(40.), Radius::Px(0.)),
+            gpui_kit::Corners::all(px(0.))
+        );
     }
 
     #[test]

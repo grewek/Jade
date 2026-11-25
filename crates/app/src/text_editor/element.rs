@@ -43,7 +43,7 @@ use super::table::ops::Op;
 use super::table::{Table, table_index_at};
 use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
-use boxes::{BoxShape, paint_box, paint_box_corners, paint_strip};
+use boxes::{BoxShape, corners_of, paint_box, paint_box_corners, paint_strip};
 #[allow(unused_imports)]
 pub(super) use input::*;
 #[allow(unused_imports)]
