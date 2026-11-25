@@ -274,6 +274,14 @@ fn bench_highlight(c: &mut Criterion) {
         b.iter(|| syntaxes.highlight("rust", black_box(large.as_str())))
     });
     group.finish();
+    // A hit is what every frame pays per visible block: the key hash only.
+    let mut cache = syntaxes.into_cache();
+    for (name, text) in [("6_lines", block), ("1000_lines", large.as_str())] {
+        cache.spans("rust", text);
+        let mut group = c.benchmark_group("highlight_cache_hit");
+        group.bench_function(name, |b| b.iter(|| cache.spans("rust", black_box(text))));
+        group.finish();
+    }
 }
 
 criterion_group!(
