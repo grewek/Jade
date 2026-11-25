@@ -31,6 +31,7 @@ pub(super) fn paint_lines(
     for freed in cx.default_global::<ImageCache>().begin_frame() {
         window.drop_image(freed).ok();
     }
+    let typography = crate::text_editor::TextSettings::typography(cx);
     let palette = ThemeEngine::global(cx).palette().clone();
     let inline = InlineColors::from_palette(&palette);
     let rule = palette.color(Role::BorderStrong);
@@ -147,6 +148,11 @@ pub(super) fn paint_lines(
         selection_fill,
         widget_colors,
         cursor_color,
+        table_shape: BoxShape {
+            radius: typography.radius_of(crate::settings::Boxed::Table),
+            border_width: typography.shape.border_width,
+        },
+        checkbox_radius: typography.task.checkbox_radius,
     };
 
     for i in range.clone() {
@@ -308,6 +314,10 @@ pub(super) struct PaintEnv<'a> {
     pub(super) selection_fill: Hsla,
     pub(super) widget_colors: WidgetColors,
     pub(super) cursor_color: Hsla,
+    /// Outline and corners of a rendered table's box.
+    pub(super) table_shape: BoxShape,
+    /// Corners of a task checkbox.
+    pub(super) checkbox_radius: crate::settings::Radius,
 }
 
 /// One shaped line and where it goes: `bounds` is the frame it is painted
@@ -350,6 +360,7 @@ pub(super) fn paint_line(
         selection_fill,
         ref widget_colors,
         cursor_color,
+        checkbox_radius,
         ..
     } = *env;
     let selection = env.selection.clone();
@@ -696,6 +707,7 @@ pub(super) fn paint_line(
             line_text,
             row_width: full_row_width,
             macros: state.macros,
+            checkbox_radius,
         };
         paint_widgets(display_line, wrapped, line_origin, &widgets, (window, cx));
 

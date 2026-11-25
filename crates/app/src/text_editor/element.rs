@@ -7,6 +7,7 @@ use gpui_kit::component::WindowExt;
 use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
+mod boxes;
 mod input;
 pub(super) mod justify;
 mod paint;
@@ -42,6 +43,7 @@ use super::table::ops::Op;
 use super::table::{Table, table_index_at};
 use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
+use boxes::{BoxShape, paint_box, paint_box_corners};
 #[allow(unused_imports)]
 pub(super) use input::*;
 #[allow(unused_imports)]

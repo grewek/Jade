@@ -28,6 +28,8 @@ pub(super) struct WidgetPaint<'a> {
     pub(super) row_width: Pixels,
     /// The note's macros, which its formulas are expanded with.
     pub(super) macros: &'a Macros,
+    /// The corners of a task checkbox (`task.checkbox_radius`).
+    pub(super) checkbox_radius: crate::settings::Radius,
 }
 
 /// Paints a bundled Lucide icon (`path`) filling `bounds`.
@@ -117,14 +119,13 @@ pub(super) fn paint_widgets(
                 } else {
                     (Hsla::transparent_black(), colors.border)
                 };
-                window.paint_quad(quad(
+                paint_box(
                     boxed,
-                    CHECKBOX_RADIUS,
+                    paint.checkbox_radius,
                     fill_color,
-                    CHECKBOX_BORDER,
-                    edge,
-                    BorderStyle::Solid,
-                ));
+                    Some((CHECKBOX_BORDER, edge)),
+                    window,
+                );
                 if checked {
                     let inset = boxed.size.width * 0.12;
                     let tick = Bounds {
@@ -307,9 +308,7 @@ pub(super) fn paint_math_block(
     paint_layout(layout, baseline, (em, font_id), colors, window);
 }
 
-/// Corner radius and outline width of a task checkbox.
-pub(super) const CHECKBOX_RADIUS: Pixels = px(3.);
-
+/// Outline width of a task checkbox.
 pub(super) const CHECKBOX_BORDER: Pixels = px(1.5);
 
 /// Draws the image of `info` at the top left of `area`, starting its decode if
