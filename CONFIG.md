@@ -67,7 +67,7 @@ none of its own; `border_width` (px 0..8, default 1).
 | `code_block.border` | outline | `false` | no |
 | `code_block.language_label` | the fence language in the corner (needs `background`) | `false` | no |
 | `code_block.font_scale` | 0.5..1 (code can shrink, not grow) | 1.0 | yes |
-| `code_block.highlight` | colour the tokens of fenced code (`syntax_*` roles); needs `.sublime-syntax` files; nothing draws it yet (#99) | `false` | no |
+| `code_block.highlight` | colour the tokens of fenced code (`syntax_*` roles); needs `.sublime-syntax` files, see Syntax highlighting below | `false` | no |
 | `code_block.syntax_folder` | where the `.sublime-syntax` files are: relative to the config folder, or absolute | `syntaxes` | |
 | `radius` (in either) | px or `"full"`; omitted follows `[shape]` | | no |
 
@@ -106,7 +106,76 @@ checked item; `task.checkbox_radius` (px or `"full"`, default 3);
 when the theme changes: `heading_1 = "#c0392b"`, `code_background = "#10203040"`,
 `quote_bar = "accent"`. A value is `#rrggbb`, `#rrggbbaa` or another role's name.
 The roles (including `heading`, `heading_1`..`heading_6`, `code_background`,
-`quote_bar`, `link_underline`, and the ten `syntax_*` roles for highlighted code once that lands, #99) are listed in `crates/app/assets/themes/FORMAT.md`.
+`quote_bar`, `link_underline`, and the ten `syntax_*` roles for highlighted code) are listed in `crates/app/assets/themes/FORMAT.md`.
+
+## Syntax highlighting
+
+`code_block.highlight = true` colours the tokens of fenced code (` ```rust `).
+It is off by default, and Jade ships **no language definitions**: a language is
+a file you put in a folder.
+
+**The folder.** `syntaxes/` inside the config folder, next to `config.toml`
+(`~/.config/jade/syntaxes/` on Linux; `target/jade-dev/syntaxes/` in a debug
+build; under `JADE_CONFIG_DIR` when that is set). `code_block.syntax_folder`
+changes it: a path relative to the config folder, or an absolute one. A vault is
+never searched, since vaults get shared.
+
+```
+~/.config/jade/
+├── config.toml
+└── syntaxes/
+    ├── Rust.sublime-syntax
+    ├── Python.sublime-syntax
+    └── Bash.sublime-syntax
+```
+
+**Where to get definitions.** Jade reads Sublime Text syntax definitions
+(`*.sublime-syntax`). The Sublime Text packages at
+<https://github.com/sublimehq/Packages> have one per language, in a folder per
+language (`Python/Python.sublime-syntax`). Copy the files into the one folder:
+only files directly in it are read, not subfolders. That repository's licence
+lets you copy, use, modify and distribute its files, except those that carry
+their own licence text or have a `-license` file beside them, so check the
+languages you take; Jade does not bundle any.
+
+**Which fence gets which language.** The first word after the backticks is
+matched, in any case, against the `name` and the `file_extensions` a definition
+lists, so `rust`, `Rust` and `rs` all find the Rust one. A word no definition
+knows leaves the block plain, without a message.
+
+**Definitions that include others.** Some refer to other files (Python to its
+regular-expression and SQL definitions, Rust to TOML for embedded blocks). Copy
+those too; without them a block stops being coloured at the first line that
+needs the missing one, and Jade says so once for that language. Not every
+Sublime definition loads in Jade's reader either: one it cannot read is skipped
+with a message and the others still load.
+
+**Messages** go to stderr, start with `syntax:`, and appear once: one per file
+that cannot be read, one when the folder cannot be read, one per language whose
+definition needs a file the folder lacks.
+
+**When it happens.** Definitions are read once, in the background, when the first
+highlighted block is on screen, and not again until Jade restarts (adding or
+changing a file needs a restart; changing `syntax_folder` re-reads). Blocks are
+coloured in the background too: a block is plain for a moment (about half a
+second the first time, a few milliseconds after), then coloured, and nothing
+moves. Only the blocks near the screen are coloured.
+
+**Limits.** A block over 2000 lines or 128 KiB stays plain, and so does a line
+over 2000 bytes inside a coloured block. Code inside columns is coloured like
+any other, inline code never is.
+
+**Colours** are the ten `syntax_*` theme roles (comment, string, number,
+keyword, function, type, constant, operator, punctuation, variable); every
+built-in theme sets them. Recolour one in `[colors]`:
+
+```toml
+[code_block]
+highlight = true
+
+[colors]
+syntax_keyword = "#c0392b"
+```
 
 ## Settings dialog
 

@@ -65,7 +65,7 @@ Use an override for a real difference (contrast, a palette that lacks the defaul
 | `link_underline` | the underline of a link; follows `link` | (new) |
 | `code_background` | the box behind code; follows `surface` | (new) |
 | `highlight` | `==highlight==` (not drawn yet) | (new) |
-| `syntax_comment` | comments in highlighted fenced code (#99; not drawn yet); follows `text`, the built-in themes set it | (new) |
+| `syntax_comment` | comments in highlighted fenced code (`code_block.highlight`, #99); follows `text`, the built-in themes set it | (new) |
 | `syntax_string` | string and character literals; follows `text` | (new) |
 | `syntax_number` | numeric literals; follows `text` | (new) |
 | `syntax_keyword` | keywords and storage words (`fn`, `if`, `const`); follows `text` | (new) |
