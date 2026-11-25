@@ -39,6 +39,15 @@ static MATH_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static HEADING_SCALE: [AtomicU32; HEADING_LEVELS] =
     [const { AtomicU32::new(1.0f32.to_bits()) }; HEADING_LEVELS];
 
+static HEADING_WEIGHT: [AtomicU32; HEADING_LEVELS] =
+    [const { AtomicU32::new(700) }; HEADING_LEVELS];
+
+/// `heading.weight` of `level` (1..=6, clamped): the font weight, 100..=900.
+pub fn heading_weight(level: u8) -> u16 {
+    let i = Typography::heading_index(level);
+    HEADING_WEIGHT[i].load(Ordering::Relaxed) as u16
+}
+
 /// `heading.scale` of `level` (1..=6, clamped): the heading's font size as a
 /// multiple of the body size.
 pub fn heading_scale(level: u8) -> f32 {
@@ -74,5 +83,8 @@ pub fn set_body(typography: &Typography) {
     MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
     for (slot, scale) in HEADING_SCALE.iter().zip(typography.heading.scale) {
         slot.store(scale.to_bits(), Ordering::Relaxed);
+    }
+    for (slot, weight) in HEADING_WEIGHT.iter().zip(typography.heading.weight) {
+        slot.store(u32::from(weight), Ordering::Relaxed);
     }
 }

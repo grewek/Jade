@@ -320,8 +320,9 @@ pub(in crate::text_editor) fn mono_ascent_descent(
 fn font_for_style(style: InlineStyle, base: &Font) -> Font {
     let mut font = base.clone();
     match style {
-        InlineStyle::Bold | InlineStyle::Heading(_) | InlineStyle::CalloutTitle => {
-            font.weight = FontWeight::BOLD
+        InlineStyle::Bold | InlineStyle::CalloutTitle => font.weight = FontWeight::BOLD,
+        InlineStyle::Heading(level) => {
+            font.weight = FontWeight(f32::from(crate::settings::heading_weight(level)));
         }
         InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
         InlineStyle::Plain
@@ -353,6 +354,7 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
         InlineStyle::WikiLink => colors.wikilink,
         InlineStyle::Link => colors.link,
         InlineStyle::CalloutTitle => callout.map_or(base, |c| colors.callout(c.kind)),
+        InlineStyle::Heading(level) => colors.heading(level),
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => {
             if callout.is_some() {
                 base
@@ -363,7 +365,6 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
         InlineStyle::Plain
         | InlineStyle::Bold
         | InlineStyle::Italic
-        | InlineStyle::Heading(_)
         | InlineStyle::Strikethrough
         | InlineStyle::Widget(_)
         | InlineStyle::Math => base,
@@ -778,4 +779,36 @@ pub(in crate::text_editor) fn char_budget(
         return None;
     }
     Some((available_width / char_width) as usize)
+}
+
+#[cfg(test)]
+mod heading_style_tests {
+    // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
+    use super::{InlineColors, InlineStyle, color_for_style, font_for_style};
+    use crate::settings::{self, HEADING_LEVELS, Typography};
+
+    #[test]
+    fn a_heading_takes_its_levels_weight_and_color() {
+        let mut t = Typography::default();
+        t.heading.weight = [900, 800, 700, 600, 500, 400];
+        settings::set_body(&t);
+        let mut colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.5, 1.));
+        colors.heading = std::array::from_fn(|i| gpui_kit::hsla(i as f32 / 8., 0.5, 0.5, 1.));
+        let base = gpui_kit::Font::default();
+        for level in 1..=HEADING_LEVELS as u8 {
+            let style = InlineStyle::Heading(level);
+            let font = font_for_style(style, &base);
+            assert_eq!(
+                font.weight.0,
+                t.heading.weight[usize::from(level) - 1] as f32
+            );
+            assert_eq!(color_for_style(style, &colors, None), colors.heading(level));
+        }
+        settings::set_body(&Typography::default());
+        assert_eq!(
+            font_for_style(InlineStyle::Heading(3), &base).weight,
+            gpui_kit::FontWeight::BOLD,
+            "the default weight is bold"
+        );
+    }
 }
