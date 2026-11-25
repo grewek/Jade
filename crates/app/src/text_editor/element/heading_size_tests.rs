@@ -224,3 +224,65 @@ fn the_rule_and_space_defaults_change_nothing() {
         assert!(!settings::heading_rule(level));
     }
 }
+
+/// The shaped display text and entry of line 1 of `text` at `width`.
+fn shown(
+    cx: &mut TestAppContext,
+    window: gpui_kit::AnyWindowHandle,
+    font: &Font,
+    text: &str,
+    width: f32,
+) -> (String, super::super::layout::EntryHeight) {
+    let doc = DocumentCache::new(text);
+    cx.update_window(window, |_, window, _| {
+        let (font_size, row) = (px(16.), px(26.));
+        let state = LineState::of(&doc, 1, 0, true);
+        let line = &text[doc.line_start_byte(1)..doc.line_end_byte(1)];
+        let shaped = shape_display_line(
+            line,
+            &state,
+            font,
+            font_size,
+            gpui_kit::black(),
+            px(width),
+            window,
+        );
+        let entry = entry_heights(&shaped, line, (font_size, row), doc.macros())
+            .next()
+            .unwrap();
+        (shaped[0].1.display_text.clone(), entry)
+    })
+    .unwrap()
+}
+
+#[gpui_kit::test]
+fn a_formula_in_a_heading_is_sized_with_it(cx: &mut TestAppContext) {
+    let (window, font) = open(cx);
+    let text = "caret\n# $\\frac{\\frac{a}{b}}{\\frac{c}{d}}$";
+    let (_, body) = shown(cx, window, &font, text, 900.);
+    let _s = Scales::set([3.0; HEADING_LEVELS]);
+    let (_, big) = shown(cx, window, &font, text, 900.);
+    // The same formula at three times the size needs more than three times a
+    // body row's height only if it is drawn at the heading's size.
+    assert!(
+        big.height >= body.height * 3.0 - px(0.5),
+        "{:?} vs {:?}",
+        big.height,
+        body.height
+    );
+    let (_, plain) = shown(cx, window, &font, "caret\n# word", 900.);
+    assert_eq!(plain.height, px(78.));
+}
+
+#[gpui_kit::test]
+fn a_heading_formula_wider_than_its_row_is_shown_as_source(cx: &mut TestAppContext) {
+    let (window, font) = open(cx);
+    let text = "caret\n# $x^2+y^2+z^2+w^2$";
+    // 16px text is 9.6px per column: 40 columns fit 400px at body size but
+    // not at three times the size (13 columns).
+    let (flat, _) = shown(cx, window, &font, text, 400.);
+    assert!(!flat.contains('$'), "drawn at body size: {flat:?}");
+    let _s = Scales::set([3.0; HEADING_LEVELS]);
+    let (big, _) = shown(cx, window, &font, text, 150.);
+    assert!(big.contains('$'), "too wide at heading size: {big:?}");
+}

@@ -747,13 +747,16 @@ fn state_row_count(
     let line_height = crate::text_editor::settings::body_row_height();
     let tall = |dl: &DisplayLine| {
         let mut formulas = formula_spots(dl, line_text, env.doc.macros());
-        let text = (env.metrics.ascent, env.metrics.descent);
-        let per_row = chars_per_row(wrap_width, env.metrics.char_width);
+        // A heading's formulas are drawn at its size, in its rows of `units` body rows.
+        let (scale, units) = (dl.font_scale(), dl.row_units());
+        let text = (env.metrics.ascent * scale, env.metrics.descent * scale);
+        let per_row = chars_per_row(wrap_width, env.metrics.char_width * scale);
         let moved = settle_formulas(&mut formulas, per_row);
         let chars = dl.display_text.chars().count();
         // The room left empty before a moved formula can cost a row of text.
-        let pushed = (chars + moved).div_ceil(per_row) - chars.div_ceil(per_row);
-        pushed + tall_extra_rows(&formulas, per_row, (env.font_size, line_height), text)
+        let pushed = ((chars + moved).div_ceil(per_row) - chars.div_ceil(per_row)) * units;
+        let metrics = (env.font_size * scale, line_height * units as f32);
+        pushed + tall_extra_rows(&formulas, per_row, metrics, text) * units
     };
     display_lines
         .iter()
