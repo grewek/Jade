@@ -28,7 +28,7 @@ Use an override for a real difference (contrast, a palette that lacks the defaul
 
 ## User colors
 
-`config.toml` may hold a `[colors]` table that recolors single roles on top of whatever theme is active, and stays when the theme is switched: `heading_5 = "#c0392b"`. A value is `#rrggbb`, `#rrggbbaa` (the alpha applies to Jade's own painting; widgets ignore it) or another role's name (`quote_bar = "accent"`, that role's color in the theme). An entry that is not a role or not a color is reported and skipped. A role that follows another (`heading_3` follows `heading`) follows the user's color unless the theme colored it itself. New contrast warnings are printed. Per-theme tables come later.
+`config.toml` may hold a `[colors]` table that recolors single roles on top of whatever theme is active, and stays when the theme is switched: `heading_5 = "#c0392b"`. A value is `#rrggbb`, `#rrggbbaa` (the alpha applies to Jade's own painting; widgets ignore it) or another role's name (`quote_bar = "accent"`, that role's color in the theme). An entry that is not a role or not a color is reported and skipped. A role that follows another (`heading_3` follows `heading`) follows the user's color unless the theme colored it itself. New contrast warnings are printed. Per-theme tables come later. The rest of `config.toml` is documented in `CONFIG.md` at the repository root.
 
 ## Roles
 
