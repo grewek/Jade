@@ -835,7 +835,7 @@ fn paint_column_blocks(
                 table_left,
                 &table_at,
                 rows,
-                env.palette,
+                (env.palette, env.table_shape),
                 window,
             );
             let hovered = env.table_hover.filter(|(t, _)| *t == index);

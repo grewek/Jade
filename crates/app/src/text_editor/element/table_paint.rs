@@ -2,12 +2,10 @@
 //! its edge. Moves into the table module with the rest of table code.
 
 use super::*;
+use crate::settings::{Boxed, Radius};
 #[allow(unused_imports)]
 use crate::text_editor::math::Macros;
 use crate::text_editor::table;
-
-/// Corner radius of a table's box.
-pub(super) const TABLE_RADIUS: Pixels = px(6.);
 
 /// `trace` gets each box's extent, to check it against the lines it frames.
 pub(super) fn paint_table_boxes(
@@ -19,6 +17,11 @@ pub(super) fn paint_table_boxes(
 ) {
     let mut trace = trace;
     let tables = doc.tables();
+    let typography = crate::text_editor::TextSettings::typography(cx);
+    let shape = BoxShape {
+        radius: typography.radius_of(Boxed::Table),
+        border_width: typography.shape.border_width,
+    };
     let FrameView {
         layout,
         focused,
@@ -62,7 +65,7 @@ pub(super) fn paint_table_boxes(
             bounds.origin.x,
             &at,
             visible_rows,
-            palette,
+            (palette, shape),
             window,
         );
         let hovered = view.table_hover.as_ref().filter(|(t, _)| *t == index);
@@ -97,7 +100,7 @@ pub(super) fn paint_table_box(
     left: Pixels,
     at: &dyn Fn(usize) -> Pixels,
     visible_rows: Range<usize>,
-    palette: &crate::theme::Palette,
+    (palette, shape): (&crate::theme::Palette, BoxShape),
     window: &mut Window,
 ) {
     let strong = palette.color(Role::BorderStrong);
@@ -114,22 +117,33 @@ pub(super) fn paint_table_box(
             color,
         )
     };
-    window.paint_quad(quad(
+    let outer = Bounds {
+        origin: point(left, top),
+        size: size(width, bottom - top),
+    };
+    // No more than the header band can round, so its tint stays inside the outline.
+    let limit = width.min(bottom - top).min(header_bottom - top);
+    let radius = px(shape.radius.px(f32::from(limit)));
+    let shape = BoxShape {
+        radius: Radius::Px(f32::from(radius)),
+        ..shape
+    };
+    let (zero, edge) = (px(0.), px(shape.border_width));
+    paint_box_corners(
         Bounds {
-            origin: point(left, top),
             size: size(width, header_bottom - top),
+            ..outer
         },
         Corners {
-            top_left: TABLE_RADIUS,
-            top_right: TABLE_RADIUS,
-            bottom_left: px(0.),
-            bottom_right: px(0.),
+            top_left: radius,
+            top_right: radius,
+            bottom_left: zero,
+            bottom_right: zero,
         },
         palette.color(Role::TableHeader),
-        px(0.),
-        Hsla::transparent_black(),
-        BorderStyle::Solid,
-    ));
+        None,
+        window,
+    );
     for column in 1..columns.widths.len() {
         let x = left + columns.x(table::column_left(&columns.widths, column));
         window.paint_quad(line(x, top, TABLE_LINE_WIDTH, bottom - top, light));
@@ -148,17 +162,13 @@ pub(super) fn paint_table_box(
         TABLE_LINE_WIDTH,
         strong,
     ));
-    window.paint_quad(quad(
-        Bounds {
-            origin: point(left, top),
-            size: size(width, bottom - top),
-        },
-        TABLE_RADIUS,
+    paint_box(
+        outer,
+        shape.radius,
         Hsla::transparent_black(),
-        TABLE_LINE_WIDTH,
-        strong,
-        BorderStyle::Solid,
-    ));
+        Some((edge, strong)),
+        window,
+    );
 }
 
 /// Colors of the controls on a table's edge.
@@ -234,6 +244,9 @@ pub(super) fn paint_table_row(
     window: &mut Window,
     cx: &mut App,
 ) {
+    let checkbox_radius = crate::text_editor::TextSettings::typography(cx)
+        .task
+        .checkbox_radius;
     let pitch = line_height * scale as f32;
     let lift = (pitch - line_height) / 2.;
     for (c, cell) in table::layout_row_in(line, &columns.widths, editing, macros)
@@ -280,6 +293,7 @@ pub(super) fn paint_table_row(
                 line_text: text,
                 row_width: column_width,
                 macros,
+                checkbox_radius,
             };
             paint_widgets(&shown, &wrapped, at, &widgets, (window, cx));
         }
