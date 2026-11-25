@@ -363,12 +363,15 @@ impl RowCache {
         assert_eq!(counts.len(), doc.line_count());
         self.rows = Fenwick::from_vec(counts);
         self.editing = doc.view.editing_cell();
-        self.active_line = inp.focused.then(|| doc.line_at(inp.cursor));
         self.available_width = inp.width;
         self.metrics = metrics;
         self.layout_generation = crate::settings::layout_generation();
         self.verified = 0..0;
         self.pending = None;
+        // The caret's line is drawn raw (a heading with its `#`s, #74), which
+        // the cold estimate does not know: count it exactly, as when it moves.
+        self.active_line = None;
+        self.sync_active_line(&env, window);
     }
 
     /// Mirrors an edit's line-count change in the counts, so [`Self::patch`]

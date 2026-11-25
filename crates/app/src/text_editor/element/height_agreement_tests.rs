@@ -333,3 +333,75 @@ fn the_cold_estimate_of_a_spaced_heading_matches_shaping(cx: &mut TestAppContext
         &verified[..verified.len().min(5)]
     );
 }
+
+/// The line the caret is in is drawn raw, with its `#`s, which a cold rebuild
+/// must count too: a long heading that wraps is as tall as shaping says (#74).
+#[gpui_kit::test]
+fn the_cold_count_of_the_caret_heading_equals_shaping(cx: &mut TestAppContext) {
+    let mut t = crate::settings::Typography::default();
+    t.heading.scale = [2.0, 1.75, 1.5, 1.25, 1.1, 1.0];
+    crate::settings::set_body(&t);
+    cx.update(|cx| {
+        gpui_kit::init(cx);
+        crate::theme::ThemeEngine::install(None, cx);
+    });
+    let (window, _editor) = cx.update(|cx| {
+        gpui_kit::open_window(WindowOptions::default(), cx, |_w, cx| {
+            cx.new(|cx| Editor::new("", cx))
+        })
+        .unwrap()
+    });
+    // Headings whose text fills a row exactly, so the prefix decides the row.
+    let mut text = String::new();
+    let mut heading_lines = Vec::new();
+    for hashes in 1..=3_usize {
+        for body in 8..40_usize {
+            heading_lines.push(text.lines().count());
+            text.push_str(&format!("{} {}\n", "#".repeat(hashes), "y".repeat(body)));
+        }
+    }
+    let off = cx
+        .update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let (font, size, color) = style_of(window);
+            let width = px(NARROW);
+            let mut wrong = Vec::new();
+            for &line in &heading_lines {
+                let mut doc = DocumentCache::new(&text);
+                doc.view.set_column_width(Some(NARROW));
+                let cursor = doc.line_start_byte(line) + 2;
+                let mut cache = RowCache::empty();
+                rows::rebuild_for_test(
+                    &mut cache,
+                    &text,
+                    &doc,
+                    (cursor, true),
+                    width,
+                    (&font, size, color),
+                    window,
+                );
+                let shaped = rows::shaped_count_for_test(
+                    &text,
+                    &doc,
+                    line,
+                    (cursor, true),
+                    width,
+                    (&font, size, color),
+                    window,
+                );
+                let cached = rows::count_at(&cache, line);
+                if cached != shaped as i64 {
+                    wrong.push((line, cached, shaped));
+                }
+            }
+            wrong
+        })
+        .unwrap();
+    crate::settings::set_body(&crate::settings::Typography::default());
+    assert!(
+        off.is_empty(),
+        "{} headings off, first {:?}",
+        off.len(),
+        &off[..off.len().min(5)]
+    );
+}
