@@ -163,6 +163,12 @@ pub struct List {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Strikethrough {
+    /// Draw `~~struck~~` text in the muted colour, not the text colour.
+    pub muted: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Task {
     pub done_style: DoneStyle,
     pub checkbox_radius: Radius,
@@ -188,6 +194,7 @@ pub struct Typography {
     pub blockquote: Blockquote,
     pub list: List,
     pub task: Task,
+    pub strikethrough: Strikethrough,
     pub spacing: Spacing,
 }
 
@@ -256,6 +263,7 @@ impl Default for Typography {
                 done_style: DoneStyle::None,
                 checkbox_radius: Radius::Px(3.0),
             },
+            strikethrough: Strikethrough { muted: false },
             spacing: Spacing { block_gap: 1.0 },
         }
     }
@@ -322,6 +330,7 @@ impl Typography {
         self.blockquote.bar_width = other.blockquote.bar_width;
         self.list.bullet_shapes = other.list.bullet_shapes;
         self.task = other.task;
+        self.strikethrough = other.strikethrough;
     }
 
     /// The line height in px.

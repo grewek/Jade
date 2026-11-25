@@ -12,8 +12,8 @@ pub use read::{Read, load};
 
 pub use typography::{
     Blockquote, Boxed, BulletShape, Callout, CodeBlock, DoneStyle, Font, FontFamily,
-    HEADING_LEVELS, Heading, Image, InlineCode, Link, List, Radius, Shape, Spacing, Table, Task,
-    Typography, Underline,
+    HEADING_LEVELS, Heading, Image, InlineCode, Link, List, Radius, Shape, Spacing, Strikethrough,
+    Table, Task, Typography, Underline,
 };
 
 /// Bumped whenever a reload changes a layout key. Row counts depend on those
@@ -37,6 +37,7 @@ static BODY_SIZE: AtomicU32 = AtomicU32::new(16.0f32.to_bits());
 static BODY_ROW: AtomicU32 = AtomicU32::new(26.0f32.to_bits());
 static MATH_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static CELL_PADDING: AtomicU32 = AtomicU32::new(0.0f32.to_bits());
+static STRIKE_MUTED: AtomicBool = AtomicBool::new(false);
 static DONE_STYLE: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(DoneStyle::None as u8);
 static QUOTE_INDENT: AtomicU32 = AtomicU32::new(1.25f32.to_bits());
@@ -103,6 +104,11 @@ pub fn cell_padding() -> f32 {
 /// Whether fenced code lines are inset to sit inside a box (`code_block.background`).
 pub fn code_inset() -> bool {
     CODE_INSET.load(Ordering::Relaxed)
+}
+
+/// `strikethrough.muted`.
+pub fn strike_muted() -> bool {
+    STRIKE_MUTED.load(Ordering::Relaxed)
 }
 
 /// `task.done_style`: how the text of a checked task is drawn.
@@ -172,6 +178,7 @@ pub fn set_body(typography: &Typography) {
     BODY_ROW.store(typography.line_height_px().to_bits(), Ordering::Relaxed);
     MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
     CELL_PADDING.store(typography.table.cell_padding.to_bits(), Ordering::Relaxed);
+    STRIKE_MUTED.store(typography.strikethrough.muted, Ordering::Relaxed);
     DONE_STYLE.store(typography.task.done_style as u8, Ordering::Relaxed);
     LIST_INDENT.store(typography.list.indent.to_bits(), Ordering::Relaxed);
     LIST_GAP.store(
