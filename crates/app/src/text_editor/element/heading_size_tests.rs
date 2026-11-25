@@ -286,3 +286,49 @@ fn a_heading_formula_wider_than_its_row_is_shown_as_source(cx: &mut TestAppConte
     let (big, _) = shown(cx, window, &font, text, 150.);
     assert!(big.contains('$'), "too wide at heading size: {big:?}");
 }
+
+/// Entering a heading changes neither its row height nor its spacing, and its
+/// text stays at the heading's size.
+#[gpui_kit::test]
+fn the_caret_line_of_a_heading_keeps_its_height(cx: &mut TestAppContext) {
+    let _s = Scales::with(|t| {
+        t.heading.scale = SCALES;
+        t.heading.space_above[0] = 1.0;
+        t.heading.space_below[0] = 1.0;
+    });
+    let (window, font) = open(cx);
+    let text = "caret\n# Title\nplain";
+    let doc = DocumentCache::new(text);
+    let measure = |cx: &mut TestAppContext, cursor: usize| {
+        cx.update_window(window, |_, window, _| {
+            let (font_size, row) = (px(16.), px(26.));
+            let state = LineState::of(&doc, 1, cursor, true);
+            let line = &text[doc.line_start_byte(1)..doc.line_end_byte(1)];
+            let shaped = shape_display_line(
+                line,
+                &state,
+                &font,
+                font_size,
+                gpui_kit::black(),
+                px(900.),
+                window,
+            );
+            let entry = entry_heights(&shaped, line, (font_size, row), doc.macros())
+                .next()
+                .unwrap();
+            (
+                entry,
+                shaped[0].0.size(row).width / shaped[0].1.display_text.len() as f32,
+            )
+        })
+        .unwrap()
+    };
+    let (shown, shown_advance) = measure(cx, 0);
+    let (editing, editing_advance) = measure(cx, doc.line_start_byte(1) + 2);
+    assert_eq!(editing.height, shown.height);
+    assert_eq!(editing.pad, shown.pad);
+    assert!(
+        (f32::from(editing_advance) - f32::from(shown_advance)).abs() < 0.01,
+        "same advance per character: {editing_advance:?} vs {shown_advance:?}"
+    );
+}

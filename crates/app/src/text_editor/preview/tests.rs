@@ -341,18 +341,37 @@ fn assert_contiguous(dl: &DisplayLine, raw_len: usize) {
 
 #[test]
 fn active_line_is_shown_verbatim_and_unstyled() {
-    let line = "# **bold** [[Link]]";
-    let dl = build_display_line(line, true);
-    assert_eq!(dl.display_text, line);
-    assert_eq!(
-        dl.segments,
-        vec![DisplaySegment {
-            raw: 0..line.len(),
-            display: 0..line.len(),
-            style: InlineStyle::Plain,
-            replaced: false
-        }]
-    );
+    for line in ["plain **bold** [[Link]]", "#nospace", "a # b"] {
+        let dl = build_display_line(line, true);
+        assert_eq!(dl.display_text, line);
+        assert_eq!(
+            dl.segments,
+            vec![DisplaySegment {
+                raw: 0..line.len(),
+                display: 0..line.len(),
+                style: InlineStyle::Plain,
+                replaced: false
+            }]
+        );
+    }
+}
+
+/// The raw line of a heading keeps its level, so it is not resized when the
+/// caret enters it (#58 C7); the text itself is still verbatim.
+#[test]
+fn the_active_line_of_a_heading_keeps_its_level() {
+    for (line, level) in [
+        ("# **bold** [[Link]]", 1),
+        ("### Title", 3),
+        ("> ## quoted", 2),
+        ("- # item", 1),
+    ] {
+        let dl = build_display_line(line, true);
+        assert_eq!(dl.display_text, line);
+        assert_eq!(dl.heading_level(), Some(level), "{line}");
+        assert_eq!(dl.segments.len(), 1);
+        assert_contiguous(&dl, line.len());
+    }
 }
 
 #[test]

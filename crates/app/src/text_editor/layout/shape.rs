@@ -663,6 +663,7 @@ pub(in crate::text_editor) fn line_runs(
     bold: bool,
 ) -> Vec<TextRun> {
     let text_color = colors.text;
+    let heading = display_line.heading_level();
     let mut runs: Vec<TextRun> = display_line
         .segments
         .iter()
@@ -674,6 +675,13 @@ pub(in crate::text_editor) fn line_runs(
                     .any(|r| r.start <= seg.raw.start && seg.raw.end <= r.end);
             let color = if is_broken {
                 colors.broken
+            } else if let (
+                Some(level),
+                InlineStyle::Bold | InlineStyle::Italic | InlineStyle::Strikethrough,
+            ) = (heading, seg.style)
+            {
+                // Emphasis inside a heading keeps the heading's color.
+                colors.heading(level)
             } else {
                 color_for_style(seg.style, colors, callout)
             };
@@ -839,5 +847,21 @@ mod heading_style_tests {
             gpui_kit::FontWeight::BOLD,
             "the default weight is bold"
         );
+    }
+
+    #[test]
+    fn emphasis_inside_a_heading_keeps_the_headings_color() {
+        let mut colors = InlineColors::from(gpui_kit::hsla(0., 0., 0.5, 1.));
+        colors.heading = [gpui_kit::hsla(0.6, 0.5, 0.5, 1.); HEADING_LEVELS];
+        let base = gpui_kit::Font::default();
+        let line = crate::text_editor::preview::build_display_line("## a **b** *c* `d`", false);
+        let runs = super::line_runs(&line, (&base, &colors), (&[], None), false);
+        let ink: Vec<_> = runs.iter().map(|r| r.color).collect();
+        let (heading, text) = (colors.heading(2), colors.text);
+        assert_eq!(
+            ink,
+            [heading, heading, heading, heading, heading, colors.code]
+        );
+        assert_ne!(heading, text);
     }
 }
