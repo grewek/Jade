@@ -386,7 +386,8 @@ fn estimate_row_count(
 }
 
 /// The rows of a heading's `text` (its `#` prefix hidden) at `level`: the rows
-/// its wider characters wrap to, each `settings::heading_rows` body rows tall.
+/// its wider characters wrap to, each `settings::heading_rows` body rows tall,
+/// plus the empty rows around it.
 fn heading_row_estimate(
     text: &str,
     level: u8,
@@ -396,7 +397,8 @@ fn heading_row_estimate(
     let scale = crate::settings::heading_scale(level);
     let units = crate::settings::heading_rows(scale);
     let wide = char_width * scale;
-    rows_for_chars(text.chars().count(), Some(available_width), wide) * units
+    let (above, below) = crate::settings::heading_space_rows(level);
+    rows_for_chars(text.chars().count(), Some(available_width), wide) * units + above + below
 }
 
 /// A drawn formula as the row estimate sees it: the display character it starts
@@ -759,7 +761,11 @@ fn state_row_count(
             // A heading's characters are wider and each of its rows is several
             // body rows (#58); its formulas are not yet sized with it (C6).
             let char_width = env.metrics.char_width * dl.font_scale();
-            wrapped_row_count(&dl.display_text, wrap_width, char_width) * dl.row_units() + tall(dl)
+            let (above, below) = dl.space_rows();
+            wrapped_row_count(&dl.display_text, wrap_width, char_width) * dl.row_units()
+                + above
+                + below
+                + tall(dl)
         })
         .sum::<usize>()
         .max(usize::from(!state.hidden))

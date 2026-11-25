@@ -170,6 +170,12 @@ impl DisplayLine {
         })
     }
 
+    /// The body rows left empty above and below this line (0 unless a heading).
+    pub fn space_rows(&self) -> (usize, usize) {
+        self.heading_level()
+            .map_or((0, 0), crate::settings::heading_space_rows)
+    }
+
     /// Cuts the line at display byte `at` into the part before and the part
     /// from there on, and the raw byte where the second begins. Each part's
     /// raw and display ranges start at 0, so each reads as a line of its own.

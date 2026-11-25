@@ -3,7 +3,7 @@
 //! are the theme engine's business (`crate::theme`); this is sizes, spacing,
 //! shapes and switches.
 
-use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 mod read;
 mod typography;
@@ -41,6 +41,25 @@ static HEADING_SCALE: [AtomicU32; HEADING_LEVELS] =
 
 static HEADING_WEIGHT: [AtomicU32; HEADING_LEVELS] =
     [const { AtomicU32::new(700) }; HEADING_LEVELS];
+
+static HEADING_SPACE: [[AtomicU32; HEADING_LEVELS]; 2] =
+    [const { [const { AtomicU32::new(0) }; HEADING_LEVELS] }; 2];
+static HEADING_RULE: [AtomicBool; HEADING_LEVELS] =
+    [const { AtomicBool::new(false) }; HEADING_LEVELS];
+
+/// The whole body rows left empty above and below a heading of `level`
+/// (`heading.space_above`/`space_below`, rounded: row heights stay whole rows,
+/// which the row counts and scroll anchoring depend on).
+pub fn heading_space_rows(level: u8) -> (usize, usize) {
+    let i = Typography::heading_index(level);
+    let rows = |side: usize| HEADING_SPACE[side][i].load(Ordering::Relaxed) as usize;
+    (rows(0), rows(1))
+}
+
+/// `heading.rule` of `level`: a line under the heading.
+pub fn heading_rule(level: u8) -> bool {
+    HEADING_RULE[Typography::heading_index(level)].load(Ordering::Relaxed)
+}
 
 /// `heading.weight` of `level` (1..=6, clamped): the font weight, 100..=900.
 pub fn heading_weight(level: u8) -> u16 {
@@ -83,6 +102,20 @@ pub fn set_body(typography: &Typography) {
     MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
     for (slot, scale) in HEADING_SCALE.iter().zip(typography.heading.scale) {
         slot.store(scale.to_bits(), Ordering::Relaxed);
+    }
+    for (side, spaces) in [
+        typography.heading.space_above,
+        typography.heading.space_below,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        for (slot, space) in HEADING_SPACE[side].iter().zip(spaces) {
+            slot.store(space.round().max(0.0) as u32, Ordering::Relaxed);
+        }
+    }
+    for (slot, rule) in HEADING_RULE.iter().zip(typography.heading.rule) {
+        slot.store(rule, Ordering::Relaxed);
     }
     for (slot, weight) in HEADING_WEIGHT.iter().zip(typography.heading.weight) {
         slot.store(u32::from(weight), Ordering::Relaxed);
