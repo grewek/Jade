@@ -12,6 +12,12 @@ mod doc_stats;
 mod editor;
 mod element;
 mod headings;
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "first used by the highlighter (#99 step 7)"
+)]
+mod highlight;
 mod image;
 mod input_handler;
 mod layout;
