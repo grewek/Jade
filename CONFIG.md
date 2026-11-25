@@ -67,6 +67,8 @@ none of its own; `border_width` (px 0..8, default 1).
 | `code_block.border` | outline | `false` | no |
 | `code_block.language_label` | the fence language in the corner (needs `background`) | `false` | no |
 | `code_block.font_scale` | 0.5..1 (code can shrink, not grow) | 1.0 | yes |
+| `code_block.highlight` | colour the tokens of fenced code (`syntax_*` roles); needs `.sublime-syntax` files; nothing draws it yet (#99) | `false` | no |
+| `code_block.syntax_folder` | where the `.sublime-syntax` files are: relative to the config folder, or absolute | `syntaxes` | |
 | `radius` (in either) | px or `"full"`; omitted follows `[shape]` | | no |
 
 ### `[callout]`, `[table]`, `[image]`

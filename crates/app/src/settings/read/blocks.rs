@@ -95,6 +95,8 @@ impl Reader {
             "radius",
             "language_label",
             "font_scale",
+            "highlight",
+            "syntax_folder",
         ];
         let Some(table) = self.section(root, "code_block", &known) else {
             return;
@@ -107,6 +109,21 @@ impl Reader {
         c.radius = self.own_radius(at, c.radius);
         c.language_label = self.boolean(at, "language_label", c.language_label);
         c.font_scale = self.number(at, "font_scale", CODE_SCALE, c.font_scale);
+        c.highlight = self.boolean(at, "highlight", c.highlight);
+        self.syntax_folder(table);
+    }
+
+    /// A non-empty string; anything else is a notice and the default folder.
+    fn syntax_folder(&mut self, table: &Table) {
+        match table.get("syntax_folder").map(Value::as_str) {
+            None => {}
+            Some(Some(folder)) if !folder.trim().is_empty() => {
+                self.syntax_folder = Some(folder.trim().to_owned());
+            }
+            Some(_) => self.notice(
+                "code_block.syntax_folder must be a folder path, using the default".to_owned(),
+            ),
+        }
     }
 
     fn callout_table_image(&mut self, root: &Table, t: &mut Typography) {
@@ -217,6 +234,29 @@ mod tests {
 
     fn read(src: &str) -> crate::settings::Read {
         Typography::from_config(src)
+    }
+
+    #[test]
+    fn highlight_and_its_folder_are_read_and_default_off() {
+        let off = read("[code_block]\nbackground = true\n");
+        assert!(!off.typography.code_block.highlight && off.syntax_folder.is_none());
+        let on = read("[code_block]\nhighlight = true\nsyntax_folder = \" langs \"\n");
+        assert_eq!(on.notices, Vec::<String>::new());
+        assert!(on.typography.code_block.highlight);
+        assert_eq!(on.syntax_folder.as_deref(), Some("langs"));
+    }
+
+    #[test]
+    fn a_bad_highlight_or_folder_is_a_notice_and_the_default() {
+        for src in [
+            "[code_block]\nhighlight = \"yes\"\n",
+            "[code_block]\nsyntax_folder = 3\n",
+            "[code_block]\nsyntax_folder = \"  \"\n",
+        ] {
+            let r = read(src);
+            assert_eq!(r.notices.len(), 1, "{src:?}: {:?}", r.notices);
+            assert!(!r.typography.code_block.highlight && r.syntax_folder.is_none());
+        }
     }
 
     #[test]
