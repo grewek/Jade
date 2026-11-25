@@ -37,6 +37,7 @@ static BODY_SIZE: AtomicU32 = AtomicU32::new(16.0f32.to_bits());
 static BODY_ROW: AtomicU32 = AtomicU32::new(26.0f32.to_bits());
 static MATH_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static CELL_PADDING: AtomicU32 = AtomicU32::new(0.0f32.to_bits());
+static CODE_INSET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static HEADING_SCALE: [AtomicU32; HEADING_LEVELS] =
     [const { AtomicU32::new(1.0f32.to_bits()) }; HEADING_LEVELS];
 
@@ -89,6 +90,11 @@ pub fn cell_padding() -> f32 {
     f32::from_bits(CELL_PADDING.load(Ordering::Relaxed))
 }
 
+/// Whether fenced code lines are inset to sit inside a box (`code_block.background`).
+pub fn code_inset() -> bool {
+    CODE_INSET.load(Ordering::Relaxed)
+}
+
 /// `font.math_scale`: formulas relative to the built-in formula size.
 pub fn math_scale() -> f32 {
     f32::from_bits(MATH_SCALE.load(Ordering::Relaxed))
@@ -108,6 +114,7 @@ pub fn set_body(typography: &Typography) {
     BODY_ROW.store(typography.line_height_px().to_bits(), Ordering::Relaxed);
     MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
     CELL_PADDING.store(typography.table.cell_padding.to_bits(), Ordering::Relaxed);
+    CODE_INSET.store(typography.code_block.background, Ordering::Relaxed);
     for (slot, scale) in HEADING_SCALE.iter().zip(typography.heading.scale) {
         slot.store(scale.to_bits(), Ordering::Relaxed);
     }

@@ -37,6 +37,20 @@ pub(super) fn paint_lines(
         typography.callout.bar_width,
     );
     let palette = ThemeEngine::global(cx).palette().clone();
+    let code_box_look = typography
+        .code_block
+        .background
+        .then(|| code_box::CodeBoxLook {
+            fill: palette.color(Role::CodeBackground),
+            border: typography.code_block.border.then(|| {
+                (
+                    px(typography.shape.border_width),
+                    palette.color(Role::Border),
+                )
+            }),
+            radius: typography.radius_of(crate::settings::Boxed::CodeBlock),
+            padding: typography.code_block.padding,
+        });
     let chip_look = typography
         .inline_code
         .background
@@ -130,6 +144,10 @@ pub(super) fn paint_lines(
             (&palette, callout_shape),
             window,
         );
+    }
+
+    if let Some(look) = &code_box_look {
+        code_box::paint_code_boxes(&range, view, doc, look, window);
     }
 
     if range.is_empty() {

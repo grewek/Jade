@@ -356,7 +356,7 @@ pub fn build_display_line_in_context_with(
             }
             let style = match indent {
                 LineIndent::Blockquote(depth) => InlineStyle::Blockquote(depth),
-                LineIndent::List(_) | LineIndent::None => InlineStyle::Plain,
+                LineIndent::List(_) | LineIndent::Code | LineIndent::None => InlineStyle::Plain,
             };
             let mut segments = Vec::new();
             let mut display_text = String::new();

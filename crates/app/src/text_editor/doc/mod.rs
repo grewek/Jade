@@ -141,6 +141,11 @@ impl DocumentCache {
         &self.line_roles
     }
 
+    /// Whether a code fence is open entering line `i`.
+    pub(super) fn fence_open_before(&self, i: usize) -> bool {
+        self.fence_states.get(i).is_some_and(|&s| s != 0)
+    }
+
     pub(super) fn block_contexts(&self) -> &[LineContext] {
         &self.block_contexts
     }
