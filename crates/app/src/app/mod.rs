@@ -113,6 +113,14 @@ pub(crate) struct JadeApp {
     pub(crate) backlinks_width: Pixels,
     resize_start: Option<ResizeStart>,
     pub(crate) search: Search,
+    /// Scroll state of the three sidebar lists (vault tree, search results,
+    /// backlinks); the fixed parts above each list stay put.
+    vault_scroll: ScrollHandle,
+    search_scroll: ScrollHandle,
+    backlinks_scroll: ScrollHandle,
+    /// The note the vault tree was last scrolled to, so a wheel scroll is not
+    /// undone on every frame.
+    vault_scrolled_to: Option<String>,
 }
 
 /// The vault at `path`; when it cannot be read, an empty one at that path and
@@ -184,6 +192,10 @@ impl JadeApp {
             backlinks_width: SIDEBAR_WIDTH_DEFAULT,
             resize_start: None,
             search: Search::new(window, cx),
+            vault_scroll: ScrollHandle::new(),
+            search_scroll: ScrollHandle::new(),
+            backlinks_scroll: ScrollHandle::new(),
+            vault_scrolled_to: None,
         }
     }
 }
@@ -205,10 +217,23 @@ impl Render for JadeApp {
         // of erasing a character.
         let sidebar_content: AnyElement = match self.sidebar_tab {
             SidebarTab::Vault => {
-                let tree_rows = self.render_tree_level(None, 0, cx);
+                let mut tree_rows = Vec::new();
+                let mut selected_row = None;
+                self.render_tree_level(None, 0, &mut tree_rows, &mut selected_row, cx);
+                // Scroll to the open note when it changes (a new tab, a link
+                // followed), not on every frame, so the wheel stays in charge.
+                let selected = self.selected_id().map(str::to_string);
+                if selected != self.vault_scrolled_to {
+                    if let Some(row) = selected_row {
+                        self.vault_scroll.scroll_to_item(row);
+                    }
+                    self.vault_scrolled_to = selected;
+                }
                 div()
                     .flex()
                     .flex_col()
+                    .flex_1()
+                    .min_h_0()
                     .gap_1()
                     .key_context("NoteList")
                     .track_focus(&self.sidebar_focus)
@@ -239,7 +264,7 @@ impl Render for JadeApp {
                                     .debug_name("new-folder"),
                             ),
                     )
-                    .children(tree_rows)
+                    .child(scroll_list("vault-scroll", &self.vault_scroll, tree_rows))
                     .into_any_element()
             }
             SidebarTab::Search => self.render_search_panel(cx),
@@ -365,6 +390,7 @@ impl Render for JadeApp {
             .gap_1()
             .w(self.backlinks_width)
             .flex_none()
+            .min_h_0()
             .p_2()
             .bg(secondary)
             .border_l_1()
