@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 mod read;
 mod typography;
+pub mod write;
 
 pub use read::{Read, load};
 

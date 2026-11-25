@@ -4,7 +4,7 @@
 use std::fs;
 use std::path::Path;
 
-use toml::{Table, Value};
+use toml::Value;
 
 use super::builtin;
 use super::loader;
@@ -84,16 +84,26 @@ pub fn remember_vault(dirs: &ConfigDirs, vault: &Path) -> Result<(), String> {
 }
 
 fn remember_value(dirs: &ConfigDirs, key: &str, value: Value) -> Result<(), String> {
+    remember_setting(dirs, None, key, &value.to_string())
+}
+
+/// Writes `key = <value>` (TOML source) into `[section]` of `config.toml`,
+/// or the top of the file for `None`. The file is edited in place, so its
+/// comments and layout stay; a file that does not parse is left alone.
+pub fn remember_setting(
+    dirs: &ConfigDirs,
+    section: Option<&str>,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
     let path = dirs.config_file();
-    let mut table = if path.is_file() {
-        let src = loader::read_bounded(&path)?;
-        src.parse::<Table>()
-            .map_err(|e| format!("{}: {e}; not changed", path.display()))?
+    let src = if path.is_file() {
+        loader::read_bounded(&path)?
     } else {
-        Table::new()
+        String::new()
     };
-    table.insert(key.to_owned(), value);
-    let out = toml::to_string(&table).map_err(|e| e.to_string())?;
+    let out = crate::settings::write::set_key(&src, section, key, value)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
     fs::create_dir_all(dirs.base()).map_err(|e| format!("{}: {e}", dirs.base().display()))?;
     // Rename is atomic, so the watcher never reads a half-written file.
     let tmp = path.with_extension("toml.tmp");
