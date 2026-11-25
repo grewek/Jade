@@ -165,7 +165,7 @@ fn paint_math(
     paint: &WidgetPaint,
     (window, cx): (&mut Window, &mut App),
 ) {
-    let _ = (display_line, cx);
+    let _ = cx;
     let Some(raw) = paint.line_text.get(seg.raw.clone()) else {
         return;
     };
@@ -186,7 +186,8 @@ fn paint_math(
     let font_id = window.text_system().resolve_font(&font(MATH_FONT_FAMILY));
     // GPUI centres a row's text in the line height; the baseline follows.
     let pad = (line_height - (wrapped.ascent() + wrapped.descent())) / 2.;
-    let em = paint.font_size * math::scale();
+    // A formula in a heading follows the heading's size.
+    let em = paint.font_size * display_line.font_scale() * math::scale();
     let centred = raw.starts_with("$$") && paint.line_text.trim() == raw;
     let left = if centred {
         ((paint.row_width - em * rendered.layout.width) / 2.).max(px(0.))

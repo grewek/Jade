@@ -46,7 +46,7 @@ pub fn build_display_line_with(line: &str, active: bool, macros: &Macros) -> Dis
     let mut display_text = String::new();
 
     if let Some((level, prefix_len)) = heading_prefix(line) {
-        push_hidden(&mut segments, &display_text, 0..prefix_len);
+        push_hidden_heading(&mut segments, &display_text, level, 0..prefix_len);
         scan_inline(
             line,
             prefix_len,
@@ -283,7 +283,7 @@ pub(super) fn compound_inner(
     let rest = &line[offset..];
 
     if let Some((level, inner_len)) = heading_prefix(rest) {
-        push_hidden(segments, display_text, offset..offset + inner_len);
+        push_hidden_heading(segments, display_text, level, offset..offset + inner_len);
         return (offset + inner_len, InlineStyle::Heading(level));
     }
 
@@ -388,6 +388,24 @@ pub(in crate::text_editor) fn heading_prefix(line: &str) -> Option<(u8, usize)> 
         end += 1;
     }
     Some((hashes as u8, end))
+}
+
+/// Hides a heading's `#` prefix. The hidden segment carries the level, so a
+/// heading whose text is all bold, a link or a formula still reads as one
+/// (`DisplayLine::heading_level`).
+fn push_hidden_heading(
+    segments: &mut Vec<DisplaySegment>,
+    display_text: &str,
+    level: u8,
+    raw: Range<usize>,
+) {
+    let at = display_text.len();
+    segments.push(DisplaySegment {
+        raw,
+        display: at..at,
+        style: InlineStyle::Heading(level),
+        replaced: false,
+    });
 }
 
 /// Whether `line` is a thematic break (`---`, `***`, `___`, optionally with

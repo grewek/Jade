@@ -442,6 +442,28 @@ fn heading_hides_its_marker_and_styles_the_rest() {
     assert_contiguous(&dl, line.len());
 }
 
+/// A heading whose whole text is another construct has no heading-styled
+/// visible run, but is still a heading (it takes its size, #58).
+#[test]
+fn a_heading_made_only_of_another_construct_keeps_its_level() {
+    for (line, level) in [
+        ("## **bold**", 2),
+        ("# [[note]]", 1),
+        ("### `code`", 3),
+        ("# $x^2$", 1),
+        ("> # **quoted**", 1),
+        ("- ## **item**", 2),
+    ] {
+        let dl = build_display_line(line, false);
+        assert_eq!(dl.heading_level(), Some(level), "{line}");
+        assert_contiguous(&dl, line.len());
+    }
+    assert_eq!(
+        build_display_line("plain **bold**", false).heading_level(),
+        None
+    );
+}
+
 #[test]
 fn heading_without_a_following_space_is_not_a_heading() {
     let line = "##nospace";

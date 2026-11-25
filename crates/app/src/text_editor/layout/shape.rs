@@ -208,9 +208,11 @@ fn row_heights(
         reach[at].0 = reach[at].0.max(rendered.layout.ascent);
         reach[at].1 = reach[at].1.max(rendered.layout.descent);
     }
+    // A heading's formulas are drawn at its size.
+    let em_size = font_size * display_line.font_scale();
     let units: Vec<usize> = reach
         .iter()
-        .map(|&r| tall_rows(r, (font_size, line_height), text).max(base))
+        .map(|&r| tall_rows(r, (em_size, line_height), text).max(base))
         .collect();
     if units.iter().all(|&u| u == units[0]) {
         return uniform(units[0]);
@@ -529,7 +531,9 @@ pub(in crate::text_editor) fn build_display_lines(
                     build_display_line_in_context_with(line, active, block_ctx, state.macros);
                 if line.contains('$') {
                     // A formula wider than a row cannot be drawn (#49).
-                    let char_width = mono_char_width(font, font_size, text_color, window);
+                    // A heading's characters are wider, so its row fits fewer.
+                    let char_width = mono_char_width(font, font_size, text_color, window)
+                        * display_line.font_scale();
                     let fit =
                         fit_with_indent(available_width, char_width, display_line.indent.level());
                     show_wide_formulas(&mut display_line, line, fit);
