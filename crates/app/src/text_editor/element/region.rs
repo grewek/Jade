@@ -804,7 +804,7 @@ fn paint_column_blocks(
             // A block is as wide as the line that opens it (text beside a float
             // is narrower than text below it).
             let span = (bounds.origin.x + sl.x, sl.width);
-            paint_callout_band(callout, (band_top, bottom), span, env.palette, window);
+            paint_callout_band(callout, (band_top, bottom), span, env.band_style(), window);
         }
         if let Some(index) = table_index_at(doc.tables(), sl.line)
             && last_table != Some(index)

@@ -43,7 +43,7 @@ use super::table::ops::Op;
 use super::table::{Table, table_index_at};
 use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
-use boxes::{BoxShape, paint_box, paint_box_corners};
+use boxes::{BoxShape, paint_box, paint_box_corners, paint_strip};
 #[allow(unused_imports)]
 pub(super) use input::*;
 #[allow(unused_imports)]
@@ -55,11 +55,6 @@ pub(super) use render::*;
 pub(super) use table_paint::*;
 #[allow(unused_imports)]
 pub(super) use widgets::*;
-
-/// Pixel width of a callout's left accent bar — thicker than a plain
-/// blockquote's own `QUOTE_BAR_WIDTH`, so a callout reads as a distinct,
-/// heavier element even before its background tint is noticed.
-const CALLOUT_BAR_WIDTH: Pixels = px(3.);
 
 /// The left inset, within an indent level's own lane, that a blockquote's
 /// quote bar is painted at — see `paint_lines`.

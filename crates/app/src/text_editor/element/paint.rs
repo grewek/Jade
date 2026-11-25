@@ -32,6 +32,10 @@ pub(super) fn paint_lines(
         window.drop_image(freed).ok();
     }
     let typography = crate::text_editor::TextSettings::typography(cx);
+    let callout_shape = (
+        typography.radius_of(crate::settings::Boxed::Callout),
+        typography.callout.bar_width,
+    );
     let palette = ThemeEngine::global(cx).palette().clone();
     let inline = InlineColors::from_palette(&palette);
     let rule = palette.color(Role::BorderStrong);
@@ -110,7 +114,13 @@ pub(super) fn paint_lines(
             );
         }
         let span = (bounds.origin.x, bounds.size.width);
-        paint_callout_band(callout, (top, bottom), span, &palette, window);
+        paint_callout_band(
+            callout,
+            (top, bottom),
+            span,
+            (&palette, callout_shape),
+            window,
+        );
     }
 
     if range.is_empty() {
@@ -153,6 +163,7 @@ pub(super) fn paint_lines(
             border_width: typography.shape.border_width,
         },
         checkbox_radius: typography.task.checkbox_radius,
+        callout_shape,
     };
 
     for i in range.clone() {
@@ -271,25 +282,26 @@ pub(super) fn paint_callout_band(
     callout: &Callout,
     (top, bottom): (Pixels, Pixels),
     (left, width): (Pixels, Pixels),
-    palette: &crate::theme::Palette,
+    (palette, (radius, bar_width)): (&crate::theme::Palette, (crate::settings::Radius, f32)),
     window: &mut Window,
 ) {
     let color = palette.color(callout_role(callout.kind));
     let background = palette.with_alpha(callout_role(callout.kind), Alpha::CalloutBackground);
-    window.paint_quad(fill(
-        Bounds {
-            origin: point(left, top),
-            size: size(width, bottom - top),
-        },
-        background,
-    ));
-    window.paint_quad(fill(
-        Bounds {
-            origin: point(left + QUOTE_BAR_INSET, top),
-            size: size(CALLOUT_BAR_WIDTH, bottom - top),
-        },
-        color,
-    ));
+    let band = Bounds {
+        origin: point(left, top),
+        size: size(width, bottom - top),
+    };
+    paint_box(band, radius, background, None, window);
+    if bar_width > 0.0 {
+        // Rounded, the bar is the box's own left edge; square, it keeps its inset.
+        let x0 = if matches!(radius, crate::settings::Radius::Px(r) if r <= 0.0) {
+            QUOTE_BAR_INSET
+        } else {
+            px(0.)
+        };
+        let x1 = (x0 + px(bar_width)).min(width);
+        paint_strip(band, radius, (x0, x1), color, window);
+    }
 }
 
 /// What painting any line of a frame needs, whichever column it is in.
@@ -318,6 +330,15 @@ pub(super) struct PaintEnv<'a> {
     pub(super) table_shape: BoxShape,
     /// Corners of a task checkbox.
     pub(super) checkbox_radius: crate::settings::Radius,
+    /// Corners and accent bar width of a callout's band.
+    pub(super) callout_shape: (crate::settings::Radius, f32),
+}
+
+impl<'a> PaintEnv<'a> {
+    /// The palette and the (corners, bar width) a callout's band is painted with.
+    pub(super) fn band_style(&self) -> (&'a crate::theme::Palette, (crate::settings::Radius, f32)) {
+        (self.palette, self.callout_shape)
+    }
 }
 
 /// One shaped line and where it goes: `bounds` is the frame it is painted
