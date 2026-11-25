@@ -55,6 +55,17 @@ pub enum BulletShape {
     Square,
 }
 
+impl BulletShape {
+    /// The shape stored as `shape as u8`; anything else is a disc.
+    pub fn from_u8(n: u8) -> Self {
+        match n {
+            1 => BulletShape::Ring,
+            2 => BulletShape::Square,
+            _ => BulletShape::Disc,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Font {
     pub family: FontFamily,
@@ -375,7 +386,7 @@ mod tests {
         paint.task.done_style = DoneStyle::Both;
         paint.table.zebra = true;
         assert!(!base.layout_differs(&paint));
-        let edits: [fn(&mut Typography); 9] = [
+        let edits: [fn(&mut Typography); 10] = [
             |t| t.font.size = 18.0,
             |t| t.heading.scale[2] = 1.5,
             |t| t.heading.space_above[0] = 1.0,
@@ -384,6 +395,7 @@ mod tests {
             |t| t.code_block.font_scale = 0.8,
             |t| t.blockquote.indent = 2.0,
             |t| t.list.indent = 2.0,
+            |t| t.list.item_gap = 1.0,
             |t| t.spacing.block_gap = 2.0,
         ];
         for edit in edits {
@@ -392,6 +404,27 @@ mod tests {
             assert!(base.layout_differs(&layout));
             assert!(layout.layout_differs(&base));
         }
+    }
+
+    #[test]
+    fn bullet_shapes_follow_the_depth_and_repeat_the_last() {
+        let mut t = Typography::default();
+        t.list.bullet_shapes = [BulletShape::Disc, BulletShape::Ring, BulletShape::Square];
+        t.list.item_gap = 1.4;
+        crate::settings::set_body(&t);
+        let shapes: Vec<_> = (1..=5).map(crate::settings::bullet_shape).collect();
+        assert_eq!(
+            shapes,
+            [
+                BulletShape::Disc,
+                BulletShape::Ring,
+                BulletShape::Square,
+                BulletShape::Square,
+                BulletShape::Square
+            ]
+        );
+        assert_eq!(crate::settings::list_item_gap(), 1, "whole rows");
+        crate::settings::set_body(&Typography::default());
     }
 
     #[test]

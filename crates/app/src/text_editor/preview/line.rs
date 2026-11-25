@@ -186,10 +186,31 @@ impl DisplayLine {
         })
     }
 
-    /// The body rows left empty above and below this line (0 unless a heading).
+    /// Whether this line starts a list item: its marker is a bullet, a number
+    /// or a checkbox.
+    pub fn is_list_item(&self) -> bool {
+        matches!(self.indent, LineIndent::List(_))
+            && self.segments.iter().any(|s| {
+                matches!(
+                    s.style,
+                    InlineStyle::ListMarker
+                        | InlineStyle::Widget(Widget::Bullet | Widget::Checkbox { .. })
+                )
+            })
+    }
+
+    /// The body rows left empty above and below this line: a heading's
+    /// `space_above`/`space_below`, plus `list.item_gap` below a list item.
     pub fn space_rows(&self) -> (usize, usize) {
-        self.heading_level()
-            .map_or((0, 0), crate::settings::heading_space_rows)
+        let (above, below) = self
+            .heading_level()
+            .map_or((0, 0), crate::settings::heading_space_rows);
+        let gap = if self.is_list_item() {
+            crate::settings::list_item_gap()
+        } else {
+            0
+        };
+        (above, below + gap)
     }
 
     /// Cuts the line at display byte `at` into the part before and the part

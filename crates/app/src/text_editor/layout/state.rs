@@ -213,10 +213,12 @@ pub(in crate::text_editor) fn is_table_active(
 const INDENT_UNIT: Pixels = px(20.);
 
 /// The pixel x-offset `indent` shifts a line's content by: a quote level is
-/// `blockquote.indent` em, any other level a fixed unit.
+/// `blockquote.indent` em, a list level `list.indent` em, any other level a
+/// fixed unit.
 pub(in crate::text_editor) fn indent_px(indent: LineIndent) -> Pixels {
     match indent {
         LineIndent::Blockquote(depth) => px(crate::settings::quote_indent_px()) * f32::from(depth),
+        LineIndent::List(depth) => px(crate::settings::list_indent_px()) * f32::from(depth),
         other => INDENT_UNIT * f32::from(other.level()),
     }
 }
@@ -273,7 +275,7 @@ mod indent_tests {
     use gpui_kit::px;
 
     #[test]
-    fn a_quote_level_follows_the_config_and_other_levels_stay_a_unit() {
+    fn a_quote_or_list_level_follows_the_config_and_code_stays_a_unit() {
         let mut t = Typography::default();
         settings::set_body(&t);
         assert_eq!(
@@ -282,11 +284,16 @@ mod indent_tests {
             "today's look"
         );
         assert_eq!(indent_px(LineIndent::List(1)), px(20.));
+        assert_eq!(indent_px(LineIndent::Code), px(20.));
         assert_eq!(indent_px(LineIndent::None), px(0.));
         t.blockquote.indent = 2.0;
         settings::set_body(&t);
         assert_eq!(indent_px(LineIndent::Blockquote(2)), px(64.));
-        assert_eq!(indent_px(LineIndent::List(1)), px(20.), "lists are G2's");
+        assert_eq!(indent_px(LineIndent::List(1)), px(20.));
+        t.list.indent = 2.0;
+        settings::set_body(&t);
+        assert_eq!(indent_px(LineIndent::List(3)), px(96.));
+        assert_eq!(indent_px(LineIndent::Code), px(20.));
         settings::set_body(&Typography::default());
     }
 }

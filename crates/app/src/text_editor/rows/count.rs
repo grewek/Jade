@@ -2,7 +2,7 @@
 //! pure, thread-split counters used by a cold rebuild, and the per-line
 //! computations (with a `Window`) used to patch or verify single lines.
 
-use crate::text_editor::preview::LineIndent;
+use crate::text_editor::preview::{LineIndent, is_thematic_break};
 use crate::text_editor::table;
 use gpui_kit::*;
 
@@ -382,6 +382,13 @@ fn estimate_row_count(
         }
     };
     let wrap_width = Some((available_width - indent_px(indent)).max(px(1.)));
+    // The empty rows `list.item_gap` leaves below a list item.
+    let gap = match doc.contexts[i] {
+        LineContext::ListMarkerLine(_) if !is_thematic_break(line) => {
+            crate::settings::list_item_gap()
+        }
+        _ => 0,
+    };
     // A formula is a few blank columns that may be taller than a row (#20): the
     // rows are counted on what is left of the text, each as many as it needs.
     if has_dollar
@@ -395,9 +402,9 @@ fn estimate_row_count(
         let per_row = chars_per_row(wrap_width, char_width);
         let moved = settle_formulas(&mut formulas, per_row);
         let rows = rows_for_chars(chars + moved, wrap_width, char_width);
-        return rows + tall_extra_rows(&formulas, per_row, (font_size, line_height), text);
+        return rows + gap + tall_extra_rows(&formulas, per_row, (font_size, line_height), text);
     }
-    wrapped_row_count(line, wrap_width, char_width).max(1)
+    wrapped_row_count(line, wrap_width, char_width).max(1) + gap
 }
 
 /// The rows of a heading's `text` (its `#` prefix hidden) at `level`: the rows
