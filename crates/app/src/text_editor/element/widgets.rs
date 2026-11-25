@@ -318,6 +318,7 @@ pub(super) fn paint_image(
     info: &ImageInfo,
     requested: Option<u32>,
     area: Bounds<Pixels>,
+    radius: crate::settings::Radius,
     window: &mut Window,
     cx: &mut App,
 ) -> bool {
@@ -351,7 +352,7 @@ pub(super) fn paint_image(
         size: size(px(width), px(height)),
     };
     window
-        .paint_image(frame, frame, Corners::default(), image, 0, false)
+        .paint_image(frame, frame, corners_of(frame, radius), image, 0, false)
         .is_ok()
 }
 
@@ -361,14 +362,20 @@ pub(super) fn paint_image_placeholder(
     path: &str,
     area: Bounds<Pixels>,
     (font, font_size): (&Font, Pixels),
-    (border, label): (Hsla, Hsla),
+    (border, label, radius): (Hsla, Hsla, crate::settings::Radius),
     (window, cx): (&mut Window, &mut App),
 ) {
     let frame = Bounds {
         origin: area.origin + point(px(0.), px(2.)),
         size: size(area.size.width, area.size.height - px(4.)),
     };
-    window.paint_quad(outline(frame, border, BorderStyle::Solid));
+    paint_box(
+        frame,
+        radius,
+        Hsla::transparent_black(),
+        Some((px(1.), border)),
+        window,
+    );
     let name = path.rsplit('/').next().unwrap_or(path);
     let run = TextRun {
         len: name.len(),

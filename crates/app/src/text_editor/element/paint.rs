@@ -163,6 +163,7 @@ pub(super) fn paint_lines(
             border_width: typography.shape.border_width,
         },
         checkbox_radius: typography.task.checkbox_radius,
+        image_radius: typography.radius_of(crate::settings::Boxed::Image),
         callout_shape,
     };
 
@@ -330,6 +331,8 @@ pub(super) struct PaintEnv<'a> {
     pub(super) table_shape: BoxShape,
     /// Corners of a task checkbox.
     pub(super) checkbox_radius: crate::settings::Radius,
+    /// Corners of an image and of its placeholder.
+    pub(super) image_radius: crate::settings::Radius,
     /// Corners and accent bar width of a callout's band.
     pub(super) callout_shape: (crate::settings::Radius, f32),
 }
@@ -382,6 +385,7 @@ pub(super) fn paint_line(
         ref widget_colors,
         cursor_color,
         checkbox_radius,
+        image_radius,
         ..
     } = *env;
     let selection = env.selection.clone();
@@ -486,14 +490,14 @@ pub(super) fn paint_line(
         let wiki = line_text.trim_start().starts_with("![[");
         let drawn = doc.view.images().info(target).is_some_and(|info| {
             let requested = image::requested_width(alt, wiki);
-            paint_image(info, requested, area, window, cx)
+            paint_image(info, requested, area, image_radius, window, cx)
         });
         if !drawn {
             paint_image_placeholder(
                 target,
                 area,
                 (font, font_size),
-                (rule, inline.subtle),
+                (rule, inline.subtle, image_radius),
                 (window, cx),
             );
         }
