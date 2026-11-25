@@ -2,7 +2,7 @@
 //! character's own place (#58 E1).
 
 use super::super::Editor;
-use super::code_chip::code_runs;
+use super::code_chip::style_runs;
 use crate::text_editor::doc::DocumentCache;
 use crate::text_editor::layout::{LineState, shape_display_line};
 use gpui_kit::{AppContext, Font, TestAppContext, WindowOptions, px};
@@ -57,7 +57,9 @@ fn runs(
         let (wrapped, display) = &shaped[0];
         let advance = 16.0 * crate::text_editor::math::MONO_ADVANCE_EM;
         let rows = wrapped.wrap_boundaries().len() + 1;
-        let found = code_runs((&state, wrapped, display), px(26.), px(advance));
+        let found = style_runs((&state, wrapped, display), px(26.), px(advance), |s| {
+            s.style == crate::text_editor::preview::InlineStyle::Code
+        });
         (found, advance, rows)
     })
     .unwrap()
