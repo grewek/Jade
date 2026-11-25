@@ -30,3 +30,16 @@ surface0  = "#414559"
 base      = "#303446"
 mantle    = "#292c3c"
 crust     = "#232634"
+
+[overrides]
+# Syntax colors (#99): the Catppuccin editor scheme by hue name.
+syntax_comment     = "overlay2"
+syntax_string      = "green"
+syntax_number      = "peach"
+syntax_keyword     = "mauve"
+syntax_function    = "blue"
+syntax_type        = "yellow"
+syntax_constant    = "sapphire"
+syntax_operator    = "sky"
+syntax_punctuation = "subtext0"
+syntax_variable    = "flamingo"

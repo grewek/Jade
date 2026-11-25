@@ -1026,3 +1026,26 @@ fn a_role_the_theme_colored_itself_does_not_follow_the_override() {
     assert_eq!(t.color(Role::Heading3), rgb("445566"));
     assert_eq!(t.color(Role::Heading4), rgb("102030"));
 }
+
+#[test]
+fn every_shipped_theme_has_a_readable_and_varied_syntax_scheme() {
+    for (name, _) in SHIPPED {
+        let t = load(name);
+        let bad: Vec<_> = t
+            .warnings
+            .iter()
+            .filter(|w| w.foreground.is_syntax())
+            .map(ToString::to_string)
+            .collect();
+        assert!(bad.is_empty(), "{name}: {bad:?}");
+        let mut colors: Vec<_> = Role::SYNTAX.iter().map(|&r| t.color(r)).collect();
+        colors.sort_by_key(|c| (c.r, c.g, c.b));
+        colors.dedup();
+        assert!(
+            colors.len() >= 8,
+            "{name}: only {} distinct colors",
+            colors.len()
+        );
+        assert_ne!(t.color(Role::SyntaxKeyword), t.color(Role::Text), "{name}");
+    }
+}
