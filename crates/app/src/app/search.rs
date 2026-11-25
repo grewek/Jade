@@ -106,7 +106,7 @@ impl JadeApp {
     /// query, by title or content substring (via `Vault::search`).
     pub(super) fn render_search_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
         self.search.refresh(&self.vault, cx);
-        let mut panel = div().flex().flex_col().gap_1().child(
+        let mut panel = div().flex().flex_col().flex_1().min_h_0().gap_1().child(
             Input::new(self.search.input())
                 .id("search-input")
                 .debug_name("search-input"),
@@ -135,9 +135,10 @@ impl JadeApp {
                 );
             } else {
                 let row_hover = ThemeEngine::color(cx, Role::Surface);
+                let mut rows = Vec::with_capacity(results.len());
                 for (id, title) in results {
                     let target_id = id.clone();
-                    panel = panel.child(
+                    rows.push(
                         div()
                             .id(format!("search-result-{id}"))
                             .test_support()
@@ -153,6 +154,7 @@ impl JadeApp {
                             .debug_name_with(|| format!("search-result-{id}").into()),
                     );
                 }
+                panel = panel.child(scroll_list("search-scroll", &self.search_scroll, rows));
             }
         }
         panel.into_any_element()

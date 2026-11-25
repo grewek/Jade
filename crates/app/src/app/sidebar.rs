@@ -3,6 +3,43 @@
 #[allow(unused_imports)]
 use super::*;
 
+/// Room on the right of a sidebar list for its scrollbar, which overlays it.
+const SCROLLBAR_GUTTER: Pixels = px(12.);
+
+/// A list that scrolls under a scrollbar and takes the height left in its
+/// sidebar. The scrollbar sits on a wrapper, or it would scroll away with the
+/// rows; the rows must be direct children, for `scroll_to_item`.
+pub(super) fn scroll_list(
+    name: &'static str,
+    handle: &ScrollHandle,
+    rows: Vec<impl IntoElement>,
+) -> Div {
+    let list = div()
+        .id(name)
+        .test_support()
+        .flex()
+        .flex_col()
+        .gap_1()
+        .size_full()
+        .overflow_y_scroll()
+        .track_scroll(handle)
+        .children(rows)
+        .debug_name(name);
+    div()
+        .relative()
+        .flex_1()
+        .min_h_0()
+        .pr(SCROLLBAR_GUTTER)
+        .child(list)
+        .child(
+            div().absolute().inset_0().child(
+                Scrollbar::vertical(handle)
+                    .id(SharedString::from(format!("{name}-bar")))
+                    .viewport_from_layout(),
+            ),
+        )
+}
+
 pub(super) const SIDEBAR_WIDTH_DEFAULT: Pixels = px(220.);
 
 pub(super) const SIDEBAR_WIDTH_MIN: Pixels = px(140.);
@@ -69,14 +106,17 @@ pub(super) fn link_is_live(vault: &Vault, from: &str, kind: LinkKind, dest: &str
 }
 
 impl JadeApp {
-    /// Renders the notes and (non-collapsed) subfolders directly inside `parent`
-    /// (vault root if `None`), indented by `depth`, recursing into subfolders.
+    /// Appends the rows of the notes and (non-collapsed) subfolders directly
+    /// inside `parent` (vault root if `None`) to `rows`, indented by `depth`,
+    /// recursing into subfolders; `selected_row` gets the open note's index.
     pub(super) fn render_tree_level(
         &self,
         parent: Option<&str>,
         depth: usize,
+        rows: &mut Vec<AnyElement>,
+        selected_row: &mut Option<usize>,
         cx: &mut Context<Self>,
-    ) -> Vec<AnyElement> {
+    ) {
         let mut folder_ids: Vec<&String> = self
             .vault
             .folders
@@ -94,17 +134,18 @@ impl JadeApp {
             .collect();
         note_entries.sort_by_key(|(_, title)| *title);
 
-        let mut rows = Vec::new();
         for folder_id in folder_ids {
             rows.push(self.render_folder_row(folder_id, depth, cx));
             if !self.collapsed_folders.contains(folder_id.as_str()) {
-                rows.extend(self.render_tree_level(Some(folder_id), depth + 1, cx));
+                self.render_tree_level(Some(folder_id), depth + 1, rows, selected_row, cx);
             }
         }
         for (id, title) in note_entries {
+            if self.selected_id() == Some(id.as_str()) {
+                *selected_row = Some(rows.len());
+            }
             rows.push(self.render_note_row(id, title, depth, cx));
         }
-        rows
     }
 
     pub(super) fn render_folder_row(
@@ -274,11 +315,12 @@ impl JadeApp {
             .collect();
         backlink_entries.sort_by(|a, b| a.1.cmp(&b.1));
 
-        let mut backlinks_panel = div().flex().flex_col().gap_1().child(
+        let mut backlinks_panel = div().flex().flex_col().flex_1().min_h_0().gap_1().child(
             div()
                 .font_weight(FontWeight::BOLD)
                 .child(format!("Backlinks ({})", backlink_entries.len())),
         );
+        let mut entries = Vec::with_capacity(backlink_entries.len());
 
         if backlink_entries.is_empty() {
             backlinks_panel = backlinks_panel.child(
@@ -325,7 +367,7 @@ impl JadeApp {
                         .debug_name_with(|| format!("backlink-{source_id}").into()),
                 );
                 let Some(found) = contexts.iter().find(|c| c.source == source_id) else {
-                    backlinks_panel = backlinks_panel.child(entry);
+                    entries.push(entry);
                     continue;
                 };
                 for context in &found.contexts {
@@ -358,8 +400,13 @@ impl JadeApp {
                             .child(format!("+{} more", found.total - found.contexts.len())),
                     );
                 }
-                backlinks_panel = backlinks_panel.child(entry);
+                entries.push(entry);
             }
+            backlinks_panel = backlinks_panel.child(scroll_list(
+                "backlinks-scroll",
+                &self.backlinks_scroll,
+                entries,
+            ));
         }
 
         backlinks_panel
