@@ -3828,7 +3828,7 @@ checksum = "3bd1574e617a9a6c1f8f8181bd7e841e1f20e4277607ef28945765188d6284d4"
 
 [[package]]
 name = "jade-app"
-version = "0.2.0"
+version = "0.201.0"
 dependencies = [
  "criterion",
  "dirs 6.0.0",
@@ -3847,7 +3847,7 @@ dependencies = [
 
 [[package]]
 name = "jade-core"
-version = "0.2.0"
+version = "0.201.0"
 dependencies = [
  "criterion",
  "tempfile",
@@ -3855,14 +3855,14 @@ dependencies = [
 
 [[package]]
 name = "jade-debug-cli"
-version = "0.2.0"
+version = "0.201.0"
 dependencies = [
  "jade-debug-protocol",
 ]
 
 [[package]]
 name = "jade-debug-protocol"
-version = "0.2.0"
+version = "0.201.0"
 dependencies = [
  "serde",
  "serde_json",
