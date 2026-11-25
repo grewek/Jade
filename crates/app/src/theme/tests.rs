@@ -881,6 +881,30 @@ fn a_style_role_follows_its_fallback_until_set() {
 }
 
 #[test]
+fn every_syntax_role_follows_text_until_set() {
+    let t = resolved("");
+    for role in Role::SYNTAX {
+        assert!(role.is_syntax());
+        assert_eq!(t.color(role), t.color(Role::Text), "{}", role.name());
+    }
+    assert!(!Role::Text.is_syntax() && !Role::Code.is_syntax());
+    let t = resolved("\n[overrides]\nsyntax_keyword = \"#aa0000\"\ntext = \"#102030\"\n");
+    assert_eq!(t.color(Role::SyntaxKeyword), rgb("aa0000"));
+    assert_eq!(
+        t.color(Role::SyntaxString),
+        rgb("102030"),
+        "the others follow text"
+    );
+}
+
+#[test]
+fn a_low_contrast_syntax_role_is_reported() {
+    let t = resolved("\n[overrides]\nsyntax_comment = \"#fefefe\"\n");
+    let bad: Vec<_> = t.warnings.iter().map(|w| w.foreground).collect();
+    assert!(bad.contains(&Role::SyntaxComment), "{bad:?}");
+}
+
+#[test]
 fn heading_colors_cascade_from_heading_to_a_level() {
     let t = resolved("\n[overrides]\nheading = \"#112233\"\nheading_5 = \"#445566\"\n");
     assert_eq!(t.color(Role::Heading), rgb("112233"));
