@@ -283,10 +283,13 @@ impl RowCache {
             // Not worth shaping: a line the estimate puts in a row or less that is
             // plain ASCII with no formula. Every character is one width and
             // markup only shrinks the text, so it fits as counted. A wide
-            // glyph or a formula can make it longer, so those are shaped.
+            // glyph, a formula or a heading (bigger text, space around it,
+            // #58) can make it longer, so those are shaped.
             let line = &inp.text[doc.line_start_byte(i)..doc.line_end_byte(i)];
-            let fits =
-                !width_unknown && self.row_count(i) <= 1 && line.is_ascii() && !line.contains('$');
+            let fits = !width_unknown
+                && self.row_count(i) <= 1
+                && line.is_ascii()
+                && !line.contains(['$', '#']);
             if !fits {
                 corrections.push((i, shaped_row_count_for_line(&env, i, window)));
             }

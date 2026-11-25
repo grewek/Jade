@@ -603,7 +603,10 @@ pub(super) fn paint_line(
                     display_line.display_offset_for_raw(end - line_range.start),
                     line_height,
                 )
-                .unwrap_or(point(full_row_width, total_height - line_height));
+                .unwrap_or(point(
+                    full_row_width,
+                    total_height - entry.pad.0 - entry.pad.1 - line_height,
+                ));
                 // Rows are `line_height` apart in the layout, however tall they are painted.
                 let row_of = |y: Pixels| (f32::from(y) / f32::from(line_height)).round() as usize;
                 let (start_row, end_row) = (row_of(start_pos.y), row_of(end_pos.y));
@@ -668,7 +671,22 @@ pub(super) fn paint_line(
                 (window, cx),
             );
         } else {
-            let _ = wrapped.paint(line_origin, line_height, TextAlign::Left, None, window, cx);
+            let text_origin = line_origin + point(px(0.), entry.pad.0);
+            let _ = wrapped.paint(text_origin, line_height, TextAlign::Left, None, window, cx);
+        }
+        if display_line
+            .heading_level()
+            .is_some_and(crate::settings::heading_rule)
+        {
+            // Under the text rows, above the space below the heading.
+            let y = line_origin.y + entry.height - entry.pad.1 - px(1.);
+            window.paint_quad(fill(
+                Bounds {
+                    origin: point(line_origin.x, y),
+                    size: size(full_row_width, px(1.)),
+                },
+                rule,
+            ));
         }
         let widgets = WidgetPaint {
             colors: &widget_colors,

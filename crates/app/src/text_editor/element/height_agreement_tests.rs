@@ -300,3 +300,36 @@ fn the_cold_estimate_of_a_heading_follows_its_size(cx: &mut TestAppContext) {
         .collect();
     assert!(headings.is_empty(), "headings off: {headings:?}");
 }
+
+/// Space above and below a heading adds whole rows to the estimate and to the
+/// shaped count alike (#58 C5).
+#[gpui_kit::test]
+fn the_cold_estimate_of_a_spaced_heading_matches_shaping(cx: &mut TestAppContext) {
+    let mut t = crate::settings::Typography::default();
+    t.heading.scale = [2.0, 1.75, 1.5, 1.25, 1.1, 1.0];
+    t.heading.space_above = [1.0, 1.0, 1.0, 0.0, 0.0, 0.0];
+    t.heading.space_below = [2.0, 0.0, 1.0, 1.0, 0.0, 0.0];
+    crate::settings::set_body(&t);
+    let off = disagreements(cx, |_, _, _, _, _| {}, 0..usize::MAX);
+    let verified = disagreements(
+        cx,
+        |text, doc, cache, range, window| {
+            let (font, size, color) = style_of(window);
+            rows::verify_for_test(cache, text, doc, range, (&font, size, color), window);
+        },
+        0..usize::MAX,
+    );
+    crate::settings::set_body(&crate::settings::Typography::default());
+    let text = fixture();
+    let lines: Vec<&str> = text.lines().collect();
+    let short: Vec<_> = off
+        .iter()
+        .filter(|&&(i, ..)| lines[i].starts_with('#') && lines[i].len() < 20)
+        .collect();
+    assert!(short.is_empty(), "short spaced headings off: {short:?}");
+    assert!(
+        verified.is_empty(),
+        "verify disagrees: {:?}",
+        &verified[..verified.len().min(5)]
+    );
+}

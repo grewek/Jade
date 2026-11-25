@@ -12,6 +12,13 @@ use gpui_kit::{AppContext, Font, Pixels, TestAppContext, WindowOptions, point, p
 struct Scales;
 
 impl Scales {
+    fn with(edit: impl FnOnce(&mut Typography)) -> Scales {
+        let mut t = Typography::default();
+        edit(&mut t);
+        settings::set_body(&t);
+        Scales
+    }
+
     fn set(scale: [f32; HEADING_LEVELS]) -> Scales {
         let mut t = Typography::default();
         t.heading.scale = scale;
@@ -182,4 +189,38 @@ fn the_defaults_leave_headings_at_body_size(cx: &mut TestAppContext) {
     let _s = Scales::set(SCALES);
     let (_, _, scaled) = shape(cx, window, &font, text, 900.);
     assert!((f32::from(scaled) / f32::from(width) - 2.0).abs() < 1e-3);
+}
+
+#[gpui_kit::test]
+fn space_around_a_heading_is_whole_rows_the_text_sits_inside(cx: &mut TestAppContext) {
+    // 0.8 above rounds to one row, 1.6 below to two; level 1 is two rows tall.
+    let _s = Scales::with(|t| {
+        t.heading.scale = SCALES;
+        t.heading.space_above[0] = 0.8;
+        t.heading.space_below[0] = 1.6;
+    });
+    let (window, font) = open(cx);
+    let (entry, rows, _) = shape(cx, window, &font, "caret\n# Title", 900.);
+    assert_eq!(rows, 1);
+    assert_eq!(entry.pad, (px(26.), px(52.)));
+    assert_eq!(f32::from(entry.height), 26.0 + 52.0 + 52.0);
+    // The text starts below the space above, and clicks in it land on row 0.
+    assert_eq!(entry.top(0), px(26.));
+    assert_eq!(entry.place(point(px(5.), px(0.))).0, point(px(5.), px(26.)));
+    assert_eq!(entry.row_at(px(3.)), 0);
+    assert_eq!(entry.layout_y(px(26. + 10.)), px(10.));
+    assert_eq!(entry.layout_y(px(3.)), px(0.));
+    // Another level has none.
+    let (plain, ..) = shape(cx, window, &font, "caret\n## Title", 900.);
+    assert_eq!(plain.pad, (px(0.), px(0.)));
+}
+
+#[test]
+fn the_rule_and_space_defaults_change_nothing() {
+    let t = Typography::default();
+    settings::set_body(&t);
+    for level in 1..=6 {
+        assert_eq!(settings::heading_space_rows(level), (0, 0));
+        assert!(!settings::heading_rule(level));
+    }
 }

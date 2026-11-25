@@ -44,6 +44,10 @@ pub(in crate::text_editor) struct EntryHeight {
     /// rows are `row`. GPUI lays the text out at `row` per row, so its y values
     /// need [`place`](Self::place) to land where the rows are painted.
     pub varied: Vec<u8>,
+    /// Empty rows above and below the text (a heading's `space_above` and
+    /// `space_below`, #58); `height` includes both, the text is painted
+    /// `pad_top` down, so everything that places text goes through `place`/`top`.
+    pub pad: (Pixels, Pixels),
     pub height: Pixels,
 }
 
@@ -54,8 +58,17 @@ impl EntryHeight {
         EntryHeight {
             row,
             varied: Vec::new(),
+            pad: (px(0.), px(0.)),
             height: row,
         }
+    }
+
+    /// This entry with `above` and `below` empty body rows (of `body`) around it.
+    fn padded(mut self, body: Pixels, (above, below): (usize, usize)) -> Self {
+        let pad = (body * above as f32, body * below as f32);
+        self.pad = pad;
+        self.height += pad.0 + pad.1;
+        self
     }
 
     fn unit(&self, row: usize) -> f32 {
@@ -74,13 +87,14 @@ impl EntryHeight {
     /// Where wrapped row `row` starts, from the entry's top.
     pub fn top(&self, row: usize) -> Pixels {
         if self.varied.is_empty() {
-            return self.row * row as f32;
+            return self.pad.0 + self.row * row as f32;
         }
-        self.row * (0..row).map(|r| self.unit(r)).sum::<f32>()
+        self.pad.0 + self.row * (0..row).map(|r| self.unit(r)).sum::<f32>()
     }
 
     /// The wrapped row at `y` below the entry's top (the last for a `y` below it).
     pub fn row_at(&self, y: Pixels) -> usize {
+        let y = (y - self.pad.0).max(px(0.));
         if self.varied.is_empty() {
             return (f32::from(y) / f32::from(self.row)).max(0.0) as usize;
         }
@@ -98,7 +112,7 @@ impl EntryHeight {
     /// holding `y` as painted: what `closest_index_for_position` wants.
     pub fn layout_y(&self, y: Pixels) -> Pixels {
         if self.varied.is_empty() {
-            y
+            (y - self.pad.0).max(px(0.))
         } else {
             self.row * self.row_at(y) as f32
         }
@@ -108,7 +122,7 @@ impl EntryHeight {
     /// row is painted, with that row's height.
     pub fn place(&self, layout: Point<Pixels>) -> (Point<Pixels>, Pixels) {
         if self.varied.is_empty() {
-            return (layout, self.row);
+            return (point(layout.x, layout.y + self.pad.0), self.row);
         }
         let row = (f32::from(layout.y) / f32::from(self.row)).round().max(0.0) as usize;
         (point(layout.x, self.top(row)), self.row_height(row))
@@ -140,10 +154,19 @@ fn row_heights(
     (font_size, line_height): (Pixels, Pixels),
     macros: &Macros,
 ) -> EntryHeight {
-    let uniform = |units: usize| EntryHeight {
-        row: line_height * units as f32,
-        varied: Vec::new(),
-        height: wrapped.size(line_height * units as f32).height,
+    let space = if entries == 1 {
+        display_line.space_rows()
+    } else {
+        (0, 0)
+    };
+    let uniform = |units: usize| {
+        EntryHeight {
+            row: line_height * units as f32,
+            varied: Vec::new(),
+            pad: (px(0.), px(0.)),
+            height: wrapped.size(line_height * units as f32).height,
+        }
+        .padded(line_height, space)
     };
     // A heading's rows are whole multiples of the body row (#58).
     let base = display_line.row_units();
@@ -195,8 +218,10 @@ fn row_heights(
     EntryHeight {
         row: line_height,
         varied: units.iter().map(|&u| u.min(255) as u8).collect(),
+        pad: (px(0.), px(0.)),
         height: line_height * units.iter().sum::<usize>() as f32,
     }
+    .padded(line_height, space)
 }
 
 /// How far the drawn formulas of `display_line` reach above and below the
