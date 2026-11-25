@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use gpui_kit::*;
 
+mod code_spans;
 mod column_edit;
 pub(super) use column_edit::ColumnMenu;
 mod table_edit;
@@ -872,6 +873,7 @@ impl Render for Editor {
         self.unfold_at_cursor();
         self.sync_table_view(window);
         self.sync_column_view(window, cx);
+        self.sync_code_spans(cx);
         self.document_cache
             .borrow_mut()
             .view

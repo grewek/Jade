@@ -1529,3 +1529,65 @@ fn a_list_item_leaves_the_item_gap_below_and_other_lines_none() {
     crate::settings::set_body(&crate::settings::Typography::default());
     assert_eq!(rows("- item"), (0, 0), "today's look");
 }
+
+#[test]
+fn syntax_runs_split_a_code_line_without_touching_its_text() {
+    let code = |line: &str| {
+        let mut l = build_display_line(line, true);
+        l.segments[0].style = InlineStyle::CodeBlock;
+        l
+    };
+    let split = code("let é = 1").with_syntax_runs([(0..3, 3u8), (4..6, 5), (9..9, 1)].into_iter());
+    let shape: Vec<_> = split
+        .segments
+        .iter()
+        .map(|s| (s.raw.clone(), s.display.clone(), s.style))
+        .collect();
+    assert_eq!(
+        shape,
+        [
+            (0..3, 0..3, InlineStyle::Syntax(3)),
+            (3..4, 3..4, InlineStyle::CodeBlock),
+            (4..6, 4..6, InlineStyle::Syntax(5)),
+            (6..10, 6..10, InlineStyle::CodeBlock),
+        ],
+        "the empty run is dropped"
+    );
+    assert_eq!(split.display_text, "let é = 1");
+}
+
+#[test]
+fn bad_syntax_runs_are_skipped_and_other_lines_are_left_alone() {
+    let mut code = build_display_line("héllo", true);
+    code.segments[0].style = InlineStyle::CodeBlock;
+    // Two cut the é, one overlaps the run before it, one runs past the end.
+    let runs = [
+        (2..3, 1u8),
+        (0..2, 2),
+        (0..1, 6),
+        (0..1, 7),
+        (1..3, 3),
+        (4..9, 4),
+    ];
+    let split = code.clone().with_syntax_runs(runs.into_iter());
+    let styles: Vec<_> = split
+        .segments
+        .iter()
+        .map(|s| (s.raw.clone(), s.style))
+        .collect();
+    assert_eq!(
+        styles,
+        [
+            (0..1, InlineStyle::Syntax(6)),
+            (1..3, InlineStyle::Syntax(3)),
+            (3..6, InlineStyle::CodeBlock),
+        ]
+    );
+    // Not a code line, or a line with nothing coloured: unchanged.
+    let prose = build_display_line("let x", true);
+    assert_eq!(
+        prose.clone().with_syntax_runs([(0..3, 1u8)].into_iter()),
+        prose
+    );
+    assert_eq!(code.clone().with_syntax_runs(std::iter::empty()), code);
+}

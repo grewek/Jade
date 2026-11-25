@@ -20,7 +20,7 @@ pub(super) struct CodeBoxLook {
 
 /// The language of an opening fence line (```` ```rust ````): the first word of its
 /// info string, `None` when there is none.
-pub(super) fn fence_language(line: &str) -> Option<&str> {
+pub(in crate::text_editor) fn fence_language(line: &str) -> Option<&str> {
     let rest = line.trim_start().trim_start_matches(['`', '~']);
     // A backtick fence's info string has no backticks; the line is not a fence otherwise.
     rest.split_whitespace().next().filter(|w| !w.contains('`'))
@@ -30,7 +30,7 @@ pub(super) fn fence_language(line: &str) -> Option<&str> {
 /// from its opening fence to the line after its closing one, or to the end
 /// of the note when it is left open. `open_before(j)` is whether a fence is
 /// open entering line `j`.
-pub(super) fn block_lines(
+pub(in crate::text_editor) fn block_lines(
     roles: &[LineRole],
     open_before: impl Fn(usize) -> bool,
     i: usize,

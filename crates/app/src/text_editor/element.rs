@@ -48,6 +48,7 @@ use crate::debug_server::targets::DebugName;
 use crate::theme::{Alpha, Role, ThemeEngine};
 use boxes::{BoxShape, corners_of, paint_box, paint_box_corners, paint_strip};
 #[allow(unused_imports)]
+pub(in crate::text_editor) use code_box::{block_lines, fence_language};
 pub(super) use input::*;
 #[allow(unused_imports)]
 pub(super) use paint::*;
@@ -475,6 +476,13 @@ pub(super) struct FrameView {
     hover_link: Option<link_underline::HoverLink>,
     /// See `Editor::float_spots`.
     float_spots: Rc<RefCell<Vec<(usize, Vec<region::FloatSpot>)>>>,
+}
+
+impl FrameView {
+    /// The lines that were painted, with their overscan.
+    pub(super) fn visible_lines(&self) -> std::ops::Range<usize> {
+        visible_line_range(&self.layout, self.bounds, self.viewport)
+    }
 }
 
 /// What painting a table needs about the columns it is drawn with.

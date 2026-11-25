@@ -40,6 +40,9 @@ pub enum InlineStyle {
     /// A line of a fenced code block (never inline-scanned): drawn like plain
     /// text at `code_block.font_scale`.
     CodeBlock,
+    /// A coloured token of a fenced code line (#99): an index into
+    /// `Role::SYNTAX`. Same size and font as [`InlineStyle::CodeBlock`].
+    Syntax(u8),
     /// A control drawn as a 2D element over blank columns, never as a glyph
     /// from a font: see [`Widget`].
     Widget(Widget),
@@ -156,6 +159,50 @@ pub struct DisplayLine {
 }
 
 impl DisplayLine {
+    /// Splits a fenced code line that is one verbatim `CodeBlock` run into
+    /// runs of `Syntax` styles (`(byte range, index)`, in order) and the
+    /// `CodeBlock` text between them. The text and the raw/display mapping do
+    /// not change. A run that overlaps the previous one, is empty, runs past
+    /// the line or cuts a character is skipped.
+    pub fn with_syntax_runs(mut self, runs: impl Iterator<Item = (Range<usize>, u8)>) -> Self {
+        let len = self.display_text.len();
+        let whole = 0..len;
+        let [only] = self.segments.as_slice() else {
+            return self;
+        };
+        if only.style != InlineStyle::CodeBlock || only.raw != whole || only.display != whole {
+            return self;
+        }
+        let verbatim = |range: Range<usize>, style| DisplaySegment {
+            raw: range.clone(),
+            display: range,
+            style,
+            replaced: false,
+        };
+        let text = &self.display_text;
+        let mut out = Vec::new();
+        let mut at = 0;
+        for (range, index) in runs {
+            let fits = range.start >= at && range.start < range.end && range.end <= len;
+            if !fits || !text.is_char_boundary(range.start) || !text.is_char_boundary(range.end) {
+                continue;
+            }
+            if range.start > at {
+                out.push(verbatim(at..range.start, InlineStyle::CodeBlock));
+            }
+            at = range.end;
+            out.push(verbatim(range, InlineStyle::Syntax(index)));
+        }
+        if out.is_empty() {
+            return self;
+        }
+        if at < len {
+            out.push(verbatim(at..len, InlineStyle::CodeBlock));
+        }
+        self.segments = out;
+        self
+    }
+
     /// The heading level this line is shown as (a `#` heading, also inside a
     /// quote or list item), if it is one.
     pub fn heading_level(&self) -> Option<u8> {
@@ -168,11 +215,12 @@ impl DisplayLine {
     /// The factor the line's font size is scaled by: the `heading.scale` of its
     /// level, `code_block.font_scale` for a fenced code line, 1 for any other.
     pub fn font_scale(&self) -> f32 {
-        if self
-            .segments
-            .first()
-            .is_some_and(|s| matches!(s.style, InlineStyle::CodeBlock | InlineStyle::CodeFence))
-        {
+        if self.segments.first().is_some_and(|s| {
+            matches!(
+                s.style,
+                InlineStyle::CodeBlock | InlineStyle::CodeFence | InlineStyle::Syntax(_)
+            )
+        }) {
             return crate::settings::code_font_scale();
         }
         self.heading_level()

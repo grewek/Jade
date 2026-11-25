@@ -2,7 +2,12 @@
 //! typography (#58). Held as one global; a missing one (tests) means the
 //! defaults. Colours are the theme engine's.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use gpui_kit::{App, Global};
+
+use super::highlight::Syntaxes;
 
 use crate::settings::{self, Typography};
 use crate::theme::{self, ConfigDirs, ThemeEngine};
@@ -16,6 +21,26 @@ pub struct TextSettings {
 
 impl Global for TextSettings {}
 
+/// The fenced-code definitions and their block cache, shared by every editor
+/// (#99). Replaced when the folder setting changes.
+#[derive(Clone)]
+pub struct SyntaxStore(pub(super) Rc<RefCell<Syntaxes>>);
+
+impl Global for SyntaxStore {}
+
+impl SyntaxStore {
+    /// Installs the store for `folder` unless it already is for it.
+    pub(in crate::text_editor) fn set(folder: Option<std::path::PathBuf>, cx: &mut App) {
+        let same = cx
+            .try_global::<SyntaxStore>()
+            .is_some_and(|s| s.0.borrow().folder() == folder.as_deref());
+        if !same {
+            cx.set_global(SyntaxStore(Rc::new(RefCell::new(Syntaxes::new(folder)))));
+            cx.refresh_windows();
+        }
+    }
+}
+
 /// The body font size, as the editor lays out and paints with it.
 pub fn body_font_size() -> gpui_kit::Pixels {
     gpui_kit::px(settings::body_font_size())
@@ -26,11 +51,16 @@ pub fn body_row_height() -> gpui_kit::Pixels {
     gpui_kit::px(settings::body_row_height())
 }
 
+fn syntax_folder(dirs: Option<&ConfigDirs>, setting: Option<&str>) -> Option<std::path::PathBuf> {
+    dirs.map(|d| d.syntax_dir(setting))
+}
+
 impl TextSettings {
     /// Reads `config.toml` once at startup; returns what to tell the user.
     pub fn install(dirs: Option<&ConfigDirs>, cx: &mut App) -> Vec<String> {
         let read = settings::load(dirs);
         settings::set_body(&read.typography);
+        SyntaxStore::set(syntax_folder(dirs, read.syntax_folder.as_deref()), cx);
         cx.set_global(TextSettings {
             justify: theme::configured_justify(dirs),
             typography: read.typography,
@@ -43,6 +73,7 @@ impl TextSettings {
     /// repaints. Returns what to tell the user.
     pub fn reload(dirs: Option<&ConfigDirs>, cx: &mut App) -> Vec<String> {
         let read = settings::load(dirs);
+        SyntaxStore::set(syntax_folder(dirs, read.syntax_folder.as_deref()), cx);
         let next = TextSettings {
             justify: theme::configured_justify(dirs),
             typography: read.typography,
