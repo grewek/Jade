@@ -28,6 +28,8 @@ pub(in crate::text_editor) struct Syntaxes {
     state: State,
     cache: BlockCache,
     jobs: HashMap<Key, Cancel>,
+    /// Languages already reported as broken, lower case.
+    reported: HashSet<String>,
 }
 
 impl Syntaxes {
@@ -42,6 +44,7 @@ impl Syntaxes {
             state: State::Unloaded,
             cache: BlockCache::new(limits),
             jobs: HashMap::new(),
+            reported: HashSet::new(),
         }
     }
 
@@ -113,6 +116,12 @@ impl Syntaxes {
         if let Some(spans) = spans {
             self.cache.insert(key, &Arc::new(spans));
         }
+    }
+
+    /// `true` the first time `language` is asked about, so a broken
+    /// definition is reported once and not on every parse of every block.
+    pub fn first_report(&mut self, language: &str) -> bool {
+        self.reported.insert(language.to_ascii_lowercase())
     }
 
     pub fn jobs(&self) -> usize {
@@ -202,6 +211,15 @@ mod tests {
         store.cancel_unwanted(&HashSet::from([b]));
         assert!(ta.load(Ordering::Relaxed) && !tb.load(Ordering::Relaxed));
         assert_eq!(store.jobs(), 1);
+    }
+
+    #[test]
+    fn a_language_is_reported_once_whatever_its_case() {
+        let mut store = Syntaxes::new(None);
+        assert!(store.first_report("Rust"));
+        assert!(!store.first_report("rust"));
+        assert!(!store.first_report("RUST"));
+        assert!(store.first_report("python"));
     }
 
     #[test]
