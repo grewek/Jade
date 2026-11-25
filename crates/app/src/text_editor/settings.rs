@@ -68,6 +68,33 @@ impl TextSettings {
             .map_or_else(Typography::default, |s| s.typography)
     }
 
+    /// Applies a change to the typography now, as a reload of an edited file
+    /// does: a layout key that moved rebuilds the row caches, anything else
+    /// repaints.
+    pub fn apply_typography(edit: impl FnOnce(&mut Typography), cx: &mut App) {
+        let before = cx.try_global::<TextSettings>().copied().unwrap_or_default();
+        let mut next = before;
+        edit(&mut next.typography);
+        if next == before {
+            return;
+        }
+        if before.typography.layout_differs(&next.typography) {
+            settings::layout_changed();
+        }
+        settings::set_body(&next.typography);
+        cx.set_global(next);
+        cx.refresh_windows();
+    }
+
+    /// Remembers `key = value` of `[section]` in `config.toml` (a pick made
+    /// in Settings, already applied); the setting holds even when this fails.
+    pub fn remember(section: &str, key: &str, value: &str, cx: &App) -> Result<(), String> {
+        match ThemeEngine::config_dirs(cx) {
+            Some(dirs) => theme::remember_setting(dirs, Some(section), key, value),
+            None => Ok(()),
+        }
+    }
+
     /// A user's pick: applies now and remembers it in `config.toml`; the
     /// switch holds even when remembering fails.
     pub fn choose_justify(on: bool, cx: &mut App) -> Result<(), String> {
@@ -92,6 +119,34 @@ mod tests {
     fn write(dirs: &ConfigDirs, src: &str) {
         std::fs::create_dir_all(dirs.base()).unwrap();
         std::fs::write(dirs.config_file(), src).unwrap();
+    }
+
+    #[gpui_kit::test]
+    fn a_dialog_pick_applies_now_and_is_written_in_place(cx: &mut TestAppContext) {
+        let tmp = tempfile::tempdir().unwrap();
+        let dirs = ConfigDirs::new(tmp.path().to_path_buf());
+        write(&dirs, "# mine\n[font]\nsize = 16 # body\n");
+        cx.update(|cx| {
+            TextSettings::install(Some(&dirs), cx);
+            let before = settings::layout_generation();
+            TextSettings::apply_typography(|t| t.font.size = 24.0, cx);
+            assert_eq!(TextSettings::typography(cx).font.size, 24.0);
+            assert!(
+                settings::layout_generation() > before,
+                "a size is a layout key"
+            );
+            let before = settings::layout_generation();
+            TextSettings::apply_typography(|t| t.shape.radius = settings::Radius::Px(9.0), cx);
+            assert_eq!(
+                settings::layout_generation(),
+                before,
+                "a radius only repaints"
+            );
+            theme::remember_setting(&dirs, Some("font"), "size", "24").unwrap();
+            settings::set_body(&Typography::default());
+        });
+        let text = std::fs::read_to_string(dirs.config_file()).unwrap();
+        assert_eq!(text, "# mine\n[font]\nsize = 24 # body\n");
     }
 
     #[gpui_kit::test]

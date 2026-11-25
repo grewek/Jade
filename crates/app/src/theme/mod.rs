@@ -17,7 +17,7 @@ mod roles;
 mod tests;
 mod watch;
 
-pub use choices::{Choice, remember_justify, remember_vault};
+pub use choices::{Choice, remember_justify, remember_setting, remember_vault};
 pub use contrast::ContrastWarning;
 pub use engine::ThemeEngine;
 pub use loader::{Loaded, config_text, configured_justify, configured_vault, load_startup};
