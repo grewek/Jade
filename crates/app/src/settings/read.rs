@@ -15,6 +15,8 @@ use super::typography::{FontFamily, HEADING_LEVELS, Radius, Typography};
 pub struct Read {
     pub typography: Typography,
     pub notices: Vec<String>,
+    /// `code_block.syntax_folder` as written; see `ConfigDirs::syntax_dir`.
+    pub syntax_folder: Option<String>,
 }
 
 impl Typography {
@@ -22,6 +24,7 @@ impl Typography {
     pub fn from_config(src: &str) -> Read {
         let mut reader = Reader {
             notices: Vec::new(),
+            syntax_folder: None,
         };
         let mut typography = Typography::default();
         let table = match src.parse::<Table>() {
@@ -31,6 +34,7 @@ impl Typography {
                 return Read {
                     typography,
                     notices: reader.notices,
+                    syntax_folder: None,
                 };
             }
         };
@@ -41,6 +45,7 @@ impl Typography {
         Read {
             typography,
             notices: reader.notices,
+            syntax_folder: reader.syntax_folder,
         }
     }
 }
@@ -52,11 +57,13 @@ pub fn load(dirs: Option<&ConfigDirs>) -> Read {
         None => Read {
             typography: Typography::default(),
             notices: Vec::new(),
+            syntax_folder: None,
         },
         Some(Ok(src)) => Typography::from_config(&src),
         Some(Err(message)) => Read {
             typography: Typography::default(),
             notices: vec![format!("config.toml: {message}")],
+            syntax_folder: None,
         },
     }
 }
@@ -65,6 +72,7 @@ mod blocks;
 
 struct Reader {
     notices: Vec<String>,
+    syntax_folder: Option<String>,
 }
 
 /// The accepted range of a number key, inclusive.

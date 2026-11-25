@@ -114,6 +114,8 @@ pub struct CodeBlock {
     pub radius: Option<Radius>,
     pub language_label: bool,
     pub font_scale: f32,
+    /// Colour the tokens of fenced code (#99); paint-only.
+    pub highlight: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -233,6 +235,7 @@ impl Default for Typography {
                 radius: None,
                 language_label: false,
                 font_scale: 1.0,
+                highlight: false,
             },
             callout: Callout {
                 radius: None,
@@ -319,6 +322,7 @@ impl Typography {
         self.code_block.border = other.code_block.border;
         self.code_block.padding = other.code_block.padding;
         self.code_block.language_label = other.code_block.language_label;
+        self.code_block.highlight = other.code_block.highlight;
         self.code_block.radius = other.code_block.radius;
         self.callout.radius = other.callout.radius;
         self.table.radius = other.table.radius;
@@ -394,6 +398,7 @@ mod tests {
         paint.blockquote.italic = false;
         paint.task.done_style = DoneStyle::Both;
         paint.table.zebra = true;
+        paint.code_block.highlight = true;
         assert!(!base.layout_differs(&paint));
         let edits: [fn(&mut Typography); 10] = [
             |t| t.font.size = 18.0,
