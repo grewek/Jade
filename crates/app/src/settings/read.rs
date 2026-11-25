@@ -308,6 +308,16 @@ mod tests {
         }
     }
 
+    /// `config.sample.toml` documents every key at its built-in value: it must
+    /// read without a notice and give the defaults, so it cannot drift.
+    #[test]
+    fn the_sample_config_is_the_defaults_and_has_no_notice() {
+        let sample = include_str!("../../../../config.sample.toml");
+        let r = read(sample);
+        assert_eq!(r.notices, Vec::<String>::new());
+        assert_eq!(r.typography, Typography::default());
+    }
+
     #[test]
     fn valid_values_are_read() {
         let r = read(
