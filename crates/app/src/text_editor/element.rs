@@ -8,6 +8,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
 mod boxes;
+mod code_chip;
 mod input;
 pub(super) mod justify;
 mod paint;
@@ -592,6 +593,8 @@ mod math_rows_tests;
 
 #[cfg(test)]
 mod anchoring_tests;
+#[cfg(test)]
+mod code_chip_tests;
 #[cfg(test)]
 mod formula_context_tests;
 #[cfg(test)]

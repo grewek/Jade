@@ -296,6 +296,7 @@ impl Typography {
         self.heading.rule = other.heading.rule;
         self.inline_code.background = other.inline_code.background;
         self.inline_code.radius = other.inline_code.radius;
+        self.inline_code.padding = other.inline_code.padding;
         self.code_block.background = other.code_block.background;
         self.code_block.border = other.code_block.border;
         self.code_block.radius = other.code_block.radius;
