@@ -147,6 +147,29 @@ pub struct DisplayLine {
 }
 
 impl DisplayLine {
+    /// The heading level this line is shown as (a `#` heading, also inside a
+    /// quote or list item), if it is one.
+    pub fn heading_level(&self) -> Option<u8> {
+        self.segments.iter().find_map(|s| match s.style {
+            InlineStyle::Heading(level) => Some(level),
+            _ => None,
+        })
+    }
+
+    /// The factor the line's font size is scaled by: the `heading.scale` of its
+    /// level, 1 for any other line.
+    pub fn font_scale(&self) -> f32 {
+        self.heading_level()
+            .map_or(1.0, crate::settings::heading_scale)
+    }
+
+    /// How many body rows one row of this line takes (1 unless a heading).
+    pub fn row_units(&self) -> usize {
+        self.heading_level().map_or(1, |l| {
+            crate::settings::heading_rows(crate::settings::heading_scale(l))
+        })
+    }
+
     /// Cuts the line at display byte `at` into the part before and the part
     /// from there on, and the raw byte where the second begins. Each part's
     /// raw and display ranges start at 0, so each reads as a line of its own.

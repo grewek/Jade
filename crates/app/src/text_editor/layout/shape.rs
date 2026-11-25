@@ -145,6 +145,8 @@ fn row_heights(
         varied: Vec::new(),
         height: wrapped.size(line_height * units as f32).height,
     };
+    // A heading's rows are whole multiples of the body row (#58).
+    let base = display_line.row_units();
     // Several entries are a wrapped table row, which never holds a drawn formula.
     if entries != 1
         || !display_line
@@ -152,7 +154,7 @@ fn row_heights(
             .iter()
             .any(|s| s.style == InlineStyle::Math)
     {
-        return uniform(1);
+        return uniform(base);
     }
     let rows = wrapped.wrap_boundaries().len() + 1;
     let text = (f32::from(wrapped.ascent()), f32::from(wrapped.descent()));
@@ -185,7 +187,7 @@ fn row_heights(
     }
     let units: Vec<usize> = reach
         .iter()
-        .map(|&r| tall_rows(r, (font_size, line_height), text))
+        .map(|&r| tall_rows(r, (font_size, line_height), text).max(base))
         .collect();
     if units.iter().all(|&u| u == units[0]) {
         return uniform(units[0]);
@@ -683,6 +685,8 @@ pub(in crate::text_editor) fn shape_entry(
     window: &mut Window,
 ) -> WrappedLine {
     let runs = line_runs(display_line, (font, colors), (broken, callout), bold);
+    // A heading is shaped at its own size, whole line at once.
+    let font_size = font_size * display_line.font_scale();
     window
         .text_system()
         .shape_text(

@@ -36,6 +36,23 @@ pub fn layout_changed() {
 static BODY_SIZE: AtomicU32 = AtomicU32::new(16.0f32.to_bits());
 static BODY_ROW: AtomicU32 = AtomicU32::new(26.0f32.to_bits());
 static MATH_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
+static HEADING_SCALE: [AtomicU32; HEADING_LEVELS] =
+    [const { AtomicU32::new(1.0f32.to_bits()) }; HEADING_LEVELS];
+
+/// `heading.scale` of `level` (1..=6, clamped): the heading's font size as a
+/// multiple of the body size.
+pub fn heading_scale(level: u8) -> f32 {
+    let i = Typography::heading_index(level);
+    f32::from_bits(HEADING_SCALE[i].load(Ordering::Relaxed))
+}
+
+/// How many body rows one row of a heading at `scale` takes: the nearest whole
+/// row, at least one. Row heights stay whole editor rows (row counts, scroll
+/// anchoring and the estimates depend on that); the text box is 0.75 em, so it
+/// fits in the rows this gives.
+pub fn heading_rows(scale: f32) -> usize {
+    (scale.round().max(1.0)) as usize
+}
 
 /// `font.math_scale`: formulas relative to the built-in formula size.
 pub fn math_scale() -> f32 {
@@ -55,4 +72,7 @@ pub fn set_body(typography: &Typography) {
     BODY_SIZE.store(typography.font.size.to_bits(), Ordering::Relaxed);
     BODY_ROW.store(typography.line_height_px().to_bits(), Ordering::Relaxed);
     MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
+    for (slot, scale) in HEADING_SCALE.iter().zip(typography.heading.scale) {
+        slot.store(scale.to_bits(), Ordering::Relaxed);
+    }
 }
