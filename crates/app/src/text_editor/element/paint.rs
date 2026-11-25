@@ -37,6 +37,15 @@ pub(super) fn paint_lines(
         typography.callout.bar_width,
     );
     let palette = ThemeEngine::global(cx).palette().clone();
+    let chip_look = typography
+        .inline_code
+        .background
+        .then(|| code_chip::ChipLook {
+            fill: palette.color(Role::CodeBackground),
+            padding: typography.inline_code.padding,
+            radius: typography.radius_of(crate::settings::Boxed::InlineCode),
+            char_width: mono_char_width(font, font_size, text_color, window),
+        });
     let inline = InlineColors::from_palette(&palette);
     let rule = palette.color(Role::BorderStrong);
     let selection_fill = palette.with_alpha(Role::Selection, Alpha::Selection);
@@ -164,6 +173,7 @@ pub(super) fn paint_lines(
         },
         checkbox_radius: typography.task.checkbox_radius,
         image_radius: typography.radius_of(crate::settings::Boxed::Image),
+        chip_look,
         callout_shape,
     };
 
@@ -333,6 +343,8 @@ pub(super) struct PaintEnv<'a> {
     pub(super) checkbox_radius: crate::settings::Radius,
     /// Corners of an image and of its placeholder.
     pub(super) image_radius: crate::settings::Radius,
+    /// The chip behind inline code, when `inline_code.background` is on.
+    pub(super) chip_look: Option<code_chip::ChipLook>,
     /// Corners and accent bar width of a callout's band.
     pub(super) callout_shape: (crate::settings::Radius, f32),
 }
@@ -386,6 +398,7 @@ pub(super) fn paint_line(
         cursor_color,
         checkbox_radius,
         image_radius,
+        ref chip_look,
         ..
     } = *env;
     let selection = env.selection.clone();
@@ -621,6 +634,14 @@ pub(super) fn paint_line(
         }
     } else {
         let (wrapped, display_line) = &results[0];
+        if let Some(look) = &chip_look {
+            code_chip::paint_code_chips(
+                (state, wrapped, display_line),
+                (entry, line_origin),
+                look,
+                window,
+            );
+        }
 
         if let Some(selection) = &selection {
             let start = selection.start.max(line_range.start);
