@@ -80,6 +80,18 @@ highlight = "orange"                     # ==highlight==, like warning
 error   = "red"                          # Failure, Danger, Bug
 neutral = "gray_55"                      # Example, Quote
 
+# Syntax colors (#99): the Catppuccin Latte scheme, darkened to 4.5:1 on white (this palette has no hue names).
+syntax_comment     = "#686b7e"
+syntax_string      = "#327c21"
+syntax_number      = "#bc4501"
+syntax_keyword     = "#8839ef"
+syntax_function    = "#145ff5"
+syntax_type        = "#976014"
+syntax_constant    = "#187787"
+syntax_operator    = "#0374a1"
+syntax_punctuation = "#696b81"
+syntax_variable    = "#c93333"
+
 [alpha]                                  # only what differs from roles.toml
 selection = 0.35                         # text selection fill
 overlay   = 0.50                         # scrim opacity behind dialogs

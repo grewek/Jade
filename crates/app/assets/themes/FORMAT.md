@@ -65,7 +65,7 @@ Use an override for a real difference (contrast, a palette that lacks the defaul
 | `link_underline` | the underline of a link; follows `link` | (new) |
 | `code_background` | the box behind code; follows `surface` | (new) |
 | `highlight` | `==highlight==` (not drawn yet) | (new) |
-| `syntax_comment` | comments in highlighted fenced code (#99; not drawn yet); follows `text` | (new) |
+| `syntax_comment` | comments in highlighted fenced code (#99; not drawn yet); follows `text`, the built-in themes set it | (new) |
 | `syntax_string` | string and character literals; follows `text` | (new) |
 | `syntax_number` | numeric literals; follows `text` | (new) |
 | `syntax_keyword` | keywords and storage words (`fn`, `if`, `const`); follows `text` | (new) |
@@ -106,6 +106,8 @@ Catppuccin's guide gives no ratios, so these were measured on the resolved theme
 - **Latte**: its pastels fell to 2.3 to 4.4, so it overrides 11 roles (`text_muted`, `text_subtle`, `link`, `wikilink`, `code`, `info`, `tip`, `success`, `warning`, `neutral`, `accent`) with darkened versions of the same hues; all measured roles now reach 4.5.
 - **Jade Neon, Jade Neon Light**: no overrides for contrast and no warnings; every measured role reaches 4.5 (the light one gets there by deepening each hue in its palette).
 - **Jade Light** reproduces today's colors as they are; several are low (`link` 1.8, `tip` 1.9, `success` 2.2, `warning` 2.5).
+
+**Syntax roles (#99).** The built-in themes use the Catppuccin editor scheme by hue name (comment `overlay2`, string `green`, number `peach`, keyword `mauve`, function `blue`, type `yellow`, constant `sapphire`, operator `sky`, punctuation `subtext0`, variable `flamingo`), set in each theme's `[overrides]` so a user theme without those palette names stays valid and just follows `text`. Every shipped theme reaches 4.5 on `background` (test `every_shipped_theme_has_a_readable_and_varied_syntax_scheme`, which also requires at least 8 distinct colors): Mocha, Macchiato, Frappe and both Neon themes with their hues as they are; Latte replaces nine roles with darkened versions of the same hues (all but `syntax_keyword`), and Jade Light, whose palette has no hue names, sets all ten as the same darkened Latte colors.
 
 ## Mapping to gpui-component (`Theme::apply_config`)
 

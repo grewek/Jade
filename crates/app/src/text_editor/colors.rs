@@ -163,8 +163,11 @@ mod heading_tests {
     fn heading_colors_follow_each_levels_role() {
         let defaults = Defaults::parse(include_str!("../../assets/themes/roles.toml")).unwrap();
         let mocha = include_str!("../../assets/themes/catppuccin-mocha.toml");
-        let theme =
-            format!("{mocha}\n[overrides]\nheading = \"#112233\"\nheading_5 = \"#445566\"\n");
+        let theme = mocha.replacen(
+            "[overrides]\n",
+            "[overrides]\nheading = \"#112233\"\nheading_5 = \"#445566\"\n",
+            1,
+        );
         let palette = Palette::from_resolved(&ResolvedTheme::parse(&defaults, &theme).unwrap());
         let colors = InlineColors::from_palette(&palette);
         for level in 1..=6 {
