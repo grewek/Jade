@@ -46,7 +46,7 @@ padding        = 0.0           # em above and below the lines
 border         = false
 language_label = false         # the fence's language in the box corner (needs background)
 font_scale     = 1.0           # 0.5..1; code can shrink, not grow
-highlight      = false         # colour fenced code by language (needs .sublime-syntax files)
+highlight      = false         # colour fenced code by language (needs .sublime-syntax files, see CONFIG.md)
 # syntax_folder = "syntaxes"   # relative to this folder, or absolute; default: syntaxes/
 # radius       = 8
 
