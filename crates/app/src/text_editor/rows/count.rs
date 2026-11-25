@@ -2,6 +2,7 @@
 //! pure, thread-split counters used by a cold rebuild, and the per-line
 //! computations (with a `Window`) used to patch or verify single lines.
 
+use crate::text_editor::preview::LineIndent;
 use crate::text_editor::table;
 use gpui_kit::*;
 
@@ -152,7 +153,10 @@ fn pure_row_counts_in(
     // a cursor instead of a binary search per line. What is the same for every
     // row of a table (column widths) is worked out once per table.
     let budget = char_budget(available_width, char_width);
-    let one_level_fit = fit_with_indent(available_width, char_width, 1);
+    let one_level_fit =
+        fit_with_indent(available_width, char_width, LineIndent::Blockquote(1)).min(
+            fit_with_indent(available_width, char_width, LineIndent::List(1)),
+        );
     let mut next_table = view.tables.partition_point(|t| t.end_line <= range.start);
     let mut next_callout = view.callouts.partition_point(|c| c.end_line <= range.start);
     let mut next_region = view.columns.partition_point(|r| r.end_line <= range.start);
@@ -364,16 +368,20 @@ fn estimate_row_count(
     } else {
         char_width
     };
-    let indent_level = if is_code {
-        u8::from(crate::settings::code_inset())
+    let indent = if is_code {
+        if crate::settings::code_inset() {
+            LineIndent::Code
+        } else {
+            LineIndent::None
+        }
     } else {
         match doc.contexts[i] {
-            LineContext::Plain => line_indent(line).level(),
-            LineContext::ListMarkerLine(depth) => depth,
-            LineContext::LazyContinuation(indent) => indent.level(),
+            LineContext::Plain => line_indent(line),
+            LineContext::ListMarkerLine(depth) => LineIndent::List(depth),
+            LineContext::LazyContinuation(indent) => indent,
         }
     };
-    let wrap_width = Some((available_width - indent_px(indent_level)).max(px(1.)));
+    let wrap_width = Some((available_width - indent_px(indent)).max(px(1.)));
     // A formula is a few blank columns that may be taller than a row (#20): the
     // rows are counted on what is left of the text, each as many as it needs.
     if has_dollar
@@ -381,7 +389,7 @@ fn estimate_row_count(
         && let Some((mut formulas, chars)) = inline_math_extent(
             line,
             doc.macros,
-            fit_with_indent(available_width, char_width, indent_level),
+            fit_with_indent(available_width, char_width, indent),
         )
     {
         let per_row = chars_per_row(wrap_width, char_width);

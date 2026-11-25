@@ -462,12 +462,12 @@ pub(super) fn paint_line(
     // Every entry of one raw line shares the same indent (a table's is
     // always `None` across all of them, same as the common one-entry
     // case) — fine to read it off the first.
-    let indent_level = results[0].1.indent.level();
-    let line_origin = bounds.origin + point(indent_px(indent_level), y_offset);
+    let indent = results[0].1.indent;
+    let line_origin = bounds.origin + point(indent_px(indent), y_offset);
     // The width a wrapped row should be highlighted to when a
     // selection continues past it onto the next row — the same budget
     // `wrap_width_for` gave this line to wrap within.
-    let full_row_width = bounds.size.width - indent_px(indent_level);
+    let full_row_width = bounds.size.width - indent_px(indent);
 
     // A thematic break (`---`/`***`/`___`) renders as a real vector
     // line, same "quad over a blank `hidden_line` gap" technique a
@@ -616,12 +616,18 @@ pub(super) fn paint_line(
     if callout.is_none()
         && let LineIndent::Blockquote(depth) = results[0].1.indent
     {
+        let (unit, bar) = (
+            crate::settings::quote_indent_px(),
+            crate::settings::quote_bar_width(),
+        );
+        // The bar sits inside its level's indent, a little in from the edge.
+        let inset = px(((unit - bar) / 2.).clamp(0., f32::from(QUOTE_BAR_INSET)));
         for level in 0..depth {
-            let bar_x = bounds.origin.x + indent_px(level) + QUOTE_BAR_INSET;
+            let bar_x = bounds.origin.x + indent_px(LineIndent::Blockquote(level)) + inset;
             window.paint_quad(fill(
                 Bounds {
                     origin: point(bar_x, bounds.origin.y + y_offset),
-                    size: size(QUOTE_BAR_WIDTH, total_height),
+                    size: size(px(bar), total_height),
                 },
                 rule,
             ));
@@ -651,7 +657,7 @@ pub(super) fn paint_line(
         let mut row_y = y_offset;
         for (wrapped, _) in results {
             let _ = wrapped.paint(
-                bounds.origin + point(indent_px(indent_level), row_y),
+                bounds.origin + point(indent_px(indent), row_y),
                 line_height,
                 TextAlign::Left,
                 None,

@@ -509,7 +509,7 @@ pub(super) fn hit_in_line(
         let (line_height, height) = (entry.row, entry.height);
         if relative_y < y + height {
             let relative_x =
-                (position.x - bounds.origin.x - indent_px(display_line.indent.level())).max(px(0.));
+                (position.x - bounds.origin.x - indent_px(display_line.indent)).max(px(0.));
             let local_y = (relative_y - y).max(px(0.));
             let row = entry.row_at(local_y);
             // GPUI laid the rows `line_height` apart, however tall they are painted.

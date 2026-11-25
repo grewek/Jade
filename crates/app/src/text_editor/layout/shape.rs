@@ -351,8 +351,12 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
         InlineStyle::Heading(level) => {
             font.weight = FontWeight(f32::from(crate::settings::heading_weight(level)));
         }
-        InlineStyle::Italic | InlineStyle::Blockquote(_) => font.style = FontStyle::Italic,
+        InlineStyle::Italic => font.style = FontStyle::Italic,
+        InlineStyle::Blockquote(_) if crate::settings::quote_italic() => {
+            font.style = FontStyle::Italic;
+        }
         InlineStyle::Plain
+        | InlineStyle::Blockquote(_)
         | InlineStyle::Code
         | InlineStyle::Strikethrough
         | InlineStyle::WikiLink
@@ -478,13 +482,13 @@ fn wrap_width_for(
     table_kind: &TableLineKind,
     table_active: bool,
     available_width: Pixels,
-    indent_level: u8,
+    indent: LineIndent,
 ) -> Option<Pixels> {
     if table_active {
-        return Some((available_width - indent_px(indent_level)).max(px(1.)));
+        return Some((available_width - indent_px(indent)).max(px(1.)));
     }
     match table_kind {
-        TableLineKind::None => Some((available_width - indent_px(indent_level)).max(px(1.))),
+        TableLineKind::None => Some((available_width - indent_px(indent)).max(px(1.))),
         TableLineKind::Delimiter | TableLineKind::Row(_) => None,
     }
 }
@@ -589,8 +593,7 @@ pub(in crate::text_editor) fn build_display_lines(
                     // A heading's characters are wider, so its row fits fewer.
                     let char_width = mono_char_width(font, font_size, text_color, window)
                         * display_line.font_scale();
-                    let fit =
-                        fit_with_indent(available_width, char_width, display_line.indent.level());
+                    let fit = fit_with_indent(available_width, char_width, display_line.indent);
                     show_wide_formulas(&mut display_line, line, fit);
                 }
                 vec![display_line]
@@ -626,7 +629,7 @@ pub(in crate::text_editor) fn build_display_lines(
         table_kind,
         table_active,
         available_width,
-        display_lines[0].indent.level(),
+        display_lines[0].indent,
     );
     (display_lines, wrap_width)
 }
@@ -883,18 +886,18 @@ fn table_row_char_budget(
     )
 }
 
-/// How many monospace characters fit on a row indented `level` levels
+/// How many monospace characters fit on a row indented by `indent`
 /// (zero if `char_width` is not positive); the wrap width is floored at 1px
 /// like [`wrap_width_for`].
 pub(in crate::text_editor) fn fit_with_indent(
     available_width: Pixels,
     char_width: Pixels,
-    level: u8,
+    indent: LineIndent,
 ) -> usize {
     if char_width <= px(0.) {
         return 0;
     }
-    ((available_width - indent_px(level)).max(px(1.)) / char_width) as usize
+    ((available_width - indent_px(indent)).max(px(1.)) / char_width) as usize
 }
 
 /// How many monospace characters of `char_width` fit in `available_width`;
