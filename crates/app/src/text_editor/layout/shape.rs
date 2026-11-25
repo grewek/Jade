@@ -358,6 +358,7 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
         | InlineStyle::WikiLink
         | InlineStyle::Link
         | InlineStyle::ListMarker
+        | InlineStyle::CodeFence
         | InlineStyle::Widget(_)
         | InlineStyle::Math => {}
     }
@@ -382,6 +383,7 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
         InlineStyle::Link => colors.link,
         InlineStyle::CalloutTitle => callout.map_or(base, |c| colors.callout(c.kind)),
         InlineStyle::Heading(level) => colors.heading(level),
+        InlineStyle::CodeFence => colors.subtle,
         InlineStyle::Blockquote(_) | InlineStyle::ListMarker => {
             if callout.is_some() {
                 base
@@ -516,7 +518,7 @@ pub(in crate::text_editor) fn build_display_lines(
         LineRole::Plain if let Some(rows) = block_rows => vec![hidden_line(line); rows],
         LineRole::FenceContent => vec![build_display_line(line, true)],
         LineRole::FenceDelimiter if !active => vec![hidden_line(line)],
-        LineRole::FenceDelimiter => vec![build_display_line(line, active)],
+        LineRole::FenceDelimiter => vec![raw_fence_line(line, active)],
         LineRole::Plain if table_active && !matches!(table_kind, TableLineKind::None) => {
             vec![build_display_line(line, true)]
         }
@@ -559,7 +561,7 @@ pub(in crate::text_editor) fn build_display_lines(
     // that's not a real blockquote/list line and shouldn't indent as one.
     if matches!(role, LineRole::FenceContent) {
         for display_line in &mut display_lines {
-            display_line.indent = LineIndent::None;
+            display_line.indent = code_indent();
         }
     }
 
@@ -750,6 +752,30 @@ pub(in crate::text_editor) fn shape_entry(
 /// call. Shared by `table_row_char_budget` (converts it to a *character*
 /// budget) and `paint_table_grid_lines` (converts a *character offset* to
 /// an actual pixel x) — both need the same measurement to agree.
+/// A fenced code line, inset when a box is drawn behind it.
+fn code_inset(mut line: DisplayLine) -> DisplayLine {
+    line.indent = code_indent();
+    line
+}
+
+/// The indent of a fenced code line: in by one level when a box is drawn behind it.
+fn code_indent() -> LineIndent {
+    if crate::settings::code_inset() {
+        LineIndent::Code
+    } else {
+        LineIndent::None
+    }
+}
+
+/// An opening or closing fence line shown raw (the caret is on it), in the fence colour.
+fn raw_fence_line(line: &str, active: bool) -> DisplayLine {
+    let mut raw = build_display_line(line, active);
+    if let Some(seg) = raw.segments.first_mut() {
+        seg.style = InlineStyle::CodeFence;
+    }
+    code_inset(raw)
+}
+
 pub(in crate::text_editor) fn mono_char_width(
     font: &Font,
     font_size: Pixels,

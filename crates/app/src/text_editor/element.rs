@@ -8,6 +8,7 @@ use gpui_kit::component::menu::{ContextMenuExt, PopupMenu, PopupMenuItem};
 use gpui_kit::*;
 
 mod boxes;
+mod code_box;
 mod code_chip;
 mod input;
 pub(super) mod justify;

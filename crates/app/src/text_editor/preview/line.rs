@@ -35,6 +35,8 @@ pub enum InlineStyle {
     /// [`callout::Callout`](super::callout::Callout), keeping this module
     /// GPUI-free.
     CalloutTitle,
+    /// A code fence line shown raw (the caret is on it): ```` ```rust ````.
+    CodeFence,
     /// A control drawn as a 2D element over blank columns, never as a glyph
     /// from a font: see [`Widget`].
     Widget(Widget),
@@ -119,6 +121,9 @@ pub enum LineIndent {
     /// [`classify_block_context`]'s whole-document pass, via
     /// [`build_display_line_in_context`].
     List(u8),
+    /// A line of a fenced code block drawn on a box (`code_block.background`):
+    /// one level in, so the text clears the box's edge.
+    Code,
 }
 
 impl LineIndent {
@@ -127,6 +132,7 @@ impl LineIndent {
     pub fn level(self) -> u8 {
         match self {
             LineIndent::None => 0,
+            LineIndent::Code => 1,
             LineIndent::Blockquote(depth) | LineIndent::List(depth) => depth,
         }
     }

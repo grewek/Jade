@@ -297,8 +297,8 @@ impl Typography {
         self.inline_code.background = other.inline_code.background;
         self.inline_code.radius = other.inline_code.radius;
         self.inline_code.padding = other.inline_code.padding;
-        self.code_block.background = other.code_block.background;
         self.code_block.border = other.code_block.border;
+        self.code_block.padding = other.code_block.padding;
         self.code_block.radius = other.code_block.radius;
         self.callout.radius = other.callout.radius;
         self.table.radius = other.table.radius;
@@ -371,11 +371,12 @@ mod tests {
         paint.task.done_style = DoneStyle::Both;
         paint.table.zebra = true;
         assert!(!base.layout_differs(&paint));
-        let edits: [fn(&mut Typography); 6] = [
+        let edits: [fn(&mut Typography); 7] = [
             |t| t.font.size = 18.0,
             |t| t.heading.scale[2] = 1.5,
             |t| t.heading.space_above[0] = 1.0,
-            |t| t.code_block.padding = 0.5,
+            |t| t.table.cell_padding = 0.5,
+            |t| t.code_block.background = true,
             |t| t.list.indent = 2.0,
             |t| t.spacing.block_gap = 2.0,
         ];
