@@ -293,7 +293,12 @@ pub(super) fn paint_callout_band(
     };
     paint_box(band, radius, background, None, window);
     if bar_width > 0.0 {
-        let x0 = QUOTE_BAR_INSET;
+        // Rounded, the bar is the box's own left edge; square, it keeps its inset.
+        let x0 = if matches!(radius, crate::settings::Radius::Px(r) if r <= 0.0) {
+            QUOTE_BAR_INSET
+        } else {
+            px(0.)
+        };
         let x1 = (x0 + px(bar_width)).min(width);
         paint_strip(band, radius, (x0, x1), color, window);
     }
