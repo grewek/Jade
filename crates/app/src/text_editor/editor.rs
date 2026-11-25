@@ -137,6 +137,8 @@ pub struct Editor {
     pub(super) link_table: LinkTable,
     /// The mouse is over a link a click would follow: paint shows a pointer.
     pub(super) hovering_link: bool,
+    /// The link under the pointer (line, byte span in the line), for hover underlines.
+    pub(super) hover_link: Option<(usize, std::ops::Range<usize>)>,
     /// The table Ctrl+/ asked to show raw; it stays raw while the caret is in it.
     raw_pinned: Option<usize>,
     /// The columns region Ctrl+/ asked to show as source, while the caret is in it.
@@ -181,6 +183,7 @@ impl Editor {
             doc_stats,
             link_table,
             hovering_link: false,
+            hover_link: None,
             raw_pinned: None,
             raw_region_pinned: None,
             table_hover: None,
@@ -370,6 +373,15 @@ impl Editor {
     #[cfg(test)]
     pub fn is_hovering_link(&self) -> bool {
         self.hovering_link
+    }
+
+    /// The link under byte `offset`: its line and byte span within the line.
+    pub(super) fn link_span_at(&self, offset: usize) -> Option<(usize, std::ops::Range<usize>)> {
+        let doc = self.document_cache.borrow();
+        let line = doc.line_at(offset);
+        let column = offset - doc.line_start_byte(line);
+        let link = self.link_table.at(line, column)?;
+        Some((line, link.start as usize..link.end as usize))
     }
 
     /// Whether a click at `offset` would follow a link (see `on_cursor_line`;

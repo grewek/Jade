@@ -342,6 +342,7 @@ pub(in crate::text_editor) fn render_editor(
                         table_drag: editor_entity.read(cx).table_drag,
                         column_hover: editor_entity.read(cx).column_hover,
                         column_drag: editor_entity.read(cx).column_drag.clone(),
+                        hover_link: editor_entity.read(cx).hover_link.clone(),
                         float_spots: editor_entity.read(cx).float_spots.clone(),
                     });
                     editor_entity.update(cx, |editor, cx| {

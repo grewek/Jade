@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::settings::Radius;
-use crate::text_editor::preview::DisplayLine;
+use crate::text_editor::preview::{DisplayLine, DisplaySegment};
 
 /// How chips look, once per frame: `None` of this when `inline_code.background`
 /// is off.
@@ -43,11 +43,13 @@ fn row_runs(chars: impl Iterator<Item = (Pixels, Pixels)>, advance: Pixels) -> V
     runs
 }
 
-/// The row runs of every inline code span of the (rendered) line.
-pub(super) fn code_runs(
+/// The row runs of every segment `pick` accepts (inline code for the chip, links
+/// for the underline) of the (rendered) line.
+pub(super) fn style_runs(
     (state, wrapped, display_line): (&LineState, &WrappedLine, &DisplayLine),
     line_height: Pixels,
     advance: Pixels,
+    pick: impl Fn(&DisplaySegment) -> bool,
 ) -> Vec<RowRun> {
     // GPUI puts the first character of a wrapped row at the end of the row
     // before it; its place is the start of its own row.
@@ -62,7 +64,7 @@ pub(super) fn code_runs(
     for seg in display_line
         .segments
         .iter()
-        .filter(|s| s.style == InlineStyle::Code && !s.display.is_empty())
+        .filter(|s| !s.display.is_empty() && pick(s))
     {
         let text = &display_line.display_text[seg.display.clone()];
         let last = seg.display.start + text.char_indices().next_back().map_or(0, |(i, _)| i);
@@ -96,7 +98,8 @@ pub(super) fn paint_code_chips(
     window: &mut Window,
 ) {
     let scale = shaped.2.font_scale();
-    for run in code_runs(shaped, entry.row, look.char_width * scale) {
+    let code = |s: &DisplaySegment| s.style == InlineStyle::Code;
+    for run in style_runs(shaped, entry.row, look.char_width * scale, code) {
         paint_chip(run, (shaped.1, entry, origin), look, scale, window);
     }
 }

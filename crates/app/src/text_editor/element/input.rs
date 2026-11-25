@@ -251,11 +251,22 @@ pub(super) fn register_mouse_handling(
                 let probe = !dialog
                     && bounds.contains(&event.position)
                     && editor_entity.read(cx).link_count() > 0;
-                let hovering = probe && {
+                let (hovering, over_link) = if probe {
                     let editor = editor_entity.read(cx);
                     let offset = offset_for_position(editor, &view, event.position, window);
-                    editor.follows_link_at(offset, event.modifiers.secondary())
+                    (
+                        editor.follows_link_at(offset, event.modifiers.secondary()),
+                        editor.link_span_at(offset),
+                    )
+                } else {
+                    (false, None)
                 };
+                if editor_entity.read(cx).hover_link != over_link {
+                    editor_entity.update(cx, |editor, cx| {
+                        editor.hover_link = over_link;
+                        cx.notify();
+                    });
+                }
                 if editor_entity.read(cx).hovering_link != hovering {
                     editor_entity.update(cx, |editor, cx| {
                         editor.hovering_link = hovering;

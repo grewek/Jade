@@ -12,6 +12,7 @@ mod code_box;
 mod code_chip;
 mod input;
 pub(super) mod justify;
+mod link_underline;
 mod paint;
 pub(in crate::text_editor) mod region;
 mod render;
@@ -471,6 +472,8 @@ pub(super) struct FrameView {
     /// The columns region whose controls show, and the divider being dragged.
     column_hover: Option<usize>,
     column_drag: Option<ColumnDrag>,
+    /// The link under the pointer, for `link.underline = "hover"`.
+    hover_link: Option<link_underline::HoverLink>,
     /// See `Editor::float_spots`.
     float_spots: Rc<RefCell<Vec<(usize, Vec<region::FloatSpot>)>>>,
 }
@@ -1840,6 +1843,7 @@ mod tests {
                 table_drag: None,
                 column_hover: None,
                 column_drag: None,
+                hover_link: None,
                 float_spots: Default::default(),
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;
@@ -2392,6 +2396,7 @@ mod tests {
                 table_drag: None,
                 column_hover: None,
                 column_drag: None,
+                hover_link: None,
                 float_spots: Default::default(),
             };
             let split = doc_cache.borrow().side_by_side(2).unwrap().1;

@@ -55,6 +55,18 @@ pub(super) fn paint_lines(
                 .language_label
                 .then(|| palette.color(Role::TextSubtle)),
         });
+    let underline_look = {
+        use crate::settings::Underline::Never;
+        let link = typography.link;
+        (link.underline != Never || link.wikilink_underline != Never).then(|| {
+            link_underline::UnderlineLook {
+                color: palette.color(Role::LinkUnderline),
+                links: link.underline,
+                wikilinks: link.wikilink_underline,
+                char_width: mono_char_width(font, font_size, text_color, window),
+            }
+        })
+    };
     let chip_look = typography
         .inline_code
         .background
@@ -196,6 +208,8 @@ pub(super) fn paint_lines(
         checkbox_radius: typography.task.checkbox_radius,
         image_radius: typography.radius_of(crate::settings::Boxed::Image),
         chip_look,
+        underline_look,
+        hover_link: view.hover_link.as_ref(),
         callout_shape,
     };
 
@@ -367,6 +381,9 @@ pub(super) struct PaintEnv<'a> {
     pub(super) image_radius: crate::settings::Radius,
     /// The chip behind inline code, when `inline_code.background` is on.
     pub(super) chip_look: Option<code_chip::ChipLook>,
+    /// How links are underlined, and the link under the pointer.
+    pub(super) underline_look: Option<link_underline::UnderlineLook>,
+    pub(super) hover_link: Option<&'a link_underline::HoverLink>,
     /// Corners and accent bar width of a callout's band.
     pub(super) callout_shape: (crate::settings::Radius, f32),
 }
@@ -421,6 +438,8 @@ pub(super) fn paint_line(
         checkbox_radius,
         image_radius,
         ref chip_look,
+        ref underline_look,
+        hover_link,
         ..
     } = *env;
     let selection = env.selection.clone();
@@ -656,6 +675,14 @@ pub(super) fn paint_line(
         }
     } else {
         let (wrapped, display_line) = &results[0];
+        if let Some(look) = underline_look {
+            link_underline::paint_link_underlines(
+                (state, wrapped, display_line),
+                (entry, line_origin),
+                (look, i, hover_link),
+                window,
+            );
+        }
         if let Some(look) = &chip_look {
             code_chip::paint_code_chips(
                 (state, wrapped, display_line),
