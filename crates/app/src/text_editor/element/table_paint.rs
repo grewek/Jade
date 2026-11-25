@@ -343,7 +343,7 @@ pub(super) fn paint_editing_cell(
             .max()
             .unwrap_or(1) as f32;
     let left = origin.x + columns.x(table::column_left(&columns.widths, column));
-    let width = columns.x(columns.widths[column] as f32 + 2.0 * table::CELL_PAD);
+    let width = columns.x(columns.widths[column] as f32 + 2.0 * table::cell_pad());
     window.paint_quad(quad(
         Bounds {
             origin: point(left, origin.y),

@@ -14,7 +14,7 @@ mod model;
 pub(super) mod ops;
 
 pub(super) use geometry::{
-    CELL_PAD, align_fraction, box_width, caret_at, cell_at, cell_ranges, column_left, edit_range,
+    align_fraction, box_width, caret_at, cell_at, cell_pad, cell_ranges, column_left, edit_range,
     layout_row_editing, layout_row_in, offset_at_editing, offset_in_line, text_left, x_in_line,
 };
 #[cfg(test)]
