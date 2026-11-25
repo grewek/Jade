@@ -606,6 +606,8 @@ mod heading_size_tests;
 mod heading_spike_tests;
 #[cfg(test)]
 mod height_agreement_tests;
+#[cfg(test)]
+mod task_toggle_tests;
 
 #[cfg(test)]
 mod tests {

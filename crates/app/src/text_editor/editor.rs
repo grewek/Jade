@@ -229,6 +229,18 @@ impl Editor {
             new_end_byte: mark + 1,
         };
         self.record_edit(edit, window, cx);
+        self.keep_view_off_caret();
+    }
+
+    /// Stops the first paint after a click from scrolling to the caret. The
+    /// view follows the caret once per caret position, and the first click on a
+    /// note not yet focused (a fold marker, a task checkbox) acts on text far
+    /// from a caret that is still at the top: that click must not send the view there.
+    fn keep_view_off_caret(&mut self) {
+        if self.last_autoscrolled_cursor.get().is_none() {
+            self.last_autoscrolled_cursor
+                .set(Some(self.buffer.cursor()));
+        }
     }
 
     /// Folds callout `index` if it is open, else opens it. Only the view: the
@@ -262,13 +274,7 @@ impl Editor {
             self.row_height_cache
                 .borrow_mut()
                 .invalidate(Invalidate::Lines(lines));
-            // The caret stays put, wherever it is: folding must not scroll back
-            // to it (a first click on a fold marker in a note not yet focused
-            // would send the view to a caret at the top).
-            if self.last_autoscrolled_cursor.get().is_none() {
-                self.last_autoscrolled_cursor
-                    .set(Some(self.buffer.cursor()));
-            }
+            self.keep_view_off_caret();
             cx.notify();
         }
     }
