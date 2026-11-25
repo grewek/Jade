@@ -14,6 +14,16 @@ pub(super) struct CodeBoxLook {
     pub radius: Radius,
     /// em of the body font, above and below the block (paint-only).
     pub padding: f32,
+    /// The colour of the language label, when `code_block.language_label` is on.
+    pub label: Option<Hsla>,
+}
+
+/// The language of an opening fence line (```` ```rust ````): the first word of its
+/// info string, `None` when there is none.
+pub(super) fn fence_language(line: &str) -> Option<&str> {
+    let rest = line.trim_start().trim_start_matches(['`', '~']);
+    // A backtick fence's info string has no backticks; the line is not a fence otherwise.
+    rest.split_whitespace().next().filter(|w| !w.contains('`'))
 }
 
 /// The lines of the code block around line `i` (which has a fence role):
@@ -45,10 +55,9 @@ pub(super) fn block_lines(
 /// Paints the box of every code block in `range` (the visible lines).
 pub(super) fn paint_code_boxes(
     range: &Range<usize>,
-    view: &FrameView,
-    doc: &DocumentCache,
+    (view, doc, text): (&FrameView, &DocumentCache, &str),
     look: &CodeBoxLook,
-    window: &mut Window,
+    (window, cx): (&mut Window, &mut App),
 ) {
     let roles = doc.line_roles();
     let (layout, bounds) = (&view.layout, view.bounds);
@@ -84,13 +93,56 @@ pub(super) fn paint_code_boxes(
             size: size(bounds.size.width, bottom - top + 2. * pad),
         };
         paint_box(area, look.radius, look.fill, look.border, window);
+        if let Some(color) = look.label {
+            paint_label(
+                (view, doc, text),
+                (block.start, top, area.right()),
+                color,
+                (window, cx),
+            );
+        }
     }
 }
+
+/// The block's language, small, in the top-right corner of its first row. Not
+/// drawn while the opening fence is shown raw (the caret is on it) or has none.
+fn paint_label(
+    (view, doc, text): (&FrameView, &DocumentCache, &str),
+    (line, top, right): (usize, Pixels, Pixels),
+    color: Hsla,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let raw = &text[doc.line_start_byte(line)..doc.line_end_byte(line)];
+    let on_it = view.focused
+        && (doc.line_start_byte(line)..=doc.line_end_byte(line)).contains(&view.cursor);
+    let Some(name) = fence_language(raw).filter(|_| !on_it) else {
+        return;
+    };
+    let size = view.font_size * LABEL_SCALE;
+    let run = TextRun {
+        len: name.len(),
+        font: view.font.clone(),
+        color,
+        background_color: None,
+        underline: None,
+        strikethrough: None,
+    };
+    let shaped = window
+        .text_system()
+        .shape_line(name.to_string().into(), size, &[run], None);
+    let at = point(right - shaped.width - LABEL_INSET, top);
+    let _ = shaped.paint(at, view.line_height, TextAlign::Left, None, window, cx);
+}
+
+/// The label is this much of the body size.
+const LABEL_SCALE: f32 = 0.75;
+/// Distance of the label from the box's right edge.
+const LABEL_INSET: Pixels = px(10.);
 
 #[cfg(test)]
 mod tests {
     // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
-    use super::{LineRole, block_lines};
+    use super::{LineRole, block_lines, fence_language};
     use crate::text_editor::preview::fence::classify_lines;
 
     fn blocks(text: &str) -> Vec<(usize, std::ops::Range<usize>)> {
@@ -132,6 +184,14 @@ mod tests {
                 .filter(|(i, _)| *i >= 3)
                 .all(|(_, r)| *r == (3..6))
         );
+    }
+
+    #[test]
+    fn the_language_is_the_first_word_of_the_info_string() {
+        assert_eq!(fence_language("```rust"), Some("rust"));
+        assert_eq!(fence_language("  ~~~ python  title=x"), Some("python"));
+        assert_eq!(fence_language("```"), None);
+        assert_eq!(fence_language("````"), None);
     }
 
     #[test]

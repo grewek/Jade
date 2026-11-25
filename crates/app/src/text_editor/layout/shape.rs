@@ -359,6 +359,7 @@ fn font_for_style(style: InlineStyle, base: &Font) -> Font {
         | InlineStyle::Link
         | InlineStyle::ListMarker
         | InlineStyle::CodeFence
+        | InlineStyle::CodeBlock
         | InlineStyle::Widget(_)
         | InlineStyle::Math => {}
     }
@@ -392,6 +393,7 @@ fn color_for_style(style: InlineStyle, colors: &InlineColors, callout: Option<&C
             }
         }
         InlineStyle::Plain
+        | InlineStyle::CodeBlock
         | InlineStyle::Bold
         | InlineStyle::Italic
         | InlineStyle::Strikethrough
@@ -516,7 +518,7 @@ pub(in crate::text_editor) fn build_display_lines(
         LineRole::Plain if let MathPart::Head(rows) = state.math => vec![hidden_line(line); rows],
         // A block is `rows` stacked empty rows; `paint_lines` draws the box over them.
         LineRole::Plain if let Some(rows) = block_rows => vec![hidden_line(line); rows],
-        LineRole::FenceContent => vec![build_display_line(line, true)],
+        LineRole::FenceContent => vec![fence_content_line(line)],
         LineRole::FenceDelimiter if !active => vec![hidden_line(line)],
         LineRole::FenceDelimiter => vec![raw_fence_line(line, active)],
         LineRole::Plain if table_active && !matches!(table_kind, TableLineKind::None) => {
@@ -765,6 +767,17 @@ fn code_indent() -> LineIndent {
     } else {
         LineIndent::None
     }
+}
+
+/// A line inside a fence: literal text, styled as code-block text.
+fn fence_content_line(line: &str) -> DisplayLine {
+    let mut content = build_display_line(line, true);
+    for seg in &mut content.segments {
+        if seg.style == InlineStyle::Plain {
+            seg.style = InlineStyle::CodeBlock;
+        }
+    }
+    content
 }
 
 /// An opening or closing fence line shown raw (the caret is on it), in the fence colour.
