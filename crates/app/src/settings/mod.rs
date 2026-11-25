@@ -39,6 +39,9 @@ static MATH_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static CELL_PADDING: AtomicU32 = AtomicU32::new(0.0f32.to_bits());
 static DONE_STYLE: std::sync::atomic::AtomicU8 =
     std::sync::atomic::AtomicU8::new(DoneStyle::None as u8);
+static QUOTE_INDENT: AtomicU32 = AtomicU32::new(1.25f32.to_bits());
+static QUOTE_BAR: AtomicU32 = AtomicU32::new(2.0f32.to_bits());
+static QUOTE_ITALIC: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 static CODE_SCALE: AtomicU32 = AtomicU32::new(1.0f32.to_bits());
 static CODE_INSET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static HEADING_SCALE: [AtomicU32; HEADING_LEVELS] =
@@ -108,6 +111,21 @@ pub fn done_style() -> DoneStyle {
     }
 }
 
+/// `blockquote.indent` in px: one quote level, em of the body font.
+pub fn quote_indent_px() -> f32 {
+    f32::from_bits(QUOTE_INDENT.load(Ordering::Relaxed)) * body_font_size()
+}
+
+/// `blockquote.bar_width` in px.
+pub fn quote_bar_width() -> f32 {
+    f32::from_bits(QUOTE_BAR.load(Ordering::Relaxed))
+}
+
+/// `blockquote.italic`.
+pub fn quote_italic() -> bool {
+    QUOTE_ITALIC.load(Ordering::Relaxed)
+}
+
 /// `code_block.font_scale`: the size of fenced code relative to the body.
 pub fn code_font_scale() -> f32 {
     f32::from_bits(CODE_SCALE.load(Ordering::Relaxed))
@@ -133,6 +151,9 @@ pub fn set_body(typography: &Typography) {
     MATH_SCALE.store(typography.font.math_scale.to_bits(), Ordering::Relaxed);
     CELL_PADDING.store(typography.table.cell_padding.to_bits(), Ordering::Relaxed);
     DONE_STYLE.store(typography.task.done_style as u8, Ordering::Relaxed);
+    QUOTE_INDENT.store(typography.blockquote.indent.to_bits(), Ordering::Relaxed);
+    QUOTE_BAR.store(typography.blockquote.bar_width.to_bits(), Ordering::Relaxed);
+    QUOTE_ITALIC.store(typography.blockquote.italic, Ordering::Relaxed);
     CODE_SCALE.store(
         typography.code_block.font_scale.to_bits(),
         Ordering::Relaxed,

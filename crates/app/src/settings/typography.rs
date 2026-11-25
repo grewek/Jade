@@ -308,6 +308,7 @@ impl Typography {
         self.image.radius = other.image.radius;
         self.link = other.link;
         self.blockquote.italic = other.blockquote.italic;
+        self.blockquote.bar_width = other.blockquote.bar_width;
         self.list.bullet_shapes = other.list.bullet_shapes;
         self.task = other.task;
     }
@@ -369,16 +370,19 @@ mod tests {
         paint.shape.radius = Radius::Full;
         paint.heading.weight = [400; HEADING_LEVELS];
         paint.link.underline = Underline::Always;
+        paint.blockquote.bar_width = 5.0;
+        paint.blockquote.italic = false;
         paint.task.done_style = DoneStyle::Both;
         paint.table.zebra = true;
         assert!(!base.layout_differs(&paint));
-        let edits: [fn(&mut Typography); 8] = [
+        let edits: [fn(&mut Typography); 9] = [
             |t| t.font.size = 18.0,
             |t| t.heading.scale[2] = 1.5,
             |t| t.heading.space_above[0] = 1.0,
             |t| t.table.cell_padding = 0.5,
             |t| t.code_block.background = true,
             |t| t.code_block.font_scale = 0.8,
+            |t| t.blockquote.indent = 2.0,
             |t| t.list.indent = 2.0,
             |t| t.spacing.block_gap = 2.0,
         ];

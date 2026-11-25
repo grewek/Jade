@@ -62,7 +62,6 @@ pub(super) use widgets::*;
 /// The left inset, within an indent level's own lane, that a blockquote's
 /// quote bar is painted at — see `paint_lines`.
 const QUOTE_BAR_INSET: Pixels = px(4.);
-const QUOTE_BAR_WIDTH: Pixels = px(2.);
 
 /// The thickness of a table's grid lines — see `paint_table_grid_lines`.
 const TABLE_LINE_WIDTH: Pixels = px(1.);
@@ -281,7 +280,7 @@ pub(super) fn caret_rect(
                 )
                 .unwrap_or(point(px(0.), px(0.)));
                 let (pos, caret_height) = entry.place(pos);
-                let x = pos.x + indent_px(display_line.indent.level());
+                let x = pos.x + indent_px(display_line.indent);
                 return Some(Bounds {
                     origin: point(bounds.origin.x + x, anchor + y_offset + pos.y),
                     size: size(px(1.), caret_height),

@@ -987,7 +987,7 @@ pub(super) fn caret_bounds(
             continue;
         };
         let (pos, caret_height) = entry.place(pos);
-        let x = pos.x + indent_px(display.indent.level());
+        let x = pos.x + indent_px(display.indent);
         let origin = bounds.origin + point(sl.x + x, region_top + sl.y + pos.y);
         return Some(Bounds {
             origin,

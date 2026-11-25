@@ -1,3 +1,4 @@
+use crate::text_editor::preview::LineIndent;
 use std::ops::Range;
 
 use gpui_kit::*;
@@ -211,11 +212,13 @@ pub(in crate::text_editor) fn is_table_active(
 /// math always agree.
 const INDENT_UNIT: Pixels = px(20.);
 
-/// The pixel x-offset `level` structural indent levels shifts a line's
-/// content by — `level` is [`LineIndent::level`], `0` for a line with no
-/// indent.
-pub(in crate::text_editor) fn indent_px(level: u8) -> Pixels {
-    INDENT_UNIT * level as f32
+/// The pixel x-offset `indent` shifts a line's content by: a quote level is
+/// `blockquote.indent` em, any other level a fixed unit.
+pub(in crate::text_editor) fn indent_px(indent: LineIndent) -> Pixels {
+    match indent {
+        LineIndent::Blockquote(depth) => px(crate::settings::quote_indent_px()) * f32::from(depth),
+        other => INDENT_UNIT * f32::from(other.level()),
+    }
 }
 
 /// Whether the line spanning `line_range` should render raw/unstyled rather
@@ -258,5 +261,32 @@ fn math_part(doc: &DocumentCache, i: usize, cursor: usize, focused: bool) -> Mat
             None => MathPart::None,
         },
         None => MathPart::None,
+    }
+}
+
+#[cfg(test)]
+mod indent_tests {
+    // Not `super::*`: its `gpui_kit::*` glob brings a `test` macro that shadows `#[test]`.
+    use super::indent_px;
+    use crate::settings::{self, Typography};
+    use crate::text_editor::preview::LineIndent;
+    use gpui_kit::px;
+
+    #[test]
+    fn a_quote_level_follows_the_config_and_other_levels_stay_a_unit() {
+        let mut t = Typography::default();
+        settings::set_body(&t);
+        assert_eq!(
+            indent_px(LineIndent::Blockquote(2)),
+            px(40.),
+            "today's look"
+        );
+        assert_eq!(indent_px(LineIndent::List(1)), px(20.));
+        assert_eq!(indent_px(LineIndent::None), px(0.));
+        t.blockquote.indent = 2.0;
+        settings::set_body(&t);
+        assert_eq!(indent_px(LineIndent::Blockquote(2)), px(64.));
+        assert_eq!(indent_px(LineIndent::List(1)), px(20.), "lists are G2's");
+        settings::set_body(&Typography::default());
     }
 }
