@@ -71,9 +71,26 @@ impl Highlighter {
         }
     }
 
+    /// Whether some definition knows the fence word `language`.
+    pub fn knows(&self, language: &str) -> bool {
+        self.set.find_syntax_by_token(language).is_some()
+    }
+
     /// The spans of `text` as `language` (a fence word: a name or extension a
     /// definition lists, any case); `None` when no definition knows it.
     pub fn highlight(&self, language: &str, text: &str) -> Option<Highlighted> {
+        self.highlight_until(language, text, &|| false)
+    }
+
+    /// [`Highlighter::highlight`] that gives up (`None`) as soon as `cancelled`
+    /// says so, checked before every line: a block that was edited or scrolled
+    /// away while it was being parsed need not be finished.
+    pub fn highlight_until(
+        &self,
+        language: &str,
+        text: &str,
+        cancelled: &dyn Fn() -> bool,
+    ) -> Option<Highlighted> {
         let syntax = self.set.find_syntax_by_token(language)?;
         let mut state = ParseState::new(syntax);
         let mut stack = ScopeStack::new();
@@ -81,6 +98,9 @@ impl Highlighter {
         let mut out = Highlighted::default();
         let mut line = String::new();
         for (index, text_line) in text.split_inclusive('\n').enumerate() {
+            if cancelled() {
+                return None;
+            }
             let body = text_line.strip_suffix('\n').unwrap_or(text_line);
             if out.stopped_at.is_some() {
                 out.lines.push(Vec::new());
@@ -298,6 +318,21 @@ contexts:
         assert_eq!(got.lines.len(), 3);
         assert_eq!(got.lines[0], [span(0..3, Role::SyntaxKeyword)]);
         assert!(got.lines[1].is_empty() && got.lines[2].is_empty());
+    }
+
+    #[test]
+    fn a_cancelled_parse_stops_and_a_known_word_is_known() {
+        let (_dir, h) = tiny();
+        assert!(h.knows("tiny") && h.knows("TINY") && !h.knows("nope"));
+        let polled = std::cell::Cell::new(0);
+        // Cancelled on the third line: nothing is returned, and it stopped there.
+        let got = h.highlight_until("tiny", "let\nlet\nlet\nlet\n", &|| {
+            polled.set(polled.get() + 1);
+            polled.get() > 2
+        });
+        assert!(got.is_none());
+        assert_eq!(polled.get(), 3);
+        assert!(h.highlight_until("tiny", "let\n", &|| false).is_some());
     }
 
     #[test]

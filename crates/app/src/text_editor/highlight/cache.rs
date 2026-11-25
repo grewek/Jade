@@ -38,8 +38,8 @@ impl Default for Limits {
 
 /// A 64-bit hash plus the length: a collision would need both to agree, and
 /// would only colour a block wrongly.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
-struct Key {
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(in crate::text_editor) struct Key {
     hash: u64,
     len: usize,
 }
@@ -50,8 +50,16 @@ struct Entry {
     used: u64,
 }
 
+/// What the cache knows about a block.
+pub(in crate::text_editor) enum Lookup {
+    /// Never coloured: an unknown language or a block over the limits.
+    Plain,
+    Hit(Arc<Highlighted>),
+    /// Not highlighted yet; the key to [`BlockCache::insert`] the spans under.
+    Miss(Key),
+}
+
 pub(in crate::text_editor) struct BlockCache {
-    highlighter: Highlighter,
     limits: Limits,
     entries: HashMap<Key, Entry>,
     bytes: usize,
@@ -59,10 +67,9 @@ pub(in crate::text_editor) struct BlockCache {
 }
 
 impl BlockCache {
-    pub fn new(highlighter: Highlighter, limits: Limits) -> Self {
+    pub fn new(limits: Limits) -> Self {
         assert!(limits.entries > 0 && limits.block_bytes > 0);
         Self {
-            highlighter,
             limits,
             entries: HashMap::with_capacity(limits.entries),
             bytes: 0,
@@ -70,22 +77,43 @@ impl BlockCache {
         }
     }
 
-    /// The spans of the block `text` as `language`, highlighted now if they
-    /// are not kept. `None` is plain: no definition knows the language, or the
-    /// block is over the limits.
-    pub fn spans(&mut self, language: &str, text: &str) -> Option<Arc<Highlighted>> {
-        if text.len() > self.limits.block_bytes || line_count(text) > self.limits.block_lines {
-            return None;
+    /// What is kept for the block `text` as `language`; the cost of a hit is
+    /// the key hash.
+    pub fn lookup(&mut self, highlighter: &Highlighter, language: &str, text: &str) -> Lookup {
+        if text.len() > self.limits.block_bytes
+            || line_count(text) > self.limits.block_lines
+            || !highlighter.knows(language)
+        {
+            return Lookup::Plain;
         }
         let key = key_of(language, text);
         self.tick += 1;
-        if let Some(entry) = self.entries.get_mut(&key) {
-            entry.used = self.tick;
-            return Some(Arc::clone(&entry.spans));
+        match self.entries.get_mut(&key) {
+            Some(entry) => {
+                entry.used = self.tick;
+                Lookup::Hit(Arc::clone(&entry.spans))
+            }
+            None => Lookup::Miss(key),
         }
-        let spans = Arc::new(self.highlighter.highlight(language, text)?);
-        self.insert(key, &spans);
-        Some(spans)
+    }
+
+    /// The spans of the block, highlighted now if they are not kept: the
+    /// synchronous form, for tests and benches (the editor parses elsewhere).
+    pub fn spans(
+        &mut self,
+        highlighter: &Highlighter,
+        language: &str,
+        text: &str,
+    ) -> Option<Arc<Highlighted>> {
+        match self.lookup(highlighter, language, text) {
+            Lookup::Plain => None,
+            Lookup::Hit(spans) => Some(spans),
+            Lookup::Miss(key) => {
+                let spans = Arc::new(highlighter.highlight(language, text)?);
+                self.insert(key, &spans);
+                Some(spans)
+            }
+        }
     }
 
     /// How many blocks are kept.
@@ -93,7 +121,8 @@ impl BlockCache {
         self.entries.len()
     }
 
-    fn insert(&mut self, key: Key, spans: &Arc<Highlighted>) {
+    /// Keeps `spans` for the block `key` stands for.
+    pub fn insert(&mut self, key: Key, spans: &Arc<Highlighted>) {
         let size = estimate(spans);
         // One block larger than the whole budget is not kept.
         if size > self.limits.bytes {
@@ -166,45 +195,48 @@ mod tests {
     const TINY: &str = "%YAML 1.2\n---\nname: Tiny\nfile_extensions: [tiny]\nscope: source.tiny\n\
         contexts:\n  main:\n    - match: '\\b(?:let|fn)\\b'\n      scope: keyword.control.tiny\n";
 
-    fn cache(limits: Limits) -> (tempfile::TempDir, BlockCache) {
+    fn cache(limits: Limits) -> (tempfile::TempDir, Highlighter, BlockCache) {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Tiny.sublime-syntax"), TINY).unwrap();
         let loaded = Highlighter::load_dir(dir.path());
         assert!(loaded.notices.is_empty(), "{:?}", loaded.notices);
-        (dir, BlockCache::new(loaded.highlighter, limits))
+        (dir, loaded.highlighter, BlockCache::new(limits))
     }
 
     #[test]
     fn the_same_block_is_highlighted_once() {
-        let (_dir, mut c) = cache(Limits::default());
-        let a = c.spans("tiny", "let x\n").unwrap();
-        let b = c.spans("tiny", "let x\n").unwrap();
+        let (_dir, h, mut c) = cache(Limits::default());
+        let a = c.spans(&h, "tiny", "let x\n").unwrap();
+        let b = c.spans(&h, "tiny", "let x\n").unwrap();
         assert!(Arc::ptr_eq(&a, &b));
         assert_eq!(c.len(), 1);
     }
 
     #[test]
     fn an_edit_changes_only_its_own_block() {
-        let (_dir, mut c) = cache(Limits::default());
-        let first = c.spans("tiny", "let a\n").unwrap();
-        let second = c.spans("tiny", "fn b\n").unwrap();
-        let edited = c.spans("tiny", "let a2\n").unwrap();
+        let (_dir, h, mut c) = cache(Limits::default());
+        let first = c.spans(&h, "tiny", "let a\n").unwrap();
+        let second = c.spans(&h, "tiny", "fn b\n").unwrap();
+        let edited = c.spans(&h, "tiny", "let a2\n").unwrap();
         assert!(!Arc::ptr_eq(&first, &edited));
-        assert!(Arc::ptr_eq(&second, &c.spans("tiny", "fn b\n").unwrap()));
+        assert!(Arc::ptr_eq(
+            &second,
+            &c.spans(&h, "tiny", "fn b\n").unwrap()
+        ));
     }
 
     #[test]
     fn the_language_is_part_of_the_key() {
-        let (_dir, mut c) = cache(Limits::default());
-        let a = c.spans("tiny", "let a\n").unwrap();
-        let b = c.spans("TINY", "let a\n").unwrap();
+        let (_dir, h, mut c) = cache(Limits::default());
+        let a = c.spans(&h, "tiny", "let a\n").unwrap();
+        let b = c.spans(&h, "TINY", "let a\n").unwrap();
         assert!(!Arc::ptr_eq(&a, &b));
     }
 
     #[test]
     fn an_unknown_language_is_plain_and_not_kept() {
-        let (_dir, mut c) = cache(Limits::default());
-        assert!(c.spans("nope", "let a\n").is_none());
+        let (_dir, h, mut c) = cache(Limits::default());
+        assert!(c.spans(&h, "nope", "let a\n").is_none());
         assert_eq!(c.len(), 0);
     }
 
@@ -215,14 +247,20 @@ mod tests {
             block_bytes: 12,
             ..Limits::default()
         };
-        let (_dir, mut c) = cache(limits);
-        assert!(c.spans("tiny", "let\nlet\nlet\n").is_some());
-        assert!(c.spans("tiny", "let\nlet\nlet\nlet\n").is_none(), "4 lines");
+        let (_dir, h, mut c) = cache(limits);
+        assert!(c.spans(&h, "tiny", "let\nlet\nlet\n").is_some());
         assert!(
-            c.spans("tiny", "let\nlet\nlet").is_some(),
+            c.spans(&h, "tiny", "let\nlet\nlet\nlet\n").is_none(),
+            "4 lines"
+        );
+        assert!(
+            c.spans(&h, "tiny", "let\nlet\nlet").is_some(),
             "no trailing newline"
         );
-        assert!(c.spans("tiny", "let aaaaaaaaaa\n").is_none(), "15 bytes");
+        assert!(
+            c.spans(&h, "tiny", "let aaaaaaaaaa\n").is_none(),
+            "15 bytes"
+        );
     }
 
     #[test]
@@ -231,13 +269,13 @@ mod tests {
             entries: 2,
             ..Limits::default()
         };
-        let (_dir, mut c) = cache(limits);
-        let a = c.spans("tiny", "let a\n").unwrap();
-        c.spans("tiny", "let b\n").unwrap();
-        c.spans("tiny", "let a\n").unwrap(); // a is now newer than b
-        c.spans("tiny", "let c\n").unwrap(); // evicts b
+        let (_dir, h, mut c) = cache(limits);
+        let a = c.spans(&h, "tiny", "let a\n").unwrap();
+        c.spans(&h, "tiny", "let b\n").unwrap();
+        c.spans(&h, "tiny", "let a\n").unwrap(); // a is now newer than b
+        c.spans(&h, "tiny", "let c\n").unwrap(); // evicts b
         assert_eq!(c.len(), 2);
-        assert!(Arc::ptr_eq(&a, &c.spans("tiny", "let a\n").unwrap()));
+        assert!(Arc::ptr_eq(&a, &c.spans(&h, "tiny", "let a\n").unwrap()));
     }
 
     #[test]
@@ -246,9 +284,9 @@ mod tests {
             bytes: 600,
             ..Limits::default()
         };
-        let (_dir, mut c) = cache(limits);
+        let (_dir, h, mut c) = cache(limits);
         for i in 0..20 {
-            c.spans("tiny", &format!("let a{i}\n")).unwrap();
+            c.spans(&h, "tiny", &format!("let a{i}\n")).unwrap();
         }
         assert!(c.bytes <= 600 && c.len() < 20, "{} kept", c.len());
         let total: usize = c.entries.values().map(|e| e.size).sum();

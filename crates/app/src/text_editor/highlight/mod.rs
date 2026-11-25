@@ -8,10 +8,10 @@ mod syntax;
 
 // Unused in the test build until the block cache (step 9) consumes them.
 #[cfg_attr(test, allow(unused_imports))]
-pub(super) use cache::{BlockCache, Limits};
+pub(super) use cache::{BlockCache, Key, Limits, Lookup};
 #[cfg_attr(test, allow(unused_imports))]
 pub(super) use scope::{role_for_scope, role_for_stack};
 #[cfg_attr(test, allow(unused_imports))]
-pub(super) use store::Syntaxes;
+pub(super) use store::{Cancel, Syntaxes};
 #[cfg_attr(test, allow(unused_imports))]
 pub(super) use syntax::{Highlighted, Highlighter, Loaded, Span};
