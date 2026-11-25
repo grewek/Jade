@@ -190,6 +190,18 @@ mod tests {
     }
 
     #[test]
+    fn a_syntax_role_can_be_recolored() {
+        let (o, notices) =
+            parse("[colors]\nsyntax_string = \"#00ff00\"\nsyntax_comment = \"text_muted\"\n");
+        assert!(notices.is_empty(), "{notices:?}");
+        assert!(o.set[Role::SyntaxString.index()].is_some());
+        assert_eq!(
+            o.set[Role::SyntaxComment.index()],
+            Some(Override::Alias(Role::TextMuted))
+        );
+    }
+
+    #[test]
     fn a_bad_entry_is_skipped_and_the_rest_applies() {
         let (o, notices) = parse(
             "[colors]\nheading = \"red\"\nheading_1 = \"#12345\"\nnot_a_role = \"#ffffff\"\n\

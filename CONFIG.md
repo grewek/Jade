@@ -104,7 +104,7 @@ checked item; `task.checkbox_radius` (px or `"full"`, default 3);
 when the theme changes: `heading_1 = "#c0392b"`, `code_background = "#10203040"`,
 `quote_bar = "accent"`. A value is `#rrggbb`, `#rrggbbaa` or another role's name.
 The roles (including `heading`, `heading_1`..`heading_6`, `code_background`,
-`quote_bar`, `link_underline`) are listed in `crates/app/assets/themes/FORMAT.md`.
+`quote_bar`, `link_underline`, and the ten `syntax_*` roles for highlighted code once that lands, #99) are listed in `crates/app/assets/themes/FORMAT.md`.
 
 ## Settings dialog
 

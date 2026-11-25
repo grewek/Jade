@@ -65,6 +65,17 @@ named_enum!(Role {
     LinkUnderline => "link_underline",
     CodeBackground => "code_background",
     Highlight => "highlight",
+    // Syntax highlighting of fenced code (#99); each follows `text`.
+    SyntaxComment => "syntax_comment",
+    SyntaxString => "syntax_string",
+    SyntaxNumber => "syntax_number",
+    SyntaxKeyword => "syntax_keyword",
+    SyntaxFunction => "syntax_function",
+    SyntaxType => "syntax_type",
+    SyntaxConstant => "syntax_constant",
+    SyntaxOperator => "syntax_operator",
+    SyntaxPunctuation => "syntax_punctuation",
+    SyntaxVariable => "syntax_variable",
 });
 
 impl Role {
@@ -83,8 +94,27 @@ impl Role {
             Role::QuoteBar => Some(Role::BorderStrong),
             Role::LinkUnderline => Some(Role::Link),
             Role::CodeBackground => Some(Role::Surface),
+            role if role.is_syntax() => Some(Role::Text),
             _ => None,
         }
+    }
+
+    /// The roles that color the tokens of highlighted code.
+    pub const SYNTAX: [Role; 10] = [
+        Role::SyntaxComment,
+        Role::SyntaxString,
+        Role::SyntaxNumber,
+        Role::SyntaxKeyword,
+        Role::SyntaxFunction,
+        Role::SyntaxType,
+        Role::SyntaxConstant,
+        Role::SyntaxOperator,
+        Role::SyntaxPunctuation,
+        Role::SyntaxVariable,
+    ];
+
+    pub fn is_syntax(self) -> bool {
+        Self::SYNTAX.contains(&self)
     }
 
     /// `heading_1`..`heading_6` for level 1..=6 (anything else is clamped).
