@@ -22,7 +22,8 @@ mod tests;
 
 pub use ast::*;
 pub use cache::{
-    MATH_SCALE, Rendered, block_rows, rendered, rendered_span, rows_to_fit, scale, span_body,
+    MATH_SCALE, MONO_ADVANCE_EM, Rendered, block_rows, rendered, rendered_span, rows_to_fit, scale,
+    span_body,
 };
 pub use font::MathFont;
 pub use layout::{Item, Layout, layout};

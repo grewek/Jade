@@ -11,21 +11,26 @@ use super::super::math::{Macros, NO_MACROS};
 use super::super::preview::{build_cell_line_with, cell_formulas, raw_cell_line};
 use super::model::{Align, Chunk, LINE_BREAK, chunks, for_each_cell_range, shown_len};
 
-/// Space on each side of a cell's text, in characters. The grid is laid out in
-/// characters (the font is monospace); `element.rs` multiplies by the advance.
-pub(in crate::text_editor) const CELL_PAD: f32 = 1.5;
+/// Space on each side of a cell's text with no `table.cell_padding`, in
+/// characters. The grid is laid out in characters (the font is monospace);
+/// `element.rs` multiplies by the advance.
+const BASE_CELL_PAD: f32 = 1.5;
+
+/// Space on each side of a cell's text, in characters: the base plus
+/// `table.cell_padding` (em, as characters of the mono advance).
+pub(in crate::text_editor) fn cell_pad() -> f32 {
+    BASE_CELL_PAD + crate::settings::cell_padding() / crate::text_editor::math::MONO_ADVANCE_EM
+}
 
 /// Where `column`'s box starts, in characters from the table's left edge.
 pub(in crate::text_editor) fn column_left(widths: &[usize], column: usize) -> f32 {
-    widths[..column]
-        .iter()
-        .map(|&w| w as f32 + 2.0 * CELL_PAD)
-        .sum()
+    let pad = cell_pad();
+    widths[..column].iter().map(|&w| w as f32 + 2.0 * pad).sum()
 }
 
 /// Where `column`'s text starts, in characters from the table's left edge.
 pub(in crate::text_editor) fn text_left(widths: &[usize], column: usize) -> f32 {
-    column_left(widths, column) + CELL_PAD
+    column_left(widths, column) + cell_pad()
 }
 
 /// The table's width in characters, borders included.
@@ -548,6 +553,23 @@ mod tests {
         assert_eq!(column_at(&widths, 8.0), 1);
         assert_eq!(column_at(&widths, 50.0), 1);
         assert_eq!(column_at(&widths, -4.0), 0);
+    }
+
+    /// `table.cell_padding` (em) adds characters of the mono advance on each
+    /// side, and a click on a cell's text still finds that cell.
+    #[test]
+    fn cell_padding_widens_the_columns_and_clicks_still_land() {
+        let mut t = crate::settings::Typography::default();
+        t.table.cell_padding = 0.6; // one character each side
+        crate::settings::set_body(&t);
+        let widths = [5, 3];
+        let (pad, left1, total) = (cell_pad(), column_left(&widths, 1), box_width(&widths));
+        let hit = [0, 1].map(|c| column_at(&widths, text_left(&widths, c) + 0.1));
+        crate::settings::set_body(&crate::settings::Typography::default());
+        assert!((pad - 2.5).abs() < 1e-5, "{pad}");
+        assert!((left1 - 10.0).abs() < 1e-4 && (total - 18.0).abs() < 1e-4);
+        assert_eq!(hit, [0, 1]);
+        assert_eq!(cell_pad(), 1.5, "defaults are back");
     }
 
     /// Same lines, same count as the string-building wrap and the counting one,

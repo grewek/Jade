@@ -639,13 +639,20 @@ pub fn classify_tables(source: &str) -> (Vec<Option<usize>>, Vec<Table>) {
 /// that a many-column table doesn't collapse every column to nothing.
 pub const MIN_COLUMN_WIDTH: usize = 3;
 
+/// The characters `columns` columns spend on gaps: `3 * columns + 1`, plus the
+/// space `table.cell_padding` adds on both sides of every cell.
+fn border_overhead(columns: usize) -> usize {
+    let extra = 2.0 * crate::settings::cell_padding() / super::super::math::MONO_ADVANCE_EM;
+    3 * columns + 1 + (extra * columns as f32).ceil() as usize
+}
+
 /// Whether `columns` keep their natural widths within `max_total_chars`
 /// (or there is no cap). Then every cell fits its column, so no row wraps.
 pub fn fits_unshrunk(columns: &[Column], max_total_chars: impl Into<Option<usize>>) -> bool {
     let Some(max) = max_total_chars.into() else {
         return true;
     };
-    let content_budget = max.saturating_sub(3 * columns.len() + 1);
+    let content_budget = max.saturating_sub(border_overhead(columns.len()));
     columns.iter().map(|c| c.width).sum::<usize>() <= content_budget
 }
 
@@ -664,7 +671,7 @@ pub fn cap_column_widths(columns: &[Column], max_total_chars: usize) -> Vec<usiz
     if columns.is_empty() || fits_unshrunk(columns, max_total_chars) {
         return natural;
     }
-    let content_budget = max_total_chars.saturating_sub(3 * columns.len() + 1);
+    let content_budget = max_total_chars.saturating_sub(border_overhead(columns.len()));
 
     let floor_total = MIN_COLUMN_WIDTH * columns.len();
     if content_budget <= floor_total {
@@ -950,6 +957,22 @@ mod tests {
             vec![Some(0), Some(0), Some(0), None, Some(1), Some(1), Some(1)]
         );
         assert_eq!(tables.len(), 2);
+    }
+
+    /// Padding takes characters of the budget, so a table that just fit no longer does.
+    #[test]
+    fn cell_padding_costs_budget() {
+        let columns = [col(10), col(10)];
+        // 7 characters of gaps and 20 of text.
+        assert!(fits_unshrunk(&columns, 27));
+        let mut t = crate::settings::Typography::default();
+        t.table.cell_padding = 0.6;
+        crate::settings::set_body(&t);
+        let (still, wider) = (fits_unshrunk(&columns, 27), fits_unshrunk(&columns, 31));
+        let shrunk = resolve_widths(&columns, Some(27));
+        crate::settings::set_body(&crate::settings::Typography::default());
+        assert!(!still && wider, "4 more characters of gaps");
+        assert!(shrunk.iter().sum::<usize>() <= 16, "{shrunk:?}");
     }
 
     fn col(width: usize) -> Column {
