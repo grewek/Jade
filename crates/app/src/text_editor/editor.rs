@@ -9,6 +9,8 @@ use gpui_kit::*;
 mod code_spans;
 mod column_edit;
 pub(super) use column_edit::ColumnMenu;
+#[cfg(test)]
+pub(super) use column_edit::is_hidden_line;
 mod table_edit;
 
 use super::EditorBuffer;

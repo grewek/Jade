@@ -605,8 +605,6 @@ mod math_rows_tests;
 #[cfg(test)]
 mod anchoring_tests;
 #[cfg(test)]
-mod bare_column_tests;
-#[cfg(test)]
 mod code_chip_tests;
 #[cfg(test)]
 mod formula_context_tests;
@@ -616,6 +614,10 @@ mod heading_size_tests;
 mod heading_spike_tests;
 #[cfg(test)]
 mod height_agreement_tests;
+#[cfg(test)]
+mod region_edge_tests;
+#[cfg(test)]
+mod region_fuzz_tests;
 #[cfg(test)]
 mod task_toggle_tests;
 

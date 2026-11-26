@@ -44,6 +44,12 @@ pub(in crate::text_editor) fn is_hidden_line(doc: &DocumentCache, line: usize) -
         .is_some_and(|(region, _)| region.column_of(line).is_none())
 }
 
+/// Whether `line` is a marker of a region laid out side by side.
+fn is_shown_marker(doc: &DocumentCache, line: usize) -> bool {
+    doc.side_by_side(line)
+        .is_some_and(|(region, _)| region.is_marker(line))
+}
+
 impl Editor {
     /// Moves a caret on a hidden line to the nearest visible one in the
     /// direction it was heading (the start of the next, or the end of the
@@ -91,29 +97,46 @@ impl Editor {
         self.skip_hidden_lines(down, extend);
     }
 
-    /// The padding an insertion over `range` must bring along: a newline on
-    /// each side where the caret's column line touches a marker, which would
-    /// otherwise stop being alone on its line and end the region. Only a
-    /// column with nothing but padding has such a line.
+    /// The newlines that typing `text` over `range` must bring along on each
+    /// side, so a marker next to the caret's line stays alone between blank
+    /// lines and its region survives. In a column (only one with nothing but
+    /// padding has a line next to a marker) the padding always comes, to keep
+    /// the caret off it; on the blank line outside a region, only once that
+    /// line would no longer be blank.
     pub(in crate::text_editor) fn column_padding(
         &self,
         range: &Range<usize>,
+        text: &str,
     ) -> (&'static str, &'static str) {
         let doc = self.document_cache.borrow();
         let (first, last) = (doc.line_at(range.start), doc.line_at(range.end));
-        let Some((region, _)) = doc.side_by_side(first) else {
-            return ("", "");
+        let column = match doc.side_by_side(first) {
+            Some((region, _)) => match region.column_of(first) {
+                Some(k) if region.column_of(last) == Some(k) => true,
+                _ => return ("", ""),
+            },
+            None => false,
         };
-        if region.column_of(first).is_none() || region.column_of(last) != region.column_of(first) {
+        let lead = first > 0 && is_shown_marker(&doc, first - 1);
+        let trail = last + 1 < doc.line_count() && is_shown_marker(&doc, last + 1);
+        if !lead && !trail {
             return ("", "");
         }
-        let lead = if region.is_marker(first - 1) {
-            "\n"
-        } else {
-            ""
-        };
-        let trail = if region.is_marker(last + 1) { "\n" } else { "" };
-        (lead, trail)
+        // What the first and the last line of the result hold.
+        let source = self.buffer.text();
+        let blank = |s: &str| s.trim().is_empty();
+        let before = blank(&source[doc.line_start_byte(first)..range.start]);
+        let after = blank(&source[range.end..doc.line_end_byte(last)]);
+        let one_line = !text.contains('\n');
+        let mut pieces = text.split('\n');
+        let first_blank = before && pieces.next().is_none_or(blank) && (!one_line || after);
+        let last_blank =
+            after && text.rsplit('\n').next().is_none_or(blank) && (!one_line || before);
+        let pad = |needed: bool| if needed { "\n" } else { "" };
+        (
+            pad(lead && (column || !first_blank)),
+            pad(trail && (column || !last_blank)),
+        )
     }
 
     /// Typing, pasting, Enter or Tab on a line that needs [`Self::column_padding`]:
@@ -126,7 +149,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (lead, trail) = self.column_padding(&range);
+        let (lead, trail) = self.column_padding(&range, text);
         if text.is_empty() || (lead.is_empty() && trail.is_empty()) {
             return false;
         }
@@ -143,20 +166,32 @@ impl Editor {
         true
     }
 
-    /// Whether the newline `Backspace` (`backward`) or `Delete` would remove
-    /// joins a column's edge line to a hidden one: that would break the
-    /// region's blank-line padding, so the key does nothing there.
+    /// Whether `Backspace` (`backward`) or `Delete` at a line's edge would
+    /// break a region, and so does nothing: it would join a column's edge line
+    /// to a hidden one, or put text right next to a marker.
     pub(in crate::text_editor) fn at_region_edge(&self, backward: bool) -> bool {
         let doc = self.document_cache.borrow();
         let cursor = self.buffer.cursor();
         let line = doc.line_at(cursor);
-        if backward {
-            cursor == doc.line_start_byte(line) && line > 0 && is_hidden_line(&doc, line - 1)
+        // The newline in question joins lines `above` and `above + 1`.
+        let above = if backward {
+            if cursor != doc.line_start_byte(line) || line == 0 {
+                return false;
+            }
+            line - 1
         } else {
-            cursor == doc.line_end_byte(line)
-                && line + 1 < doc.line_count()
-                && is_hidden_line(&doc, line + 1)
+            if cursor != doc.line_end_byte(line) || line + 1 >= doc.line_count() {
+                return false;
+            }
+            line
+        };
+        let below = above + 1;
+        if is_hidden_line(&doc, above) || is_hidden_line(&doc, below) {
+            return true;
         }
+        let next_to_marker = (above > 0 && is_shown_marker(&doc, above - 1))
+            || (below + 1 < doc.line_count() && is_shown_marker(&doc, below + 1));
+        next_to_marker && !(self.is_blank_line(&doc, above) && self.is_blank_line(&doc, below))
     }
 
     /// Works out which region is shown as source from where the caret is. Called

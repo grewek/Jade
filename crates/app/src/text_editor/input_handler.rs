@@ -136,7 +136,7 @@ impl EntityInputHandler for Editor {
         let (lead, trail) = if new_text.is_empty() {
             ("", "")
         } else {
-            self.column_padding(&replace_range)
+            self.column_padding(&replace_range, new_text)
         };
         let padded = [lead, new_text, trail].concat();
         let edit = TextEdit {

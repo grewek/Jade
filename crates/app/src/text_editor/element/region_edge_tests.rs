@@ -1,5 +1,6 @@
-//! A hand-typed region has a single blank line per side (#116): each side
-//! must be reachable by click, and typing there must keep the region a region.
+//! The lines at a region's edges (#116, #115, #118): a hand-typed region's
+//! sides must be reachable, and neither typing nor deleting next to a marker
+//! may end the region.
 
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
@@ -222,4 +223,42 @@ fn a_blank_line_of_fenced_code_offers_no_region(cx: &mut TestAppContext) {
         e.buffer.set_cursor(4, false);
         assert!(e.column_menu_state().is_none());
     });
+}
+
+/// The blank line next to a region, outside it: typing there keeps the blank
+/// line the marker needs, and the keys that would remove it do nothing.
+#[gpui_kit::test]
+fn editing_beside_a_region_keeps_it_a_region(cx: &mut TestAppContext) {
+    let region = "::: columns\n\na\n\n---\n\nb\n\n:::";
+    let source = format!("top\n\n{region}\n\nend");
+    let before = "top\n".len();
+    let after = source.len() - "\nend".len();
+    // (caret, key or typed text, result)
+    let cases = [
+        (before, "x", format!("top\nx\n\n{region}\n\nend")),
+        (after, "x", format!("top\n\n{region}\n\nx\nend")),
+        (after, "enter", format!("top\n\n{region}\n\n\nend")),
+        (after + 1, "backspace", source.clone()),
+        ("top".len(), "delete", source.clone()),
+    ];
+    for (caret, what, expected) in cases {
+        let (window, editor) = open(cx, &source);
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                window.focus(&e.focus_handle, cx);
+                e.buffer.set_cursor(caret, false);
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        if what.len() == 1 {
+            type_text(cx, window, what);
+        } else {
+            press(cx, window, what);
+        }
+        let result = text_of(cx, &editor);
+        assert_eq!(result, expected, "{what} at {caret}");
+        let regions = editor.read_with(cx, |e, _| e.document_cache.borrow().columns().len());
+        assert_eq!(regions, 1, "{what} at {caret}");
+    }
 }
