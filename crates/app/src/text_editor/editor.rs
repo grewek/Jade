@@ -660,6 +660,9 @@ impl Editor {
                     };
                     if let Some(edit) = edit {
                         self.record_edit(edit, window, cx);
+                        // A restored caret never stays where typing would end
+                        // a region.
+                        self.skip_hidden_lines(true, false);
                     }
                     return;
                 }
