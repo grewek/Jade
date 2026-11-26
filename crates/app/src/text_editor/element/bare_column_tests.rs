@@ -166,3 +166,60 @@ fn left_and_right_reach_both_bare_columns(cx: &mut TestAppContext) {
     press(cx, window, "left");
     assert_eq!(caret_column(cx, &editor), Some(0));
 }
+
+/// An empty region put on a blank line (#115): padded away from the text
+/// around it, each part reachable, and one undo step.
+#[gpui_kit::test]
+fn an_empty_region_can_be_inserted_on_a_blank_line(cx: &mut TestAppContext) {
+    use super::ColumnMenu;
+    use gpui_kit::{Context, Window};
+    type Insert = fn(&mut Editor, &mut Window, &mut Context<Editor>) -> bool;
+    let columns: Insert = Editor::insert_columns;
+    let float: Insert = |e, w, c| e.insert_float(true, w, c);
+    // (source, caret, entry, result)
+    let cases = [
+        ("", 0, columns, "::: columns\n\n\n\n---\n\n\n\n:::"),
+        (
+            "a\n\nb",
+            2,
+            columns,
+            "a\n\n::: columns\n\n\n\n---\n\n\n\n:::\n\nb",
+        ),
+        (
+            "a\n",
+            2,
+            float,
+            "a\n\n::: aside right 40%\n\n\n\n---\n\n\n\n:::",
+        ),
+    ];
+    for (source, caret, insert, expected) in cases {
+        let (window, editor) = open(cx, source);
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                window.focus(&e.focus_handle, cx);
+                e.buffer.set_cursor(caret, false);
+                assert!(e.column_menu_state() == Some(ColumnMenu::Blank));
+                assert!(insert(e, window, cx));
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert_eq!(text_of(cx, &editor), expected);
+        assert_eq!(caret_column(cx, &editor), Some(0));
+        type_text(cx, window, "x");
+        assert_eq!(text_of(cx, &editor).len(), expected.len() + 1);
+        assert_eq!(caret_column(cx, &editor), Some(0));
+        press(cx, window, "ctrl-z");
+        press(cx, window, "ctrl-z");
+        assert_eq!(text_of(cx, &editor), source);
+    }
+}
+
+#[gpui_kit::test]
+fn a_blank_line_of_fenced_code_offers_no_region(cx: &mut TestAppContext) {
+    let (_, editor) = open(cx, "```\n\n```");
+    editor.update(cx, |e, _| {
+        e.buffer.set_cursor(4, false);
+        assert!(e.column_menu_state().is_none());
+    });
+}

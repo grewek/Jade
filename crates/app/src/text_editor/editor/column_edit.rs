@@ -29,6 +29,8 @@ pub(in crate::text_editor) enum ColumnMenu {
     Float,
     /// The caret is in a plain block that can become the first column, or a float.
     Block,
+    /// The caret is on a blank line where an empty region can be put.
+    Blank,
 }
 
 /// The longest run of hidden lines a vertical move steps over: a close marker,
@@ -254,7 +256,17 @@ impl Editor {
                 can_add: region.count < crate::text_editor::columns::MAX_COLUMNS,
             });
         }
-        self.block_lines(&doc, line).map(|_| ColumnMenu::Block)
+        if self.block_lines(&doc, line).is_some() {
+            return Some(ColumnMenu::Block);
+        }
+        // Not a blank line of fenced code: a marker there would be code.
+        (self.is_blank_line(&doc, line) && doc.line_roles().get(line) == Some(&LineRole::Plain))
+            .then_some(ColumnMenu::Blank)
+    }
+
+    fn is_blank_line(&self, doc: &DocumentCache, line: usize) -> bool {
+        let range = doc.line_start_byte(line)..doc.line_end_byte(line);
+        self.buffer.text()[range].trim().is_empty()
     }
 
     /// The lines of the paragraph-like block holding `line`: the run of
@@ -262,13 +274,7 @@ impl Editor {
     /// both sides. `None` in code, a table or a callout, whose own structure
     /// a column marker would cut.
     fn block_lines(&self, doc: &DocumentCache, line: usize) -> Option<Range<usize>> {
-        let text = self.buffer.text();
-        let blank = |l: usize| {
-            doc.line_end_byte(l) == doc.line_start_byte(l)
-                || text[doc.line_start_byte(l)..doc.line_end_byte(l)]
-                    .trim()
-                    .is_empty()
-        };
+        let blank = |l: usize| self.is_blank_line(doc, l);
         let plain = |l: usize| {
             doc.line_roles().get(l) == Some(&LineRole::Plain)
                 && crate::text_editor::table::table_index_at(doc.tables(), l).is_none()
@@ -598,6 +604,56 @@ impl Editor {
         } else {
             self.unwrap_region(index, window, cx)
         }
+    }
+
+    /// Puts an empty region (`lines`, as `columns::ops` makes it) on the
+    /// caret's blank line, with the blank lines its markers need around it,
+    /// and the caret in its first part.
+    fn insert_region(
+        &mut self,
+        lines: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (range, lead, trail) = {
+            let doc = self.document_cache.borrow();
+            let line = doc.line_at(self.buffer.cursor());
+            if !self.is_blank_line(&doc, line) {
+                return false;
+            }
+            let lead = line > 0 && !self.is_blank_line(&doc, line - 1);
+            let trail = line + 1 < doc.line_count() && !self.is_blank_line(&doc, line + 1);
+            let range = doc.line_start_byte(line)..doc.line_end_byte(line);
+            (range, lead, trail)
+        };
+        let pad = |needed: bool| if needed { "\n" } else { "" };
+        let text = [pad(lead), &lines.join("\n"), pad(trail)].concat();
+        // Past the open marker and its padding line.
+        let first = range.start + pad(lead).len() + lines[0].len() + "\n\n".len();
+        self.buffer.set_cursor(range.start, false);
+        self.replace_in_buffer(range.clone(), &text, window, cx);
+        self.buffer.set_cursor(first, false);
+        cx.notify();
+        true
+    }
+
+    /// Two empty columns on the caret's blank line.
+    pub(in crate::text_editor) fn insert_columns(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.insert_region(columns::ops::wrapped(&[""]), window, cx)
+    }
+
+    /// An empty float and the empty text beside it, on the caret's blank line.
+    pub(in crate::text_editor) fn insert_float(
+        &mut self,
+        right: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.insert_region(columns::ops::floated(&[""], &[], right), window, cx)
     }
 
     /// Makes the block around the caret the first of two columns.
