@@ -7,7 +7,7 @@
 //!
 //! The caret's Up/Down across columns lives in `editor/column_edit.rs`.
 
-use super::code_box::{CodeBox, CodeBoxLook, CodeText, paint_code_box};
+use super::code_box::{CodeBox, CodeText, paint_code_box};
 use super::*;
 
 /// One shaped line of a column: `y` is its top below the region's top.
