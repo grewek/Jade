@@ -78,11 +78,14 @@ fn fence_delimiter(line: &str) -> Option<(u8, usize)> {
 }
 
 /// Whether `line` closes a fence opened with `fence_char` repeated at least
-/// `min_len` times: a run of exactly that character, at least as long, and
-/// nothing else on the line.
+/// `min_len` times: a run of that character, at least as long, followed by
+/// nothing but blank space (the `\r` of a Windows line ending included).
 fn closes_fence(line: &str, fence_char: u8, min_len: usize) -> bool {
     let len = line.bytes().take_while(|&b| b == fence_char).count();
-    len >= min_len && len == line.len()
+    len >= min_len
+        && line[len..]
+            .bytes()
+            .all(|b| matches!(b, b' ' | b'\t' | b'\r'))
 }
 
 #[cfg(test)]
@@ -107,6 +110,31 @@ mod tests {
             roles("a\n```rust\nb\n```\nc"),
             [Plain, Delimiter, Content, Delimiter, Plain]
         );
+    }
+
+    /// As in CommonMark, only blank space may follow a closing run; the `\r`
+    /// of a Windows line ending counts as that.
+    #[test]
+    fn a_closer_may_be_followed_by_blank_space() {
+        use FenceRole::*;
+        for closer in ["``` ", "```\t", "```  \t ", "```\r", "```` "] {
+            assert_eq!(
+                roles(&format!("```\nx\n{closer}\nafter")),
+                [Delimiter, Content, Delimiter, Plain],
+                "{closer:?}"
+            );
+        }
+        assert_eq!(
+            roles("```\r\nx\r\n```\r\ny"),
+            [Delimiter, Content, Delimiter, Plain]
+        );
+        for text_after in ["``` x", "```x ", "``` ```"] {
+            assert_eq!(
+                roles(&format!("```\n{text_after}")),
+                [Delimiter, Content],
+                "{text_after:?}"
+            );
+        }
     }
 
     #[test]

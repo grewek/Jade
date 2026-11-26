@@ -182,6 +182,7 @@ pub(super) fn paint_lines(
     };
     let mut columns: Option<(usize, TableColumns)> = None;
     let env = PaintEnv {
+        code_box: code_box_look,
         text,
         doc,
         selection,
@@ -379,6 +380,8 @@ pub(super) struct PaintEnv<'a> {
     pub(super) checkbox_radius: crate::settings::Radius,
     /// Corners of an image and of its placeholder.
     pub(super) image_radius: crate::settings::Radius,
+    /// The box behind code blocks, when `code_block.background` is on.
+    pub(super) code_box: Option<code_box::CodeBoxLook>,
     /// The chip behind inline code, when `inline_code.background` is on.
     pub(super) chip_look: Option<code_chip::ChipLook>,
     /// How links are underlined, and the link under the pointer.

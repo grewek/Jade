@@ -685,6 +685,8 @@ mod heading_spike_tests;
 #[cfg(test)]
 mod height_agreement_tests;
 #[cfg(test)]
+mod region_code_tests;
+#[cfg(test)]
 mod region_edge_tests;
 #[cfg(test)]
 mod region_fuzz_tests;

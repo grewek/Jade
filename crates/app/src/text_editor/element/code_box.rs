@@ -52,7 +52,50 @@ pub(in crate::text_editor) fn block_lines(
     start..end
 }
 
-/// Paints the box of every code block in `range` (the visible lines).
+/// Where one block's box goes.
+pub(super) struct CodeBox {
+    /// The opening fence line.
+    pub opening: usize,
+    /// The window y of the block's first row and of the end of its last; the
+    /// padding goes outside these.
+    pub rows: Range<Pixels>,
+    /// The box's left edge and width.
+    pub span: (Pixels, Pixels),
+}
+
+/// What a box's language label is drawn from.
+pub(super) struct CodeText<'a> {
+    pub text: &'a str,
+    pub doc: &'a DocumentCache,
+    /// `None` when the editor shows no caret.
+    pub caret: Option<usize>,
+    pub font: &'a Font,
+    pub font_size: Pixels,
+    pub line_height: Pixels,
+}
+
+/// One block's box and its language label.
+pub(super) fn paint_code_box(
+    code: &CodeText,
+    look: &CodeBoxLook,
+    at: CodeBox,
+    (window, cx): (&mut Window, &mut App),
+) {
+    let pad = code.font_size * look.padding;
+    let (left, width) = at.span;
+    let area = Bounds {
+        origin: point(left, at.rows.start - pad),
+        size: size(width, at.rows.end - at.rows.start + 2. * pad),
+    };
+    paint_box(area, look.radius, look.fill, look.border, window);
+    if let Some(color) = look.label {
+        let corner = point(area.right(), at.rows.start);
+        paint_label(code, (at.opening, corner), color, (window, cx));
+    }
+}
+
+/// Paints the box of every code block in `range` (the visible lines) that is
+/// not in a side-by-side region; `region.rs` paints those where it places them.
 pub(super) fn paint_code_boxes(
     range: &Range<usize>,
     (view, doc, text): (&FrameView, &DocumentCache, &str),
@@ -61,7 +104,14 @@ pub(super) fn paint_code_boxes(
 ) {
     let roles = doc.line_roles();
     let (layout, bounds) = (&view.layout, view.bounds);
-    let pad = view.font_size * look.padding;
+    let code = CodeText {
+        text,
+        doc,
+        caret: view.focused.then_some(view.cursor),
+        font: &view.font,
+        font_size: view.font_size,
+        line_height: view.line_height,
+    };
     let mut i = range.start;
     while i < range.end.min(roles.len()) {
         if matches!(roles[i], LineRole::Plain) {
@@ -70,7 +120,8 @@ pub(super) fn paint_code_boxes(
         }
         let block = block_lines(roles, |j| doc.fence_open_before(j), i);
         i = block.end.max(i + 1);
-        // A block in a side-by-side region has no place of its own here.
+        // A region places its own lines. By the line the walk is on: a block
+        // in a float's text may start inside the region and end below it.
         if doc.side_by_side(block.start).is_some() {
             continue;
         }
@@ -88,40 +139,35 @@ pub(super) fn paint_code_boxes(
             bottom.min(bounds.origin.y + bounds.size.height + margin),
         );
         // Horizontally the box is the editor's width; the lines are inset into it.
-        let area = Bounds {
-            origin: point(bounds.origin.x, top - pad),
-            size: size(bounds.size.width, bottom - top + 2. * pad),
+        let frame = CodeBox {
+            opening: block.start,
+            rows: top..bottom,
+            span: (bounds.origin.x, bounds.size.width),
         };
-        paint_box(area, look.radius, look.fill, look.border, window);
-        if let Some(color) = look.label {
-            paint_label(
-                (view, doc, text),
-                (block.start, top, area.right()),
-                color,
-                (window, cx),
-            );
-        }
+        paint_code_box(&code, look, frame, (window, cx));
     }
 }
 
 /// The block's language, small, in the top-right corner of its first row. Not
 /// drawn while the opening fence is shown raw (the caret is on it) or has none.
 fn paint_label(
-    (view, doc, text): (&FrameView, &DocumentCache, &str),
-    (line, top, right): (usize, Pixels, Pixels),
+    code: &CodeText,
+    (line, corner): (usize, Point<Pixels>),
     color: Hsla,
     (window, cx): (&mut Window, &mut App),
 ) {
-    let raw = &text[doc.line_start_byte(line)..doc.line_end_byte(line)];
-    let on_it = view.focused
-        && (doc.line_start_byte(line)..=doc.line_end_byte(line)).contains(&view.cursor);
+    let lines = code.doc.line_start_byte(line)..code.doc.line_end_byte(line);
+    let raw = &code.text[lines.clone()];
+    let on_it = code
+        .caret
+        .is_some_and(|caret| (lines.start..=lines.end).contains(&caret));
     let Some(name) = fence_language(raw).filter(|_| !on_it) else {
         return;
     };
-    let size = view.font_size * LABEL_SCALE;
+    let size = code.font_size * LABEL_SCALE;
     let run = TextRun {
         len: name.len(),
-        font: view.font.clone(),
+        font: code.font.clone(),
         color,
         background_color: None,
         underline: None,
@@ -130,8 +176,8 @@ fn paint_label(
     let shaped = window
         .text_system()
         .shape_line(name.to_string().into(), size, &[run], None);
-    let at = point(right - shaped.width - LABEL_INSET, top);
-    let _ = shaped.paint(at, view.line_height, TextAlign::Left, None, window, cx);
+    let at = point(corner.x - shaped.width - LABEL_INSET, corner.y);
+    let _ = shaped.paint(at, code.line_height, TextAlign::Left, None, window, cx);
 }
 
 /// The label is this much of the body size.

@@ -7,6 +7,7 @@
 //!
 //! The caret's Up/Down across columns lives in `editor/column_edit.rs`.
 
+use super::code_box::{CodeBox, CodeBoxLook, CodeText, paint_code_box};
 use super::*;
 
 /// One shaped line of a column: `y` is its top below the region's top.
@@ -173,6 +174,15 @@ fn flowable(state: &LineState, display_line: &DisplayLine, line_text: &str) -> b
         })
 }
 
+/// A block drawn in a box, which keeps the width it starts at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BoxedBlock {
+    Table(usize),
+    Callout(usize),
+    /// By its opening line.
+    Code(usize),
+}
+
 /// Which side's floats a band is cut for.
 const LEFT: usize = 0;
 const RIGHT: usize = 1;
@@ -320,8 +330,8 @@ impl Floats {
 /// floats on one side stacked with a row between, and the text (the last part)
 /// flowing between them: each paragraph is as wide as the band its first row
 /// is in, and where a band changes (a side's floats end) it is cut at a row
-/// boundary and the rest continues in the new band. A table or callout that
-/// starts in a band stays in it, so its box keeps one width.
+/// boundary and the rest continues in the new band. A table, callout or code
+/// block that starts in a band stays in it, so its box keeps one width.
 fn shape_aside(
     text: &str,
     doc: &DocumentCache,
@@ -395,7 +405,9 @@ fn shape_aside(
 
     let mut flow_lines: Vec<ShapedLine> = Vec::new();
     let mut y = px(0.);
-    let mut block_band: Option<((bool, usize), Pixels, Pixels)> = None;
+    let mut block_band: Option<(BoxedBlock, Pixels, Pixels)> = None;
+    // The opening line of the code block the walk is in.
+    let mut code_start = 0;
     let mut clears = region.clears().iter().copied().peekable();
     for i in region.text_lines() {
         // A `::: clear` above this line: it starts below every float so far.
@@ -405,9 +417,14 @@ fn shape_aside(
         }
         floats.place_before(region, i, y, line_height);
         let row = rows_of(y);
+        let role = doc.line_roles()[i];
+        if role == LineRole::FenceDelimiter && !doc.fence_open_before(i) {
+            code_start = i;
+        }
         let block = table_index_at(doc.tables(), i)
-            .map(|t| (true, t))
-            .or_else(|| callout_index_at(doc.callouts(), i).map(|c| (false, c)));
+            .map(BoxedBlock::Table)
+            .or_else(|| callout_index_at(doc.callouts(), i).map(BoxedBlock::Callout))
+            .or_else(|| (role != LineRole::Plain).then_some(BoxedBlock::Code(code_start)));
         let (x, width) = match (block, block_band) {
             (Some(b), Some((id, x, w))) if b == id => (x, w),
             _ => floats.bands.at(row),
@@ -564,8 +581,8 @@ pub(super) fn line_top(column: &ShapedColumn, region_top: Pixels, line: usize) -
 }
 
 /// Paints the region whose first line is at `top` below `bounds.origin.y`:
-/// dividers, then per column the callout bands and table boxes (which go under
-/// the text), then the lines.
+/// dividers, then per column the callout bands, code boxes and table boxes
+/// (which go under the text), then the lines.
 pub(super) fn paint_region(
     env: &PaintEnv,
     shaped: &ShapedRegion,
@@ -782,14 +799,16 @@ fn paint_column_blocks(
     (window, cx): (&mut Window, &mut App),
 ) {
     let doc = env.doc;
-    let frame = Bounds {
-        origin: bounds.origin,
-        size: size(column.width, bounds.size.height),
-    };
-    let at = |line: usize| line_top(column, frame.origin.y + top, line);
+    let at = |line: usize| line_top(column, bounds.origin.y + top, line);
     let mut last_callout = None;
     let mut last_table = None;
+    // The line after the last code block painted.
+    let mut code_end = 0;
     for sl in &column.lines {
+        if sl.line >= code_end && doc.line_roles()[sl.line] != LineRole::Plain {
+            let place = (column, bounds, top);
+            code_end = paint_region_code_box(env, sl, place, (window, cx));
+        }
         if let Some(index) = callout_index_at(doc.callouts(), sl.line)
             && last_callout != Some(index)
         {
@@ -800,7 +819,7 @@ fn paint_column_blocks(
                 .iter()
                 .rfind(|l| l.line < callout.end_line)
                 .map_or(sl.y, |l| l.y + l.height);
-            let (band_top, bottom) = (at(callout.start_line), frame.origin.y + top + end);
+            let (band_top, bottom) = (at(callout.start_line), bounds.origin.y + top + end);
             // A block is as wide as the line that opens it (text beside a float
             // is narrower than text below it).
             let span = (bounds.origin.x + sl.x, sl.width);
@@ -849,6 +868,42 @@ fn paint_column_blocks(
             }
         }
     }
+}
+
+/// The box of the code block `first` is the first shown line of, in
+/// `column`; returns the line after the block.
+fn paint_region_code_box(
+    env: &PaintEnv,
+    first: &ShapedLine,
+    (column, bounds, top): (&ShapedColumn, Bounds<Pixels>, Pixels),
+    (window, cx): (&mut Window, &mut App),
+) -> usize {
+    let doc = env.doc;
+    let block = block_lines(doc.line_roles(), |j| doc.fence_open_before(j), first.line);
+    let Some(look) = &env.code_box else {
+        return block.end;
+    };
+    let region_top = bounds.origin.y + top;
+    let end = column
+        .lines
+        .iter()
+        .rfind(|l| l.line < block.end)
+        .map_or(first.y + first.height, |l| l.y + l.height);
+    let at = CodeBox {
+        opening: block.start,
+        rows: line_top(column, region_top, block.start)..region_top + end,
+        span: (bounds.origin.x + first.x, first.width),
+    };
+    let text = CodeText {
+        text: env.text,
+        doc,
+        caret: env.show_cursor.then_some(env.cursor),
+        font: env.font,
+        font_size: env.font_size,
+        line_height: env.line_height,
+    };
+    paint_code_box(&text, look, at, (window, cx));
+    block.end
 }
 
 /// What a click needs to place itself in a line.
