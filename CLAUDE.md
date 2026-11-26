@@ -2,7 +2,7 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It's deliberately minimal — standing rules and commands only, since this file is reloaded in full on every turn.
 
-- **`ARCHITECTURE.md`** — non-obvious invariants, GPUI/test gotchas, and the Backlog. Not auto-loaded; read before touching the editor, dialogs, or UI tests.
+- **`ARCHITECTURE.md`** — rules and invariants, GPUI/test gotchas. Not auto-loaded; read before touching the editor, dialogs, or UI tests.
 - **`SPEC.md`** — what Jade Markdown is and how it is displayed. Not auto-loaded; read before touching parsing or rendering.
 - **`STYLE.md`** — Tigerstyle-derived coding rules plus documentation/comment rules. Not auto-loaded, but **mandatory: read it before writing or reviewing any code, docs, or comments, and always follow it.**
 
@@ -18,14 +18,12 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 
 **Do not add dependencies to any `Cargo.toml` without first asking the user for explicit approval** — this applies even to crates already agreed upon in principle (e.g. `gpui`, `gpui-kit`), ask again at the point of actually adding them.
 
-**`ARCHITECTURE.md`'s Backlog section lists deliberately deferred follow-ups — don't pick one up without checking in with the user first.**
-
 ## Git workflow (GitFlow) and issues
 
 - **`main`** holds tagged releases only; **`develop`** is the integration branch. Never commit or push directly to either, and never force-push. Merge with merge commits (`--no-ff`), never squash or rebase.
 - **Work** happens on `feature/<issue#>-<slug>` cut from `develop` and ends in a PR into `develop`. Don't start a `release/*` or `hotfix/*` branch or create a tag unless asked.
 - **Release / hotfix** (when asked): `release/x.y.z` from `develop`, `hotfix/x.y.z` from `main`; each goes by PR into `main` (then tag `vX.Y.Z`) and by a second PR back into `develop`.
-- **Issues:** read the whole issue and its comments first, then do only what it asks. A `Backlog` item or a new dependency needs a comment asking the user, not a guess. Reference the issue in commits (`refs #n`); the PR targets `develop`, and its body says `Closes #n`.
+- **Issues:** read the whole issue and its comments first, then do only what it asks. A new dependency needs a comment asking the user, not a guess. Reference the issue in commits (`refs #n`); the PR targets `develop`, and its body says `Closes #n`.
 - **`CHANGELOG.md`** is edited only when preparing a release, on the `release/*` branch (newest version first, one entry per user-visible change). Never touch it in feature or hotfix work.
 - **Before opening the PR**, run what CI runs: `cargo fmt --check`, `cargo clippy`, `cargo test`, and `cargo doc --no-deps`. Opening the PR ends the task; merging is the user's call.
 - **Reviewable steps:** one topic per PR, at most ~500 changed lines of production code (tests count separately), commits that each carry one reason. Cut larger work into PRs first and show the cut to the user.
