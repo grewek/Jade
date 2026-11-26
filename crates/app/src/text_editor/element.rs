@@ -367,6 +367,76 @@ pub(super) fn move_by_row(
     true
 }
 
+/// Up or Down with nowhere to go: the caret is on the last row (the first, for
+/// Up) of a region that ends (starts) the note. Adds a line outside the region
+/// and puts the caret there, as one undo step. `false` anywhere else, and
+/// before the first frame.
+pub(super) fn leave_region(
+    editor: &mut Editor,
+    down: bool,
+    window: &mut Window,
+    cx: &mut Context<Editor>,
+) -> bool {
+    let Some(view) = editor.last_view.clone() else {
+        return false;
+    };
+    let cursor = editor.buffer().cursor();
+    let insert = {
+        let doc = editor.document_cache.borrow();
+        let text = editor.buffer().text();
+        let Some((region, split)) = doc.side_by_side(doc.line_at(cursor)) else {
+            return false;
+        };
+        let Some(part) = region.column_of(doc.line_at(cursor)) else {
+            return false;
+        };
+        let Some(newlines) = missing_lines(&doc, &region, part, down) else {
+            return false;
+        };
+        let shaped = region::shape_region(
+            text,
+            &doc,
+            (&region, &split),
+            (cursor, true),
+            (&view.font, view.font_size, view.line_height),
+            (view.text_color.into(), None),
+            window,
+        );
+        let metrics = (view.font_size, view.line_height);
+        if !region::at_edge_row((text, &doc), &shaped, (cursor, down), metrics) {
+            return false;
+        }
+        let at = if down { text.len() } else { 0 };
+        (at, "\n".repeat(newlines))
+    };
+    editor.add_line_outside(insert, down, window, cx);
+    true
+}
+
+/// How many newlines the note lacks at the region's end (`down`) or start for
+/// the caret to have a line past it; `None` when it has one. A float block's
+/// text is what follows it, so only a float with no text lacks a line.
+fn missing_lines(
+    doc: &DocumentCache,
+    region: &columns::Columns,
+    part: usize,
+    down: bool,
+) -> Option<usize> {
+    if !down {
+        // The new line, and the blank one the open marker needs.
+        return (region.start_line == 0).then_some(2);
+    }
+    if region.end_line != doc.line_count() {
+        return None;
+    }
+    if !region.tail {
+        return Some(2);
+    }
+    let text = region.count - 1;
+    let lines = region.column_lines(text);
+    (part != text && lines.is_empty()).then(|| lines.start + 1 - doc.line_count())
+}
+
 /// The width regions are laid out across for an editor `available_width`
 /// wide: none before the first layout (no real width yet).
 /// See [`region::caret_bounds`].

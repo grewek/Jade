@@ -88,6 +88,14 @@ impl Editor {
         }
     }
 
+    /// The caret where the mouse points. A point below a region that ends the
+    /// note is on its close marker, where typing would end the region: the
+    /// caret stops at the end of the text before it.
+    pub(in crate::text_editor) fn place_from_pointer(&mut self, offset: usize, extend: bool) {
+        self.buffer.set_cursor(offset, extend);
+        self.skip_hidden_lines(false, extend);
+    }
+
     /// Up or Down, which keeps its column across the hidden lines it steps over.
     pub(in crate::text_editor) fn move_vertical(&mut self, down: bool, extend: bool) {
         for _ in 0..=MAX_HIDDEN_RUN {
@@ -104,6 +112,21 @@ impl Editor {
             }
         }
         self.skip_hidden_lines(down, extend);
+    }
+
+    /// Inserts `newlines` at `at`, the note's end (`down`) or start, and puts
+    /// the caret on the outermost new line.
+    pub(in crate::text_editor) fn add_line_outside(
+        &mut self,
+        (at, newlines): (usize, String),
+        down: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let caret = if down { at + newlines.len() } else { at };
+        self.buffer.end_undo_group();
+        self.replace_in_buffer(at..at, &newlines, window, cx);
+        self.buffer.set_cursor(caret, false);
     }
 
     /// The newlines that typing `text` over `range` must bring along on each

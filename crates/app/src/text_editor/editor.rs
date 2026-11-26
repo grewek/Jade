@@ -497,6 +497,7 @@ impl Editor {
         self.row_height_cache.borrow().trace_state().2
     }
 
+    #[cfg(test)]
     pub fn buffer_mut(&mut self) -> &mut EditorBuffer {
         &mut self.buffer
     }
@@ -698,13 +699,17 @@ impl Editor {
                 cx.notify();
             }
             "up" => {
-                if !super::element::move_by_row(self, false, shift, window) {
+                if (shift || !super::element::leave_region(self, false, window, cx))
+                    && !super::element::move_by_row(self, false, shift, window)
+                {
                     self.move_vertical(false, shift);
                 }
                 cx.notify();
             }
             "down" => {
-                if !super::element::move_by_row(self, true, shift, window) {
+                if (shift || !super::element::leave_region(self, true, window, cx))
+                    && !super::element::move_by_row(self, true, shift, window)
+                {
                     self.move_vertical(true, shift);
                 }
                 cx.notify();

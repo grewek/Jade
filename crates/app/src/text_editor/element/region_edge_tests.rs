@@ -4,8 +4,8 @@
 
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AnyWindowHandle, AppContext, ClipboardItem, Entity, EntityInputHandler, TestAppContext,
-    WindowOptions, point, px,
+    AnyWindowHandle, AppContext, ClipboardItem, Entity, EntityInputHandler, InputEvent,
+    MouseButton, MouseDownEvent, TestAppContext, WindowOptions, point, px,
 };
 
 use super::super::Editor;
@@ -366,5 +366,126 @@ fn undoing_a_structure_edit_restores_the_caret(cx: &mut TestAppContext) {
         assert_eq!(text_of(cx, &editor), source, "case {n}");
         let after = editor.read_with(cx, |e, _| e.buffer().cursor());
         assert_eq!(after, caret, "case {n}");
+    }
+}
+
+/// Down on the last row of a region that ends the note adds a line below it,
+/// Up on the first row of one that starts it a line above (#119).
+#[gpui_kit::test]
+fn arrows_leave_a_region_at_the_end_or_start_of_the_note(cx: &mut TestAppContext) {
+    let columns = "::: columns\n\nleft\n\n---\n\nr1\nr2\n\n:::";
+    let aside = "::: aside right 40%\n\nbox\n\n---\n\nwords\n\n:::";
+    let float = "::: float right 30%\n\nbox\n\n:::";
+    let float_newline = "::: float right 30%\n\nbox\n\n:::\n";
+    let below = |source: &str| format!("{source}\n\nx");
+    let above = |source: &str| format!("x\n\n{source}");
+    // (source, the word the caret is in, key, result of the key and an "x")
+    let cases = [
+        (columns, "left", "down", below(columns)),
+        (columns, "r2", "down", below(columns)),
+        (columns, "left", "up", above(columns)),
+        (columns, "r1", "up", above(columns)),
+        (aside, "box", "down", below(aside)),
+        (aside, "words", "down", below(aside)),
+        (aside, "words", "up", above(aside)),
+        // A float's text is the line beside it.
+        (float, "box", "down", format!("{float}\n\nx")),
+        (float_newline, "box", "down", format!("{float}\n\nx")),
+        (float, "box", "up", above(float)),
+    ];
+    for (source, word, key, expected) in cases {
+        let (window, editor) = open(cx, source);
+        let caret = source.find(word).unwrap() + 1;
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                window.focus(&e.focus_handle, cx);
+                e.buffer.set_cursor(caret, false);
+            });
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        press(cx, window, key);
+        type_text(cx, window, "x");
+        let case = format!("{key} from {word} in {source:?}");
+        assert_eq!(text_of(cx, &editor), expected, "{case}");
+        press(cx, window, "ctrl-z");
+        press(cx, window, "ctrl-z");
+        assert_eq!(text_of(cx, &editor), source, "undo: {case}");
+    }
+}
+
+/// Where there is a row or a line to go to, or the arrow selects, nothing is
+/// added.
+#[gpui_kit::test]
+fn arrows_add_nothing_while_there_is_somewhere_to_go(cx: &mut TestAppContext) {
+    let columns = "::: columns\n\nleft\n\n---\n\nr1\nr2\n\n:::";
+    let between = "top\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nend";
+    let stacked = "::: aside left 30%\n\none\n\n--- left 30%\n\ntwo\n\n---\n\nwords\n\n:::";
+    // A float with no text, and another region right after it.
+    let crowded = "::: float right 30%\n\nbox\n\n:::\n\n::: columns\n\na\n\n---\n\nb\n\n:::";
+    let cases = [
+        (crowded, "box", "down"),
+        (columns, "r1", "down"),
+        (columns, "r2", "up"),
+        (columns, "left", "shift-down"),
+        (columns, "left", "shift-up"),
+        (between, "left", "down"),
+        (between, "right", "up"),
+        // The second float is below the first.
+        (stacked, "one", "down"),
+        (stacked, "two", "up"),
+    ];
+    for (source, word, key) in cases {
+        let (window, editor) = open(cx, source);
+        let caret = source.find(word).unwrap() + 1;
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                window.focus(&e.focus_handle, cx);
+                e.buffer.set_cursor(caret, false);
+            });
+            window.render_frame(cx);
+            window.render_frame(cx);
+        })
+        .unwrap();
+        press(cx, window, key);
+        assert_eq!(
+            text_of(cx, &editor),
+            source,
+            "{key} from {word} in {source:?}"
+        );
+    }
+}
+
+/// A click or a drag into the empty space below a region that ends the note
+/// stops at its text, not on the hidden close marker.
+#[gpui_kit::test]
+fn the_mouse_never_leaves_the_caret_on_a_hidden_line(cx: &mut TestAppContext) {
+    let source = "::: columns\n\nleft\n\n---\n\nright\n\n:::";
+    for what in ["click", "right click", "drag"] {
+        let (window, editor) = open(cx, source);
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let bounds = window.find("editor").bounds();
+            let x = bounds.size.width * 0.2;
+            let below = bounds.origin + point(x, px(300.));
+            match what {
+                "click" => window.click_at("editor", point(x, px(300.)), cx),
+                "right click" => {
+                    let event = MouseDownEvent {
+                        button: MouseButton::Right,
+                        position: below,
+                        modifiers: Default::default(),
+                        click_count: 1,
+                        first_mouse: false,
+                    };
+                    window.dispatch_event(event.to_platform_input(), cx);
+                }
+                _ => window.drag(bounds.origin + point(x, px(4.)), below, cx),
+            }
+            window.render_frame(cx);
+        })
+        .unwrap();
+        assert!(caret_column(cx, &editor).is_some(), "{what}");
     }
 }
