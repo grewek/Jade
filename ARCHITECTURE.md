@@ -3,7 +3,7 @@
 Rules and invariants: what must stay true, and the non-obvious traps. Not auto-loaded. The code is the source of truth for module structure, `SPEC.md` for what is displayed, git for history.
 
 - **No fix history, no measurement logs here** (`CLAUDE.md`). A rule may name the test that guards it.
-- The previous, long version of this file (including every detail of the old rendering path) is `git show 838dc96:ARCHITECTURE.md`. Deferred work is in `BACKLOG.md`.
+- The previous, long version of this file (including every detail of the old rendering path and the old backlog) is `git show 838dc96:ARCHITECTURE.md`. Planned work lives in GitHub issues.
 
 ## Crates
 
