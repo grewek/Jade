@@ -103,6 +103,8 @@ pub(crate) struct JadeApp {
     content_generation: u64,
     backlink_cache: std::cell::RefCell<Option<BacklinkCache>>,
     sidebar_focus: FocusHandle,
+    /// SPIKE #135: replaces the editor pane when set.
+    spike: Option<Entity<crate::spike_scroll::SpikeView>>,
     collapsed_folders: std::collections::HashSet<String>,
     pub(crate) sidebar_tab: SidebarTab,
     /// Hides the whole sidebar (tabs, vault tree, search); the toggle rail stays.
@@ -196,6 +198,7 @@ impl JadeApp {
             search_scroll: ScrollHandle::new(),
             backlinks_scroll: ScrollHandle::new(),
             vault_scrolled_to: None,
+            spike: crate::spike_scroll::SpikeView::from_env(cx),
         }
     }
 }
@@ -293,6 +296,12 @@ impl Render for JadeApp {
             div()
                 .p_4()
                 .child(format!("Could not open vault: {err}"))
+                .into_any_element()
+        } else if let Some(spike) = self.spike.clone() {
+            div()
+                .size_full()
+                .p_4()
+                .child(div().size_full().child(spike).debug_name("editor"))
                 .into_any_element()
         } else if self.tabs.active_index().is_some() {
             let mut editor_pane = div()
