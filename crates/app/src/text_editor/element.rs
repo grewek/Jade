@@ -605,6 +605,8 @@ mod math_rows_tests;
 #[cfg(test)]
 mod anchoring_tests;
 #[cfg(test)]
+mod bare_column_tests;
+#[cfg(test)]
 mod code_chip_tests;
 #[cfg(test)]
 mod formula_context_tests;

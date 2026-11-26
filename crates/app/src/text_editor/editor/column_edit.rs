@@ -4,12 +4,14 @@
 //! down a column and then into the next in source order, and the keys that
 //! would delete their newline do nothing. Ctrl+/ shows a region's source.
 
+use std::ops::Range;
+
 use gpui_kit::*;
 
 use super::super::columns;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
-use super::super::doc::DocumentCache;
+use super::super::doc::{DocumentCache, TextEdit};
 use super::super::element::render_params;
 use super::super::preview::LineRole;
 use super::super::rows::{Change, Inputs};
@@ -85,6 +87,58 @@ impl Editor {
             }
         }
         self.skip_hidden_lines(down, extend);
+    }
+
+    /// The padding an insertion over `range` must bring along: a newline on
+    /// each side where the caret's column line touches a marker, which would
+    /// otherwise stop being alone on its line and end the region. Only a
+    /// column with nothing but padding has such a line.
+    pub(in crate::text_editor) fn column_padding(
+        &self,
+        range: &Range<usize>,
+    ) -> (&'static str, &'static str) {
+        let doc = self.document_cache.borrow();
+        let (first, last) = (doc.line_at(range.start), doc.line_at(range.end));
+        let Some((region, _)) = doc.side_by_side(first) else {
+            return ("", "");
+        };
+        if region.column_of(first).is_none() || region.column_of(last) != region.column_of(first) {
+            return ("", "");
+        }
+        let lead = if region.is_marker(first - 1) {
+            "\n"
+        } else {
+            ""
+        };
+        let trail = if region.is_marker(last + 1) { "\n" } else { "" };
+        (lead, trail)
+    }
+
+    /// Typing, pasting, Enter or Tab on a line that needs [`Self::column_padding`]:
+    /// the text and its padding as one edit, the caret after the text. `false`
+    /// (nothing done) everywhere else.
+    pub(in crate::text_editor) fn insert_in_bare_column(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (lead, trail) = self.column_padding(&range);
+        if text.is_empty() || (lead.is_empty() && trail.is_empty()) {
+            return false;
+        }
+        let caret = range.start + lead.len() + text.len();
+        let padded = [lead, text, trail].concat();
+        let edit = TextEdit {
+            start_byte: range.start,
+            old_end_byte: range.end,
+            new_end_byte: range.start + padded.len(),
+        };
+        self.buffer.replace_range_with(range, &padded);
+        self.buffer.set_cursor(caret, false);
+        self.record_edit(edit, window, cx);
+        true
     }
 
     /// Whether the newline `Backspace` (`backward`) or `Delete` would remove
@@ -207,7 +261,7 @@ impl Editor {
     /// non-blank lines around it, with a blank line (or the document edge) on
     /// both sides. `None` in code, a table or a callout, whose own structure
     /// a column marker would cut.
-    fn block_lines(&self, doc: &DocumentCache, line: usize) -> Option<std::ops::Range<usize>> {
+    fn block_lines(&self, doc: &DocumentCache, line: usize) -> Option<Range<usize>> {
         let text = self.buffer.text();
         let blank = |l: usize| {
             doc.line_end_byte(l) == doc.line_start_byte(l)
