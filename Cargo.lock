@@ -5156,6 +5156,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "parser-spike"
+version = "0.0.0"
+dependencies = [
+ "jade-core",
+]
+
+[[package]]
 name = "paste"
 version = "1.0.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"

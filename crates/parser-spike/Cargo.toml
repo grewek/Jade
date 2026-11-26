@@ -1,0 +1,9 @@
+# Throwaway spike for #133. Never merged.
+[package]
+name = "parser-spike"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+jade-core = { path = "../core" }
