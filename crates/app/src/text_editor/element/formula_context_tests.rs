@@ -154,23 +154,33 @@ fn regions() -> Vec<(&'static str, String)> {
     vec![
         (
             "columns",
-            format!("::: columns\n\n{body}\n\n---\n\nright\n\n:::\n"),
+            format!(
+                "<!-- jade:columns -->\n\n{body}\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n"
+            ),
         ),
         (
             "columns quote",
-            format!("::: columns\n\n> {body}\n\n---\n\nright\n\n:::\n"),
+            format!(
+                "<!-- jade:columns -->\n\n> {body}\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n"
+            ),
         ),
         (
             "aside text",
-            format!("::: aside left 30%\n\nfloat\n\n---\n\n{body}\n\n:::\n"),
+            format!(
+                "<!-- jade:aside left 30% -->\n\nfloat\n\n<!-- jade:next -->\n\n{body}\n\n<!-- jade:end -->\n"
+            ),
         ),
         (
             "aside float",
-            format!("::: aside left 30%\n\n{body}\n\n---\n\nplain text\n\n:::\n"),
+            format!(
+                "<!-- jade:aside left 30% -->\n\n{body}\n\n<!-- jade:next -->\n\nplain text\n\n<!-- jade:end -->\n"
+            ),
         ),
         (
             "aside quote",
-            format!("::: aside left 30%\n\n> [!cite]\n> {body}\n\n---\n\nplain text\n\n:::\n"),
+            format!(
+                "<!-- jade:aside left 30% -->\n\n> [!cite]\n> {body}\n\n<!-- jade:next -->\n\nplain text\n\n<!-- jade:end -->\n"
+            ),
         ),
     ]
 }
@@ -269,15 +279,21 @@ fn a_block_in_a_region_is_a_formula_over_its_rows(cx: &mut TestAppContext) {
     let regions = [
         (
             "columns",
-            format!("::: columns\n\nleft\n\n{BLOCK}\n\n---\n\nright\n\n:::\n"),
+            format!(
+                "<!-- jade:columns -->\n\nleft\n\n{BLOCK}\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n"
+            ),
         ),
         (
             "aside text",
-            format!("::: aside left 30%\n\nfloat\n\n---\n\n{BLOCK}\n\nmore\n\n:::\n"),
+            format!(
+                "<!-- jade:aside left 30% -->\n\nfloat\n\n<!-- jade:next -->\n\n{BLOCK}\n\nmore\n\n<!-- jade:end -->\n"
+            ),
         ),
         (
             "aside float",
-            format!("::: aside left 30%\n\n{BLOCK}\n\n---\n\nplain text\n\n:::\n"),
+            format!(
+                "<!-- jade:aside left 30% -->\n\n{BLOCK}\n\n<!-- jade:next -->\n\nplain text\n\n<!-- jade:end -->\n"
+            ),
         ),
     ];
     for (name, text) in regions {
@@ -346,7 +362,7 @@ fn a_block_in_a_region_is_a_formula_over_its_rows(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_block_across_a_divider_stays_source(cx: &mut TestAppContext) {
     let window = open(cx);
-    let text = "::: columns\n\nleft\n\n$$\nx\n\n---\n\ny\n$$\n\n:::\n";
+    let text = "<!-- jade:columns -->\n\nleft\n\n$$\nx\n\n<!-- jade:next -->\n\ny\n$$\n\n<!-- jade:end -->\n";
     cx.update_window(window, |_, window, cx| {
         window.render_frame(cx);
         let mut doc = DocumentCache::new(text);

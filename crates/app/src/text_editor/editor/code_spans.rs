@@ -425,7 +425,7 @@ mod tests {
 
     #[gpui_kit::test]
     fn code_in_a_column_is_coloured_too(cx: &mut TestAppContext) {
-        let note = "::: columns\n\n```tiny\nlet a\n```\n\n---\n\n```tiny\nfn b\n```\n\n:::\n";
+        let note = "<!-- jade:columns -->\n\n```tiny\nlet a\n```\n\n<!-- jade:next -->\n\n```tiny\nfn b\n```\n\n<!-- jade:end -->\n";
         let mut env = open(cx, note, true);
         // The layout sets a width; without one every region is stacked.
         env.cx.read(|cx| {

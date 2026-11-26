@@ -2,23 +2,27 @@
 //! columns (design in `ARCHITECTURE.md`, "Side-by-side columns").
 //!
 //! ```text
-//! ::: columns 60/40
+//! <!-- jade:columns 60/40 -->
 //!
 //! Left text.
 //!
-//! ---
+//! <!-- jade:next -->
 //!
 //! Right text.
 //!
-//! :::
+//! <!-- jade:end -->
 //! ```
 //!
-//! Every marker (`::: columns [ratio]`, `---`, `:::`) is alone on a line at
-//! column 0 with a blank line before and after, so another renderer reads the
-//! region as plain text with a rule between the parts. A marker that breaks
-//! that rule is ordinary text, and so is every marker inside fenced code.
+//! A marker is an HTML comment, so another renderer shows only the parts, one
+//! after another: `jade:columns [ratio]`, `jade:aside [side] [share]`,
+//! `jade:float [side] [share]`, `jade:next` (with a side and share in an
+//! aside: the next float), `jade:end` and `jade:clear`. Each is alone on a
+//! line at column 0 with a blank line before and after; one that breaks that
+//! rule is ordinary text. A marker is never code: it ends a fence left open
+//! before it (`jade_core::fence`, #126), so unfinished code cannot take a
+//! region's markers with it. To show one in a code block, indent it.
 //! Regions do not nest: a second open marker abandons the first (the last open
-//! wins), and the first `:::` closes the region. A region that is unclosed,
+//! wins), and the first `jade:end` closes the region. A region that is unclosed,
 //! has more than [`MAX_COLUMNS`] columns, or whose ratio does not fit its
 //! column count is not a region at all.
 //!
@@ -26,6 +30,8 @@
 //! live elsewhere.
 
 use std::ops::Range;
+
+use jade_core::fence::{MARKER_PREFIX, MARKER_SUFFIX};
 
 pub(in crate::text_editor) mod handles;
 pub(in crate::text_editor) mod ops;
@@ -35,27 +41,32 @@ pub use split::*;
 
 pub const MAX_COLUMNS: usize = 4;
 
-const OPEN: &str = "::: columns";
-const OPEN_ASIDE: &str = "::: aside";
-const OPEN_FLOAT: &str = "::: float";
+const OPEN: &str = "columns";
+const OPEN_ASIDE: &str = "aside";
+const OPEN_FLOAT: &str = "float";
 /// A line of its own in a float region's text: the text below it starts under
 /// every float above it.
-const CLEAR: &str = "::: clear";
+const CLEAR: &str = "clear";
 /// The clear markers one region keeps.
 pub const MAX_CLEARS: usize = 3;
 /// An aside's float share, in percent of the line (without the gap).
 pub const ASIDE_MIN: u8 = 10;
 pub const ASIDE_MAX: u8 = 90;
 pub const ASIDE_DEFAULT: u8 = 40;
-const CLOSE: &str = ":::";
-const SEPARATOR: &str = "---";
+const CLOSE: &str = "end";
+const SEPARATOR: &str = "next";
+
+/// The marker line saying `body` (`columns 60/40`, `end`).
+pub(super) fn marker_line(body: &str) -> String {
+    format!("{MARKER_PREFIX}{body} {MARKER_SUFFIX}")
+}
 
 /// What a region lays out as: equal-height columns, or blocks floated to the
-/// sides with the last part, the text, flowing around them (`::: aside right
+/// sides with the last part, the text, flowing around them (`jade:aside right
 /// 40%`). An aside has 1 to [`MAX_FLOATS`] floats, each a part of its own,
 /// then the text as the last part; the first float's side and share are on the
-/// open marker, each further float's on the `--- left 30%` separator that
-/// starts it, and the plain `---` starts the text. Its `percent` holds the
+/// open marker, each further float's on the `jade:next left 30%` separator that
+/// starts it, and the plain `jade:next` starts the text. Its `percent` holds the
 /// floats' shares, then 0 for the text.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Kind {
@@ -94,8 +105,8 @@ pub struct Columns {
     separators: [usize; MAX_COLUMNS - 1],
     /// An aside's floats; the first `count - 1` are used.
     floats: [FloatSpec; MAX_FLOATS],
-    /// A float block (`::: float`, the float, `:::`) with no close marker for
-    /// its text: the text is the lines after the `:::` up to `end_line`, which
+    /// A float block (`jade:float`, the float, `jade:end`) with no close marker for
+    /// its text: the text is the lines after the `jade:end` up to `end_line`, which
     /// [`Self::cap_tail`] sets. `end_line` is then no marker line.
     pub tail: bool,
     /// Where a tail's text would end with no cap: the next region's open marker
@@ -103,9 +114,9 @@ pub struct Columns {
     tail_bound: usize,
     /// A tail's further floats' open marker lines (a float block close enough
     /// after the one before joins its region); `opens[k]` is float `k`'s, the
-    /// first float's being `start_line`. Their `:::` is `separators[k]`.
+    /// first float's being `start_line`. Their `jade:end` is `separators[k]`.
     opens: [usize; MAX_FLOATS],
-    /// A tail's `::: clear` lines; the first `clear_count` are used.
+    /// A tail's `jade:clear` lines; the first `clear_count` are used.
     clears: [usize; MAX_CLEARS],
     clear_count: usize,
 }
@@ -150,7 +161,7 @@ impl Columns {
         &self.separators[..self.count - 1]
     }
 
-    /// The close marker's line; for a tail region the `:::` that ends its last
+    /// The close marker's line; for a tail region the `jade:end` that ends its last
     /// float, the region itself having none.
     pub fn close_line(&self) -> usize {
         if self.tail {
@@ -182,7 +193,7 @@ impl Columns {
         TAIL_BASE + TAIL_PER_LINE * self.float_lines()
     }
 
-    /// A tail's `::: clear` lines, in order: those inside its text, the cap
+    /// A tail's `jade:clear` lines, in order: those inside its text, the cap
     /// possibly leaving later ones out.
     pub fn clears(&self) -> &[usize] {
         let all = &self.clears[..self.clear_count];
@@ -191,7 +202,7 @@ impl Columns {
     }
 
     /// Whether `line` is in a tail's further float block (open marker to the
-    /// padding line after its `:::`) or a clear marker or its padding line:
+    /// padding line after its `jade:end`) or a clear marker or its padding line:
     /// lines the text flows past.
     fn in_float_block(&self, line: usize) -> bool {
         self.tail
@@ -291,17 +302,17 @@ impl Columns {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Marker {
-    /// `::: columns`, with its explicit ratio if one was written.
+    /// `jade:columns`, with its explicit ratio if one was written.
     Open(Option<Ratio>),
-    /// `::: aside [left|right] [N%]`.
+    /// `jade:aside [left|right] [N%]`.
     OpenAside(FloatSpec),
-    /// `::: float [left|right] [N%]`: a float whose text is what follows its
-    /// closing `:::`.
+    /// `jade:float [left|right] [N%]`: a float whose text is what follows its
+    /// closing `jade:end`.
     OpenFloat(FloatSpec),
-    /// `::: clear`.
+    /// `jade:clear`.
     Clear,
     Separator,
-    /// `--- [left|right] [N%]`: starts a further float of an aside.
+    /// `jade:next [left|right] [N%]`: starts a further float of an aside.
     FloatSeparator(FloatSpec),
     Close,
 }
@@ -317,12 +328,12 @@ struct Pending {
     start: usize,
     ratio: Option<Ratio>,
     aside: bool,
-    /// A float block: closed by its `:::`, its text is the lines after.
+    /// A float block: closed by its `jade:end`, its text is the lines after.
     float: bool,
     floats: [FloatSpec; MAX_FLOATS],
     /// The floats so far (an aside's open marker is the first).
     float_count: usize,
-    /// Whether the plain `---` that starts an aside's text was seen.
+    /// Whether the plain `jade:next` that starts an aside's text was seen.
     text_seen: bool,
     separators: [usize; MAX_COLUMNS - 1],
     seen: usize,
@@ -415,33 +426,28 @@ pub fn equal_shares(count: usize) -> [u8; MAX_COLUMNS] {
 /// What marker `line` is, if it is one. Layout (blank lines around it) is
 /// checked by the caller.
 fn marker_of(line: &str) -> Option<Marker> {
-    let line = line.trim_end();
-    if line == SEPARATOR {
-        return Some(Marker::Separator);
+    let body = line
+        .trim_end()
+        .strip_prefix(MARKER_PREFIX)?
+        .strip_suffix(MARKER_SUFFIX)?
+        .strip_suffix(' ')?
+        .trim_end();
+    let (name, rest) = body.split_at(body.find(' ').unwrap_or(body.len()));
+    let bare = rest.is_empty();
+    match name {
+        SEPARATOR if bare => Some(Marker::Separator),
+        SEPARATOR => parse_aside(rest).map(Marker::FloatSeparator),
+        CLOSE => bare.then_some(Marker::Close),
+        CLEAR => bare.then_some(Marker::Clear),
+        OPEN_ASIDE => parse_aside(rest).map(Marker::OpenAside),
+        OPEN_FLOAT => parse_aside(rest).map(Marker::OpenFloat),
+        OPEN if bare => Some(Marker::Open(None)),
+        OPEN => parse_ratio(rest.trim_start()).map(|r| Marker::Open(Some(r))),
+        _ => None,
     }
-    if let Some(rest) = line.strip_prefix(SEPARATOR).filter(|r| r.starts_with(' ')) {
-        return parse_aside(rest).map(Marker::FloatSeparator);
-    }
-    if line == CLOSE {
-        return Some(Marker::Close);
-    }
-    if line == CLEAR {
-        return Some(Marker::Clear);
-    }
-    if let Some(rest) = line.strip_prefix(OPEN_ASIDE) {
-        return parse_aside(rest).map(Marker::OpenAside);
-    }
-    if let Some(rest) = line.strip_prefix(OPEN_FLOAT) {
-        return parse_aside(rest).map(Marker::OpenFloat);
-    }
-    let rest = line.strip_prefix(OPEN)?;
-    if rest.is_empty() {
-        return Some(Marker::Open(None));
-    }
-    parse_ratio(rest.strip_prefix(' ')?.trim_start()).map(|r| Marker::Open(Some(r)))
 }
 
-/// What follows `::: aside`: nothing, or `left`/`right` and a share (`40` or
+/// What follows `jade:aside`: nothing, or `left`/`right` and a share (`40` or
 /// `40%`) in either order, each at most once. Right and 40% by default.
 fn parse_aside(rest: &str) -> Option<FloatSpec> {
     if !rest.is_empty() && !rest.starts_with(' ') {
@@ -522,7 +528,7 @@ pub fn place_markers<'a>(
     let mut line = first_line;
     while let Some((text, in_code)) = lines.next() {
         // Most lines are not markers; this skips the rest of the work for them.
-        if matches!(text.as_bytes().first(), Some(b':' | b'-'))
+        if text.as_bytes().first() == Some(&b'<')
             && !in_code
             && let Some(marker) = marker_of(text)
             && prev_blank
@@ -714,7 +720,8 @@ mod tests {
         scan(text.lines().map(|l| (l, false)))
     }
 
-    const TWO: &str = "::: columns\n\nleft\n\n---\n\nright\n\n:::\n";
+    const TWO: &str =
+        "<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n";
 
     #[test]
     fn two_equal_columns() {
@@ -733,14 +740,18 @@ mod tests {
 
     #[test]
     fn ratio_sets_the_shares() {
-        let r = scan_text("::: columns 20/50/30\n\na\n\n---\n\nb\n\n---\n\nc\n\n:::")[0];
+        let r = scan_text(
+            "<!-- jade:columns 20/50/30 -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:next -->\n\nc\n\n<!-- jade:end -->",
+        )[0];
         assert_eq!(r.count, 3);
         assert_eq!(&r.percent[..3], &[20, 50, 30]);
     }
 
     #[test]
     fn equal_shares_give_the_remainder_to_the_last() {
-        let r = scan_text("::: columns\n\na\n\n---\n\nb\n\n---\n\nc\n\n:::")[0];
+        let r = scan_text(
+            "<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:next -->\n\nc\n\n<!-- jade:end -->",
+        )[0];
         assert_eq!(&r.percent[..3], &[33, 33, 34]);
     }
 
@@ -756,62 +767,100 @@ mod tests {
             "60/-40",
             "+60/40",
         ] {
-            let text = format!("::: columns {ratio}\n\na\n\n---\n\nb\n\n:::");
+            let text = format!(
+                "<!-- jade:columns {ratio} -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->"
+            );
             assert!(scan_text(&text).is_empty(), "{ratio}");
         }
     }
 
     #[test]
     fn ratio_count_must_match_columns() {
-        let text = "::: columns 60/40\n\na\n\n---\n\nb\n\n---\n\nc\n\n:::";
+        let text = "<!-- jade:columns 60/40 -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:next -->\n\nc\n\n<!-- jade:end -->";
         assert!(scan_text(text).is_empty());
     }
 
     #[test]
     fn markers_need_blank_lines_around_them() {
         // No blank before the separator: a heading underline elsewhere.
-        assert!(scan_text("::: columns\n\nleft\n---\n\nright\n\n:::").is_empty());
+        assert!(
+            scan_text(
+                "<!-- jade:columns -->\n\nleft\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->"
+            )
+            .is_empty()
+        );
         // No blank after the open marker.
-        assert!(scan_text("::: columns\nleft\n\n---\n\nright\n\n:::").is_empty());
+        assert!(
+            scan_text(
+                "<!-- jade:columns -->\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->"
+            )
+            .is_empty()
+        );
         // No blank before the close marker.
-        assert!(scan_text("::: columns\n\nleft\n\n---\n\nright\n:::").is_empty());
+        assert!(
+            scan_text(
+                "<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n<!-- jade:end -->"
+            )
+            .is_empty()
+        );
     }
 
     #[test]
     fn markers_must_be_at_column_zero_and_exact() {
-        assert!(scan_text(" ::: columns\n\na\n\n---\n\nb\n\n:::").is_empty());
-        assert!(scan_text("::: columnsx\n\na\n\n---\n\nb\n\n:::").is_empty());
-        assert!(scan_text("::: columns\n\na\n\n----\n\nb\n\n:::").is_empty());
-        assert!(scan_text("> ::: columns\n>\n> a\n>\n> ---\n>\n> b\n>\n> :::").is_empty());
+        assert!(
+            scan_text(
+                " <!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->"
+            )
+            .is_empty()
+        );
+        assert!(
+            scan_text(
+                "<!-- jade:columnsx -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->"
+            )
+            .is_empty()
+        );
+        assert!(
+            scan_text(
+                "<!-- jade:columns -->\n\na\n\n<!-- jade:nextx -->\n\nb\n\n<!-- jade:end -->"
+            )
+            .is_empty()
+        );
+        assert!(
+            scan_text("> <!-- jade:columns -->\n>\n> a\n>\n> ---\n>\n> b\n>\n> <!-- jade:end -->")
+                .is_empty()
+        );
         // Trailing spaces are fine.
         assert_eq!(
-            scan_text("::: columns  \n\na\n\n---  \n\nb\n\n:::  ").len(),
+            scan_text(
+                "<!-- jade:columns -->  \n\na\n\n<!-- jade:next -->  \n\nb\n\n<!-- jade:end -->  "
+            )
+            .len(),
             1
         );
     }
 
     #[test]
     fn unclosed_or_single_column_is_not_a_region() {
-        assert!(scan_text("::: columns\n\na\n\n---\n\nb\n").is_empty());
-        assert!(scan_text("::: columns\n\na\n\n:::").is_empty());
-        assert!(scan_text("---\n\n:::").is_empty());
+        assert!(scan_text("<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n").is_empty());
+        assert!(scan_text("<!-- jade:columns -->\n\na\n\n<!-- jade:end -->").is_empty());
+        assert!(scan_text("<!-- jade:next -->\n\n<!-- jade:end -->").is_empty());
     }
 
     #[test]
     fn more_than_four_columns_is_not_a_region() {
-        let mut text = String::from("::: columns\n\n");
+        let mut text = String::from("<!-- jade:columns -->\n\n");
         for _ in 0..4 {
-            text.push_str("a\n\n---\n\n");
+            text.push_str("a\n\n<!-- jade:next -->\n\n");
         }
-        text.push_str("a\n\n:::");
+        text.push_str("a\n\n<!-- jade:end -->");
         assert!(scan_text(&text).is_empty());
-        let r = scan_text(&text.replacen("---\n\na\n\n", "", 1))[0];
+        let r = scan_text(&text.replacen("<!-- jade:next -->\n\na\n\n", "", 1))[0];
         assert_eq!(r.count, 4);
     }
 
     #[test]
     fn the_last_open_wins_and_regions_do_not_nest() {
-        let text = "::: columns\n\nlost\n\n::: columns\n\na\n\n---\n\nb\n\n:::";
+        let text = "<!-- jade:columns -->\n\nlost\n\n<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->";
         let regions = scan_text(text);
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].start_line, 4);
@@ -827,19 +876,20 @@ mod tests {
 
     #[test]
     fn a_column_of_one_blank_line_has_that_line() {
-        let r = scan_text("::: columns\n\n---\n\n:::")[0];
+        let r = scan_text("<!-- jade:columns -->\n\n<!-- jade:next -->\n\n<!-- jade:end -->")[0];
         assert_eq!(r.column_lines(0), 1..2);
         assert_eq!(r.column_lines(1), 3..4);
         // A second blank line (Enter there) is content too, until there is
         // room for a padding line on each side of it.
-        let r = scan_text("::: columns\n\n\n---\n\n\n\n:::")[0];
+        let r =
+            scan_text("<!-- jade:columns -->\n\n\n<!-- jade:next -->\n\n\n\n<!-- jade:end -->")[0];
         assert_eq!(r.column_lines(0), 1..3);
         assert_eq!(r.column_lines(1), 5..6);
     }
 
     #[test]
     fn code_fences_hide_markers() {
-        let text = "::: columns\n\na\n\n---\n\nb\n\n:::";
+        let text = "<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->";
         // The separator is inside a fence: no second column.
         let lines = text.lines().enumerate().map(|(i, l)| (l, i == 4));
         assert!(scan(lines).is_empty());
@@ -847,7 +897,11 @@ mod tests {
 
     #[test]
     fn a_document_end_counts_as_blank() {
-        assert_eq!(scan_text("::: columns\n\na\n\n---\n\nb\n\n:::").len(), 1);
+        assert_eq!(
+            scan_text("<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->")
+                .len(),
+            1
+        );
         assert!(scan_text("").is_empty());
     }
     #[test]
@@ -911,23 +965,24 @@ mod tests {
     #[test]
     fn an_aside_opens_with_a_side_and_a_share_in_any_order() {
         let aside = |open: &str| {
-            let text = format!("{open}\n\nblock\n\n---\n\ntext\n\n:::\n");
+            let text =
+                format!("{open}\n\nblock\n\n<!-- jade:next -->\n\ntext\n\n<!-- jade:end -->\n");
             scan_text(&text)
                 .first()
                 .map(|r| (r.kind, r.floats().to_vec()))
         };
         let expect = |right, share| Some((Kind::Aside, one(right, share).to_vec()));
-        assert_eq!(aside("::: aside"), expect(true, 40));
-        assert_eq!(aside("::: aside right 30%"), expect(true, 30));
-        assert_eq!(aside("::: aside left 25"), expect(false, 25));
-        assert_eq!(aside("::: aside 60% left"), expect(false, 60));
+        assert_eq!(aside("<!-- jade:aside -->"), expect(true, 40));
+        assert_eq!(aside("<!-- jade:aside right 30% -->"), expect(true, 30));
+        assert_eq!(aside("<!-- jade:aside left 25 -->"), expect(false, 25));
+        assert_eq!(aside("<!-- jade:aside 60% left -->"), expect(false, 60));
         for bad in [
-            "::: aside middle",
-            "::: aside 5%",
-            "::: aside 95",
-            "::: aside left left",
-            "::: asidex",
-            "::: aside 40% 50%",
+            "<!-- jade:aside middle -->",
+            "<!-- jade:aside 5% -->",
+            "<!-- jade:aside 95 -->",
+            "<!-- jade:aside left left -->",
+            "<!-- jade:asidex -->",
+            "<!-- jade:aside 40% 50% -->",
         ] {
             assert_eq!(aside(bad), None, "{bad}");
         }
@@ -935,8 +990,8 @@ mod tests {
 
     #[test]
     fn an_aside_has_floats_then_one_text_part() {
-        // Two floats, then the text: each further float starts at a `--- side N%`.
-        let two = "::: aside left 30%\n\na\n\n--- right 25%\n\nb\n\n---\n\ntext\n\n:::\n";
+        // Two floats, then the text: each further float starts at a `jade:next side N%`.
+        let two = "<!-- jade:aside left 30% -->\n\na\n\n<!-- jade:next right 25% -->\n\nb\n\n<!-- jade:next -->\n\ntext\n\n<!-- jade:end -->\n";
         let r = scan_text(two)[0];
         assert_eq!(r.count, 3);
         assert_eq!(
@@ -957,21 +1012,22 @@ mod tests {
         assert_eq!(r.column_of(6), Some(1));
         assert_eq!(r.column_of(10), Some(2));
         // Three floats is the most; a fourth is not a region.
-        let three = "::: aside\n\na\n\n--- left\n\nb\n\n--- right\n\nc\n\n---\n\ntext\n\n:::\n";
+        let three = "<!-- jade:aside -->\n\na\n\n<!-- jade:next left -->\n\nb\n\n<!-- jade:next right -->\n\nc\n\n<!-- jade:next -->\n\ntext\n\n<!-- jade:end -->\n";
         assert_eq!(scan_text(three)[0].floats().len(), 3);
-        let four = "::: aside\n\na\n\n--- left\n\nb\n\n--- right\n\nc\n\n--- left\n\nd\n\n---\n\ntext\n\n:::\n";
+        let four = "<!-- jade:aside -->\n\na\n\n<!-- jade:next left -->\n\nb\n\n<!-- jade:next right -->\n\nc\n\n<!-- jade:next left -->\n\nd\n\n<!-- jade:next -->\n\ntext\n\n<!-- jade:end -->\n";
         assert!(scan_text(four).is_empty());
         // The text part is last and plain, and needs to be there.
         for bad in [
-            "::: aside\n\na\n\n---\n\nb\n\n---\n\nc\n\n:::\n",
-            "::: aside\n\na\n\n---\n\nb\n\n--- left\n\nc\n\n:::\n",
-            "::: aside\n\na\n\n--- left\n\nb\n\n:::\n",
-            "::: aside\n\na\n\n:::\n",
+            "<!-- jade:aside -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:next -->\n\nc\n\n<!-- jade:end -->\n",
+            "<!-- jade:aside -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:next left -->\n\nc\n\n<!-- jade:end -->\n",
+            "<!-- jade:aside -->\n\na\n\n<!-- jade:next left -->\n\nb\n\n<!-- jade:end -->\n",
+            "<!-- jade:aside -->\n\na\n\n<!-- jade:end -->\n",
         ] {
             assert!(scan_text(bad).is_empty(), "{bad}");
         }
         // A spec'd separator is only a separator in an aside.
-        let columns = "::: columns\n\na\n\n--- left\n\nb\n\n:::\n";
+        let columns =
+            "<!-- jade:columns -->\n\na\n\n<!-- jade:next left -->\n\nb\n\n<!-- jade:end -->\n";
         assert!(scan_text(columns).is_empty());
     }
 
@@ -1057,7 +1113,9 @@ mod tests {
     fn unchecked_geometry_matches_the_checked_one_where_both_exist() {
         let total = 1000.;
         let percent = [20, 50, 30];
-        let columns = scan_text("::: columns 20/50/30\n\na\n\n---\n\nb\n\n---\n\nc\n\n:::\n")[0];
+        let columns = scan_text(
+            "<!-- jade:columns 20/50/30 -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:next -->\n\nc\n\n<!-- jade:end -->\n",
+        )[0];
         let split = split(total, &percent).unwrap();
         for k in 0..2 {
             assert!(
@@ -1073,7 +1131,7 @@ mod tests {
         for right in [true, false] {
             let aside = aside_split(total, &one(right, 40)).unwrap();
             let region = scan_text(&format!(
-                "::: aside {} 40%\n\nf\n\n---\n\nt\n\n:::\n",
+                "<!-- jade:aside {} 40% -->\n\nf\n\n<!-- jade:next -->\n\nt\n\n<!-- jade:end -->\n",
                 if right { "right" } else { "left" }
             ))[0];
             assert!(
@@ -1092,19 +1150,22 @@ mod tests {
 
     #[test]
     fn a_stacked_region_is_restored_to_equal_shares_only_when_they_fit() {
-        let text = "::: columns 90/10\n\na\n\n---\n\nb\n\n:::\n";
+        let text =
+            "<!-- jade:columns 90/10 -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->\n";
         let region = scan_text(text)[0];
         assert_eq!(restored(&region, 1000.), Some(vec![50, 50]));
         assert_eq!(restored(&region, 300.), None, "too narrow even when equal");
-        let aside = scan_text("::: aside left 90%\n\na\n\n---\n\nb\n\n:::\n")[0];
+        let aside = scan_text(
+            "<!-- jade:aside left 90% -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->\n",
+        )[0];
         assert_eq!(restored(&aside, 1000.), Some(vec![ASIDE_DEFAULT, 0]));
     }
 
-    /// A float block: the float, its closing `:::`, and the lines after it as
+    /// A float block: the float, its closing `<!-- jade:end -->`, and the lines after it as
     /// the text, up to the next region's open marker.
     #[test]
     fn a_float_block_takes_the_lines_after_it_as_its_text() {
-        let text = "::: float left 30%\n\nfloat\n\n:::\n\ntext one\n\ntext two\n\n::: columns\n\na\n\n---\n\nb\n\n:::\n";
+        let text = "<!-- jade:float left 30% -->\n\nfloat\n\n<!-- jade:end -->\n\ntext one\n\ntext two\n\n<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->\n";
         let regions = scan_text(text);
         assert_eq!(regions.len(), 2);
         let r = regions[0];
@@ -1126,7 +1187,7 @@ mod tests {
 
     #[test]
     fn a_float_blocks_text_runs_to_the_end_of_the_document() {
-        let regions = scan_text("::: float\n\nf\n\n:::\n\nafter");
+        let regions = scan_text("<!-- jade:float -->\n\nf\n\n<!-- jade:end -->\n\nafter");
         assert_eq!(regions.len(), 1);
         assert_eq!(regions[0].end_line, 7);
         assert_eq!(regions[0].column_lines(1), 6..7);
@@ -1136,7 +1197,7 @@ mod tests {
     /// document is not one region and no paragraph is cut.
     #[test]
     fn a_float_blocks_text_is_capped_at_a_blank_line() {
-        let mut text = String::from("::: float\n\nf\n\n:::\n\n");
+        let mut text = String::from("<!-- jade:float -->\n\nf\n\n<!-- jade:end -->\n\n");
         for i in 0..200 {
             text.push_str(&format!("line {i}\n\n"));
         }
@@ -1153,10 +1214,12 @@ mod tests {
 
     #[test]
     fn a_float_block_is_not_one_without_its_close_or_when_the_marker_is_bad() {
-        assert!(scan_text("::: float\n\nf\n").is_empty());
-        assert!(scan_text("::: float middle\n\nf\n\n:::\n").is_empty());
+        assert!(scan_text("<!-- jade:float -->\n\nf\n").is_empty());
+        assert!(scan_text("<!-- jade:float middle -->\n\nf\n\n<!-- jade:end -->\n").is_empty());
         // A rule inside is part of the float.
-        let r = scan_text("::: float\n\nf\n\n---\n\ng\n\n:::\n\ntext")[0];
+        let r = scan_text(
+            "<!-- jade:float -->\n\nf\n\n<!-- jade:next -->\n\ng\n\n<!-- jade:end -->\n\ntext",
+        )[0];
         assert_eq!(r.column_lines(0), 2..7);
         assert_eq!(r.column_lines(1), 10..11);
     }
@@ -1165,8 +1228,7 @@ mod tests {
     /// region; the text part holds the lines between and after the floats.
     #[test]
     fn a_float_block_within_reach_joins_the_region() {
-        let text =
-            "::: float left 20%\n\nA\n\n:::\n\none\n\n::: float right 25%\n\nB\n\n:::\n\ntwo\n";
+        let text = "<!-- jade:float left 20% -->\n\nA\n\n<!-- jade:end -->\n\none\n\n<!-- jade:float right 25% -->\n\nB\n\n<!-- jade:end -->\n\ntwo\n";
         let regions = scan_text(text);
         assert_eq!(regions.len(), 1);
         let r = regions[0];
@@ -1197,28 +1259,28 @@ mod tests {
 
     #[test]
     fn a_float_block_beyond_reach_or_past_three_floats_starts_a_region() {
-        let mut far = String::from("::: float\n\nA\n\n:::\n\n");
+        let mut far = String::from("<!-- jade:float -->\n\nA\n\n<!-- jade:end -->\n\n");
         for _ in 0..40 {
             far.push_str("filler\n\n");
         }
-        far.push_str("::: float\n\nB\n\n:::\n\ntext\n");
+        far.push_str("<!-- jade:float -->\n\nB\n\n<!-- jade:end -->\n\ntext\n");
         assert_eq!(scan_text(&far).len(), 2);
 
-        let four = "::: float\n\n1\n\n:::\n\n::: float\n\n2\n\n:::\n\n::: float\n\n3\n\n:::\n\n::: float\n\n4\n\n:::\n\nt\n";
+        let four = "<!-- jade:float -->\n\n1\n\n<!-- jade:end -->\n\n<!-- jade:float -->\n\n2\n\n<!-- jade:end -->\n\n<!-- jade:float -->\n\n3\n\n<!-- jade:end -->\n\n<!-- jade:float -->\n\n4\n\n<!-- jade:end -->\n\nt\n";
         let regions = scan_text(four);
         assert_eq!(regions.len(), 2);
         assert_eq!(regions[0].count, 4, "three floats and the text");
         assert_eq!(regions[1].count, 2);
         // A column region between them keeps them apart.
-        let apart = "::: float\n\nA\n\n:::\n\n::: columns\n\na\n\n---\n\nb\n\n:::\n\n::: float\n\nB\n\n:::\n\nt\n";
+        let apart = "<!-- jade:float -->\n\nA\n\n<!-- jade:end -->\n\n<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->\n\n<!-- jade:float -->\n\nB\n\n<!-- jade:end -->\n\nt\n";
         assert_eq!(scan_text(apart).len(), 3);
     }
 
-    /// `::: clear` in a float region's text is a hidden marker: the text below
+    /// `<!-- jade:clear -->` in a float region's text is a hidden marker: the text below
     /// it comes after the floats above.
     #[test]
     fn a_clear_marker_belongs_to_the_float_text_it_is_in() {
-        let text = "::: float left\n\nA\n\n:::\n\none\n\n::: clear\n\ntwo\n";
+        let text = "<!-- jade:float left -->\n\nA\n\n<!-- jade:end -->\n\none\n\n<!-- jade:clear -->\n\ntwo\n";
         let r = scan_text(text)[0];
         assert_eq!(r.clears(), &[8]);
         assert!(r.is_marker(8) && r.is_frame(8));
@@ -1226,8 +1288,10 @@ mod tests {
         assert_eq!(r.column_of(8), None);
         assert_eq!(r.column_of(9), None, "its padding line");
         // Outside any float's text it is plain text.
-        assert!(scan_text("one\n\n::: clear\n\ntwo\n").is_empty());
-        let before = scan_text("::: clear\n\n::: float\n\nA\n\n:::\n\nt\n");
+        assert!(scan_text("one\n\n<!-- jade:clear -->\n\ntwo\n").is_empty());
+        let before = scan_text(
+            "<!-- jade:clear -->\n\n<!-- jade:float -->\n\nA\n\n<!-- jade:end -->\n\nt\n",
+        );
         assert!(before[0].clears().is_empty());
     }
 }

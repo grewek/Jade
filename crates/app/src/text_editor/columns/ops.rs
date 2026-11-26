@@ -3,38 +3,37 @@
 //! them come out, so the editor can diff them into one undo step. The pixel
 //! side (which divider is dragged, where) is `columns/handles.rs`.
 
-use super::{self as columns, Columns, MAX_COLUMNS, equal_shares};
+use super::{self as columns, Columns, MAX_COLUMNS, equal_shares, marker_line};
 
 /// The smallest share a column keeps when a divider is dragged.
 pub const MIN_SHARE: u8 = 10;
 /// Shares snap to multiples of this.
 pub const SNAP: u8 = 5;
 
+/// How a side is written in a marker.
+fn side(right: bool) -> &'static str {
+    if right { "right" } else { "left" }
+}
+
 /// The open marker for `percent`: bare when the shares are the equal ones a
 /// bare marker means, else with the written ratio.
 pub fn open_marker(percent: &[u8]) -> String {
     assert!((2..=MAX_COLUMNS).contains(&percent.len()));
     if percent == &equal_shares(percent.len())[..percent.len()] {
-        return "::: columns".to_owned();
+        return marker_line("columns");
     }
     let ratio: Vec<String> = percent.iter().map(u8::to_string).collect();
-    format!("::: columns {}", ratio.join("/"))
+    marker_line(&format!("columns {}", ratio.join("/")))
 }
 
 /// The open marker of an aside: always explicit, side and share.
 pub fn aside_marker(right: bool, share: u8) -> String {
-    format!(
-        "::: aside {} {share}%",
-        if right { "right" } else { "left" }
-    )
+    marker_line(&format!("aside {} {share}%", side(right)))
 }
 
 /// The open marker of a float block: always explicit, side and share.
 pub fn float_marker(right: bool, share: u8) -> String {
-    format!(
-        "::: float {} {share}%",
-        if right { "right" } else { "left" }
-    )
+    marker_line(&format!("float {} {share}%", side(right)))
 }
 
 /// The float block region with every float's open marker rewritten, shares from
@@ -66,15 +65,15 @@ pub fn floated(block: &[&str], text: &[&str], right: bool) -> Vec<String> {
     let mut out = Vec::with_capacity(block.len() + text.len() + 7);
     out.extend([aside_marker(right, columns::ASIDE_DEFAULT), String::new()]);
     out.extend(block.iter().map(|l| (*l).to_owned()));
-    out.extend(["", "---", ""].map(str::to_owned));
+    out.extend([String::new(), marker_line("next"), String::new()]);
     out.extend(text.iter().map(|l| (*l).to_owned()));
-    out.extend(["", ":::"].map(str::to_owned));
+    out.extend([String::new(), marker_line("end")]);
     out
 }
 
 /// A further float's separator line.
 pub fn float_separator(right: bool, share: u8) -> String {
-    format!("--- {} {share}%", if right { "right" } else { "left" })
+    marker_line(&format!("next {} {share}%", side(right)))
 }
 
 /// The aside with every float's marker line rewritten: sides mirrored when
@@ -144,7 +143,11 @@ pub fn with_added_column(lines: &[&str], region: &Columns) -> Option<Vec<String>
     // click needs a line to put the caret on) and the padding before the
     // close marker.
     let close = out.len() - 1;
-    out.splice(close..close, ["---", "", "", ""].map(str::to_owned));
+    let blank = String::new;
+    out.splice(
+        close..close,
+        [marker_line("next"), blank(), blank(), blank()],
+    );
     Some(out)
 }
 
@@ -207,9 +210,11 @@ pub fn moved_line(old: &[&str], new: &[String], region: &Columns, i: usize) -> u
 pub fn wrapped(block: &[&str]) -> Vec<String> {
     assert!(!block.is_empty());
     let mut out = Vec::with_capacity(block.len() + 6);
-    out.extend(["::: columns".to_owned(), String::new()]);
+    out.extend([marker_line("columns"), String::new()]);
     out.extend(block.iter().map(|l| (*l).to_owned()));
-    out.extend(["", "---", "", "", "", ":::"].map(str::to_owned));
+    let blank = String::new;
+    out.extend([blank(), marker_line("next"), blank(), blank(), blank()]);
+    out.push(marker_line("end"));
     out
 }
 
@@ -247,21 +252,24 @@ mod tests {
 
     #[test]
     fn a_bare_marker_means_equal_shares() {
-        assert_eq!(open_marker(&[50, 50]), "::: columns");
-        assert_eq!(open_marker(&[33, 33, 34]), "::: columns");
-        assert_eq!(open_marker(&[60, 40]), "::: columns 60/40");
+        assert_eq!(open_marker(&[50, 50]), "<!-- jade:columns -->");
+        assert_eq!(open_marker(&[33, 33, 34]), "<!-- jade:columns -->");
+        assert_eq!(open_marker(&[60, 40]), "<!-- jade:columns 60/40 -->");
     }
 
     #[test]
     fn a_ratio_is_read_back_as_written() {
-        let (lines, _) = region("::: columns\n\na\n\n---\n\nb\n\n:::");
+        let (lines, _) =
+            region("<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->");
         let out = with_ratio(&lines, &[65, 35]);
         assert_eq!(scan_one(&out).percent[..2], [65, 35]);
     }
 
     #[test]
     fn an_added_column_is_a_region_with_one_more_empty_column() {
-        let (lines, r) = region("::: columns 60/40\n\na\n\n---\n\nb\n\n:::");
+        let (lines, r) = region(
+            "<!-- jade:columns 60/40 -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->",
+        );
         let out = with_added_column(&lines, &r).unwrap();
         let grown = scan_one(&out);
         assert_eq!(grown.count, 3);
@@ -273,14 +281,18 @@ mod tests {
 
     #[test]
     fn no_column_is_added_past_the_limit() {
-        let (lines, r) = region("::: columns\n\n1\n\n---\n\n2\n\n---\n\n3\n\n---\n\n4\n\n:::");
+        let (lines, r) = region(
+            "<!-- jade:columns -->\n\n1\n\n<!-- jade:next -->\n\n2\n\n<!-- jade:next -->\n\n3\n\n<!-- jade:next -->\n\n4\n\n<!-- jade:end -->",
+        );
         assert_eq!(r.count, 4);
         assert!(with_added_column(&lines, &r).is_none());
     }
 
     #[test]
     fn unwrapping_stacks_the_columns_and_drops_the_empty_ones() {
-        let (lines, r) = region("::: columns\n\n---\n\nx\ny\n\n---\n\nz\n\n:::");
+        let (lines, r) = region(
+            "<!-- jade:columns -->\n\n<!-- jade:next -->\n\nx\ny\n\n<!-- jade:next -->\n\nz\n\n<!-- jade:end -->",
+        );
         assert_eq!(unwrapped(&lines, &r), ["x", "y", "", "z"]);
     }
 

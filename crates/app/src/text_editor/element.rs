@@ -1883,7 +1883,7 @@ mod tests {
         use gpui::{Bounds, size};
         use std::{cell::RefCell, rc::Rc};
 
-        let text = "intro\n\n::: columns\n\nleft\n\n---\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n:::\n\nafter";
+        let text = "intro\n\n<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n<!-- jade:end -->\n\nafter";
         let (window, editor) = open_editor(cx, text);
         editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
         cx.update_window(window, |_, window, cx| {
@@ -1981,7 +1981,7 @@ mod tests {
         let para = "flowing words ".repeat(60);
         let text: &'static str = Box::leak(
             format!(
-                "::: aside left 25%\n\nshort left\n\n--- right 25%\n\nright one\n\nright one b\n\n--- right 25%\n\nright two\n\n---\n\n{para}\n\n:::\n"
+                "<!-- jade:aside left 25% -->\n\nshort left\n\n<!-- jade:next right 25% -->\n\nright one\n\nright one b\n\n<!-- jade:next right 25% -->\n\nright two\n\n<!-- jade:next -->\n\n{para}\n\n<!-- jade:end -->\n"
             )
             .into_boxed_str(),
         );
@@ -2054,7 +2054,7 @@ mod tests {
         let para = "flowing words ".repeat(40);
         let text: &'static str = Box::leak(
             format!(
-                "::: float right 30%\n\nfloat words here\n\n:::\n\n{para}\n\n{para}\n\n{para}\n\nafter"
+                "<!-- jade:float right 30% -->\n\nfloat words here\n\n<!-- jade:end -->\n\n{para}\n\n{para}\n\n{para}\n\nafter"
             )
             .into_boxed_str(),
         );
@@ -2127,8 +2127,10 @@ mod tests {
         use super::super::doc::DocumentCache;
         use super::region::shape_region;
         let tall = "float line\n\n".repeat(8);
-        let text: &'static str =
-            Box::leak(format!("::: float right 30%\n\n{tall}:::\n\nshort").into_boxed_str());
+        let text: &'static str = Box::leak(
+            format!("<!-- jade:float right 30% -->\n\n{tall}<!-- jade:end -->\n\nshort")
+                .into_boxed_str(),
+        );
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -2168,7 +2170,7 @@ mod tests {
         let para = "flowing words ".repeat(80);
         let text: &'static str = Box::leak(
             format!(
-                "::: float right 25%\n\nfloat one\n\nfloat two\n\n:::\n\n{para}\n\nsecond\n\nthird"
+                "<!-- jade:float right 25% -->\n\nfloat one\n\nfloat two\n\n<!-- jade:end -->\n\n{para}\n\nsecond\n\nthird"
             )
             .into_boxed_str(),
         );
@@ -2234,7 +2236,7 @@ mod tests {
         let para = "flowing words ".repeat(60);
         let text: &'static str = Box::leak(
             format!(
-                "::: float left 20%\n\nA one\n\nA two\n\n:::\n\n{para}\n\n::: float right 20%\n\nB one\n\nB two\n\n:::\n\n::: float left 20%\n\nC\n\n:::\n\n{para}\n"
+                "<!-- jade:float left 20% -->\n\nA one\n\nA two\n\n<!-- jade:end -->\n\n{para}\n\n<!-- jade:float right 20% -->\n\nB one\n\nB two\n\n<!-- jade:end -->\n\n<!-- jade:float left 20% -->\n\nC\n\n<!-- jade:end -->\n\n{para}\n"
             )
             .into_boxed_str(),
         );
@@ -2291,7 +2293,7 @@ mod tests {
         .unwrap();
     }
 
-    /// `::: clear` starts the text below it under every float above it.
+    /// `<!-- jade:clear -->` starts the text below it under every float above it.
     #[gpui_kit::test]
     fn a_clear_marker_moves_the_text_below_the_floats(cx: &mut TestAppContext) {
         use super::super::doc::DocumentCache;
@@ -2299,7 +2301,7 @@ mod tests {
         let tall = "float line\n\n".repeat(6);
         let text: &'static str = Box::leak(
             format!(
-                "::: float right 30%\n\n{tall}:::\n\nbefore the clear\n\n::: clear\n\nafter the clear\n\nlast"
+                "<!-- jade:float right 30% -->\n\n{tall}<!-- jade:end -->\n\nbefore the clear\n\n<!-- jade:clear -->\n\nafter the clear\n\nlast"
             )
             .into_boxed_str(),
         );
@@ -2359,7 +2361,7 @@ mod tests {
         let para = "flowing words ".repeat(40);
         let text: &'static str = Box::leak(
             format!(
-                "::: aside right 40%\n\nfloat one\n\nfloat two\n\nfloat three\n\n---\n\n{para}\n\n:::\n\nafter"
+                "<!-- jade:aside right 40% -->\n\nfloat one\n\nfloat two\n\nfloat three\n\n<!-- jade:next -->\n\n{para}\n\n<!-- jade:end -->\n\nafter"
             )
             .into_boxed_str(),
         );
@@ -2436,7 +2438,7 @@ mod tests {
         use gpui::{Bounds, size};
         use std::{cell::RefCell, rc::Rc};
 
-        let text = "intro\n\n::: columns\n\nleft\n\n---\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n:::\n\nafter";
+        let text = "intro\n\n<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n<!-- jade:end -->\n\nafter";
         let (window, editor) = open_editor(cx, text);
         editor.update(cx, |editor, _| editor.buffer_mut().set_cursor(0, false));
         cx.update_window(window, |_, window, cx| {
@@ -2566,7 +2568,7 @@ mod tests {
     /// column to one do nothing.
     #[gpui_kit::test]
     fn the_caret_steps_over_a_regions_hidden_lines(cx: &mut TestAppContext) {
-        let text = "intro\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nafter";
+        let text = "intro\n\n<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n\nafter";
         let (_window, editor) = open_editor(cx, text);
         let line_of = |cx: &mut TestAppContext| {
             editor.read_with(cx, |e, _| {
@@ -2638,7 +2640,7 @@ mod tests {
         assert!(run(cx, &|e, w, c| e.make_columns(w, c)));
         assert_eq!(
             text_of(cx),
-            "intro\n\n::: columns\n\nfirst block\nsecond line\n\n---\n\n\n\n:::\n\nafter"
+            "intro\n\n<!-- jade:columns -->\n\nfirst block\nsecond line\n\n<!-- jade:next -->\n\n\n\n<!-- jade:end -->\n\nafter"
         );
         assert!(editor.read_with(cx, |e, _| matches!(
             e.column_menu_state(),
@@ -2650,11 +2652,11 @@ mod tests {
             w,
             c
         )));
-        assert!(text_of(cx).contains("::: columns 60/40\n"));
+        assert!(text_of(cx).contains("<!-- jade:columns 60/40 -->\n"));
         assert!(run(cx, &|e, w, c| e.add_region_column(0, w, c)));
         assert!(
             text_of(cx)
-                .contains("::: columns\n\nfirst block\nsecond line\n\n---\n\n\n\n---\n\n\n\n:::")
+                .contains("<!-- jade:columns -->\n\nfirst block\nsecond line\n\n<!-- jade:next -->\n\n\n\n<!-- jade:next -->\n\n\n\n<!-- jade:end -->")
         );
         assert!(run(cx, &|e, w, c| e.unwrap_region(0, w, c)));
         assert_eq!(text_of(cx), "intro\n\nfirst block\nsecond line\n\nafter");
@@ -2716,7 +2718,7 @@ mod tests {
     #[gpui_kit::test]
     fn a_float_block_flips_moves_and_unwraps(cx: &mut TestAppContext) {
         use super::{ColumnMenu, Context, Window};
-        let text = "::: float right 30%\n\nF\n\n:::\n\none\n\ntwo\n\nthree";
+        let text = "<!-- jade:float right 30% -->\n\nF\n\n<!-- jade:end -->\n\none\n\ntwo\n\nthree";
         let (window, editor) = open_editor(cx, text);
         let text_of =
             |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().text().to_owned());
@@ -2732,11 +2734,11 @@ mod tests {
         editor.update(cx, |e, _| e.buffer_mut().set_cursor(at, false));
         assert!(editor.read_with(cx, |e, _| e.column_menu_state() == Some(ColumnMenu::Float)));
         assert!(run(cx, &|e, w, c| e.flip_float(w, c)));
-        assert!(text_of(cx).starts_with("::: float left 30%\n"));
+        assert!(text_of(cx).starts_with("<!-- jade:float left 30% -->\n"));
         assert!(run(cx, &|e, w, c| e.move_float(true, w, c)));
         assert_eq!(
             text_of(cx),
-            "one\n\n::: float left 30%\n\nF\n\n:::\n\ntwo\n\nthree"
+            "one\n\n<!-- jade:float left 30% -->\n\nF\n\n<!-- jade:end -->\n\ntwo\n\nthree"
         );
         // Nothing before "one" to move past.
         let at = text_of(cx).find("two").unwrap();
@@ -2744,7 +2746,7 @@ mod tests {
         assert!(run(cx, &|e, w, c| e.move_float(false, w, c)));
         assert_eq!(
             text_of(cx),
-            "::: float left 30%\n\nF\n\n:::\n\none\n\ntwo\n\nthree"
+            "<!-- jade:float left 30% -->\n\nF\n\n<!-- jade:end -->\n\none\n\ntwo\n\nthree"
         );
         assert!(!run(cx, &|e, w, c| e.move_float(false, w, c)));
         assert!(run(cx, &|e, w, c| e.unwrap_float(w, c)));
@@ -2755,7 +2757,7 @@ mod tests {
     /// flows around it) and is one undo step; it keeps each float's side.
     #[gpui_kit::test]
     fn resizing_a_float_block_rewrites_just_its_markers(cx: &mut TestAppContext) {
-        let text = "::: float right 30%\n\nA\n\n:::\n\none\n\n::: float left 20%\n\nB\n\n:::\n\ntwo\n\n::: float right 30%\n\nC\n\n:::\n\nthree";
+        let text = "<!-- jade:float right 30% -->\n\nA\n\n<!-- jade:end -->\n\none\n\n<!-- jade:float left 20% -->\n\nB\n\n<!-- jade:end -->\n\ntwo\n\n<!-- jade:float right 30% -->\n\nC\n\n<!-- jade:end -->\n\nthree";
         let (window, editor) = open_editor(cx, text);
         let text_of =
             |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().text().to_owned());
@@ -2799,7 +2801,7 @@ mod tests {
         use super::region::{HitFrame, hit, shape_region};
         use gpui::{Bounds, Window, size};
 
-        let text = "intro\n\n::: columns\n\nleft text\n\n---\n\nright text\n\n:::\n\nafter";
+        let text = "intro\n\n<!-- jade:columns -->\n\nleft text\n\n<!-- jade:next -->\n\nright text\n\n<!-- jade:end -->\n\nafter";
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -2879,7 +2881,7 @@ mod tests {
             let text_style = window.text_style();
             let font = text_style.font();
             let font_size = text_style.font_size.to_pixels(window.rem_size());
-            for line in ["::: columns 60/40", ":::"] {
+            for line in ["<!-- jade:columns 60/40 -->", "<!-- jade:end -->"] {
                 for active in [false, true] {
                     let results = shape_display_line(
                         line,
@@ -3125,7 +3127,9 @@ mod tests {
         use gpui::Window;
 
         let long = "word ".repeat(30);
-        let text = format!("intro\n\n::: columns\n\n{long}\n\n---\n\nshort\n\n:::\n\nafter");
+        let text = format!(
+            "intro\n\n<!-- jade:columns -->\n\n{long}\n\n<!-- jade:next -->\n\nshort\n\n<!-- jade:end -->\n\nafter"
+        );
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -3225,9 +3229,9 @@ mod tests {
             "| Name | Notes |\n| --- | --- |\n| Alice | a long cell with many words to wrap |";
         let para = "plain words ".repeat(20);
         let before = format!(
-            "intro\n\n::: columns\n\n{para}\n\n---\n\n{table}\n\n---\n\n{note}\n\n:::\n\nafter"
+            "intro\n\n<!-- jade:columns -->\n\n{para}\n\n<!-- jade:next -->\n\n{table}\n\n<!-- jade:next -->\n\n{note}\n\n<!-- jade:end -->\n\nafter"
         );
-        let after = before.replacen("::: columns", "::: columns 20/50/30", 1);
+        let after = before.replacen("<!-- jade:columns -->", "<!-- jade:columns 20/50/30 -->", 1);
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
             window.render_frame(cx);
@@ -3251,12 +3255,12 @@ mod tests {
             let mut doc = DocumentCache::new(&before);
             doc.view.set_column_width(Some(f32::from(width)));
             let mut rows = build(&before, &doc, window);
-            let at = before.find("::: columns").unwrap();
+            let at = before.find("<!-- jade:columns -->").unwrap();
             let (new_text, edit) = apply_edit(
                 &before,
                 at,
-                at + "::: columns".len(),
-                "::: columns 20/50/30",
+                at + "<!-- jade:columns -->".len(),
+                "<!-- jade:columns 20/50/30 -->",
             );
             assert_eq!(new_text, after);
             let patch = doc.record_edit(&new_text, edit).unwrap();
@@ -3291,7 +3295,7 @@ mod tests {
 
         let para = "flowing words ".repeat(40);
         let text = format!(
-            "::: aside right 40%\n\nfloat\n\nfloat two\n\nfloat three\n\n---\n\n{para}\n\n:::\n"
+            "<!-- jade:aside right 40% -->\n\nfloat\n\nfloat two\n\nfloat three\n\n<!-- jade:next -->\n\n{para}\n\n<!-- jade:end -->\n"
         );
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {
@@ -3358,7 +3362,7 @@ mod tests {
         let note = "> [!note] A callout\n> inside a column";
         let mk = |t: String| {
             format!(
-                "intro\n\n::: columns 30/43/27\n\n{list}\n\n---\n\n{t}\n\n---\n\n{note}\n\n:::\n\nafter"
+                "intro\n\n<!-- jade:columns 30/43/27 -->\n\n{list}\n\n<!-- jade:next -->\n\n{t}\n\n<!-- jade:next -->\n\n{note}\n\n<!-- jade:end -->\n\nafter"
             )
         };
         let (before, after) = (mk(table("Name", "Value")), mk(table("Value", "Name")));
@@ -3420,7 +3424,7 @@ mod tests {
     #[test]
     fn a_columns_minimum_is_its_widest_tables_minimum_box() {
         use super::super::doc::DocumentCache;
-        let text = "::: columns\n\ntext\n\n---\n\n| a | b | c | d | e |\n| - | - | - | - | - |\n| 1 | 2 | 3 | 4 | 5 |\n\n:::\n";
+        let text = "<!-- jade:columns -->\n\ntext\n\n<!-- jade:next -->\n\n| a | b | c | d | e |\n| - | - | - | - | - |\n| 1 | 2 | 3 | 4 | 5 |\n\n<!-- jade:end -->\n";
         let doc = DocumentCache::new(text);
         let region = doc.columns()[0];
         assert_eq!(super::min_column_px(&doc, &region, 0, 10.), 0.);
@@ -3433,7 +3437,7 @@ mod tests {
     #[gpui_kit::test]
     fn a_dragged_divider_previews_the_shares_until_it_ends(cx: &mut TestAppContext) {
         use super::super::columns::handles::ColumnDrag;
-        let text = "intro\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nafter";
+        let text = "intro\n\n<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n\nafter";
         let (window, editor) = open_editor(cx, text);
         let shares = |cx: &mut TestAppContext| {
             editor.read_with(cx, |e, _| {
@@ -3454,7 +3458,9 @@ mod tests {
         cx.update_window(window, |_, window, cx| window.render_frame(cx))
             .unwrap();
         assert_eq!(shares(cx), Some(vec![70, 30]), "the drag is laid out live");
-        assert!(editor.read_with(cx, |e, _| e.buffer().text().contains("::: columns\n")));
+        assert!(editor.read_with(cx, |e, _| {
+            e.buffer().text().contains("<!-- jade:columns -->\n")
+        }));
         editor.update(cx, |e, _| e.column_drag = None);
         cx.update_window(window, |_, window, cx| window.render_frame(cx))
             .unwrap();
@@ -3471,7 +3477,7 @@ mod tests {
     #[gpui_kit::test]
     fn a_divider_drag_leaves_the_rows_outside_its_region_alone(cx: &mut TestAppContext) {
         use super::super::columns::handles::ColumnDrag;
-        let text = "a **bold** line\n\nb [[link]] line\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nc **bold** after\n\nd";
+        let text = "a **bold** line\n\nb [[link]] line\n\n<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n\nc **bold** after\n\nd";
         let (window, editor) = open_editor(cx, text);
         cx.update_window(window, |_, window, cx| window.render_frame(cx))
             .unwrap();
@@ -3623,7 +3629,7 @@ mod tests {
 
         let para = "flowing words ".repeat(50);
         let text = format!(
-            "intro\n\n::: float right 30%\n\nfloat\n\n:::\n\n{para}\n\n{para}\n\n{para}\n\nafter"
+            "intro\n\n<!-- jade:float right 30% -->\n\nfloat\n\n<!-- jade:end -->\n\n{para}\n\n{para}\n\n{para}\n\nafter"
         );
         let (window, _editor) = open_editor(cx, "");
         cx.update_window(window, |_, window, cx| {

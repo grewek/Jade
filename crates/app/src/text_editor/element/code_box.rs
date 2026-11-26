@@ -27,8 +27,8 @@ pub(in crate::text_editor) fn fence_language(line: &str) -> Option<&str> {
 }
 
 /// The lines of the code block around line `i` (which has a fence role):
-/// from its opening fence to the line after its closing one, or to the end
-/// of the note when it is left open. `open_before(j)` is whether a fence is
+/// from its opening fence to the line after its closing one; one left open
+/// runs to the layout marker that ends it, or to the end of the note. `open_before(j)` is whether a fence is
 /// open entering line `j`.
 pub(in crate::text_editor) fn block_lines(
     roles: &[LineRole],
@@ -41,7 +41,7 @@ pub(in crate::text_editor) fn block_lines(
         start -= 1;
     }
     let mut end = i;
-    while end < roles.len() {
+    while end < roles.len() && roles[end] != LineRole::Plain {
         // A delimiter entered with a fence open closes it.
         let closes = roles[end] == LineRole::FenceDelimiter && open_before(end);
         end += 1;

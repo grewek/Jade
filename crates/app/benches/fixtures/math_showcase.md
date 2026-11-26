@@ -1,6 +1,6 @@
 # Math showcase
 
-A hand-checked note for looking at LaTeX rendering (#13): open it in Jade and compare each formula with what you expect. Lines with tall formulas (matrices, stacked limits) get taller rows; the line you are editing shows its source and shrinks back. Inside `::: columns` and `::: aside` regions rows do not grow yet, so tall formulas there overlap, and `$$` blocks there stay source.
+A hand-checked note for looking at LaTeX rendering (#13): open it in Jade and compare each formula with what you expect. Lines with tall formulas (matrices, stacked limits) get taller rows; the line you are editing shows its source and shrinks back. Inside `<!-- jade:columns -->` and `<!-- jade:aside -->` regions rows do not grow yet, so tall formulas there overlap, and `$$` blocks there stay source.
 
 ## 1. Plain prose around inline math
 
@@ -188,7 +188,7 @@ With them: $f\colon \R \to \R$, $\norm{x + y} \le \norm{x} + \norm{y}$, $\pair{a
 
 ## Blocks in regions and nested line breaks
 
-::: columns
+<!-- jade:columns -->
 
 Left column, with a block:
 
@@ -200,14 +200,14 @@ $$
 
 Right column: ${a \\ b} + {c \\ d}$ and $x^{a \\ b}$.
 
-:::
+<!-- jade:end -->
 
-::: aside right 40%
+<!-- jade:aside right 40% -->
 
 $$
 \int_0^\infty e^{-x^2}\,dx = \frac{\sqrt{\pi}}{2}
 $$
 
-:::
+<!-- jade:end -->
 
 Text next to the aside, which flows around the block above.

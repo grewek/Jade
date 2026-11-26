@@ -294,8 +294,8 @@ fn float_blocks_stay_as_a_fresh_scan_finds_them_across_random_edits() {
         seed >> 33
     };
     let mut text = String::from(
-        "intro\n\n::: float left 30%\n\nfloat\n\n:::\n\npara one\n\npara two\n\n\
-             ::: columns\n\na\n\n---\n\nb\n\n:::\n\n::: float\n\nf\n\n:::\n\nlast\n",
+        "intro\n\n<!-- jade:float left 30% -->\n\nfloat\n\n<!-- jade:end -->\n\npara one\n\npara two\n\n\
+             <!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->\n\n<!-- jade:float -->\n\nf\n\n<!-- jade:end -->\n\nlast\n",
     );
     let mut tail = String::new();
     for i in 0..40 {
@@ -310,15 +310,15 @@ fn float_blocks_stay_as_a_fresh_scan_finds_them_across_random_edits() {
         "\n\n",
         "```\n",
         "text\n\n",
-        ":::\n",
-        "\n:::\n\n",
+        "<!-- jade:end -->\n",
+        "\n<!-- jade:end -->\n\n",
         "---\n",
-        "::: float\n",
-        "\n::: float right 20%\n\nf\n\n:::\n\n",
-        "::: columns\n",
+        "<!-- jade:float -->\n",
+        "\n<!-- jade:float right 20% -->\n\nf\n\n<!-- jade:end -->\n\n",
+        "<!-- jade:columns -->\n",
         "> [!note]\n> a\n\n",
-        "::: clear\n",
-        "\n::: clear\n\n",
+        "<!-- jade:clear -->\n",
+        "\n<!-- jade:clear -->\n\n",
     ];
     for step in 0..600 {
         let start = (next() as usize) % (text.len() + 1);
@@ -347,8 +347,8 @@ fn run_randomized_edits(mut seed: u64) {
         "intro\n```\ncode\n```\nplain\n> q\n- item\n  - nested\n    - deeper\nmore plain text here\n~~~\ntilde\n~~~\nend\n\
              > [!info]\n> body\n\n> [!warning] custom\n> more body\nafter\n\
              | a | b |\n| --- | --- |\n| 1 | 2 |\n| 3 | 4 |\nafter table\n\n\
-             ::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n\n\
-             ::: float left 30%\n\nfloat\n\n:::\n\npara one\n\npara two\n\npara three\n\
+             <!-- jade:columns 60/40 -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n\n\
+             <!-- jade:float left 30% -->\n\nfloat\n\n<!-- jade:end -->\n\npara one\n\npara two\n\npara three\n\
              $$\nx^2\n$$\n\n$$\n\\frac{a}{b}\n\n  y\n$$\n\
              $\\newcommand{\\R}{\\mathbb{R}}$ and $\\R$\n$$\n\\def\\c#1{#1}\n$$\n",
     );
@@ -381,15 +381,15 @@ fn run_randomized_edits(mut seed: u64) {
         "> [!note]\n> a\n> b\n\n",
         "\n\n\n\n",
         "line one\nline two\n",
-        "::: columns\n",
-        "\n::: columns 20/30/50\n\n",
+        "<!-- jade:columns -->\n",
+        "\n<!-- jade:columns 20/30/50 -->\n\n",
         "---\n",
-        "\n---\n\n",
-        ":::\n",
-        "\n:::\n\n",
-        "::: columns\n\na\n\n---\n\nb\n\n:::\n",
-        "::: float\n",
-        "\n::: float right 20%\n\nf\n\n:::\n\n",
+        "\n<!-- jade:next -->\n\n",
+        "<!-- jade:end -->\n",
+        "\n<!-- jade:end -->\n\n",
+        "<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->\n",
+        "<!-- jade:float -->\n",
+        "\n<!-- jade:float right 20% -->\n\nf\n\n<!-- jade:end -->\n\n",
         "text\n\n",
         "$$",
         "$$\n",
@@ -523,7 +523,7 @@ fn block_context_list_tracking_allocation_cost_on_the_stress_fixture() {
     );
 }
 
-const REGION: &str = "top\n\n::: columns 60/40\n\nleft\n\n---\n\nright\n\n:::\n\nbottom";
+const REGION: &str = "top\n\n<!-- jade:columns 60/40 -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n\nbottom";
 
 #[test]
 fn the_cache_finds_a_region_and_follows_edits_around_it() {
@@ -539,7 +539,7 @@ fn the_cache_finds_a_region_and_follows_edits_around_it() {
     assert_matches_fresh_cache(&cache, &text, "lines above");
 
     // Breaking the blank line before the separator removes the region.
-    let at = text.find("\n---").unwrap();
+    let at = text.find("\n<!-- jade:next -->").unwrap();
     let (text, edit) = apply_edit(&text, at, at + 1, "");
     cache.record_edit(&text, edit);
     assert!(cache.columns().is_empty());
@@ -557,13 +557,20 @@ fn an_edit_in_a_column_reports_the_whole_region_as_touched() {
     assert_matches_fresh_cache(&cache, &text, "typing in a column");
 }
 
+/// Unfinished code stops at the first marker (#126), so it cannot take a
+/// region's markers with it; typing it and taking it away patch the cache as
+/// a fresh read would.
 #[test]
-fn a_fence_opened_above_hides_the_markers_below() {
+fn a_fence_opened_above_leaves_the_region_standing() {
     let mut cache = DocumentCache::new(REGION);
     let (text, edit) = apply_edit(REGION, 0, 0, "```\n");
     cache.record_edit(&text, edit);
-    assert!(cache.columns().is_empty());
+    assert_eq!(cache.columns().len(), 1);
     assert_matches_fresh_cache(&cache, &text, "fence opened");
+    let (back, edit) = apply_edit(&text, 0, 4, "");
+    cache.record_edit(&back, edit);
+    assert_eq!(cache.columns().len(), 1);
+    assert_matches_fresh_cache(&cache, &back, "fence removed");
 }
 
 #[cfg(test)]

@@ -410,7 +410,7 @@ fn shape_aside(
     let mut code_start = 0;
     let mut clears = region.clears().iter().copied().peekable();
     for i in region.text_lines() {
-        // A `::: clear` above this line: it starts below every float so far.
+        // A `jade:clear` above this line: it starts below every float so far.
         while let Some(clear) = clears.next_if(|&c| c < i) {
             floats.place_before(region, clear, y, line_height);
             y = y.max(floats.clear_y());

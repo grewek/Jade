@@ -1,6 +1,7 @@
 //! Seeded random typing and moving inside every kind of region, with real key
 //! dispatch (the hardening pass, #118). Without a selection, ordinary editing
-//! keys must never break the region or leave the caret on a hidden line.
+//! keys, code fences included (#126), must never break the region or leave the
+//! caret on a hidden line.
 
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{AppContext, TestAppContext, WindowOptions};
@@ -10,12 +11,12 @@ use super::super::editor::is_hidden_line;
 use super::super::test_support::Rng;
 
 const SOURCES: [&str; 6] = [
-    "::: columns\n\n---\n\n:::",
-    "intro\n\n::: columns\n\nleft text\n\n---\n\n\nright\n\n\n:::\n\noutro",
-    "::: columns\n\na\n\n---\n\n---\n\nc\n\n:::",
-    "::: aside right 40%\n\n---\n\n:::",
-    "::: aside left 30%\n\nfloat\n\n--- right 20%\n\n---\n\nsome text\n\n:::\n\nafter",
-    "::: float right 40%\n\nF\n\n:::\n\nfirst paragraph\n\nsecond",
+    "<!-- jade:columns -->\n\n<!-- jade:next -->\n\n<!-- jade:end -->",
+    "intro\n\n<!-- jade:columns -->\n\nleft text\n\n<!-- jade:next -->\n\n\nright\n\n\n<!-- jade:end -->\n\noutro",
+    "<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\n<!-- jade:next -->\n\nc\n\n<!-- jade:end -->",
+    "<!-- jade:aside right 40% -->\n\n<!-- jade:next -->\n\n<!-- jade:end -->",
+    "<!-- jade:aside left 30% -->\n\nfloat\n\n<!-- jade:next right 20% -->\n\n<!-- jade:next -->\n\nsome text\n\n<!-- jade:end -->\n\nafter",
+    "<!-- jade:float right 40% -->\n\nF\n\n<!-- jade:end -->\n\nfirst paragraph\n\nsecond",
 ];
 
 const KEYS: [&str; 11] = [
@@ -79,7 +80,7 @@ fn editing_inside_regions_keeps_them_whole(cx: &mut TestAppContext) {
                 let what = KEYS
                     .get(step)
                     .copied()
-                    .unwrap_or(["a", "b", " ", "é", "😀"][step % 5]);
+                    .unwrap_or(["a", "```", " ", "é", "~~~"][step % 5]);
                 log.push(what);
                 cx.update_window(window, |_, window, cx| {
                     if step < KEYS.len() {

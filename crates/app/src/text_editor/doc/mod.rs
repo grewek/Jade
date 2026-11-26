@@ -100,7 +100,7 @@ pub(super) struct DocumentCache {
     /// `callout_states[i]` is the packed `CalloutState` *entering* line `i`.
     /// Parallel to `callout_for_line`.
     callout_states: Vec<u8>,
-    /// Every `::: columns` marker line that is isolated and outside code, in
+    /// Every `jade:columns` marker line that is isolated and outside code, in
     /// line order: all the cross-line state the regions below need, so an edit
     /// rescans a few lines and re-pairs the markers (few) instead of the text.
     /// What the editor sets about how the text is shown; not derived from it.

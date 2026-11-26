@@ -785,7 +785,8 @@ impl Editor {
         self.buffer.end_undo_group();
         self.replace_in_buffer(range.clone(), &text, window, cx);
         // The new region's first column, which holds the block's first line.
-        let first = range.start + "::: columns\n\n".len();
+        // Past the open marker and the blank line after it.
+        let first = range.start + text.find("\n\n").map_or(0, |i| i + 2);
         self.buffer.set_cursor(first, false);
         cx.notify();
         true

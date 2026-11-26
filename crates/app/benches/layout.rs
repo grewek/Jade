@@ -69,8 +69,11 @@ fn float_heavy_note() -> String {
     let mut out = String::new();
     for i in 0..1500 {
         let side = if i % 2 == 0 { "right" } else { "left" };
-        out.push_str(&format!("::: float {side} 35%\n\n"));
-        out.push_str(&format!("**Float {i}**\n\n{}\n\n:::\n\n", words.repeat(3)));
+        out.push_str(&format!("<!-- jade:float {side} 35% -->\n\n"));
+        out.push_str(&format!(
+            "**Float {i}**\n\n{}\n\n<!-- jade:end -->\n\n",
+            words.repeat(3)
+        ));
         for _ in 0..3 {
             out.push_str(&words.repeat(6));
             out.push_str("\n\n");

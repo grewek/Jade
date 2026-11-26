@@ -10,7 +10,7 @@ pub type FenceState = Option<(u8, usize)>;
 /// What a line is, as far as fences go.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FenceRole {
-    /// Outside any fence.
+    /// Outside any fence; a layout marker always is.
     Plain,
     /// The line that opens or closes a fence.
     Delimiter,
@@ -18,16 +18,34 @@ pub enum FenceRole {
     Content,
 }
 
+/// How every line that shapes a layout (columns, asides, floats) starts. The
+/// rest of the grammar is the editor's.
+pub const MARKER_PREFIX: &str = "<!-- jade:";
+/// How such a line ends.
+pub const MARKER_SUFFIX: &str = "-->";
+
+/// Whether `line` is a layout marker: unindented, and the whole line.
+pub fn is_layout_marker(line: &str) -> bool {
+    line.starts_with(MARKER_PREFIX) && line.trim_end().ends_with(MARKER_SUFFIX)
+}
+
 /// The line's role and the fence state entering the next line, given the
-/// state entering `line`. An unclosed fence runs to the end of the text.
+/// state entering `line`. An unclosed fence runs to the next layout marker, or
+/// to the end of the text. A marker ends a fence from its own line alone,
+/// whether or not it forms a layout: asking that would need the markers
+/// paired first, which needs to know what is code.
+#[inline]
 pub fn step(state: FenceState, line: &str) -> (FenceRole, FenceState) {
     match state {
+        // A marker opens no fence, so only an open one has to look for it.
         None => match fence_delimiter(line) {
             Some(fence) => (FenceRole::Delimiter, Some(fence)),
             None => (FenceRole::Plain, None),
         },
         Some((fence_char, min_len)) => {
-            if closes_fence(line, fence_char, min_len) {
+            if is_layout_marker(line) {
+                (FenceRole::Plain, None)
+            } else if closes_fence(line, fence_char, min_len) {
                 (FenceRole::Delimiter, None)
             } else {
                 (FenceRole::Content, Some((fence_char, min_len)))
@@ -133,6 +151,35 @@ mod tests {
                 roles(&format!("```\n{text_after}")),
                 [Delimiter, Content],
                 "{text_after:?}"
+            );
+        }
+    }
+
+    /// A layout's end must not depend on the code inside it being finished
+    /// (#126).
+    #[test]
+    fn a_layout_marker_ends_an_open_fence() {
+        use FenceRole::*;
+        assert_eq!(
+            roles("```\nx\n<!-- jade:end -->\nafter\n```\ny"),
+            [Delimiter, Content, Plain, Plain, Delimiter, Content]
+        );
+        assert_eq!(
+            roles("~~~\n<!-- jade:float left 30% -->  \r\nx"),
+            [Delimiter, Plain, Plain]
+        );
+        for code in [
+            " <!-- jade:end -->",
+            "<!-- jade:end --> x",
+            "<!-- note -->",
+            "<!--jade:end-->",
+            "---",
+            ":::",
+        ] {
+            assert_eq!(
+                roles(&format!("```\n{code}")),
+                [Delimiter, Content],
+                "{code:?}"
             );
         }
     }

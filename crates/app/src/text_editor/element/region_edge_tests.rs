@@ -10,8 +10,8 @@ use gpui_kit::{
 
 use super::super::Editor;
 
-const COLUMNS: &str = "::: columns\n\n---\n\n:::";
-const ASIDE: &str = "::: aside right 40%\n\n---\n\n:::";
+const COLUMNS: &str = "<!-- jade:columns -->\n\n<!-- jade:next -->\n\n<!-- jade:end -->";
+const ASIDE: &str = "<!-- jade:aside right 40% -->\n\n<!-- jade:next -->\n\n<!-- jade:end -->";
 
 fn open(cx: &mut TestAppContext, text: &str) -> (AnyWindowHandle, Entity<Editor>) {
     let text = text.to_owned();
@@ -83,16 +83,32 @@ fn each_side_of_a_typed_region_takes_a_click_and_typing(cx: &mut TestAppContext)
         (
             COLUMNS,
             [
-                (0.2, 0, "::: columns\n\nx\n\n---\n\n:::"),
-                (0.8, 1, "::: columns\n\n---\n\nx\n\n:::"),
+                (
+                    0.2,
+                    0,
+                    "<!-- jade:columns -->\n\nx\n\n<!-- jade:next -->\n\n<!-- jade:end -->",
+                ),
+                (
+                    0.8,
+                    1,
+                    "<!-- jade:columns -->\n\n<!-- jade:next -->\n\nx\n\n<!-- jade:end -->",
+                ),
             ],
         ),
         // The float is on the right, the text (part 1) on the left.
         (
             ASIDE,
             [
-                (0.2, 1, "::: aside right 40%\n\n---\n\nx\n\n:::"),
-                (0.8, 0, "::: aside right 40%\n\nx\n\n---\n\n:::"),
+                (
+                    0.2,
+                    1,
+                    "<!-- jade:aside right 40% -->\n\n<!-- jade:next -->\n\nx\n\n<!-- jade:end -->",
+                ),
+                (
+                    0.8,
+                    0,
+                    "<!-- jade:aside right 40% -->\n\nx\n\n<!-- jade:next -->\n\n<!-- jade:end -->",
+                ),
             ],
         ),
     ];
@@ -112,12 +128,15 @@ fn each_side_of_a_typed_region_takes_a_click_and_typing(cx: &mut TestAppContext)
 
 #[gpui_kit::test]
 fn a_typed_float_block_takes_a_click_and_typing(cx: &mut TestAppContext) {
-    let (window, editor) = open(cx, "::: float right 40%\n\n:::\n\ntext");
+    let (window, editor) = open(
+        cx,
+        "<!-- jade:float right 40% -->\n\n<!-- jade:end -->\n\ntext",
+    );
     click(cx, window, 0.8);
     type_text(cx, window, "x");
     assert_eq!(
         text_of(cx, &editor),
-        "::: float right 40%\n\nx\n\n:::\n\ntext"
+        "<!-- jade:float right 40% -->\n\nx\n\n<!-- jade:end -->\n\ntext"
     );
     assert_eq!(caret_column(cx, &editor), Some(0));
 }
@@ -125,9 +144,18 @@ fn a_typed_float_block_takes_a_click_and_typing(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn enter_tab_and_paste_keep_a_bare_column_in_the_region(cx: &mut TestAppContext) {
     let cases = [
-        ("enter", "::: columns\n\n---\n\n\n\n\n:::"),
-        ("tab", "::: columns\n\n---\n\n\t\n\n:::"),
-        ("ctrl-v", "::: columns\n\n---\n\na\nb\n\n:::"),
+        (
+            "enter",
+            "<!-- jade:columns -->\n\n<!-- jade:next -->\n\n\n\n\n<!-- jade:end -->",
+        ),
+        (
+            "tab",
+            "<!-- jade:columns -->\n\n<!-- jade:next -->\n\n\t\n\n<!-- jade:end -->",
+        ),
+        (
+            "ctrl-v",
+            "<!-- jade:columns -->\n\n<!-- jade:next -->\n\na\nb\n\n<!-- jade:end -->",
+        ),
     ];
     for (key, expected) in cases {
         let (window, editor) = open(cx, COLUMNS);
@@ -154,7 +182,10 @@ fn composing_in_a_bare_column_marks_only_the_composed_text(cx: &mut TestAppConte
         window.render_frame(cx);
     })
     .unwrap();
-    assert_eq!(text_of(cx, &editor), "::: columns\n\n---\n\nâ\n\n:::");
+    assert_eq!(
+        text_of(cx, &editor),
+        "<!-- jade:columns -->\n\n<!-- jade:next -->\n\nâ\n\n<!-- jade:end -->"
+    );
     assert_eq!(caret_column(cx, &editor), Some(1));
 }
 
@@ -179,18 +210,23 @@ fn an_empty_region_can_be_inserted_on_a_blank_line(cx: &mut TestAppContext) {
     let float: Insert = |e, w, c| e.insert_float(true, w, c);
     // (source, caret, entry, result)
     let cases = [
-        ("", 0, columns, "::: columns\n\n\n\n---\n\n\n\n:::"),
+        (
+            "",
+            0,
+            columns,
+            "<!-- jade:columns -->\n\n\n\n<!-- jade:next -->\n\n\n\n<!-- jade:end -->",
+        ),
         (
             "a\n\nb",
             2,
             columns,
-            "a\n\n::: columns\n\n\n\n---\n\n\n\n:::\n\nb",
+            "a\n\n<!-- jade:columns -->\n\n\n\n<!-- jade:next -->\n\n\n\n<!-- jade:end -->\n\nb",
         ),
         (
             "a\n",
             2,
             float,
-            "a\n\n::: aside right 40%\n\n\n\n---\n\n\n\n:::",
+            "a\n\n<!-- jade:aside right 40% -->\n\n\n\n<!-- jade:next -->\n\n\n\n<!-- jade:end -->",
         ),
     ];
     for (source, caret, insert, expected) in cases {
@@ -229,7 +265,7 @@ fn a_blank_line_of_fenced_code_offers_no_region(cx: &mut TestAppContext) {
 /// line the marker needs, and the keys that would remove it do nothing.
 #[gpui_kit::test]
 fn editing_beside_a_region_keeps_it_a_region(cx: &mut TestAppContext) {
-    let region = "::: columns\n\na\n\n---\n\nb\n\n:::";
+    let region = "<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->";
     let source = format!("top\n\n{region}\n\nend");
     let before = "top\n".len();
     let after = source.len() - "\nend".len();
@@ -269,9 +305,9 @@ fn editing_beside_a_region_keeps_it_a_region(cx: &mut TestAppContext) {
 fn structure_edits_keep_the_caret_with_its_text(cx: &mut TestAppContext) {
     use gpui_kit::{Context, Window};
     type Edit = fn(&mut Editor, &mut Window, &mut Context<Editor>) -> bool;
-    let columns = "intro\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nend";
-    let aside = "::: aside right 40%\n\nfloat\n\n---\n\nwords\n\n:::";
-    let float = "one\n\n::: float right 30%\n\nbox\n\n:::\n\ntwo";
+    let columns = "intro\n\n<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n\noutro";
+    let aside = "<!-- jade:aside right 40% -->\n\nfloat\n\n<!-- jade:next -->\n\nwords\n\n<!-- jade:end -->";
+    let float = "one\n\n<!-- jade:float right 30% -->\n\nbox\n\n<!-- jade:end -->\n\ntwo";
     let narrow_left: Edit = |e, w, c| e.set_region_ratio(0, vec![30, 70], w, c);
     let narrow_right: Edit = |e, w, c| e.set_region_ratio(0, vec![70, 30], w, c);
     let add: Edit = |e, w, c| e.add_region_column(0, w, c);
@@ -283,10 +319,10 @@ fn structure_edits_keep_the_caret_with_its_text(cx: &mut TestAppContext) {
         (columns, "right", narrow_left),
         (columns, "left", narrow_right),
         (columns, "intro", narrow_left),
-        (columns, "end", narrow_left),
+        (columns, "outro", narrow_left),
         (columns, "right", add),
         (columns, "right", unwrap),
-        (columns, "end", unwrap),
+        (columns, "outro", unwrap),
         (aside, "words", Editor::flip_aside),
         (aside, "words", add),
         (float, "box", up),
@@ -339,8 +375,9 @@ fn floating_a_block_puts_the_caret_at_its_start(cx: &mut TestAppContext) {
 fn undoing_a_structure_edit_restores_the_caret(cx: &mut TestAppContext) {
     use gpui_kit::{Context, Window};
     type Edit = fn(&mut Editor, &mut Window, &mut Context<Editor>) -> bool;
-    let columns = "::: columns\n\nleft\n\n---\n\nright\n\n:::";
-    let float = "one\n\n::: float right 30%\n\nbox\n\n:::\n\ntwo";
+    let columns =
+        "<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->";
+    let float = "one\n\n<!-- jade:float right 30% -->\n\nbox\n\n<!-- jade:end -->\n\ntwo";
     let cases: [(&str, &str, Edit); 5] = [
         (columns, "right", |e, w, c| {
             e.set_region_ratio(0, vec![30, 70], w, c)
@@ -373,10 +410,12 @@ fn undoing_a_structure_edit_restores_the_caret(cx: &mut TestAppContext) {
 /// Up on the first row of one that starts it a line above (#119).
 #[gpui_kit::test]
 fn arrows_leave_a_region_at_the_end_or_start_of_the_note(cx: &mut TestAppContext) {
-    let columns = "::: columns\n\nleft\n\n---\n\nr1\nr2\n\n:::";
-    let aside = "::: aside right 40%\n\nbox\n\n---\n\nwords\n\n:::";
-    let float = "::: float right 30%\n\nbox\n\n:::";
-    let float_newline = "::: float right 30%\n\nbox\n\n:::\n";
+    let columns =
+        "<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nr1\nr2\n\n<!-- jade:end -->";
+    let aside =
+        "<!-- jade:aside right 40% -->\n\nbox\n\n<!-- jade:next -->\n\nwords\n\n<!-- jade:end -->";
+    let float = "<!-- jade:float right 30% -->\n\nbox\n\n<!-- jade:end -->";
+    let float_newline = "<!-- jade:float right 30% -->\n\nbox\n\n<!-- jade:end -->\n";
     let below = |source: &str| format!("{source}\n\nx");
     let above = |source: &str| format!("x\n\n{source}");
     // (source, the word the caret is in, key, result of the key and an "x")
@@ -419,11 +458,12 @@ fn arrows_leave_a_region_at_the_end_or_start_of_the_note(cx: &mut TestAppContext
 /// added.
 #[gpui_kit::test]
 fn arrows_add_nothing_while_there_is_somewhere_to_go(cx: &mut TestAppContext) {
-    let columns = "::: columns\n\nleft\n\n---\n\nr1\nr2\n\n:::";
-    let between = "top\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nend";
-    let stacked = "::: aside left 30%\n\none\n\n--- left 30%\n\ntwo\n\n---\n\nwords\n\n:::";
+    let columns =
+        "<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nr1\nr2\n\n<!-- jade:end -->";
+    let between = "top\n\n<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->\n\nend";
+    let stacked = "<!-- jade:aside left 30% -->\n\none\n\n<!-- jade:next left 30% -->\n\ntwo\n\n<!-- jade:next -->\n\nwords\n\n<!-- jade:end -->";
     // A float with no text, and another region right after it.
-    let crowded = "::: float right 30%\n\nbox\n\n:::\n\n::: columns\n\na\n\n---\n\nb\n\n:::";
+    let crowded = "<!-- jade:float right 30% -->\n\nbox\n\n<!-- jade:end -->\n\n<!-- jade:columns -->\n\na\n\n<!-- jade:next -->\n\nb\n\n<!-- jade:end -->";
     let cases = [
         (crowded, "box", "down"),
         (columns, "r1", "down"),
@@ -461,7 +501,8 @@ fn arrows_add_nothing_while_there_is_somewhere_to_go(cx: &mut TestAppContext) {
 /// stops at its text, not on the hidden close marker.
 #[gpui_kit::test]
 fn the_mouse_never_leaves_the_caret_on_a_hidden_line(cx: &mut TestAppContext) {
-    let source = "::: columns\n\nleft\n\n---\n\nright\n\n:::";
+    let source =
+        "<!-- jade:columns -->\n\nleft\n\n<!-- jade:next -->\n\nright\n\n<!-- jade:end -->";
     for what in ["click", "right click", "drag"] {
         let (window, editor) = open(cx, source);
         cx.update_window(window, |_, window, cx| {
