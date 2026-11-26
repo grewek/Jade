@@ -124,7 +124,7 @@ pub(super) fn register_mouse_handling(
                 hit_for_position(editor_entity.read(cx), &view, event.position, window).offset;
             editor_entity.update(cx, |editor, cx| {
                 if editor.is_table_line_at(offset) || editor.buffer().selection().is_none() {
-                    editor.buffer_mut().set_cursor(offset, false);
+                    editor.place_from_pointer(offset, false);
                     cx.notify();
                 }
             });
@@ -179,7 +179,7 @@ pub(super) fn register_mouse_handling(
                 return;
             }
             editor_entity.update(cx, |editor, cx| {
-                editor.buffer_mut().set_cursor(offset, false);
+                editor.place_from_pointer(offset, false);
                 editor.is_dragging = true;
                 cx.notify();
             });
@@ -281,7 +281,7 @@ pub(super) fn register_mouse_handling(
             let offset = offset_for_position(editor_entity.read(cx), &view, event.position, window);
             editor_entity.update(cx, |editor, cx| {
                 let offset = editor.clamp_to_cell(offset);
-                editor.buffer_mut().set_cursor(offset, true);
+                editor.place_from_pointer(offset, true);
                 cx.notify();
             });
         }

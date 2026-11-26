@@ -959,7 +959,27 @@ pub(super) fn caret_bounds(
         (colors, None),
         window,
     );
-    let column = column_with_line(&shaped, line)?;
+    caret_in_shaped(
+        (text, doc),
+        &shaped,
+        offset,
+        (cursor, focused),
+        (font_size, line_height),
+        (region_top, bounds),
+    )
+}
+
+/// [`caret_bounds`] in a region already shaped.
+fn caret_in_shaped(
+    (text, doc): (&str, &DocumentCache),
+    shaped: &ShapedRegion,
+    offset: usize,
+    (cursor, focused): (usize, bool),
+    (font_size, line_height): (Pixels, Pixels),
+    (region_top, bounds): (Pixels, Bounds<Pixels>),
+) -> Option<Bounds<Pixels>> {
+    let line = doc.line_at(offset);
+    let column = column_with_line(shaped, line)?;
     let line_start = doc.line_start_byte(line);
     let within = offset - line_start;
     // A line cut around a float is two entries: the one holding the offset (the
@@ -968,10 +988,9 @@ pub(super) fn caret_bounds(
     let sl = pieces()
         .find(|sl| sl.raw.start <= within && within < sl.raw.end)
         .or_else(|| pieces().last())?;
-    let line_text = &text[doc.line_start_byte(line)..doc.line_end_byte(line)];
     let heights = entry_heights(
         &sl.results,
-        line_text,
+        &text[line_start..doc.line_end_byte(line)],
         (font_size, line_height),
         doc.macros(),
     );
@@ -995,6 +1014,47 @@ pub(super) fn caret_bounds(
         });
     }
     None
+}
+
+/// Whether no row lies below (`down`) or above the caret in its stretch of
+/// the region: not in its own line, and in no line under its x. A short column
+/// ends here even when its neighbour runs on, as arrows move by painted row.
+pub(super) fn at_edge_row(
+    (text, doc): (&str, &DocumentCache),
+    shaped: &ShapedRegion,
+    (cursor, down): (usize, bool),
+    (font_size, line_height): (Pixels, Pixels),
+) -> bool {
+    let caret_at = |offset| {
+        caret_in_shaped(
+            (text, doc),
+            shaped,
+            offset,
+            (cursor, true),
+            (font_size, line_height),
+            (px(0.), Bounds::default()),
+        )
+    };
+    let line = doc.line_at(cursor);
+    let within = cursor - doc.line_start_byte(line);
+    let pieces = || {
+        let lines = shaped.columns.iter().flat_map(|c| &c.lines);
+        lines.filter(|sl| !sl.results.is_empty())
+    };
+    let own = pieces()
+        .filter(|sl| sl.line == line)
+        .find(|sl| sl.raw.start <= within && within <= sl.raw.end);
+    let (Some(own), Some(caret)) = (own, caret_at(cursor)) else {
+        return false;
+    };
+    let end = if down { own.raw.end } else { own.raw.start };
+    let same_row =
+        caret_at(doc.line_start_byte(line) + end).is_some_and(|c| c.origin.y == caret.origin.y);
+    same_row
+        && !pieces().any(|sl| {
+            let beyond = if down { sl.y > own.y } else { sl.y < own.y };
+            beyond && (sl.x..sl.x + sl.width).contains(&caret.origin.x)
+        })
 }
 
 /// Where `shaped` put its parts, for the paint trace (only built when tracing).
