@@ -396,8 +396,8 @@ pub(in crate::text_editor) fn render_editor(
         .child(editor_div)
 }
 
-/// The right-click menu: table structure for the caret's cell, nothing (so no
-/// menu) outside a table. The caret was moved to the clicked cell just before
+/// The right-click menu: table structure for the caret's cell, else the column
+/// and float entries, nothing (so no menu) where neither applies. The caret was moved to the clicked cell just before
 /// (`register_mouse_handling`), so the entries are built for that cell.
 pub(super) fn table_menu(
     editor: Entity<Editor>,
@@ -453,7 +453,9 @@ pub(super) fn table_menu(
 }
 
 /// The column entries for the caret: add a column and unwrap inside a
-/// region, flip and unwrap on a float, float entries on a block, "Make columns" (and a disabled unwrap) on a block, none elsewhere.
+/// region, flip and unwrap on a float, "Make columns" and float entries on a
+/// block, inserting an empty one on a blank line, none elsewhere (code,
+/// callouts, headings: a marker would cut them).
 pub(super) fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<Vec<PopupMenuItem>> {
     let state = editor.read(cx).column_menu_state()?;
     let run = |label: &'static str,
@@ -469,6 +471,15 @@ pub(super) fn column_menu(editor: &Entity<Editor>, cx: &App) -> Option<Vec<Popup
             })
     };
     Some(match state {
+        ColumnMenu::Blank => vec![
+            run("Insert columns", true, Editor::insert_columns),
+            run("Insert float right", true, |e, w, c| {
+                e.insert_float(true, w, c)
+            }),
+            run("Insert float left", true, |e, w, c| {
+                e.insert_float(false, w, c)
+            }),
+        ],
         ColumnMenu::Block => vec![
             run("Make columns", true, Editor::make_columns),
             run("Float right", true, |e, w, c| e.make_float(true, w, c)),

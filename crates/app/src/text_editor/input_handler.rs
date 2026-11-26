@@ -111,13 +111,16 @@ impl EntityInputHandler for Editor {
             Some((range, escaped)) => (range, std::borrow::Cow::Owned(escaped)),
             None => (replace_range, std::borrow::Cow::Borrowed(text)),
         };
+        self.marked_range = None;
+        if self.insert_in_bare_column(replace_range.clone(), &text, window, cx) {
+            return;
+        }
         let edit = TextEdit {
             start_byte: replace_range.start,
             old_end_byte: replace_range.end,
             new_end_byte: replace_range.start + text.len(),
         };
         self.buffer.replace_range_with(replace_range, &text);
-        self.marked_range = None;
         self.record_edit(edit, window, cx);
     }
 
@@ -130,13 +133,19 @@ impl EntityInputHandler for Editor {
         cx: &mut Context<Self>,
     ) {
         let replace_range = resolve_replace_range(&self.buffer, &self.marked_range, range_utf16);
+        let (lead, trail) = if new_text.is_empty() {
+            ("", "")
+        } else {
+            self.column_padding(&replace_range, new_text)
+        };
+        let padded = [lead, new_text, trail].concat();
         let edit = TextEdit {
             start_byte: replace_range.start,
             old_end_byte: replace_range.end,
-            new_end_byte: replace_range.start + new_text.len(),
+            new_end_byte: replace_range.start + padded.len(),
         };
-        let marked_start = replace_range.start;
-        self.buffer.replace_range_with(replace_range, new_text);
+        let marked_start = replace_range.start + lead.len();
+        self.buffer.replace_range_with(replace_range, &padded);
         let marked_end = marked_start + new_text.len();
         self.marked_range = Some(marked_start..marked_end);
 

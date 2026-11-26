@@ -4,12 +4,14 @@
 //! down a column and then into the next in source order, and the keys that
 //! would delete their newline do nothing. Ctrl+/ shows a region's source.
 
+use std::ops::Range;
+
 use gpui_kit::*;
 
 use super::super::columns;
 use super::super::columns::Columns;
 use super::super::columns::Kind;
-use super::super::doc::DocumentCache;
+use super::super::doc::{DocumentCache, TextEdit};
 use super::super::element::render_params;
 use super::super::preview::LineRole;
 use super::super::rows::{Change, Inputs};
@@ -27,6 +29,8 @@ pub(in crate::text_editor) enum ColumnMenu {
     Float,
     /// The caret is in a plain block that can become the first column, or a float.
     Block,
+    /// The caret is on a blank line where an empty region can be put.
+    Blank,
 }
 
 /// The longest run of hidden lines a vertical move steps over: a close marker,
@@ -38,6 +42,21 @@ const MAX_HIDDEN_RUN: usize = 8;
 pub(in crate::text_editor) fn is_hidden_line(doc: &DocumentCache, line: usize) -> bool {
     doc.side_by_side(line)
         .is_some_and(|(region, _)| region.column_of(line).is_none())
+}
+
+/// Where `offset`, outside `replaced`, is once that range holds `len` bytes.
+fn shifted(offset: usize, replaced: &Range<usize>, len: usize) -> usize {
+    if offset < replaced.start {
+        offset
+    } else {
+        offset - replaced.len() + len
+    }
+}
+
+/// Whether `line` is a marker of a region laid out side by side.
+fn is_shown_marker(doc: &DocumentCache, line: usize) -> bool {
+    doc.side_by_side(line)
+        .is_some_and(|(region, _)| region.is_marker(line))
 }
 
 impl Editor {
@@ -87,20 +106,101 @@ impl Editor {
         self.skip_hidden_lines(down, extend);
     }
 
-    /// Whether the newline `Backspace` (`backward`) or `Delete` would remove
-    /// joins a column's edge line to a hidden one: that would break the
-    /// region's blank-line padding, so the key does nothing there.
+    /// The newlines that typing `text` over `range` must bring along on each
+    /// side, so a marker next to the caret's line stays alone between blank
+    /// lines and its region survives. In a column (only one with nothing but
+    /// padding has a line next to a marker) the padding always comes, to keep
+    /// the caret off it; on the blank line outside a region, only once that
+    /// line would no longer be blank.
+    pub(in crate::text_editor) fn column_padding(
+        &self,
+        range: &Range<usize>,
+        text: &str,
+    ) -> (&'static str, &'static str) {
+        let doc = self.document_cache.borrow();
+        let (first, last) = (doc.line_at(range.start), doc.line_at(range.end));
+        let column = match doc.side_by_side(first) {
+            Some((region, _)) => match region.column_of(first) {
+                Some(k) if region.column_of(last) == Some(k) => true,
+                _ => return ("", ""),
+            },
+            None => false,
+        };
+        let lead = first > 0 && is_shown_marker(&doc, first - 1);
+        let trail = last + 1 < doc.line_count() && is_shown_marker(&doc, last + 1);
+        if !lead && !trail {
+            return ("", "");
+        }
+        // What the first and the last line of the result hold.
+        let source = self.buffer.text();
+        let blank = |s: &str| s.trim().is_empty();
+        let before = blank(&source[doc.line_start_byte(first)..range.start]);
+        let after = blank(&source[range.end..doc.line_end_byte(last)]);
+        let one_line = !text.contains('\n');
+        let mut pieces = text.split('\n');
+        let first_blank = before && pieces.next().is_none_or(blank) && (!one_line || after);
+        let last_blank =
+            after && text.rsplit('\n').next().is_none_or(blank) && (!one_line || before);
+        let pad = |needed: bool| if needed { "\n" } else { "" };
+        (
+            pad(lead && (column || !first_blank)),
+            pad(trail && (column || !last_blank)),
+        )
+    }
+
+    /// Typing, pasting, Enter or Tab on a line that needs [`Self::column_padding`]:
+    /// the text and its padding as one edit, the caret after the text. `false`
+    /// (nothing done) everywhere else.
+    pub(in crate::text_editor) fn insert_in_bare_column(
+        &mut self,
+        range: Range<usize>,
+        text: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (lead, trail) = self.column_padding(&range, text);
+        if text.is_empty() || (lead.is_empty() && trail.is_empty()) {
+            return false;
+        }
+        let caret = range.start + lead.len() + text.len();
+        let padded = [lead, text, trail].concat();
+        let edit = TextEdit {
+            start_byte: range.start,
+            old_end_byte: range.end,
+            new_end_byte: range.start + padded.len(),
+        };
+        self.buffer.replace_range_with(range, &padded);
+        self.buffer.set_cursor(caret, false);
+        self.record_edit(edit, window, cx);
+        true
+    }
+
+    /// Whether `Backspace` (`backward`) or `Delete` at a line's edge would
+    /// break a region, and so does nothing: it would join a column's edge line
+    /// to a hidden one, or put text right next to a marker.
     pub(in crate::text_editor) fn at_region_edge(&self, backward: bool) -> bool {
         let doc = self.document_cache.borrow();
         let cursor = self.buffer.cursor();
         let line = doc.line_at(cursor);
-        if backward {
-            cursor == doc.line_start_byte(line) && line > 0 && is_hidden_line(&doc, line - 1)
+        // The newline in question joins lines `above` and `above + 1`.
+        let above = if backward {
+            if cursor != doc.line_start_byte(line) || line == 0 {
+                return false;
+            }
+            line - 1
         } else {
-            cursor == doc.line_end_byte(line)
-                && line + 1 < doc.line_count()
-                && is_hidden_line(&doc, line + 1)
+            if cursor != doc.line_end_byte(line) || line + 1 >= doc.line_count() {
+                return false;
+            }
+            line
+        };
+        let below = above + 1;
+        if is_hidden_line(&doc, above) || is_hidden_line(&doc, below) {
+            return true;
         }
+        let next_to_marker = (above > 0 && is_shown_marker(&doc, above - 1))
+            || (below + 1 < doc.line_count() && is_shown_marker(&doc, below + 1));
+        next_to_marker && !(self.is_blank_line(&doc, above) && self.is_blank_line(&doc, below))
     }
 
     /// Works out which region is shown as source from where the caret is. Called
@@ -200,21 +300,25 @@ impl Editor {
                 can_add: region.count < crate::text_editor::columns::MAX_COLUMNS,
             });
         }
-        self.block_lines(&doc, line).map(|_| ColumnMenu::Block)
+        if self.block_lines(&doc, line).is_some() {
+            return Some(ColumnMenu::Block);
+        }
+        // Not a blank line of fenced code: a marker there would be code.
+        (self.is_blank_line(&doc, line) && doc.line_roles().get(line) == Some(&LineRole::Plain))
+            .then_some(ColumnMenu::Blank)
+    }
+
+    fn is_blank_line(&self, doc: &DocumentCache, line: usize) -> bool {
+        let range = doc.line_start_byte(line)..doc.line_end_byte(line);
+        self.buffer.text()[range].trim().is_empty()
     }
 
     /// The lines of the paragraph-like block holding `line`: the run of
     /// non-blank lines around it, with a blank line (or the document edge) on
     /// both sides. `None` in code, a table or a callout, whose own structure
     /// a column marker would cut.
-    fn block_lines(&self, doc: &DocumentCache, line: usize) -> Option<std::ops::Range<usize>> {
-        let text = self.buffer.text();
-        let blank = |l: usize| {
-            doc.line_end_byte(l) == doc.line_start_byte(l)
-                || text[doc.line_start_byte(l)..doc.line_end_byte(l)]
-                    .trim()
-                    .is_empty()
-        };
+    fn block_lines(&self, doc: &DocumentCache, line: usize) -> Option<Range<usize>> {
+        let blank = |l: usize| self.is_blank_line(doc, l);
         let plain = |l: usize| {
             doc.line_roles().get(l) == Some(&LineRole::Plain)
                 && crate::text_editor::table::table_index_at(doc.tables(), l).is_none()
@@ -236,7 +340,7 @@ impl Editor {
     }
 
     /// Replaces region `index`'s lines with what `make` returns, as one undo
-    /// step, and leaves the caret on the region's first visible line.
+    /// step. The caret stays with the text it was in.
     fn edit_region(
         &mut self,
         index: usize,
@@ -244,7 +348,8 @@ impl Editor {
         cx: &mut Context<Self>,
         make: impl FnOnce(&[&str], &Columns) -> Option<Vec<String>>,
     ) -> bool {
-        let (range, text) = {
+        let caret = self.buffer.cursor();
+        let (range, text, caret) = {
             let doc = self.document_cache.borrow();
             let Some(&region) = doc.columns().get(index) else {
                 return false;
@@ -255,6 +360,18 @@ impl Editor {
                 .collect();
             let Some(new) = make(&old, &region) else {
                 return false;
+            };
+            let whole =
+                doc.line_start_byte(region.start_line)..doc.line_end_byte(region.end_line - 1);
+            let new_len = new.iter().map(|l| l.len() + 1).sum::<usize>() - 1;
+            let caret = if caret < whole.start || caret > whole.end {
+                shifted(caret, &whole, new_len)
+            } else {
+                let line = doc.line_at(caret);
+                let i = line - region.start_line;
+                let j = columns::ops::moved_line(&old, &new, &region, i);
+                let before: usize = new[..j].iter().map(|l| l.len() + 1).sum();
+                whole.start + before + (caret - doc.line_start_byte(line)).min(new[j].len())
             };
             // The same lines but a few (a share changed): replace just those,
             // not a float block's whole text.
@@ -276,15 +393,21 @@ impl Editor {
             } else {
                 0..=new.len() - 1
             };
-            (range, new[new_span].join("\n"))
+            (range, new[new_span].join("\n"), caret)
         };
         // A move first, so this edit never merges into the typing before it.
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
-        self.buffer.set_cursor(range.start, false);
-        self.skip_hidden_lines(true, false);
+        self.place_caret(caret);
         cx.notify();
         true
+    }
+
+    /// The caret after a structure edit, never left on a hidden line (typing
+    /// there would end the region).
+    fn place_caret(&mut self, caret: usize) {
+        self.buffer.set_cursor(caret, false);
+        self.skip_hidden_lines(true, false);
     }
 
     /// Sets region `index`'s shares, after a divider drag.
@@ -396,7 +519,8 @@ impl Editor {
         let Some((index, k)) = self.float_at_caret() else {
             return false;
         };
-        let (range, text) = {
+        let caret = self.buffer.cursor();
+        let (range, text, caret) = {
             let doc = self.document_cache.borrow();
             let region = doc.columns()[index];
             let source = self.buffer.text();
@@ -406,11 +530,18 @@ impl Editor {
                 .collect();
             let range =
                 doc.line_start_byte(region.open_of(k))..doc.line_end_byte(region.separators()[k]);
-            (range, content.join("\n"))
+            let text = content.join("\n");
+            let first = doc.line_start_byte(region.column_lines(k).start);
+            let caret = if caret < range.start || caret > range.end {
+                shifted(caret, &range, text.len())
+            } else {
+                range.start + caret.saturating_sub(first).min(text.len())
+            };
+            (range, text, caret)
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
-        self.buffer.set_cursor(range.start, false);
+        self.place_caret(caret);
         cx.notify();
         true
     }
@@ -427,6 +558,7 @@ impl Editor {
         let Some((index, k)) = self.float_at_caret() else {
             return false;
         };
+        let caret = self.buffer.cursor();
         let (range, text, caret) = {
             let doc = self.document_cache.borrow();
             let region = doc.columns()[index];
@@ -463,17 +595,29 @@ impl Editor {
             lines.push("");
             lines.extend(second.iter().copied());
             let range = doc.line_start_byte(span.start)..doc.line_end_byte(span.end - 1);
-            let caret = range.start
-                + if down {
-                    para_text.iter().map(|l| l.len() + 1).sum::<usize>() + 1
-                } else {
-                    0
-                };
-            (range, lines.join("\n"), caret)
+            let text = lines.join("\n");
+            // The caret goes with whichever of the two blocks it was in; the
+            // second one starts after the first and a blank line.
+            let second_start = range.start + first.iter().map(|l| l.len() + 1).sum::<usize>() + 1;
+            let (block_start, para_start) = if down {
+                (second_start, range.start)
+            } else {
+                (range.start, second_start)
+            };
+            let old_block = doc.line_start_byte(open)..doc.line_end_byte(close);
+            let old_para = doc.line_start_byte(para.start)..doc.line_end_byte(para.end - 1);
+            let caret = if caret < range.start || caret > range.end {
+                shifted(caret, &range, text.len())
+            } else if (old_para.start..=old_para.end).contains(&caret) {
+                para_start + (caret - old_para.start)
+            } else {
+                block_start + (caret.clamp(old_block.start, old_block.end) - old_block.start)
+            };
+            (range, text, caret)
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
-        self.buffer.set_cursor(caret, false);
+        self.place_caret(caret);
         cx.notify();
         true
     }
@@ -486,7 +630,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (range, text) = {
+        let (range, text, first) = {
             let doc = self.document_cache.borrow();
             let line = doc.line_at(self.buffer.cursor());
             let Some(block) = self.block_lines(&doc, line) else {
@@ -512,15 +656,14 @@ impl Editor {
             }
             let lines: Vec<&str> = block.clone().map(line_text).collect();
             let range = doc.line_start_byte(block.start)..doc.line_end_byte(end - 1);
-            (
-                range,
-                columns::ops::floated(&lines, &text, right).join("\n"),
-            )
+            let out = columns::ops::floated(&lines, &text, right);
+            // Past the open marker and its padding line.
+            let first = range.start + out[0].len() + "\n\n".len();
+            (range, out.join("\n"), first)
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
-        self.buffer
-            .set_cursor(range.start + "::: aside right 40%\n\n".len(), false);
+        self.buffer.set_cursor(first, false);
         cx.notify();
         true
     }
@@ -544,6 +687,56 @@ impl Editor {
         } else {
             self.unwrap_region(index, window, cx)
         }
+    }
+
+    /// Puts an empty region (`lines`, as `columns::ops` makes it) on the
+    /// caret's blank line, with the blank lines its markers need around it,
+    /// and the caret in its first part.
+    fn insert_region(
+        &mut self,
+        lines: Vec<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let (range, lead, trail) = {
+            let doc = self.document_cache.borrow();
+            let line = doc.line_at(self.buffer.cursor());
+            if !self.is_blank_line(&doc, line) {
+                return false;
+            }
+            let lead = line > 0 && !self.is_blank_line(&doc, line - 1);
+            let trail = line + 1 < doc.line_count() && !self.is_blank_line(&doc, line + 1);
+            let range = doc.line_start_byte(line)..doc.line_end_byte(line);
+            (range, lead, trail)
+        };
+        let pad = |needed: bool| if needed { "\n" } else { "" };
+        let text = [pad(lead), &lines.join("\n"), pad(trail)].concat();
+        // Past the open marker and its padding line.
+        let first = range.start + pad(lead).len() + lines[0].len() + "\n\n".len();
+        self.buffer.set_cursor(range.start, false);
+        self.replace_in_buffer(range.clone(), &text, window, cx);
+        self.buffer.set_cursor(first, false);
+        cx.notify();
+        true
+    }
+
+    /// Two empty columns on the caret's blank line.
+    pub(in crate::text_editor) fn insert_columns(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.insert_region(columns::ops::wrapped(&[""]), window, cx)
+    }
+
+    /// An empty float and the empty text beside it, on the caret's blank line.
+    pub(in crate::text_editor) fn insert_float(
+        &mut self,
+        right: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        self.insert_region(columns::ops::floated(&[""], &[], right), window, cx)
     }
 
     /// Makes the block around the caret the first of two columns.

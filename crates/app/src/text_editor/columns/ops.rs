@@ -168,6 +168,39 @@ pub fn unwrapped(lines: &[&str], region: &Columns) -> Vec<String> {
     out
 }
 
+/// Where line `i` of a region (`old`, counted from its open marker) is in the
+/// lines `new` that one of these edits made of it: marker rewrites keep every
+/// line, an added part pushes the lines after it down, and unwrapping keeps the
+/// parts' content. A line that is gone maps to the first.
+pub fn moved_line(old: &[&str], new: &[String], region: &Columns, i: usize) -> usize {
+    assert!(i < old.len() && !new.is_empty());
+    if new.len() >= old.len() {
+        // The open marker may be rewritten too; the insertion is the first
+        // later line that differs.
+        let at = (1..old.len())
+            .find(|&l| old[l] != new[l])
+            .unwrap_or(old.len());
+        return if i < at { i } else { i + new.len() - old.len() };
+    }
+    let mut out = 0;
+    for k in 0..region.count {
+        let range = region.column_lines(k);
+        let (a, b) = (
+            range.start - region.start_line,
+            range.end - region.start_line,
+        );
+        if old[a..b].iter().all(|l| l.trim().is_empty()) {
+            continue;
+        }
+        out += usize::from(out > 0);
+        if (a..b).contains(&i) {
+            return (out + i - a).min(new.len() - 1);
+        }
+        out += b - a;
+    }
+    0
+}
+
 /// `block` as the first of two columns, the second one blank line: a column
 /// with no line at all has nothing for the caret to rest on, so a click could
 /// never reach it.

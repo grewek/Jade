@@ -254,18 +254,20 @@ impl Columns {
                 && (self.opens[1..self.count - 1].contains(&line) || self.clears().contains(&line)))
     }
 
-    /// The lines of column `k`, without the blank line that pads each marker
-    /// (empty when only that blank line lies between two markers). A tail's
+    /// The lines of column `k`, without the blank line that pads each marker.
+    /// A column with nothing but padding (a hand-typed one has a single blank
+    /// line) is all of it, so the caret still has a line there; typing then
+    /// adds the padding (`Editor::insert_in_bare_column`). A tail's
     /// text part is the whole stretch after its first float; the lines of its
     /// later floats are in it too, see [`Self::text_lines`].
     pub fn column_lines(&self, k: usize) -> Range<usize> {
         assert!(k < self.count, "column {k} of {}", self.count);
-        let (start, end) = if self.tail {
-            if k + 1 == self.count {
-                (self.separators[0] + 2, self.end_line)
-            } else {
-                (self.open_of(k) + 2, self.separators[k] - 1)
-            }
+        if self.tail && k + 1 == self.count {
+            let start = self.separators[0] + 2;
+            return start..self.end_line.max(start);
+        }
+        let (before, after) = if self.tail {
+            (self.open_of(k), self.separators[k])
         } else {
             let first = if k == 0 {
                 self.start_line
@@ -277,12 +279,12 @@ impl Columns {
             } else {
                 self.separators[k]
             };
-            (first + 2, next - 1)
+            (first, next)
         };
-        if start < end {
-            start..end
+        if before + 2 < after - 1 {
+            before + 2..after - 1
         } else {
-            start..start
+            before + 1..after
         }
     }
 }
@@ -824,10 +826,15 @@ mod tests {
     }
 
     #[test]
-    fn empty_columns_are_allowed() {
+    fn a_column_of_one_blank_line_has_that_line() {
         let r = scan_text("::: columns\n\n---\n\n:::")[0];
-        assert_eq!(r.column_lines(0), 2..2);
-        assert_eq!(r.column_lines(1), 4..4);
+        assert_eq!(r.column_lines(0), 1..2);
+        assert_eq!(r.column_lines(1), 3..4);
+        // A second blank line (Enter there) is content too, until there is
+        // room for a padding line on each side of it.
+        let r = scan_text("::: columns\n\n\n---\n\n\n\n:::")[0];
+        assert_eq!(r.column_lines(0), 1..3);
+        assert_eq!(r.column_lines(1), 5..6);
     }
 
     #[test]

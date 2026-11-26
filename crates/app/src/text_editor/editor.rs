@@ -9,6 +9,8 @@ use gpui_kit::*;
 mod code_spans;
 mod column_edit;
 pub(super) use column_edit::ColumnMenu;
+#[cfg(test)]
+pub(super) use column_edit::is_hidden_line;
 mod table_edit;
 
 use super::EditorBuffer;
@@ -641,6 +643,9 @@ impl Editor {
                             self.replace_in_buffer(range, &text, window, cx);
                             return;
                         }
+                        if self.insert_in_bare_column(old_range.clone(), &text, window, cx) {
+                            return;
+                        }
                         let edit = edit_for_insertion(old_range, text.len());
                         self.buffer.insert(&text);
                         self.record_edit(edit, window, cx);
@@ -772,9 +777,11 @@ impl Editor {
                     let c = self.buffer.cursor();
                     c..c
                 });
-                let edit = edit_for_insertion(old_range, 1);
-                self.buffer.insert("\n");
-                self.record_edit(edit, window, cx);
+                if !self.insert_in_bare_column(old_range.clone(), "\n", window, cx) {
+                    let edit = edit_for_insertion(old_range, 1);
+                    self.buffer.insert("\n");
+                    self.record_edit(edit, window, cx);
+                }
             }
             _ => {}
         }
@@ -806,6 +813,9 @@ impl Editor {
             let c = self.buffer.cursor();
             c..c
         });
+        if self.insert_in_bare_column(old_range.clone(), "\t", window, cx) {
+            return;
+        }
         let edit = edit_for_insertion(old_range, 1);
         self.buffer.insert("\t");
         self.record_edit(edit, window, cx);
