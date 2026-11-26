@@ -103,6 +103,8 @@ pub(crate) struct JadeApp {
     content_generation: u64,
     backlink_cache: std::cell::RefCell<Option<BacklinkCache>>,
     sidebar_focus: FocusHandle,
+    /// SPIKE #134: replaces the editor pane when set.
+    spike: Option<Entity<crate::spike_layout::SpikeView>>,
     collapsed_folders: std::collections::HashSet<String>,
     pub(crate) sidebar_tab: SidebarTab,
     /// Hides the whole sidebar (tabs, vault tree, search); the toggle rail stays.
@@ -196,6 +198,7 @@ impl JadeApp {
             search_scroll: ScrollHandle::new(),
             backlinks_scroll: ScrollHandle::new(),
             vault_scrolled_to: None,
+            spike: crate::spike_layout::SpikeView::from_env(cx),
         }
     }
 }
@@ -294,6 +297,8 @@ impl Render for JadeApp {
                 .p_4()
                 .child(format!("Could not open vault: {err}"))
                 .into_any_element()
+        } else if let Some(spike) = self.spike.clone() {
+            spike_pane(spike, cx)
         } else if self.tabs.active_index().is_some() {
             let mut editor_pane = div()
                 .id("note-editor-pane")
@@ -519,6 +524,7 @@ pub(crate) fn setup(cx: &mut App) -> Option<ConfigDirs> {
         KeyBinding::new("ctrl-p", OpenCommandPalette, None),
     ]);
     cx.bind_keys(crate::text_editor::key_bindings());
+    cx.bind_keys(crate::spike_layout::key_bindings());
     bind_open_command_palette(cx);
     config_dirs
 }
@@ -531,6 +537,22 @@ pub(crate) fn setup(cx: &mut App) -> Option<ConfigDirs> {
 /// the exact same registration, same reasoning `cx.bind_keys([...])` is
 /// already duplicated between the two rather than risking them drifting
 /// apart.
+/// SPIKE #134: the pane around the spike element, in either hosting mode.
+fn spike_pane(spike: Entity<crate::spike_layout::SpikeView>, cx: &App) -> AnyElement {
+    let measured = spike.read(cx).mode == crate::spike_layout::Mode::Measured;
+    let inner = div().id("spike-pane").size_full();
+    let inner = if measured {
+        inner.overflow_y_scroll()
+    } else {
+        inner.overflow_hidden()
+    };
+    div()
+        .size_full()
+        .p_4()
+        .child(inner.child(spike).debug_name("editor"))
+        .into_any_element()
+}
+
 fn bind_open_command_palette(cx: &mut App) {
     cx.on_action(|_: &OpenCommandPalette, cx| {
         // Not `cx.active_window()` — that's a genuine OS-level "which

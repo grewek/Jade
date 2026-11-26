@@ -16,6 +16,7 @@ pub mod headless;
 #[cfg(any(test, feature = "debug-socket"))]
 mod memory_probe;
 pub mod settings;
+mod spike_layout; // SPIKE #134
 #[cfg(any(test, feature = "bench-support"))]
 mod test_alloc;
 mod text_editor;
