@@ -4,7 +4,7 @@
 
 use std::ops::ControlFlow;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Kind {
     Paragraph,
     Heading,
@@ -67,12 +67,34 @@ impl Unit {
 
 pub type Emit<'a> = dyn FnMut(Unit) -> ControlFlow<()> + 'a;
 
+/// Whether the line before the one holding `start` is blank (or there is
+/// none).
+pub fn after_blank_line(text: &str, start: usize) -> bool {
+    let Some(end) = text[..start].rfind('\n') else {
+        return true;
+    };
+    let from = text[..end].rfind('\n').map_or(0, |i| i + 1);
+    is_blank(&text[from..end])
+}
+
 pub trait BlockParser {
+    /// Whether any unit boundary is a place to restart parsing from, or only
+    /// one after a blank line. The libraries need the latter: some of their
+    /// boundaries come from splitting a block in retrospect.
+    fn restarts_anywhere(&self) -> bool {
+        true
+    }
+
     /// Emits the units of `text` from `from` (a unit boundary in container
     /// `ctx`) in order, until `emit` breaks or the text ends.
     fn parse_from(&mut self, text: &str, from: usize, ctx: Ctx, emit: &mut Emit<'_>);
 
+    /// The cold parse.
     fn parse(&mut self, text: &str) -> Vec<Unit> {
+        self.parse_all(text)
+    }
+
+    fn parse_all(&mut self, text: &str) -> Vec<Unit> {
         let mut units = Vec::new();
         self.parse_from(text, 0, Ctx::Top, &mut |unit| {
             units.push(unit);
@@ -138,11 +160,16 @@ pub fn update(
     text: &str,
     edit: Edit,
 ) -> Updated {
-    let first = if units.is_empty() {
+    let anywhere = parser.restarts_anywhere();
+    let mut first = if units.is_empty() {
         0
     } else {
         restart_unit(units, text, edit.at)
     };
+    // Units before the first touched one keep their offsets in the new text.
+    while !anywhere && first > 0 && !after_blank_line(text, units[first].start as usize) {
+        first -= 1;
+    }
     let (from, ctx) = match units.get(first) {
         Some(u) if first > 0 => (u.start as usize, u.ctx),
         _ => (0, Ctx::Top),
@@ -154,7 +181,8 @@ pub fn update(
     let mut resynced = false;
     parser.parse_from(text, from, ctx, &mut |unit| {
         // Strictly after the edit, so the line break before it is old too.
-        if unit.start as usize > unchanged_after {
+        let start = unit.start as usize;
+        if start > unchanged_after && (anywhere || after_blank_line(text, start)) {
             let was = (unit.start as isize - delta) as usize;
             while old < units.len() && (units[old].start as usize) < was {
                 old += 1;
@@ -239,6 +267,12 @@ pub fn whole_lines(text: &str, start: usize, end: usize) -> (usize, usize) {
 pub trait SegmentParser {
     /// Appends the units of `segment`, whose offset in the note is `base`.
     fn parse_segment(&mut self, segment: &str, base: usize, ctx: Ctx, out: &mut Vec<Unit>);
+
+    /// Whether the parser only knows `$$` inline, so the pre-pass has to cut
+    /// out blocks too (only ones starting at the left margin).
+    fn math_pre_pass(&self) -> bool {
+        false
+    }
 }
 
 /// The pre-pass the libraries need: the next line from `scan` that reads as
@@ -253,7 +287,14 @@ pub struct Boundary {
     pub complete: bool,
 }
 
-pub fn next_boundary(text: &str, from: usize, scan: usize, ctx: Ctx, window: usize) -> Boundary {
+pub fn next_boundary(
+    text: &str,
+    from: usize,
+    scan: usize,
+    ctx: Ctx,
+    window: usize,
+    math: bool,
+) -> Boundary {
     let mut pos = scan;
     while pos < text.len() {
         let (line, next) = line_at(text, pos);
@@ -264,6 +305,15 @@ pub fn next_boundary(text: &str, from: usize, scan: usize, ctx: Ctx, window: usi
                 tag,
                 complete: true,
             };
+        }
+        if math && line.starts_with("$$") {
+            if let Some(end) = crate::own::math_block_end(text, pos, ctx) {
+                return Boundary {
+                    end: pos,
+                    tag: Some((Kind::Math, ctx, end)),
+                    complete: true,
+                };
+            }
         }
         pos = next;
         if pos - from >= window && pos < text.len() {
@@ -307,6 +357,7 @@ fn reliable(text: &str, units: &[Unit], cut: usize) -> usize {
 pub struct Windowed<P> {
     pub inner: P,
     pub buffer: Vec<Unit>,
+    first_window: usize,
 }
 
 impl<P: SegmentParser> Windowed<P> {
@@ -314,6 +365,7 @@ impl<P: SegmentParser> Windowed<P> {
         Windowed {
             inner,
             buffer: Vec::new(),
+            first_window: FIRST_WINDOW,
         }
     }
 }
@@ -333,7 +385,8 @@ impl<P: SegmentParser> Windowed<P> {
         let (mut scan, mut probe_after) = (from, 0);
         let mut pending: Vec<Boundary> = Vec::new();
         loop {
-            let boundary = next_boundary(text, from, scan, ctx, window);
+            let math = self.inner.math_pre_pass();
+            let boundary = next_boundary(text, from, scan, ctx, window, math);
             let tag_end = boundary.tag.map(|t| t.2);
             let closer = tag_end.is_some_and(|end| is_closer(&text[boundary.end..end], ctx));
             let to = tag_end.unwrap_or(boundary.end);
@@ -379,14 +432,36 @@ impl<P: SegmentParser> Windowed<P> {
 }
 
 impl<P: SegmentParser> BlockParser for Windowed<P> {
+    fn restarts_anywhere(&self) -> bool {
+        false
+    }
+
+    /// Cold, each segment is parsed once, whole: no windows.
+    fn parse(&mut self, text: &str) -> Vec<Unit> {
+        self.first_window = usize::MAX;
+        let units = self.parse_all(text);
+        self.first_window = FIRST_WINDOW;
+        units
+    }
+
     fn parse_from(&mut self, text: &str, mut from: usize, mut ctx: Ctx, emit: &mut Emit<'_>) {
-        let mut window = FIRST_WINDOW;
+        let mut window = self.first_window;
         while from < text.len() {
             let boundary = self.fill(text, from, ctx, window);
-            let keep = match boundary.complete {
+            let mut keep = match boundary.complete {
                 true => self.buffer.len(),
                 false => reliable(text, &self.buffer, boundary.end),
             };
+            // The next window starts after the kept units.
+            while !boundary.complete
+                && keep > 0
+                && !self
+                    .buffer
+                    .get(keep)
+                    .is_some_and(|u| after_blank_line(text, u.start as usize))
+            {
+                keep -= 1;
+            }
             let mut reached = from;
             for unit in self.buffer.drain(..).take(keep) {
                 reached = unit.end();
@@ -398,10 +473,10 @@ impl<P: SegmentParser> BlockParser for Windowed<P> {
                 if keep > 0 {
                     from = line_at(text, reached).1;
                 }
-                window *= 2;
+                window = window.saturating_mul(2);
                 continue;
             }
-            window = FIRST_WINDOW;
+            window = self.first_window;
             let Some((kind, after, line_end)) = boundary.tag else {
                 return;
             };
@@ -416,7 +491,7 @@ impl<P: SegmentParser> BlockParser for Windowed<P> {
                 return;
             }
             ctx = after;
-            from = line_at(text, boundary.end).1;
+            from = line_at(text, line_end).1;
         }
     }
 }
@@ -473,7 +548,8 @@ fn safe_cuts(text: &str, parts: usize) -> Vec<usize> {
                     fence = jade_core::fence::step(fence, &line[indent..]).1;
                 }
                 if fence.is_none() && jade_core::math_scan::opens_block(line) {
-                    math_until = crate::own::math_block_end(text, pos).unwrap_or(0);
+                    math_until =
+                        crate::own::math_block_end(text, pos, ctx).map_or(0, |end| end + 1);
                 }
             }
             _ => {}

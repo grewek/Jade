@@ -291,16 +291,16 @@ fn math_len<'a>(src: &mut impl Source<'a>, k: usize, ctx: Ctx) -> Option<usize> 
 }
 
 /// Where the `$$` block opening at `pos` ends, for the libraries' pre-pass.
-pub fn math_block_end(text: &str, pos: usize) -> Option<usize> {
+pub fn math_block_end(text: &str, pos: usize, ctx: Ctx) -> Option<usize> {
     let mut lines = Vec::new();
     let mut doc = Doc {
         text,
         next: pos,
-        ctx: Ctx::Top,
+        ctx,
         lines: &mut lines,
     };
-    let count = math_len(&mut doc, 0, Ctx::Top)?;
-    doc.line(count - 1).map(|l| l.at + l.text.len() + 1)
+    let count = math_len(&mut doc, 0, ctx)?;
+    doc.line(count - 1).map(|l| l.at + l.text.len())
 }
 
 fn is_atx(rest: &str) -> bool {

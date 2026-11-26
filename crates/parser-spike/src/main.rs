@@ -5,10 +5,12 @@
 mod backends;
 mod bench;
 mod check;
+mod libs;
+mod native;
 mod own;
 mod tree;
 
-use backends::CANDIDATES;
+use tree::BlockParser;
 
 /// xorshift64*: seeded, so every run edits the same places.
 pub struct Rng(pub u64);
@@ -31,16 +33,34 @@ fn main() -> std::io::Result<()> {
     if command == "cases" {
         for (name, text) in check::CASES {
             println!("## {name}");
-            for candidate in CANDIDATES {
+            for candidate in backends::selected() {
                 let units = candidate.1().parse(text);
                 println!("  {:13} {}", candidate.0, check::outline(text, &units));
             }
+            for (label, mut parser) in backends::raw() {
+                let mut units = Vec::new();
+                parser.parse_segment(text, 0, tree::Ctx::Top, &mut units);
+                println!("  {label:13} {}", check::outline(text, &units));
+            }
+        }
+        return Ok(());
+    }
+    if command == "native" {
+        for file in files {
+            let text = std::fs::read_to_string(file)?;
+            println!("== native {file} ({} B)", text.len());
+            if std::env::var_os("SPIKE_SANITY").is_some() {
+                native::sanity(&text);
+                continue;
+            }
+            native::cold(&text);
+            native::tree_sitter_incremental(&text);
         }
         return Ok(());
     }
     for file in files {
         if command == "spec" {
-            for candidate in CANDIDATES {
+            for candidate in backends::selected() {
                 print!(
                     "{}: {}",
                     candidate.0,
@@ -51,7 +71,7 @@ fn main() -> std::io::Result<()> {
         }
         let text = std::fs::read_to_string(file)?;
         println!("== {command} {file} ({} B)", text.len());
-        for candidate in CANDIDATES {
+        for candidate in backends::selected() {
             match command {
                 "cold" => bench::cold(candidate, &text),
                 "edits" => {
@@ -62,6 +82,16 @@ fn main() -> std::io::Result<()> {
                 "ranges" => {
                     let units = candidate.1().parse(&text);
                     println!("{:13} {}", candidate.0, check::ranges(&text, &units));
+                    let bad = libs::BAD_POSITIONS.swap(0, std::sync::atomic::Ordering::Relaxed);
+                    if bad > 0 {
+                        println!("{:13} {bad} invalid source positions", candidate.0);
+                    }
+                }
+                "diff" => {
+                    let reference = own::Own.parse(&text);
+                    let units = candidate.1().parse(&text);
+                    let report = check::difference(&text, &reference, &units);
+                    println!("{:13} vs own: {report}", candidate.0);
                 }
                 "fuzz" => {
                     let (mismatches, first) = check::fuzz(candidate, &text, 400);
@@ -69,6 +99,10 @@ fn main() -> std::io::Result<()> {
                         "{:13} {mismatches} mismatches in 40000 edits\n{first}",
                         candidate.0
                     );
+                    let bad = libs::BAD_POSITIONS.swap(0, std::sync::atomic::Ordering::Relaxed);
+                    if bad > 0 {
+                        println!("{:13} {bad} invalid source positions", candidate.0);
+                    }
                 }
                 _ => eprintln!("unknown command {command:?}"),
             }

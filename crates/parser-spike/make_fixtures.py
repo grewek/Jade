@@ -51,16 +51,18 @@ def section(chapter, name):
 def tag(chapter, number):
     """Every 3rd chapter floats its table section, every 4th puts its lists
     and quotes side by side."""
-    if number % 3 == 0:
-        start, end = section(chapter, "Table")
-        chapter = (chapter[:start] + '<jade-aside side="left">\n\n' + chapter[start:end]
-                   + "</jade-aside>\n\n" + chapter[end:])
+    # Columns first: they end where the table section starts, so tagging the
+    # table first would put its opening tag inside a column.
     if number % 4 == 0:
         a, b = section(chapter, "Lists")
         c, d = section(chapter, "Quotes and Compounding")
         chapter = (chapter[:a] + "<jade-columns>\n\n<jade-column>\n\n" + chapter[a:b]
                    + "</jade-column>\n<jade-column>\n\n" + chapter[c:d]
                    + "</jade-column>\n\n</jade-columns>\n\n" + chapter[d:])
+    if number % 3 == 0:
+        start, end = section(chapter, "Table")
+        chapter = (chapter[:start] + '<jade-aside side="left">\n\n' + chapter[start:end]
+                   + "</jade-aside>\n\n" + chapter[end:])
     return chapter
 
 

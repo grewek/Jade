@@ -9,8 +9,9 @@ use crate::tree::{self, BlockParser, Ctx, Edit, Kind, Unit};
 
 const COLD_RUNS: usize = 15;
 const SITES: usize = 1000;
+const BUDGET_S: u64 = 90;
 
-fn median_ms(mut run: impl FnMut()) -> f64 {
+pub fn median_ms(mut run: impl FnMut()) -> f64 {
     let mut times: Vec<f64> = (0..COLD_RUNS)
         .map(|_| {
             let start = Instant::now();
@@ -53,6 +54,14 @@ pub fn cold(candidate: &Candidate, text: &str) {
 struct Boxed(Box<dyn BlockParser + Send>);
 
 impl BlockParser for Boxed {
+    fn restarts_anywhere(&self) -> bool {
+        self.0.restarts_anywhere()
+    }
+
+    fn parse(&mut self, text: &str) -> Vec<Unit> {
+        self.0.parse(text)
+    }
+
     fn parse_from(&mut self, text: &str, from: usize, ctx: Ctx, emit: &mut tree::Emit<'_>) {
         self.0.parse_from(text, from, ctx, emit);
     }
@@ -172,7 +181,8 @@ pub fn edits(candidate: &Candidate, text: &str, label: &str, typing: Typing) {
     let (mut times, mut reparsed) = (Vec::new(), Vec::new());
     let mut rng = Rng(42);
     // At least 1,000 timed keystrokes per scenario.
-    while times.len() < SITES {
+    let began = Instant::now();
+    while times.len() < SITES && (began.elapsed().as_secs() < BUDGET_S || times.len() < 60) {
         let site = sites[rng.below(sites.len())];
         if typing.needs_empty_line() {
             session.edit(site, 0, "\n\n");

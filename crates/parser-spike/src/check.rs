@@ -87,6 +87,14 @@ pub fn fuzz(candidate: &Candidate, seed_text: &str, rounds: usize) -> (usize, St
     let mut parser = candidate.1();
     let (mut mismatches, mut first) = (0, String::new());
     let mut fresh = Vec::new();
+    // `SPIKE_SKIP=a,b` leaves out snippets containing a or b, to find what a
+    // mismatch needs.
+    let skip = std::env::var("SPIKE_SKIP").unwrap_or_default();
+    let snippets: Vec<&str> = SNIPPETS
+        .iter()
+        .copied()
+        .filter(|s| !skip.split(',').any(|k| !k.is_empty() && s.contains(k)))
+        .collect();
     for round in 0..rounds {
         let mut rng = Rng(round as u64 * 7919 + 1);
         let from = char_floor(seed_text, rng.below(seed_text.len() - 3000));
@@ -106,7 +114,7 @@ pub fn fuzz(candidate: &Candidate, seed_text: &str, rounds: usize) -> (usize, St
             let inserted = if delete {
                 ""
             } else {
-                SNIPPETS[rng.below(SNIPPETS.len())]
+                snippets[rng.below(snippets.len())]
             };
             let before = text.clone();
             text.replace_range(at..at + removed, inserted);
@@ -269,4 +277,20 @@ pub fn spec(candidate: &Candidate, dir: &std::path::Path) -> std::io::Result<Str
         let _ = writeln!(out, "  {section}: {} fail {:?}", numbers.len(), numbers);
     }
     Ok(out)
+}
+
+/// Top-level differences from `reference` on the same text, by (start, length,
+/// kind): how many of its units the other tree does not have, and the first.
+pub fn difference(text: &str, reference: &[Unit], other: &[Unit]) -> String {
+    let key = |u: &Unit| (u.start, u.len, u.kind);
+    let theirs: std::collections::HashSet<_> = other.iter().map(key).collect();
+    let missing: Vec<&Unit> = reference
+        .iter()
+        .filter(|u| !theirs.contains(&key(u)))
+        .collect();
+    let first = missing.first().map_or(String::new(), |u| {
+        let body: String = text[u.start as usize..u.end()].chars().take(80).collect();
+        format!("{:?} {body:?}", u.kind)
+    });
+    format!("{}/{} units differ {first}", missing.len(), reference.len())
 }
