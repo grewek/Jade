@@ -332,3 +332,39 @@ fn floating_a_block_puts_the_caret_at_its_start(cx: &mut TestAppContext) {
         assert!(result.contains("\n\n|hello\n"), "right {right}: {result:?}");
     }
 }
+
+/// Undoing a structure edit puts the caret back where it was, not on the
+/// marker line the edit rewrote, where the next key would end the region.
+#[gpui_kit::test]
+fn undoing_a_structure_edit_restores_the_caret(cx: &mut TestAppContext) {
+    use gpui_kit::{Context, Window};
+    type Edit = fn(&mut Editor, &mut Window, &mut Context<Editor>) -> bool;
+    let columns = "::: columns\n\nleft\n\n---\n\nright\n\n:::";
+    let float = "one\n\n::: float right 30%\n\nbox\n\n:::\n\ntwo";
+    let cases: [(&str, &str, Edit); 5] = [
+        (columns, "right", |e, w, c| {
+            e.set_region_ratio(0, vec![30, 70], w, c)
+        }),
+        (columns, "right", |e, w, c| e.add_region_column(0, w, c)),
+        (columns, "right", |e, w, c| e.unwrap_region(0, w, c)),
+        (float, "box", |e, w, c| e.move_float(true, w, c)),
+        (float, "box", Editor::unwrap_float),
+    ];
+    for (n, (source, word, edit)) in cases.into_iter().enumerate() {
+        let (window, editor) = open(cx, source);
+        let caret = source.find(word).unwrap() + 1;
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                window.focus(&e.focus_handle, cx);
+                e.buffer.set_cursor(caret, false);
+                assert!(edit(e, window, cx), "case {n}");
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        press(cx, window, "ctrl-z");
+        assert_eq!(text_of(cx, &editor), source, "case {n}");
+        let after = editor.read_with(cx, |e, _| e.buffer().cursor());
+        assert_eq!(after, caret, "case {n}");
+    }
+}

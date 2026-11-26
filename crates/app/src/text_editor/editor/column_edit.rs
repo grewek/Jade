@@ -395,8 +395,8 @@ impl Editor {
             };
             (range, new[new_span].join("\n"), caret)
         };
-        // A move first, so this edit never merges into the typing before it.
-        self.buffer.set_cursor(range.start, false);
+        // So this edit never merges into the typing before it.
+        self.buffer.end_undo_group();
         self.replace_in_buffer(range.clone(), &text, window, cx);
         self.place_caret(caret);
         cx.notify();
@@ -539,7 +539,7 @@ impl Editor {
             };
             (range, text, caret)
         };
-        self.buffer.set_cursor(range.start, false);
+        self.buffer.end_undo_group();
         self.replace_in_buffer(range.clone(), &text, window, cx);
         self.place_caret(caret);
         cx.notify();
@@ -615,7 +615,7 @@ impl Editor {
             };
             (range, text, caret)
         };
-        self.buffer.set_cursor(range.start, false);
+        self.buffer.end_undo_group();
         self.replace_in_buffer(range.clone(), &text, window, cx);
         self.place_caret(caret);
         cx.notify();
@@ -661,7 +661,7 @@ impl Editor {
             let first = range.start + out[0].len() + "\n\n".len();
             (range, out.join("\n"), first)
         };
-        self.buffer.set_cursor(range.start, false);
+        self.buffer.end_undo_group();
         self.replace_in_buffer(range.clone(), &text, window, cx);
         self.buffer.set_cursor(first, false);
         cx.notify();
@@ -713,7 +713,7 @@ impl Editor {
         let text = [pad(lead), &lines.join("\n"), pad(trail)].concat();
         // Past the open marker and its padding line.
         let first = range.start + pad(lead).len() + lines[0].len() + "\n\n".len();
-        self.buffer.set_cursor(range.start, false);
+        self.buffer.end_undo_group();
         self.replace_in_buffer(range.clone(), &text, window, cx);
         self.buffer.set_cursor(first, false);
         cx.notify();
@@ -759,7 +759,7 @@ impl Editor {
             let range = doc.line_start_byte(block.start)..doc.line_end_byte(block.end - 1);
             (range, columns::ops::wrapped(&lines).join("\n"))
         };
-        self.buffer.set_cursor(range.start, false);
+        self.buffer.end_undo_group();
         self.replace_in_buffer(range.clone(), &text, window, cx);
         // The new region's first column, which holds the block's first line.
         let first = range.start + "::: columns\n\n".len();
