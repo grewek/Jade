@@ -188,6 +188,12 @@ impl EditorBuffer {
         });
     }
 
+    /// The next edit starts its own undo step. The caret stays, so undoing
+    /// that step puts it back where the user had it.
+    pub fn end_undo_group(&mut self) {
+        self.last_edit = None;
+    }
+
     /// Deletes the selection, or the one char before the cursor.
     pub fn delete_backward(&mut self) {
         if let Some(range) = self.selection() {
