@@ -66,6 +66,7 @@ Workspace-wide:
 - Test all crates: `cargo test -- --test-threads=1`
 - Test a single crate: `cargo test -p jade-core` / `cargo test -p jade-app -- --test-threads=1`
 - Run a single test: `cargo test <test_name>`
+- Acceptance catalog of the rendering core: `cargo test -p jade-app acceptance -- --test-threads=1 --nocapture` runs every scenario under `crates/app/tests/acceptance/` (needs a GPU; format in `debug_server/acceptance/`). `JADE_ACCEPTANCE=<id part>` picks scenarios; `JADE_UPDATE_INDEX=1` rewrites `INDEX.md`. Each stage's PR raises `CURRENT_STAGE`.
 - **`jade-app`'s headless UI tests require `--test-threads=1`** — the parallel harness is non-deterministic under load (a confirmed concurrency bug in the vendored gpui/gpui-component test-support stack, not Jade's code).
 - Lint: `cargo clippy`
 - Format: `cargo fmt`

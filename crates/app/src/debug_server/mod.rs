@@ -4,6 +4,8 @@
 //! the app pushes matching events, so a tool can drive and observe the live app
 //! without scraping a terminal. Nothing is sent until a client subscribes.
 
+#[cfg(test)]
+mod acceptance;
 mod capture;
 mod client;
 mod commands;
