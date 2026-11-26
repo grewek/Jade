@@ -2,7 +2,8 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository. It's deliberately minimal — standing rules and commands only, since this file is reloaded in full on every turn.
 
-- **`ARCHITECTURE.md`** — non-obvious invariants, GPUI/test gotchas, and the Backlog. Not auto-loaded; read before touching the editor, dialogs, or UI tests.
+- **`ARCHITECTURE.md`** — rules and invariants, GPUI/test gotchas. Not auto-loaded; read before touching the editor, dialogs, or UI tests.
+- **`BACKLOG.md`** — deliberately deferred follow-ups.
 - **`SPEC.md`** — what Jade Markdown is and how it is displayed. Not auto-loaded; read before touching parsing or rendering.
 - **`STYLE.md`** — Tigerstyle-derived coding rules plus documentation/comment rules. Not auto-loaded, but **mandatory: read it before writing or reviewing any code, docs, or comments, and always follow it.**
 
@@ -18,7 +19,7 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 
 **Do not add dependencies to any `Cargo.toml` without first asking the user for explicit approval** — this applies even to crates already agreed upon in principle (e.g. `gpui`, `gpui-kit`), ask again at the point of actually adding them.
 
-**`ARCHITECTURE.md`'s Backlog section lists deliberately deferred follow-ups — don't pick one up without checking in with the user first.**
+**`BACKLOG.md` lists deliberately deferred follow-ups — don't pick one up without checking in with the user first.**
 
 ## Git workflow (GitFlow) and issues
 
