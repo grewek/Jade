@@ -4,6 +4,9 @@
 //! dependency, so the app, test harness and CLI clients share these types.
 
 pub mod base64;
+mod syntax;
+
+pub use syntax::numbers;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};

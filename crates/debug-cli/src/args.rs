@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use jade_debug_protocol::{
-    Button, Check, Command, DEFAULT_DRAG_STEPS, DEFAULT_TOLERANCE, Fact, Location, Modifiers,
-    Point, Query, Rect, Topic,
+    Button, Command, DEFAULT_DRAG_STEPS, DEFAULT_TOLERANCE, Fact, Location, Modifiers, Point,
+    Query, Rect, Topic, numbers,
 };
 
 pub(crate) const DEFAULT_SOCKET: &str = "/tmp/jade-debug.sock";
@@ -425,24 +425,8 @@ fn flags_with_values(words: &[String]) -> Result<Words<'_>, String> {
 }
 
 /// Comma-separated numbers, exactly `count` of them.
-fn numbers(text: &str, count: usize, what: &str) -> Result<Vec<f32>, String> {
-    let values: Result<Vec<f32>, _> = text.split(',').map(str::parse).collect();
-    match values {
-        Ok(v) if v.len() == count => Ok(v),
-        _ => Err(format!(
-            "{what} must be {count} comma-separated numbers, got {text:?}"
-        )),
-    }
-}
-
 fn rect(text: &str) -> Result<Rect, String> {
-    let v = numbers(text, 4, "a rect (X,Y,W,H)")?;
-    Ok(Rect {
-        x: v[0],
-        y: v[1],
-        w: v[2],
-        h: v[3],
-    })
+    text.parse()
 }
 
 fn tolerance(words: &Words) -> Result<u8, String> {
@@ -502,50 +486,6 @@ fn facts_command(words: &Words) -> Result<Action, String> {
     }))
 }
 
-fn parse_check(word: &str) -> Result<Check, String> {
-    let (name, args) = word
-        .split_once(':')
-        .ok_or_else(|| format!("{word:?} is not a check: use ink:, empty:, color: or within:"))?;
-    let parts: Vec<&str> = args.split(',').collect();
-    let percent = |extra: Option<&&str>, default: f32| {
-        extra.map_or(Ok(default), |p| {
-            p.trim_end_matches('%')
-                .parse()
-                .map_err(|_| format!("{p:?} is not a percentage"))
-        })
-    };
-    let area = |parts: &[&str]| rect(&parts[..parts.len().min(4)].join(","));
-    match name {
-        "ink" if parts.len() == 4 || parts.len() == 5 => Ok(Check::InkIn {
-            rect: area(&parts)?,
-            min_percent: percent(parts.get(4), 0.1)?,
-        }),
-        "empty" if parts.len() == 4 || parts.len() == 5 => Ok(Check::Empty {
-            rect: area(&parts)?,
-            max_percent: percent(parts.get(4), 0.0)?,
-        }),
-        "within" if parts.len() == 4 => Ok(Check::BboxWithin {
-            rect: area(&parts)?,
-        }),
-        "color" if parts.len() == 3 || parts.len() == 4 => {
-            let v = numbers(&parts[..2].join(","), 2, "color:X,Y,#rrggbb")?;
-            Ok(Check::Color {
-                x: v[0],
-                y: v[1],
-                color: parts[2].into(),
-                tolerance: parts.get(3).map_or(Ok(DEFAULT_TOLERANCE), |t| {
-                    t.parse()
-                        .map_err(|_| format!("{t:?} is not a tolerance (0-255)"))
-                })?,
-            })
-        }
-        _ => Err(format!(
-            "bad check {word:?}: ink:X,Y,W,H[,MIN%] empty:X,Y,W,H[,MAX%] \
-             color:X,Y,#rrggbb[,TOL] within:X,Y,W,H"
-        )),
-    }
-}
-
 fn expect_command(words: &Words) -> Result<Action, String> {
     words.reject_unknown(&["--tol"])?;
     let Some((target, checks)) = words.pos.split_first() else {
@@ -556,10 +496,7 @@ fn expect_command(words: &Words) -> Result<Action, String> {
     }
     Ok(Action::Send(Command::Expect {
         target: (*target).into(),
-        checks: checks
-            .iter()
-            .map(|c| parse_check(c))
-            .collect::<Result<_, _>>()?,
+        checks: checks.iter().map(|c| c.parse()).collect::<Result<_, _>>()?,
         tolerance: tolerance(words)?,
     }))
 }
@@ -628,6 +565,7 @@ pub(crate) fn split_words(line: &str) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use jade_debug_protocol::Check;
 
     fn words(line: &str) -> Vec<String> {
         split_words(line).unwrap()
