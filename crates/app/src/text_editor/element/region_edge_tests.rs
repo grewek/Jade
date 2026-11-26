@@ -262,3 +262,73 @@ fn editing_beside_a_region_keeps_it_a_region(cx: &mut TestAppContext) {
         assert_eq!(regions, 1, "{what} at {caret}");
     }
 }
+
+/// A menu action or a divider drag keeps the caret with its text (typing used
+/// to go to the region's first side, or onto a hidden marker line).
+#[gpui_kit::test]
+fn structure_edits_keep_the_caret_with_its_text(cx: &mut TestAppContext) {
+    use gpui_kit::{Context, Window};
+    type Edit = fn(&mut Editor, &mut Window, &mut Context<Editor>) -> bool;
+    let columns = "intro\n\n::: columns\n\nleft\n\n---\n\nright\n\n:::\n\nend";
+    let aside = "::: aside right 40%\n\nfloat\n\n---\n\nwords\n\n:::";
+    let float = "one\n\n::: float right 30%\n\nbox\n\n:::\n\ntwo";
+    let narrow_left: Edit = |e, w, c| e.set_region_ratio(0, vec![30, 70], w, c);
+    let narrow_right: Edit = |e, w, c| e.set_region_ratio(0, vec![70, 30], w, c);
+    let add: Edit = |e, w, c| e.add_region_column(0, w, c);
+    let unwrap: Edit = |e, w, c| e.unwrap_region(0, w, c);
+    let up: Edit = |e, w, c| e.move_float(false, w, c);
+    let down: Edit = |e, w, c| e.move_float(true, w, c);
+    // (source, the word the caret is in, the edit)
+    let cases: [(&str, &str, Edit); 14] = [
+        (columns, "right", narrow_left),
+        (columns, "left", narrow_right),
+        (columns, "intro", narrow_left),
+        (columns, "end", narrow_left),
+        (columns, "right", add),
+        (columns, "right", unwrap),
+        (columns, "end", unwrap),
+        (aside, "words", Editor::flip_aside),
+        (aside, "words", add),
+        (float, "box", up),
+        (float, "box", down),
+        (float, "two", down),
+        (float, "box", Editor::unwrap_float),
+        (float, "two", Editor::unwrap_float),
+    ];
+    for (n, (source, word, edit)) in cases.into_iter().enumerate() {
+        let (window, editor) = open(cx, source);
+        // One byte into the word, so an offset error would show.
+        let caret = source.find(word).unwrap() + 1;
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                window.focus(&e.focus_handle, cx);
+                e.buffer.set_cursor(caret, false);
+                assert!(edit(e, window, cx), "case {n}");
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        type_text(cx, window, "|");
+        let result = text_of(cx, &editor);
+        let marked = format!("{}|{}", &word[..1], &word[1..]);
+        assert!(result.contains(&marked), "case {n}: {result:?}");
+    }
+}
+
+#[gpui_kit::test]
+fn floating_a_block_puts_the_caret_at_its_start(cx: &mut TestAppContext) {
+    for right in [true, false] {
+        let (window, editor) = open(cx, "hello\n\nworld");
+        cx.update_window(window, |_, window, cx| {
+            editor.update(cx, |e, cx| {
+                window.focus(&e.focus_handle, cx);
+                assert!(e.make_float(right, window, cx));
+            });
+            window.render_frame(cx);
+        })
+        .unwrap();
+        type_text(cx, window, "|");
+        let result = text_of(cx, &editor);
+        assert!(result.contains("\n\n|hello\n"), "right {right}: {result:?}");
+    }
+}

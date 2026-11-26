@@ -44,6 +44,15 @@ pub(in crate::text_editor) fn is_hidden_line(doc: &DocumentCache, line: usize) -
         .is_some_and(|(region, _)| region.column_of(line).is_none())
 }
 
+/// Where `offset`, outside `replaced`, is once that range holds `len` bytes.
+fn shifted(offset: usize, replaced: &Range<usize>, len: usize) -> usize {
+    if offset < replaced.start {
+        offset
+    } else {
+        offset - replaced.len() + len
+    }
+}
+
 /// Whether `line` is a marker of a region laid out side by side.
 fn is_shown_marker(doc: &DocumentCache, line: usize) -> bool {
     doc.side_by_side(line)
@@ -331,7 +340,7 @@ impl Editor {
     }
 
     /// Replaces region `index`'s lines with what `make` returns, as one undo
-    /// step, and leaves the caret on the region's first visible line.
+    /// step. The caret stays with the text it was in.
     fn edit_region(
         &mut self,
         index: usize,
@@ -339,7 +348,8 @@ impl Editor {
         cx: &mut Context<Self>,
         make: impl FnOnce(&[&str], &Columns) -> Option<Vec<String>>,
     ) -> bool {
-        let (range, text) = {
+        let caret = self.buffer.cursor();
+        let (range, text, caret) = {
             let doc = self.document_cache.borrow();
             let Some(&region) = doc.columns().get(index) else {
                 return false;
@@ -350,6 +360,18 @@ impl Editor {
                 .collect();
             let Some(new) = make(&old, &region) else {
                 return false;
+            };
+            let whole =
+                doc.line_start_byte(region.start_line)..doc.line_end_byte(region.end_line - 1);
+            let new_len = new.iter().map(|l| l.len() + 1).sum::<usize>() - 1;
+            let caret = if caret < whole.start || caret > whole.end {
+                shifted(caret, &whole, new_len)
+            } else {
+                let line = doc.line_at(caret);
+                let i = line - region.start_line;
+                let j = columns::ops::moved_line(&old, &new, &region, i);
+                let before: usize = new[..j].iter().map(|l| l.len() + 1).sum();
+                whole.start + before + (caret - doc.line_start_byte(line)).min(new[j].len())
             };
             // The same lines but a few (a share changed): replace just those,
             // not a float block's whole text.
@@ -371,15 +393,21 @@ impl Editor {
             } else {
                 0..=new.len() - 1
             };
-            (range, new[new_span].join("\n"))
+            (range, new[new_span].join("\n"), caret)
         };
         // A move first, so this edit never merges into the typing before it.
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
-        self.buffer.set_cursor(range.start, false);
-        self.skip_hidden_lines(true, false);
+        self.place_caret(caret);
         cx.notify();
         true
+    }
+
+    /// The caret after a structure edit, never left on a hidden line (typing
+    /// there would end the region).
+    fn place_caret(&mut self, caret: usize) {
+        self.buffer.set_cursor(caret, false);
+        self.skip_hidden_lines(true, false);
     }
 
     /// Sets region `index`'s shares, after a divider drag.
@@ -491,7 +519,8 @@ impl Editor {
         let Some((index, k)) = self.float_at_caret() else {
             return false;
         };
-        let (range, text) = {
+        let caret = self.buffer.cursor();
+        let (range, text, caret) = {
             let doc = self.document_cache.borrow();
             let region = doc.columns()[index];
             let source = self.buffer.text();
@@ -501,11 +530,18 @@ impl Editor {
                 .collect();
             let range =
                 doc.line_start_byte(region.open_of(k))..doc.line_end_byte(region.separators()[k]);
-            (range, content.join("\n"))
+            let text = content.join("\n");
+            let first = doc.line_start_byte(region.column_lines(k).start);
+            let caret = if caret < range.start || caret > range.end {
+                shifted(caret, &range, text.len())
+            } else {
+                range.start + caret.saturating_sub(first).min(text.len())
+            };
+            (range, text, caret)
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
-        self.buffer.set_cursor(range.start, false);
+        self.place_caret(caret);
         cx.notify();
         true
     }
@@ -522,6 +558,7 @@ impl Editor {
         let Some((index, k)) = self.float_at_caret() else {
             return false;
         };
+        let caret = self.buffer.cursor();
         let (range, text, caret) = {
             let doc = self.document_cache.borrow();
             let region = doc.columns()[index];
@@ -558,17 +595,29 @@ impl Editor {
             lines.push("");
             lines.extend(second.iter().copied());
             let range = doc.line_start_byte(span.start)..doc.line_end_byte(span.end - 1);
-            let caret = range.start
-                + if down {
-                    para_text.iter().map(|l| l.len() + 1).sum::<usize>() + 1
-                } else {
-                    0
-                };
-            (range, lines.join("\n"), caret)
+            let text = lines.join("\n");
+            // The caret goes with whichever of the two blocks it was in; the
+            // second one starts after the first and a blank line.
+            let second_start = range.start + first.iter().map(|l| l.len() + 1).sum::<usize>() + 1;
+            let (block_start, para_start) = if down {
+                (second_start, range.start)
+            } else {
+                (range.start, second_start)
+            };
+            let old_block = doc.line_start_byte(open)..doc.line_end_byte(close);
+            let old_para = doc.line_start_byte(para.start)..doc.line_end_byte(para.end - 1);
+            let caret = if caret < range.start || caret > range.end {
+                shifted(caret, &range, text.len())
+            } else if (old_para.start..=old_para.end).contains(&caret) {
+                para_start + (caret - old_para.start)
+            } else {
+                block_start + (caret.clamp(old_block.start, old_block.end) - old_block.start)
+            };
+            (range, text, caret)
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
-        self.buffer.set_cursor(caret, false);
+        self.place_caret(caret);
         cx.notify();
         true
     }
@@ -581,7 +630,7 @@ impl Editor {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let (range, text) = {
+        let (range, text, first) = {
             let doc = self.document_cache.borrow();
             let line = doc.line_at(self.buffer.cursor());
             let Some(block) = self.block_lines(&doc, line) else {
@@ -607,15 +656,14 @@ impl Editor {
             }
             let lines: Vec<&str> = block.clone().map(line_text).collect();
             let range = doc.line_start_byte(block.start)..doc.line_end_byte(end - 1);
-            (
-                range,
-                columns::ops::floated(&lines, &text, right).join("\n"),
-            )
+            let out = columns::ops::floated(&lines, &text, right);
+            // Past the open marker and its padding line.
+            let first = range.start + out[0].len() + "\n\n".len();
+            (range, out.join("\n"), first)
         };
         self.buffer.set_cursor(range.start, false);
         self.replace_in_buffer(range.clone(), &text, window, cx);
-        self.buffer
-            .set_cursor(range.start + "::: aside right 40%\n\n".len(), false);
+        self.buffer.set_cursor(first, false);
         cx.notify();
         true
     }
