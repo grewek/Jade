@@ -33,19 +33,26 @@ A document is a sequence of **blocks**. **Container blocks** hold other blocks; 
 | **column, float, aside text** | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – |
 | **callout** | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ | – |
 | **blockquote** | ✓ | ✓ | – | – | – | – | – | – |
+
+Blockquotes may also contain blockquotes, everywhere a blockquote is allowed, and callouts may contain blockquotes (B-NEST-3).
 | **list item** | ✓ (inline) | ✓ (sublist) | – | – | – | – | – | – |
 
-Headings, thematic breaks and reference definitions are allowed wherever a paragraph is.
+Headings, thematic breaks and reference definitions are allowed wherever a paragraph is, **except in list items**, where their lines are item text.
 
 | ID | Rule |
 |---|---|
 | B-NEST-1 | **Disallowed content is text of the enclosing block.** Lines that would start a block marked "–" are read as paragraph text of that container, with inline content parsed as usual. Example: in a list item, an indented `| a | b |` is a line of the item's text, not a table. |
 | B-NEST-2 | **List depth is at most 6.** A marker that would open a 7th level is text of the 6th-level item. |
-| B-NEST-3 | **Blockquotes do not nest.** A line starting `> >` inside a quote is a quote line whose text starts with `>`. ⚑1 |
+| B-NEST-3 | **Blockquotes nest up to depth 6** (`> > …`), as in CommonMark, including lazy continuation (`> > a` followed by `> b` continues the inner paragraph). A 7th `>` is text. A nested quote holds paragraphs, lists and quotes only: a `[!type]` line inside it is text, so a callout is never inside a quote (B-CALL-3). |
 
 ### 3.2 Paragraphs, headings, thematic breaks
 
-As in CommonMark, including lazy continuation lines and setext headings (`===`/`---` under a paragraph). ⚑2
+As in CommonMark, including lazy continuation lines and setext headings (`===` or `---` under a paragraph).
+
+| ID | Rule |
+|---|---|
+| B-HEAD-1 | **A setext underline holding the caret shows the block raw**: the paragraph keeps its normal style and the underline its characters. Otherwise typing `-` under a paragraph (the first character of a list item) would flash the paragraph into a heading until the space is typed. |
+| B-HEAD-2 | A `---` line directly under a paragraph is a setext underline, not a thematic break (CommonMark). A blank line between them makes it a thematic break. |
 
 ### 3.3 Lists
 
@@ -71,18 +78,23 @@ As in CommonMark, restricted by §3.1. A quote whose first line is a callout hea
 |---|---|
 | B-CALL-1 | **Header:** a blockquote's first line is `[!type]`, optionally followed by `+` or `-` and a title. Type names are case-insensitive. Obsidian's types and aliases are known; an unknown type is shown as `note`. Without a title, the type's name is shown. |
 | B-CALL-2 | **Body:** every following line that continues the quote (`>` prefix, or a lazy continuation line of a paragraph). Contents per §3.1. |
-| B-CALL-3 | **Not nested:** a `> > [!type]` line inside a callout is text (B-NEST-3). |
+| B-CALL-3 | **Not nested:** a callout header is only recognized at quote depth 1 of a place that allows callouts (§3.1). A `> > [!type]` line inside a callout is a nested quote whose text starts with `[!type]`. |
 | B-CALL-4 | **Folding is view state** (§9): `-` means initially folded, `+` or nothing initially open. Folding or unfolding in Jade never changes the file. A folded callout shows only its header. |
 | B-CALL-5 | **Blocks inside a callout keep their `>` prefix on every line**, fences and `$$` included. The callout ends at the first line that does not continue it, and an open code or formula block ends there too (CommonMark, P-2). |
 
 ### 3.6 Code blocks
 
-Fenced with ```` ``` ```` or `~~~` (at least 3), as in CommonMark: an info string after the opening fence, closed by a fence of the same character that is at least as long. Indented code blocks (4 spaces) as in CommonMark. ⚑3
+Fenced with ```` ``` ```` or `~~~` (at least 3), as in CommonMark: an info string after the opening fence, closed by a fence of the same character that is at least as long. Indented code blocks (4 spaces) as in CommonMark.
 
 | ID | Rule |
 |---|---|
-| B-CODE-1 | **An open fence ends at the end of its container** (CommonMark), and a container's closing tag always ends it (B-TAG-4). |
-| B-CODE-2 | An open fence that reaches the end of its container is shown as code up to there, with the open-construct hint (§7). |
+| B-CODE-1 | **Indentation of 4 or more spaces decides first:** after a blank line, such a line at top level or in a column, float, aside text or callout is indented code. That includes lines that would otherwise start a table, a formula block, a list or a tag. Container tags are only recognized in column 0 (B-TAG-1), so content inside a container never needs indenting and never turns into code by accident. |
+| B-CODE-2 | An indented code line cannot interrupt a paragraph (CommonMark): without a blank line before it, it continues the paragraph. In a list item, deeper indentation is item text (B-NEST-1). |
+
+| ID | Rule |
+|---|---|
+| B-CODE-3 | **An open fence ends at the end of its container** (CommonMark), and a container's closing tag always ends it (B-TAG-4). |
+| B-CODE-4 | An open fence that reaches the end of its container is shown as code up to there, with the open-construct hint (§7). |
 
 ### 3.7 Formula blocks
 
@@ -94,7 +106,7 @@ $$
 
 | ID | Rule |
 |---|---|
-| B-MATH-1 | **Opener:** `$$` at the start of a line (after indentation, and after a container's `>` prefix inside a callout). ⚑4 |
+| B-MATH-1 | **Opener:** `$$` at the start of a line, after at most 3 spaces of indentation and after a callout's `>` prefix. 4 or more spaces make it indented code (B-CODE-1). |
 | B-MATH-2 | **Closer:** the first unescaped `$$` in the next 256 lines. `$$…$$` on one line is a one-line formula block when it is the whole line, inline display math otherwise (§5). |
 | B-MATH-3 | **An opener without a closer is plain text.** A blank line, a code fence, a container tag line (`<jade-…>` or `</jade-…>`) or the 256-line limit, reached before a closer, makes the opener text, so typing `$$` never turns the rest of a note into a formula. **A blank line inside a long formula therefore breaks it.** |
 
@@ -104,7 +116,7 @@ GFM tables: a header row, a delimiter row (`---`, `:--`, `--:`, `:-:`), body row
 
 | ID | Rule |
 |---|---|
-| B-TAB-1 | The table has as many columns as its widest row. Rows with fewer cells are padded with empty cells. (GFM drops extra cells; Jade shows them, P-4.) ⚑11 |
+| B-TAB-1 | The table has as many columns as its widest row. Rows with fewer cells are padded with empty cells. (GFM drops extra cells; Jade shows them, P-4.) |
 | B-TAB-2 | Cells hold inline content. `\|` is a literal pipe. **`<br>` is a line break inside a cell, and only there** (I-HTML-2). |
 | B-TAB-3 | A table never shows its source as a whole. With the caret in a cell, only that cell's text is raw (§6). |
 
@@ -120,7 +132,7 @@ GFM tables: a header row, a delimiter row (`---`, `:--`, `--:`, `:-:`), body row
 | B-IMG-1 | **An image block is a line that holds nothing but one embed** of a vault-local file with an image extension (`avif`, `bmp`, `gif`, `jpeg`, `jpg`, `png`, `svg`, `webp`). |
 | B-IMG-2 | **Width:** `|300` or `|300x200` after the target or alt text requests 300 px; the height is always derived from the image's proportions. The image is shrunk to the available width. |
 | B-IMG-3 | **Size before pixels:** the block's height comes from the file header, read when the note opens. Decoding waits until the image becomes visible. |
-| B-IMG-4 | An embed that is not alone on its line, is remote, or is not an image is inline content (§5): an image link shown as text. ⚑5 |
+| B-IMG-4 | An embed that is not alone on its line, is remote, or is not an image is inline content (§5): an image link shown as text. |
 
 ### 3.10 Reference definitions
 
@@ -147,7 +159,7 @@ Right column.
 
 | ID | Rule |
 |---|---|
-| B-COL-1 | `<jade-columns>` holds **2 to 4** `<jade-column>` children and nothing else. Lines between children other than blank lines are text of the preceding column. ⚑6 |
+| B-COL-1 | `<jade-columns>` holds **2 to 4** `<jade-column>` children and nothing else. Lines between children other than blank lines are text of the preceding column. |
 | B-COL-2 | `ratio="a/b[/c[/d]]"`: whole percentages, one per column, summing to 100. Missing or invalid: equal widths. |
 | B-COL-3 | Columns are laid out side by side at equal top. The region is as tall as its tallest column. |
 | B-COL-4 | **Columns only at top level** (§3.1). A `<jade-columns>` or `<jade-aside>` line inside a column is text. |
@@ -174,9 +186,9 @@ Text that flows beside the table and continues below it at full width.
 | ID | Rule |
 |---|---|
 | B-ASIDE-1 | **An aside is self-contained** (K16): its float and the text flowing around it are inside it. Content after `</jade-aside>` starts below the whole aside at full width. |
-| B-ASIDE-2 | **The floated content is the `<jade-float>` child**, which must come first. Everything after it is the flowing text. ⚑7 |
+| B-ASIDE-2 | **The floated content is the `<jade-float>` child**, which must come first. Everything after it is the flowing text. |
 | B-ASIDE-3 | `side="left"` or `"right"` (default `right`), `width="10%"…"90%"` (default `40%`), the float's share of the line. |
-| B-ASIDE-4 | **One float per aside.** Several floats are several asides, one after another. ⚑8 |
+| B-ASIDE-4 | **One float per aside.** Several floats are several asides, one after another. |
 | B-ASIDE-5 | Asides only at top level, like columns (B-COL-4). |
 
 ## 4. Container tags
@@ -194,7 +206,7 @@ Text that flows beside the table and continues below it at full width.
 | ID | Rule |
 |---|---|
 | B-TAG-4 | **While a container is open, a closing tag line of its name always closes it**, even inside an open code block or formula, which end there (P-2). |
-| B-TAG-5 | **An opening tag line inside a code block is code.** So is a closing tag line when no container of its name is open. ⚑9 |
+| B-TAG-5 | **An opening tag line inside a code block is code.** So is a closing tag line when no container of its name is open. |
 
 ### 4.3 Open and stray tags
 
@@ -225,14 +237,14 @@ As in CommonMark and GFM: emphasis and strong emphasis (`*`, `_`), strikethrough
 | I-HTML-1 | **Raw HTML is text**, inline and as whole lines, and never swallows the Markdown after it (no CommonMark HTML blocks). HTML comments `<!-- … -->` are visible text. |
 | I-HTML-2 | **`<br>` is a line break in a table cell only.** Anywhere else it is text. |
 | I-HTML-3 | Autolinks `<https://…>`, `<mailto:…>` and `<user@host>` are links, not HTML. |
-| I-ENT-1 | Numeric entity references decode to any valid scalar value. Named references decode for a fixed common subset; any other `&name;` is text. ⚑10 |
+| I-ENT-1 | Numeric entity references decode to any valid scalar value. Named references decode for a fixed common subset; any other `&name;` is text. |
 
 ## 6. Live Preview
 
 | ID | Construct | Raw (source shown) when … |
 |---|---|---|
 | P-LP-1 | inline element (emphasis, link, wikilink, code span, inline formula, escape, entity) | **the caret touches it**: before its first character, inside, or after its last. Arrow keys step through its characters one by one. |
-| P-LP-2 | heading, list, task and quote markers | the caret touches the marker |
+| P-LP-2 | heading, list, task and quote markers | the caret touches the marker; a setext heading while its underline holds the caret (B-HEAD-1) |
 | P-LP-3 | callout header | the caret is on the header line |
 | P-LP-4 | table | never as a whole. Only the **cell** holding the caret shows its text raw |
 | P-LP-5 | formula block | the caret is in the block. Then the **whole block** is raw |
@@ -285,6 +297,7 @@ As in CommonMark and GFM: emphasis and strong emphasis (`*`, `_`), strikethrough
 | What | Limit |
 |---|---|
 | List depth | 6 (B-NEST-2) |
+| Blockquote depth | 6 (B-NEST-3) |
 | Columns per region | 2–4 (B-COL-1) |
 | Aside width | 10–90 %, default 40 % (B-ASIDE-3) |
 | Formula block lookahead | 256 lines (B-MATH-2) |
@@ -293,19 +306,3 @@ As in CommonMark and GFM: emphasis and strong emphasis (`*`, `_`), strikethrough
 ## 12. Not supported (yet)
 
 Shown as text unless the base spec gives them another meaning: footnotes, `==highlight==`, `%%comments%%`, note embeds `![[note]]`, block references `^id`, CommonMark HTML blocks (I-HTML-1). Each would need an entry here and, where it reaches across blocks, in §8.
-
-## ⚑ To confirm
-
-Points where this spec decides something that was not decided in #130. Each needs the maintainer's yes before stage 2.
-
-1. **B-NEST-3:** nested blockquotes (`> >`) are text. The nesting table did not list a quote inside a quote; CommonMark allows it.
-2. **§3.2:** setext headings are supported, as in CommonMark (needed for its examples). They mean a `---` under a paragraph turns it into a heading.
-3. **§3.6:** indented code blocks are supported, as in CommonMark. In list items they are text (B-NEST-1).
-4. **B-MATH-1:** a formula block may open after a callout's `>` prefix. Today's scanner ignores openers behind `>`; the nesting table allows formula blocks in callouts.
-5. **B-IMG-4:** an inline image (not alone on its line) is shown as text, not drawn inline.
-6. **B-COL-1:** stray lines between `<jade-column>` children belong to the preceding column.
-7. **B-ASIDE-2:** an explicit `<jade-float>` child holds the floated content, instead of "the first block floats". It is unambiguous, lets a float hold several blocks (a table plus a caption), and matches the strict-form tags.
-8. **B-ASIDE-4:** one float per aside. Today's `:::` asides allow up to 3 floats and `::: clear`; with self-contained asides, stacking asides replaces both.
-9. **B-TAG-5:** an opening tag inside a fenced code block is code. Only closing tags take precedence (B-TAG-4), so a code example of a tag is possible.
-10. **I-ENT-1:** named entities stay a fixed common subset, not all of HTML5's.
-11. **B-TAB-1:** a row with more cells than the header widens the table instead of losing its extra cells (GFM drops them). Follows from P-4.
