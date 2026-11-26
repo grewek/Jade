@@ -27,6 +27,23 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 - **Issues:** read the whole issue and its comments first, then do only what it asks. A `Backlog` item or a new dependency needs a comment asking the user, not a guess. Reference the issue in commits (`refs #n`); the PR targets `develop`, and its body says `Closes #n`.
 - **`CHANGELOG.md`** is edited only when preparing a release, on the `release/*` branch (newest version first, one entry per user-visible change). Never touch it in feature or hotfix work.
 - **Before opening the PR**, run what CI runs: `cargo fmt --check`, `cargo clippy`, `cargo test`, and `cargo doc --no-deps`. Opening the PR ends the task; merging is the user's call.
+- **Reviewable steps:** one topic per PR, at most ~500 changed lines of production code (tests count separately), commits that each carry one reason. Cut larger work into PRs first and show the cut to the user.
+
+## Rendering (rebuild in progress: #130)
+
+The editor's layout core moves from lines to blocks (#130, milestone "Rendering core"). Until that milestone is done:
+
+- **Feature freeze:** no new rendering features, and no fixes to the old line-based path except crashes or data loss. #87 and #128 wait. Old rendering bugs stay open as acceptance tests for the new core.
+- **Spec first:** a change to how anything is displayed starts as a change to `SPEC.md` (written in stage 1) that the user approves, then code.
+- **A bug is a test first:** record a rendering bug as a failing acceptance test, then fix it in the block type that causes it.
+- **No special cases in shared code:** document, height map, frame and scrolling never branch on block type; what a block type needs goes into its interface.
+- **Cache rule:** every derived value has one owner, its block, and is invalidated only by that block's text, the width or a layout setting. A new cache or global state outside that chain needs the user's approval, like a dependency.
+- **Paint is read-only:** layout state changes only in prepaint.
+- **Geometry only inside the block type:** caret, hit test, movement and selection inside a block are computed by that block alone.
+- **Files stay under ~800 lines.** `ARCHITECTURE.md` holds rules and invariants only: no fix history, no measurement logs.
+- **Stop rule:** if a fix would have to break one of these rules, stop and ask the user. Never build a workaround.
+
+Stage 1 adds automatic checks for these rules where possible (#130 §10).
 
 ## Performance
 
