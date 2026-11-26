@@ -1,0 +1,30 @@
+id = "down-at-the-end-of-a-note-leaves-the-region"
+spec = ["E-1"]
+source = "#119"
+from_stage = 9
+# No newline after the closing tag: there is no line to move to yet.
+note = """
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>"""
+
+[[step]]
+click = { line = 5, col = 5 }
+
+[[step]]
+key = "down"
+
+[[step]]
+type = "after"
+
+# The maintainer's decision in #119: Down at a region's end adds a line below.
+[[expect]]
+text_contains = "</jade-columns>\nafter"
+
+[[expect]]
+caret = { line = 8, col = 5 }

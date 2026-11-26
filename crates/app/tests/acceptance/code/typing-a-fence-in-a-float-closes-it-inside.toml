@@ -1,0 +1,30 @@
+id = "typing-a-fence-in-a-float-closes-it-inside"
+spec = ["P-OPEN-1", "B-CODE-3", "P-2"]
+source = "#126"
+from_stage = 9
+note = """
+<jade-aside side="left" width="40%">
+<jade-float>
+float text
+</jade-float>
+text beside
+</jade-aside>
+"""
+
+[[step]]
+click = { line = 2, col = 10 }
+
+[[step]]
+key = "enter"
+
+[[step]]
+type = "```"
+
+[[expect]]
+text_contains = "float text\n```\n```\n</jade-float>\ntext beside\n"
+
+[[expect]]
+block = { line = 6, kind = "paragraph" }
+
+[[expect]]
+no_overlap = true

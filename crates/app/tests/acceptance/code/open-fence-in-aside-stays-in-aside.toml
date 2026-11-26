@@ -1,0 +1,24 @@
+id = "open-fence-in-aside-stays-in-aside"
+spec = ["B-TAG-4", "B-CODE-3", "P-2"]
+source = "#126"
+from_stage = 9
+note = """
+<jade-aside side="left" width="40%">
+<jade-float>
+```
+code
+</jade-float>
+text beside
+</jade-aside>
+
+# After
+"""
+
+[[expect]]
+block = { line = 5, kind = "paragraph" }
+
+[[expect]]
+block = { line = 8, kind = "heading" }
+
+[[expect]]
+no_overlap = true

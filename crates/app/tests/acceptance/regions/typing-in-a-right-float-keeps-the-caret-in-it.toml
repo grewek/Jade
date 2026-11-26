@@ -1,0 +1,28 @@
+id = "typing-in-a-right-float-keeps-the-caret-in-it"
+spec = ["B-ASIDE-1", "B-ASIDE-2"]
+source = "#117"
+from_stage = 9
+note = """
+<jade-aside side="right" width="40%">
+<jade-float>
+float
+</jade-float>
+text beside the float
+</jade-aside>
+"""
+
+# Never reproduced from the report; it stays as a guard and a fuzzer target.
+[[step]]
+click = { line = 2, col = 5 }
+
+[[step]]
+type = " and then many more words so that the float has to wrap again and again, growing far taller than the short text that flows beside it, until it has passed that text and goes on below it"
+
+[[expect]]
+caret = { line = 2, col = 189 }
+
+[[expect]]
+text_contains = "float and then many more words so that the float has to wrap again and again, growing far taller than the short text that flows beside it, until it has passed that text and goes on below it\n</jade-float>\ntext beside the float\n"
+
+[[expect]]
+no_overlap = true

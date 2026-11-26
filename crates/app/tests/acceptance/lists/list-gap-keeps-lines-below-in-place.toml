@@ -1,0 +1,25 @@
+id = "list-gap-keeps-lines-below-in-place"
+spec = ["P-3", "P-LP-2"]
+source = "#120"
+from_stage = 3
+config = """
+[list]
+item_gap = 1
+"""
+note = """
+intro
+
+- one
+- two
+- three
+"""
+
+# The caret enters the first item, which must keep its gap.
+[[step]]
+click = { line = 2, col = 5 }
+
+[[expect]]
+view_stable = true
+
+[[expect]]
+line_stable = [3, 4]

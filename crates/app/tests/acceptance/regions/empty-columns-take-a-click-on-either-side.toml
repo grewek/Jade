@@ -1,0 +1,45 @@
+id = "empty-columns-take-a-click-on-either-side"
+spec = ["B-COL-1", "B-COL-3"]
+source = "#116"
+from_stage = 9
+note = """
+<jade-columns>
+<jade-column>
+
+</jade-column>
+<jade-column>
+
+</jade-column>
+</jade-columns>
+"""
+
+# The place of the right column's empty line, then of the left one's.
+[[step]]
+click = { line = 5, col = 0 }
+
+[[step]]
+type = "R"
+
+[[step]]
+click = { line = 2, col = 0 }
+
+[[step]]
+type = "L"
+
+[[expect]]
+text = """
+<jade-columns>
+<jade-column>
+L
+</jade-column>
+<jade-column>
+R
+</jade-column>
+</jade-columns>
+"""
+
+[[expect]]
+block = { line = 0, kind = "columns" }
+
+[[expect]]
+no_overlap = true
