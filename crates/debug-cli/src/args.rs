@@ -57,6 +57,11 @@ session
                                 with --features debug-socket)
   script                        read commands from stdin, one per line
                                 (# comments, \"quoted words\", sleep MS)
+
+fuzz (starts its own headless apps on throwaway vaults)
+  fuzz [--seed N] [--runs N] [--steps N] [--bin PATH] [--trace]
+                                random input until the app crashes or hangs; the
+                                same seed repeats a run
 ";
 
 pub(crate) struct Cli {
@@ -90,6 +95,7 @@ pub(crate) enum Action {
     },
     Script,
     Launch(LaunchArgs),
+    Fuzz(crate::fuzz::FuzzArgs),
     Help,
 }
 
@@ -159,6 +165,7 @@ pub(crate) fn parse_action(words: &[String]) -> Result<Action, String> {
         }),
         "quit" => send(Command::Quit),
         "script" => Ok(Action::Script),
+        "fuzz" => crate::fuzz::parse_args(rest).map(Action::Fuzz),
         "frames" => {
             reject_unknown(&flags, &["--raw"])?;
             Ok(Action::Frames {

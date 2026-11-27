@@ -30,24 +30,17 @@ pub(crate) fn run(socket: &Path, args: LaunchArgs) -> Result<(), String> {
         copy_vault(&vault)?
     };
     let _ = std::fs::remove_file(socket); // a stale socket from a previous run
-    let log = PathBuf::from(format!("{}.log", socket.display()));
-    let log_file = File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
     let mut app = std::process::Command::new(&bin);
-    app.arg(&vault).env("JADE_DEBUG_SOCKET", socket);
+    app.arg(&vault);
     if args.headless {
         app.env("JADE_DEBUG_HEADLESS", "1");
         if let Some(size) = &args.size {
             app.env("JADE_DEBUG_SIZE", size);
         }
     }
-    let mut child = app
-        .stdin(Stdio::null())
-        .stdout(log_file.try_clone().map_err(|e| e.to_string())?)
-        .stderr(log_file)
-        .process_group(0) // survives this CLI exiting or being interrupted
-        .spawn()
-        .map_err(|e| format!("cannot start {}: {e}", bin.display()))?;
-    wait_until_ready(socket, &mut child, &log)?;
+    // Survives this CLI exiting or being interrupted.
+    app.process_group(0);
+    let (child, log) = spawn(app, socket)?;
     println!(
         "pid={} socket={} vault={} log={}",
         child.id(),
@@ -59,7 +52,32 @@ pub(crate) fn run(socket: &Path, args: LaunchArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn find_app(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
+/// Starts the app `command` with its socket at `socket` and its output in a
+/// log file beside it, and waits until it answers. Returns the process and the
+/// log's path.
+pub(crate) fn spawn(
+    mut command: std::process::Command,
+    socket: &Path,
+) -> Result<(Child, PathBuf), String> {
+    let log = PathBuf::from(format!("{}.log", socket.display()));
+    let log_file = File::create(&log).map_err(|e| format!("{}: {e}", log.display()))?;
+    let program = command.get_program().to_owned();
+    let mut child = command
+        .env("JADE_DEBUG_SOCKET", socket)
+        .stdin(Stdio::null())
+        .stdout(log_file.try_clone().map_err(|e| e.to_string())?)
+        .stderr(log_file)
+        .spawn()
+        .map_err(|e| format!("cannot start {}: {e}", program.display()))?;
+    if let Err(err) = wait_until_ready(socket, &mut child, &log) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(err);
+    }
+    Ok((child, log))
+}
+
+pub(crate) fn find_app(explicit: Option<PathBuf>) -> Result<PathBuf, String> {
     if let Some(path) = explicit {
         return Ok(path);
     }

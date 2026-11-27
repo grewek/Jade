@@ -37,6 +37,10 @@ $J expect editor-pane empty:0,40,530,25 ink:0,0,130,25 color:5,100,#24273a
 
 Coordinates are logical px relative to the element. Prefer `expect` once you know what should be there (it exits non-zero and prints what it measured); use `capture` to look when you do not, `facts rows`/`grid` to see layout, gaps and overlap without an image. `--rect X,Y,W,H` crops, `--scale 0.5` shrinks a capture. On a live window these commands error and say to use `--headless`. The app must be built with `--features debug-socket`.
 
+## Fuzzing
+
+`$J fuzz --seed 1 --runs 20 --steps 200` starts its own headless apps (build as above) and sends random input until one crashes or hangs. Each fault names the command that repeats it; `--trace` prints every step. `--bin target/debug/jade-app` also checks the debug assertions.
+
 ## Rules that save time
 
 - **Never debug on the real vault.** Typing autosaves. `launch` copies by default; keep it that way.

@@ -34,6 +34,7 @@ fn run() -> Result<(), String> {
             Ok(())
         }
         Action::Launch(launch_args) => launch::run(&cli.socket, launch_args),
+        Action::Fuzz(fuzz_args) => fuzz::fuzz(fuzz_args),
         Action::Script => script(&mut Connection::open(&cli.socket)?),
         action => execute(&mut Connection::open(&cli.socket)?, action),
     }
@@ -68,7 +69,7 @@ fn execute(conn: &mut Connection, action: Action) -> Result<(), String> {
         }
         Action::Sleep(ms) => pump_for(conn, Duration::from_millis(ms)),
         Action::Watch { topic, seconds } => watch(conn, topic, seconds),
-        Action::Script | Action::Launch(_) | Action::Help => {
+        Action::Script | Action::Launch(_) | Action::Fuzz(_) | Action::Help => {
             Err("that command cannot run inside a script".into())
         }
     }
