@@ -10,7 +10,7 @@ What Jade Markdown is and how Jade displays it. It is the reference for the rend
 
 | ID | Rule |
 |---|---|
-| P-1 | **The source text is the truth.** Only the Markdown file is stored. Everything shown is derived from it. Jade never writes to the file on its own, except where §7 says so (auto-closing while typing). |
+| P-1 | **The source text is the truth.** Only the Markdown file is stored. Everything shown is derived from it. Jade never writes to the file on its own, except where §7 says so (inserting a closer on Enter). Moving the caret never writes (§10.1). |
 | P-2 | **Errors stay local.** An incomplete construct never reaches past the end of its container (§4.3). At top level, the container is the document. |
 | P-3 | **Stability.** Switching a construct between raw and rendered changes only the height of the block that holds the caret. Nothing above it moves. |
 | P-4 | **Nothing is lost.** Content Jade does not support at a place is shown as text (§3.1), never hidden or dropped. |
@@ -164,6 +164,7 @@ Right column.
 | B-COL-3 | Columns are laid out side by side at equal top. The region is as tall as its tallest column. |
 | B-COL-4 | **Columns only at top level** (§3.1). A `<jade-columns>` or `<jade-aside>` line inside a column is text. |
 | B-COL-5 | `<jade-column>` is valid only as a direct child of `<jade-columns>`, and `<jade-float>` only as the first child of `<jade-aside>`. Anywhere else these lines are text. |
+| B-COL-6 | **Every column has at least one caret position**, also when empty: its first blank line, else a virtual empty line (V-1). |
 
 ### 3.12 Asides (floats)
 
@@ -190,6 +191,7 @@ Text that flows beside the table and continues below it at full width.
 | B-ASIDE-3 | `side="left"` or `"right"` (default `right`), `width="10%"…"90%"` (default `40%`), the float's share of the line. |
 | B-ASIDE-4 | **One float per aside.** Several floats are several asides, one after another. |
 | B-ASIDE-5 | Asides only at top level, like columns (B-COL-4). |
+| B-ASIDE-6 | **The float and the flowing text each have at least one caret position**, also when empty (B-COL-6). |
 
 ## 4. Container tags
 
@@ -259,8 +261,10 @@ As in CommonMark and GFM: emphasis and strong emphasis (`*`, `_`), strikethrough
 
 | ID | Rule |
 |---|---|
-| P-OPEN-1 | **Auto-closing while typing:** typing an opening code fence, `$$` at a block opener position, or a valid opening tag line inserts the matching closer below, **only if the construct would otherwise stay open**. A fence typed while a fence above is open is a closer, and nothing is inserted. |
-| P-OPEN-2 | **Every other way** an open construct can arise (paste, delete, undo, external change) is shown as it is. The opening line carries a subtle "not closed" hint, and one click on it inserts a closer at the end of the construct's container. |
+| P-OPEN-1 | **A pending opener opens nothing yet.** An opening code fence line, a `$$` line at a block opener position, or a valid opening tag line that holds the caret and has no closer below it in its container is shown raw, and nothing below it changes. A fence typed while a fence above is open is a closer, not an opener. |
+| P-OPEN-1a | **Enter on a pending opener inserts its closer:** a fence of the same character and length, `$$`, or the matching closing tag, on a new line below, and puts the caret on an empty line between them. This is the only time Jade inserts text the user did not type (P-1). |
+| P-OPEN-1b | **Leaving a pending opener without Enter** (arrows, click) makes it an ordinary open construct (P-OPEN-2). |
+| P-OPEN-2 | **Every other way** an open construct can arise (leaving a pending opener, paste, delete, undo, external change) is shown as it is. The opening line carries a subtle "not closed" hint, and one click on it inserts a closer at the end of the construct's container. |
 | P-OPEN-3 | The hint also marks malformed tag lines (B-TAG-3) and open tags (B-TAG-6). |
 | P-OPEN-4 | **Accepted cost (K33):** a fence that nothing closes changes the block tree to the end of its container. On a 5 MB note this tree update may take ≈ 7 ms. The whole frame must still meet the frame budget. |
 
@@ -286,11 +290,21 @@ As in CommonMark and GFM: emphasis and strong emphasis (`*`, `_`), strikethrough
 
 | ID | Rule |
 |---|---|
-| E-1 | **Arrow keys move in reading order**, also across columns (column 1, then column 2, then below the region). |
+| E-1 | **Arrow keys move in reading order**, also across columns (column 1, then column 2, then below the region) and onto virtual empty lines (§10.1). |
 | E-2 | **Ctrl+↓ / Ctrl+↑** leave a columns region or aside spatially, at the same x. **Alt+← / Alt+→** move to the neighbouring column at the same height. Ctrl+← / Ctrl+→ stay word jumps. |
 | E-3 | **Selection is in source order.** Copy copies the selected source. |
 | E-4 | **A click on a rendered link opens it. Ctrl+click** places the caret inside it. |
 | E-5 | **Enter in a table cell** inserts `<br>`. A `<br>` or `\|` is one caret step and is deleted whole. |
+
+### 10.1 Virtual empty lines
+
+| ID | Rule |
+|---|---|
+| V-1 | **Where the caret must be able to go but no source line exists, the editor shows a virtual empty line**, one body line tall, that is not in the file: after the last block of a note and before its first, when that block is not a paragraph or heading and no blank line is there; and inside a column, float or aside text with no line between its tags. |
+| V-2 | **It is always shown**, not only while the caret is on it, so nothing moves when the caret arrives (P-3). |
+| V-3 | Arrows, Ctrl+↓ / Ctrl+↑ (E-2) and clicks reach it like any line. |
+| V-4 | **Typing or pasting on it creates the line in the file** (with the line break it needs). **Moving onto it or away never writes.** |
+| V-5 | Virtual lines belong to the transitions between blocks, not to a block type (`ARCHITECTURE.md`, geometry). |
 
 ## 11. Limits
 
