@@ -46,6 +46,7 @@ pub(super) fn execute(command: Command, app: &WeakEntity<JadeApp>, cx: &mut App)
             Answer::Ok
         }
         Command::Resize { width, height } => resize(width, height, cx),
+        Command::FocusEditor => focus_editor(app, cx),
         command if input::is_input(&command) => inject(&command, cx),
         other => error(format!("not implemented yet: {other:?}")),
     }
@@ -108,6 +109,26 @@ fn resize(width: f32, height: f32, cx: &mut App) -> Answer {
     });
     match resized {
         Ok(()) => Answer::Ok,
+        Err(err) => error(format!("window unavailable: {err}")),
+    }
+}
+
+fn focus_editor(app: &WeakEntity<JadeApp>, cx: &mut App) -> Answer {
+    let (Some(app), Some(handle)) = (app.upgrade(), first_window(cx)) else {
+        return error("the app window is gone");
+    };
+    let focused = handle.update(cx, |_, window, cx| {
+        // Typing would reach the note behind it, which a user cannot do.
+        if window.has_active_dialog(cx) {
+            return Err("a dialog is open");
+        }
+        let editor = app.read(cx).editor().cloned().ok_or("no note is open")?;
+        window.focus(&editor.focus_handle(cx), cx);
+        Ok(())
+    });
+    match focused {
+        Ok(Ok(())) => Answer::Ok,
+        Ok(Err(why)) => error(why),
         Err(err) => error(format!("window unavailable: {err}")),
     }
 }
@@ -212,3 +233,6 @@ fn read_text(app: &WeakEntity<JadeApp>, start: usize, len: usize, cx: &App) -> A
         total_len: text.len(),
     }
 }
+
+#[cfg(test)]
+mod tests;

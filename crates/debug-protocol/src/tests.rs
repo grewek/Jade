@@ -439,8 +439,9 @@ fn the_invariants_query_and_its_answer_round_trip() {
 }
 
 #[test]
-fn the_clipboard_and_resize_commands_round_trip() {
+fn the_commands_that_set_up_input_round_trip() {
     round_trip_commands(vec![
+        Command::FocusEditor,
         Command::SetClipboard {
             text: "two\nlines".into(),
         },

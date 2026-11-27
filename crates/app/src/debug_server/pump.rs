@@ -140,7 +140,8 @@ fn run(job: Job, app: &WeakEntity<JadeApp>, cx: &mut App) {
         done,
     } = job;
     let quit = matches!(command, Command::Quit);
-    let wait_for_paint = input::is_input(&command) || matches!(command, Command::Resize { .. });
+    let wait_for_paint = input::is_input(&command)
+        || matches!(command, Command::Resize { .. } | Command::FocusEditor);
     if capture::is_pixel_command(&command) {
         let (answer, follow) = capture::execute(&command, cx);
         reply.send_then(answer, follow);

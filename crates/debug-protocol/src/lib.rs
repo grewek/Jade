@@ -163,6 +163,9 @@ pub enum Command {
     SetClipboard {
         text: String,
     },
+    /// Gives the open note's editor the keyboard focus without a click, which
+    /// could land on a control that acts or keeps the focus. The caret stays.
+    FocusEditor,
     /// Resizes the window, in logical pixels.
     Resize {
         width: f32,
