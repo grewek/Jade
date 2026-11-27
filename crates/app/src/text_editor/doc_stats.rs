@@ -99,6 +99,11 @@ impl DocStats {
         stats
     }
 
+    #[cfg(any(test, feature = "debug-socket"))]
+    pub(super) fn same_counts(&self, other: &Self) -> bool {
+        (self.words, self.chars) == (other.words, other.chars) && self.per_line == other.per_line
+    }
+
     /// Recounts the whole document: the cold open, and the fallback when an
     /// edit could not be patched. A big note is counted by several threads,
     /// each over a run of whole lines: this is the one O(bytes) pass of a note

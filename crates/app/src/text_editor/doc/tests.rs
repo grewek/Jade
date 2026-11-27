@@ -118,61 +118,9 @@ fn callout_for_line_of(cache: &DocumentCache) -> Vec<Option<usize>> {
         .collect()
 }
 
-/// Every field of `cache`, including the entering-state arrays and the
-/// byte-offset index no public accessor exposes, must equal a cache
-/// built fresh from `text`: a stale entry there could survive until a
-/// later edit resumes from it.
 fn assert_matches_fresh_cache(cache: &DocumentCache, text: &str, context: &str) {
-    let fresh = DocumentCache::new(text);
-    assert_eq!(cache.line_roles, fresh.line_roles, "line_roles {context}");
-    assert_eq!(
-        cache.fence_states, fresh.fence_states,
-        "fence_states {context}"
-    );
-    assert_eq!(
-        cache.block_contexts, fresh.block_contexts,
-        "contexts {context}"
-    );
-    assert_eq!(
-        cache.open_block_states, fresh.open_block_states,
-        "open_block_states {context}"
-    );
-    assert_eq!(cache.tables, fresh.tables, "tables {context}");
-    assert_eq!(
-        cache.math_blocks, fresh.math_blocks,
-        "math_blocks {context}"
-    );
-    assert_eq!(
-        cache.macro_lines, fresh.macro_lines,
-        "macro_lines {context}"
-    );
-    assert_eq!(
-        cache.macros.stamp(),
-        fresh.macros.stamp(),
-        "macros {context}"
-    );
-    assert_eq!(cache.callouts, fresh.callouts, "callouts {context}");
-    assert_eq!(
-        cache.column_markers, fresh.column_markers,
-        "column_markers {context}"
-    );
-    assert_eq!(cache.columns, fresh.columns, "columns {context}");
-    assert_eq!(
-        cache.callout_states, fresh.callout_states,
-        "callout_states {context}"
-    );
-    assert_eq!(
-        cache.line_index.len(),
-        fresh.line_index.len(),
-        "line_index len {context}"
-    );
-    for i in 0..=fresh.line_index.len() {
-        assert_eq!(
-            cache.line_index.prefix_sum(i),
-            fresh.line_index.prefix_sum(i),
-            "line_index prefix {i} {context}"
-        );
-    }
+    let stale = cache.stale_fields(text);
+    assert!(stale.is_empty(), "stale {stale:?} {context}");
 }
 
 /// Same property, exercised over many pseudo-random edits — deliberate

@@ -28,6 +28,9 @@ pub(super) fn execute(command: Command, app: &WeakEntity<JadeApp>, cx: &mut App)
             what: Query::AppState,
         } => app_state(app, cx),
         Command::Query { what: Query::Theme } => theme_state(cx),
+        Command::Query {
+            what: Query::Invariants,
+        } => super::invariants::query(app, cx),
         Command::SetTheme { id } => match ThemeEngine::set(&id, cx) {
             Ok(()) => Answer::Ok,
             Err(messages) => error(messages.join("; ")),
@@ -64,7 +67,7 @@ fn theme_state(cx: &App) -> Answer {
     })
 }
 
-fn first_window(cx: &App) -> Option<gpui_kit::AnyWindowHandle> {
+pub(super) fn first_window(cx: &App) -> Option<gpui_kit::AnyWindowHandle> {
     cx.windows().into_iter().next()
 }
 

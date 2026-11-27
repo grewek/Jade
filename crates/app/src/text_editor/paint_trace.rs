@@ -392,10 +392,20 @@ impl PaintedFrame {
 
 /// The problems of every frame painted since the last call, since a bug that
 /// the next frame mends leaves no mark on the last one.
-#[cfg(test)]
 static PROBLEMS_SINCE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Most different problems kept between two calls: nothing may ever call.
+const MAX_KEPT_PROBLEMS: usize = 64;
 
-#[cfg(test)]
+/// Keeps each different problem once, so a problem repeated by every frame
+/// does not crowd out the others.
+fn keep_problems(kept: &mut Vec<String>, new: &[String]) {
+    for problem in new {
+        if kept.len() < MAX_KEPT_PROBLEMS && !kept.contains(problem) {
+            kept.push(problem.clone());
+        }
+    }
+}
+
 pub(crate) fn take_problems() -> Vec<String> {
     PROBLEMS_SINCE
         .lock()
@@ -438,9 +448,8 @@ impl Drop for PaintTrace {
     fn drop(&mut self) {
         let frame = crate::debug_server::frames::current();
         let problems = self.problems();
-        #[cfg(test)]
         if let Ok(mut all) = PROBLEMS_SINCE.lock() {
-            all.extend_from_slice(&problems);
+            keep_problems(&mut all, &problems);
         }
         #[cfg(test)]
         if let Ok(mut painted) = LAST_FRAME.lock() {
@@ -465,6 +474,16 @@ impl Drop for PaintTrace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_different_problem_is_kept_once_up_to_a_limit() {
+        let mut kept = Vec::new();
+        for frame in 0..2 * MAX_KEPT_PROBLEMS {
+            keep_problems(&mut kept, &["always".into(), format!("frame {frame}")]);
+        }
+        assert_eq!(kept.len(), MAX_KEPT_PROBLEMS);
+        assert_eq!(kept.iter().filter(|p| *p == "always").count(), 1);
+    }
 
     fn trace() -> PaintTrace {
         PaintTrace {

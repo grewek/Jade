@@ -23,6 +23,8 @@ mod headings;
 mod highlight;
 mod image;
 mod input_handler;
+#[cfg(any(test, feature = "debug-socket"))]
+mod invariants;
 mod layout;
 mod lines;
 mod link_table;
@@ -44,6 +46,8 @@ pub use buffer::EditorBuffer;
 #[cfg(feature = "bench-support")]
 pub use editor::{BackTab, InsertTab};
 pub use editor::{Editor, EditorEvent, key_bindings};
+#[cfg(any(test, feature = "debug-socket"))]
+pub(crate) use paint_trace::take_problems;
 #[cfg(test)]
-pub(crate) use paint_trace::{PaintedFrame, PaintedLine, last_painted_frame, take_problems};
+pub(crate) use paint_trace::{PaintedFrame, PaintedLine, last_painted_frame};
 pub use settings::TextSettings;

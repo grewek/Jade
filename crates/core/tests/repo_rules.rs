@@ -29,8 +29,6 @@ const OVERSIZED: &[(&str, usize)] = &[
     ("crates/app/src/text_editor/table/model.rs", 1334),
     ("crates/app/src/theme/tests.rs", 1051),
     ("crates/core/src/vault.rs", 884),
-    ("crates/debug-cli/src/args.rs", 881),
-    ("crates/debug-protocol/src/lib.rs", 1021),
 ];
 
 /// `ARCHITECTURE.md` holds rules and invariants only. Bytes, not lines: the

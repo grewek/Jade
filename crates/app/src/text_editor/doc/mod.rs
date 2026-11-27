@@ -43,6 +43,8 @@ use std::sync::Arc;
 
 use super::math::Macros;
 
+#[cfg(any(test, feature = "debug-socket"))]
+mod consistency;
 mod edit;
 mod macros;
 mod math;

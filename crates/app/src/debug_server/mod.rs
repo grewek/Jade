@@ -13,6 +13,7 @@ pub(crate) mod frames;
 #[cfg(feature = "debug-socket")]
 pub(crate) mod headless;
 mod input;
+mod invariants;
 mod pixels;
 mod pump;
 pub(crate) mod targets;
