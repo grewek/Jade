@@ -1,0 +1,71 @@
+id = "a-rewritten-fold-marker-opens-the-callout"
+spec = ["B-CALL-4", "P-VIEW-2"]
+source = "f165f92"
+from_stage = 6
+# The fold taken from `-` outlived the marker's change to `+`. The marker is
+# replaced in one edit: a header without one cannot be folded at all.
+note = '''
+intro
+
+> [!note]- Title
+> body
+
+below
+'''
+
+[[step]]
+click = { line = 0, col = 0 }
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "home"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "right"
+
+[[step]]
+key = "shift-right"
+
+[[step]]
+type = "+"
+
+[[step]]
+key = "up"
+
+[[step]]
+key = "up"
+
+[[expect]]
+text_contains = "> [!note]+ Title\n"
+
+[[expect]]
+shown = [3]

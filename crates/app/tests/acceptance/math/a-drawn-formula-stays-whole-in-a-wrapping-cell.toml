@@ -1,0 +1,19 @@
+id = "a-drawn-formula-stays-whole-in-a-wrapping-cell"
+spec = ["B-TAB-5"]
+source = "31217ac"
+from_stage = 7
+size = "800x700"
+# The column is far narrower than the formula's source, not than the formula.
+note = '''
+intro
+
+| text | f |
+|---|---|
+| lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore | $\frac{\frac{a}{b}}{\frac{c}{d}}$ |
+'''
+
+[[expect]]
+same_row = { line = 4, from = 200, to = 233 }
+
+[[expect]]
+no_overlap = true

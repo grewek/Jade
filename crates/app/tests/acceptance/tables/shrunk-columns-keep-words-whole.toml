@@ -1,0 +1,20 @@
+id = "shrunk-columns-keep-words-whole"
+spec = ["B-TAB-5"]
+source = "089ceb9"
+from_stage = 5
+size = "1100x700"
+# The second column is far longer, so shrinking in proportion would leave the
+# first one narrower than its word.
+note = '''
+intro
+
+| key | description |
+|---|---|
+| counterproductive | lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do |
+'''
+
+[[expect]]
+same_row = { line = 4, from = 2, to = 18 }
+
+[[expect]]
+no_overlap = true

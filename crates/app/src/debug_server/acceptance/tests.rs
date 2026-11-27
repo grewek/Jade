@@ -123,6 +123,63 @@ fn acceptance_runner_measures_how_far_content_moved() {
     assert_eq!((wrong.passed, wrong.failures.len()), (0, 2), "{wrong:?}");
 }
 
+#[test]
+fn acceptance_runner_checks_rows_and_the_caret_direction() {
+    let long = "word ".repeat(60);
+    let mut probe = scenario(
+        r#"
+        [[step]]
+        click = { line = 2, col = 1 }
+        [[step]]
+        type = "x"
+        [[expect]]
+        caret_moved_right = true
+        [[expect]]
+        same_row = { line = 0, from = 0, to = 10 }
+        [[expect]]
+        other_row = { line = 0, from = 0, to = 290 }
+        [[expect]]
+        shown = [0, 2]
+        [[expect]]
+        height_at_most = { line = 2, other = 0, times = 1.0 }
+        [[expect]]
+        every_frame_consistent = true
+        "#,
+    );
+    probe.note = format!("{long}\n\nshort\n");
+    let outcome = run(&probe);
+    assert_eq!(outcome.failures, Vec::<String>::new());
+    assert_eq!(outcome.passed, 6);
+
+    let mut wrong = scenario(
+        r#"
+        [[step]]
+        click = { line = 2, col = 4 }
+        [[step]]
+        key = "left"
+        [[expect]]
+        caret_moved_right = true
+        [[expect]]
+        same_row = { line = 0, from = 0, to = 290 }
+        [[expect]]
+        other_row = { line = 0, from = 0, to = 10 }
+        [[expect]]
+        hidden = [2]
+        [[expect]]
+        shown = [99]
+        [[expect]]
+        height_at_most = { line = 0, other = 2, times = 1.0 }
+        "#,
+    );
+    wrong.note = format!("{long}\n\nshort\n");
+    let outcome = run(&wrong);
+    assert_eq!(
+        (outcome.passed, outcome.failures.len()),
+        (0, 6),
+        "{outcome:?}"
+    );
+}
+
 /// Without this the catalog could report passes while checking nothing.
 #[test]
 fn acceptance_runner_drives_the_real_editor() {

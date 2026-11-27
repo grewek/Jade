@@ -1,0 +1,23 @@
+id = "a-tables-delimiter-line-takes-no-height"
+spec = ["B-TAB-3"]
+source = "534f7ed"
+from_stage = 5
+# The hidden delimiter line kept a row, so the header stood over an empty one.
+note = '''
+intro
+
+| a | b |
+|---|---|
+| c | d |
+
+below
+'''
+
+[[expect]]
+hidden = [3]
+
+[[expect]]
+height_at_most = { line = 2, other = 4, times = 1.5 }
+
+[[expect]]
+no_overlap = true

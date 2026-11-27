@@ -1,0 +1,26 @@
+id = "a-blank-line-ends-a-formula-block"
+spec = ["B-MATH-3"]
+source = "0e65772"
+from_stage = 7
+# The first `$$` paired with the distant one and swallowed what lies between.
+note = '''
+intro
+
+$$
+stray
+
+## Heading
+
+$$
+
+below
+'''
+
+[[expect]]
+shown = [2, 3, 5, 7]
+
+[[expect]]
+block = { line = 5, kind = "heading" }
+
+[[expect]]
+no_overlap = true

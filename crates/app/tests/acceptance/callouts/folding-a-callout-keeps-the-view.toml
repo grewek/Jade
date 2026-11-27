@@ -1,0 +1,110 @@
+id = "folding-a-callout-keeps-the-view"
+spec = ["B-CALL-4", "P-VIEW-1"]
+source = "49e8aed"
+from_stage = 6
+# Column 4 of the rendered header is on its title: a click there folds.
+note = '''
+filler 0
+
+filler 1
+
+filler 2
+
+filler 3
+
+filler 4
+
+filler 5
+
+filler 6
+
+filler 7
+
+filler 8
+
+filler 9
+
+filler 10
+
+filler 11
+
+filler 12
+
+filler 13
+
+filler 14
+
+filler 15
+
+filler 16
+
+filler 17
+
+filler 18
+
+filler 19
+
+> [!note]+ Title
+> one
+> two
+> three
+
+filler 0
+
+filler 1
+
+filler 2
+
+filler 3
+
+filler 4
+
+filler 5
+
+filler 6
+
+filler 7
+
+filler 8
+
+filler 9
+
+filler 10
+
+filler 11
+
+filler 12
+
+filler 13
+
+filler 14
+
+filler 15
+
+filler 16
+
+filler 17
+
+filler 18
+
+filler 19
+
+'''
+
+[[step]]
+scroll = { dy = -800.0 }
+
+[[step]]
+click = { line = 40, col = 12 }
+
+[[expect]]
+hidden = [41, 42, 43]
+
+[[expect]]
+view_stable = true
+
+[[expect]]
+line_stable = [38, 40]
+
+[[expect]]
+text_contains = "[!note]+ Title"

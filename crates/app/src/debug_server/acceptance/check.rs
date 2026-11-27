@@ -3,12 +3,13 @@
 
 use jade_debug_protocol::{Answer, Check, Command, DEFAULT_TOLERANCE};
 
-use super::format::Expect;
-use super::session::Session;
-use crate::text_editor::PaintedFrame;
+use super::format::{Expect, Span};
+use super::session::{Session, StepError};
+use crate::text_editor::{PaintedFrame, take_problems};
 
 /// Pixel disagreement below this is rounding.
 const TOLERANCE_PX: f32 = 0.5;
+const SAME_ROW_PX: f32 = 8.0;
 
 #[derive(Debug, PartialEq)]
 pub(super) enum Verdict {
@@ -22,6 +23,8 @@ pub(super) struct Before {
     pub scroll_y: f32,
     pub frame: PaintedFrame,
     pub frame_number: u64,
+    /// The caret's window x, if its line was drawn.
+    pub caret_x: Option<f32>,
 }
 
 fn verdict(ok: bool, why: impl FnOnce() -> String) -> Verdict {
@@ -73,7 +76,27 @@ fn evaluate(expect: &Expect, before: &Before, session: &mut Session) -> Result<V
         Expect::ContentMoved(by) => content_moved(*by, &before.frame, &session.view()?.1),
         Expect::NoOverlap(true) => no_overlap(&session.view()?.1),
         Expect::CaretVisible(true) => caret_visible(session)?,
-        Expect::ViewStable(false) | Expect::NoOverlap(false) | Expect::CaretVisible(false) => {
+        Expect::CaretMovedRight(true) => {
+            let (line, _) = session.caret()?;
+            if session.in_table(line)? {
+                Verdict::Skipped("caret_moved_right: no caret positions inside tables".into())
+            } else {
+                caret_moved_right(before.caret_x, session.caret_x()?)
+            }
+        }
+        Expect::EveryFrameConsistent(true) => every_frame_consistent(),
+        Expect::Hidden(lines) => hidden(lines, &session.view()?.1),
+        Expect::Shown(lines) => shown(lines, &session.view()?.1),
+        Expect::HeightAtMost { line, other, times } => {
+            height_at_most((*line, *other), *times, &session.view()?.1)
+        }
+        Expect::SameRow(span) => rows(span, true, session)?,
+        Expect::OtherRow(span) => rows(span, false, session)?,
+        Expect::ViewStable(false)
+        | Expect::NoOverlap(false)
+        | Expect::CaretVisible(false)
+        | Expect::CaretMovedRight(false)
+        | Expect::EveryFrameConsistent(false) => {
             Verdict::Failed("only `true` is meaningful; drop the expectation".into())
         }
         Expect::MaxFrameMs(limit) => max_frame(*limit, before.frame_number),
@@ -134,6 +157,85 @@ fn caret_visible(session: &mut Session) -> Result<Verdict, String> {
             caret.bottom(),
             pane.top(),
             pane.bottom()
+        )
+    }))
+}
+
+fn caret_moved_right(was: Option<f32>, is: Option<f32>) -> Verdict {
+    match (was, is) {
+        (Some(was), Some(is)) => verdict(is > was + TOLERANCE_PX, || {
+            format!("the caret went from x={was:.1} to x={is:.1}")
+        }),
+        _ => Verdict::Failed("the caret's line was not drawn both times".into()),
+    }
+}
+
+fn every_frame_consistent() -> Verdict {
+    let mut problems = take_problems();
+    problems.dedup();
+    verdict(problems.is_empty(), || problems.join("; "))
+}
+
+/// The drawn height of a line; zero for one the frame left out.
+fn height_of(line: usize, frame: &PaintedFrame) -> f32 {
+    frame
+        .lines
+        .iter()
+        .find(|l| l.line == line)
+        .map_or(0., |l| l.height)
+}
+
+pub(super) fn hidden(lines: &[usize], frame: &PaintedFrame) -> Verdict {
+    if frame.lines.is_empty() {
+        return Verdict::Skipped("hidden: no line was traced".into());
+    }
+    match lines.iter().find(|&&l| height_of(l, frame) > TOLERANCE_PX) {
+        Some(&line) => Verdict::Failed(format!(
+            "line {line} is drawn, {:.1} tall",
+            height_of(line, frame)
+        )),
+        None => Verdict::Passed,
+    }
+}
+
+pub(super) fn shown(lines: &[usize], frame: &PaintedFrame) -> Verdict {
+    match lines.iter().find(|&&l| height_of(l, frame) <= TOLERANCE_PX) {
+        Some(line) => Verdict::Failed(format!("line {line} is not drawn")),
+        None => Verdict::Passed,
+    }
+}
+
+pub(super) fn height_at_most(
+    (line, other): (usize, usize),
+    times: f32,
+    frame: &PaintedFrame,
+) -> Verdict {
+    let (tall, base) = (height_of(line, frame), height_of(other, frame));
+    if tall <= 0. || base <= 0. {
+        return Verdict::Failed(format!("lines {line} and {other} are not both drawn"));
+    }
+    verdict(tall <= base * times + TOLERANCE_PX, || {
+        format!("line {line} is {tall:.1} tall, over {times} times line {other}'s {base:.1}")
+    })
+}
+
+fn rows(span: &Span, same: bool, session: &mut Session) -> Result<Verdict, String> {
+    let mut points = Vec::with_capacity(2);
+    for col in [span.from, span.to] {
+        match session.point_of(span.line, col) {
+            Ok(point) => points.push(point),
+            Err(StepError::Unsupported(why)) => return Ok(Verdict::Skipped(why)),
+            Err(StepError::Failed(why)) => return Err(why),
+        }
+    }
+    let (from, to) = (points[0], points[1]);
+    // Half a body row apart is another row; less is one row's own jitter, such
+    // as a formula's baseline.
+    let apart = (from.y - to.y).abs() > SAME_ROW_PX;
+    Ok(verdict(apart != same, || {
+        format!(
+            "line {} cols {} and {} are drawn at y={:.1} and y={:.1}",
+            span.line, span.from, span.to, from.y, to.y
         )
     }))
 }
