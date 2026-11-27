@@ -20,7 +20,8 @@ use check::{Before, Verdict};
 use format::Scenario;
 use session::{Session, StepError};
 
-/// Scenarios up to this stage of #130 must pass; later ones run and report.
+/// Scenarios up to this stage of #130 must pass in full; later ones run and
+/// report.
 /// Each stage's pull request raises it.
 const CURRENT_STAGE: u8 = 1;
 
@@ -44,6 +45,13 @@ impl Outcome {
             (true, _, true) => "pass",
         }
     }
+}
+
+/// Whether this outcome fails the build at `stage`. From a scenario's stage on,
+/// a skipped step or check counts against it: otherwise part of it could go
+/// unchecked without anyone noticing.
+fn breaks_the_build(from_stage: u8, stage: u8, outcome: &Outcome) -> bool {
+    from_stage <= stage && outcome.status() != "pass"
 }
 
 fn run(scenario: &Scenario) -> Outcome {
