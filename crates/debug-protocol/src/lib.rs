@@ -76,7 +76,15 @@ pub enum Query {
     WindowSize,
     /// The active theme: id, kind and a few resolved colors.
     Theme,
+    /// What is wrong with the app right now, empty when nothing is; see
+    /// [`Answer::Invariants`].
+    Invariants,
 }
+
+/// Most problems one `Invariants` reply names; the rest are only counted.
+pub const MAX_PROBLEMS: usize = 20;
+/// Longest a problem's text gets, in bytes, so a full reply fits in a line.
+pub const MAX_PROBLEM_BYTES: usize = 300;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "cmd", rename_all = "snake_case")]
@@ -494,6 +502,14 @@ pub enum Answer {
     EditorState(EditorState),
     AppState(AppState),
     Theme(ThemeState),
+    /// Reply to `Query::Invariants`: the caret and selection lie in the open
+    /// note on character boundaries, state patched edit by edit equals one
+    /// built from the text, and no frame since the last such query had a
+    /// layout problem. `omitted` counts the problems beyond `problems`.
+    Invariants {
+        problems: Vec<String>,
+        omitted: usize,
+    },
     /// Reply to `ReadEditorText`: `text` starts at byte `start`; `total_len`
     /// is the whole note, so `start + text.len() < total_len` means more.
     Text {

@@ -135,7 +135,7 @@ pub struct Editor {
     /// `document_cache`.
     pub(super) row_height_cache: Rc<RefCell<RowCache>>,
     /// Word and character counts for the status bar, patched per edit.
-    doc_stats: DocStats,
+    pub(super) doc_stats: DocStats,
     /// Where the note's links are, patched per edit.
     pub(super) link_table: LinkTable,
     /// The mouse is over a link a click would follow: paint shows a pointer.

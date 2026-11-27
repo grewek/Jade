@@ -169,6 +169,16 @@ impl LinkTable {
         }
     }
 
+    /// Whether both found the same links; whether they resolve is not compared.
+    #[cfg(any(test, feature = "debug-socket"))]
+    pub(super) fn same_links(&self, other: &Self) -> bool {
+        let place = |l: &StoredLink| (l.line, l.start, l.end, l.kind);
+        self.links
+            .iter()
+            .map(place)
+            .eq(other.links.iter().map(place))
+    }
+
     /// Forgets which links resolved, after the vault's notes changed.
     pub(super) fn invalidate(&mut self) {
         for link in &mut self.links {

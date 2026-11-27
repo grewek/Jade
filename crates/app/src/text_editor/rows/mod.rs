@@ -305,6 +305,42 @@ impl RowCache {
         };
     }
 
+    /// `(line, counted, measured)` for each line whose count is claimed exact
+    /// (the verified window, at most `limit` lines of it around `near`) but
+    /// differs from a new measurement. Lines awaiting a patch are left out.
+    #[cfg(any(test, feature = "debug-socket"))]
+    pub(super) fn inexact_rows(
+        &self,
+        doc: &DocumentCache,
+        inp: &Inputs,
+        (near, limit): (usize, usize),
+        window: &mut Window,
+    ) -> Vec<(usize, i64, i64)> {
+        if self.line_count() != doc.line_count() || self.pending.is_some() {
+            return Vec::new();
+        }
+        let verified = self.verified.clone();
+        let from = near
+            .saturating_sub(limit / 2)
+            .min(verified.end.saturating_sub(limit))
+            .max(verified.start);
+        let metrics = RowFontMetrics::measure(inp.font, inp.font_size, inp.text_color, window);
+        let env = Env::new(inp, doc, metrics);
+        (from..verified.end.min(from.saturating_add(limit)))
+            .filter_map(|i| {
+                let counted = self.row_count(i);
+                let measured = patched_row_count(&env, i, true, window) as i64;
+                (counted != measured).then_some((i, counted, measured))
+            })
+            .collect()
+    }
+
+    /// The width the counts were built for.
+    #[cfg(any(test, feature = "debug-socket"))]
+    pub(super) fn width(&self) -> Pixels {
+        self.available_width
+    }
+
     /// Paint's per-line fix: sets line `i` to `real_rows` (exact, from shaping
     /// it), counting a late correction when that changes anything.
     pub(super) fn correct_late(&mut self, i: usize, real_rows: usize) {
@@ -622,7 +658,7 @@ pub(super) fn count_at(rows: &RowCache, i: usize) -> i64 {
 }
 
 #[cfg(test)]
-pub(super) fn correct_for_test(rows: &mut RowCache, i: usize, real_rows: usize) {
+pub(in crate::text_editor) fn correct_for_test(rows: &mut RowCache, i: usize, real_rows: usize) {
     rows.correct(i, real_rows);
 }
 

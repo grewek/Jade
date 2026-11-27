@@ -19,6 +19,8 @@ observe
   text [START] [LEN]            slice of the open note (default 0, 2000)
   frames [--raw]                recent editor frame times vs the 16.66ms budget
   theme [ID]                    active theme, or switch to ID for this run (not saved)
+  invariants                    check the caret, the patched state and the frames since the
+                                last check (fails and lists what is wrong)
   memory | size                 process memory | window size
   subscribe|unsubscribe TOPIC   topics: paint memory frames input (script only)
   await TOPIC [TIMEOUT_MS]      the next event on TOPIC
@@ -146,6 +148,9 @@ pub(crate) fn parse_action(words: &[String]) -> Result<Action, String> {
             [id] => send(Command::SetTheme { id: (*id).into() }),
             _ => Err("theme takes at most one ID".into()),
         },
+        "invariants" => send(Command::Query {
+            what: Query::Invariants,
+        }),
         "memory" => send(Command::Query {
             what: Query::Memory,
         }),

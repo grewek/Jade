@@ -423,3 +423,17 @@ fn a_full_chunk_fits_a_line_with_room_to_spare() {
     assert!(line.len() < MAX_LINE_BYTES, "{} bytes", line.len());
     assert!(line.len() < MAX_LINE_BYTES - 1024);
 }
+
+#[test]
+fn the_invariants_query_and_its_answer_round_trip() {
+    round_trip_commands(vec![Command::Query {
+        what: Query::Invariants,
+    }]);
+    roundtrip(Message::Response {
+        req: 1,
+        answer: Answer::Invariants {
+            problems: vec!["frame: overlap".into()],
+            omitted: 2,
+        },
+    });
+}

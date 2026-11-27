@@ -14,6 +14,23 @@ fn trimmed(encoded: Result<String, impl std::fmt::Display>) -> String {
     )
 }
 
+/// `ok`, or an error listing what the invariants query found.
+fn invariants_text(problems: &[String], omitted: usize) -> Result<String, String> {
+    if problems.is_empty() && omitted == 0 {
+        return Ok("ok".into());
+    }
+    let more = if omitted > 0 {
+        format!("\n  and {omitted} more")
+    } else {
+        String::new()
+    };
+    Err(format!(
+        "{} problems\n  {}{more}",
+        problems.len() + omitted,
+        problems.join("\n  ")
+    ))
+}
+
 pub(crate) fn event_line(event: &Event) -> String {
     trimmed(encode_line(&Message::Event {
         event: event.clone(),
@@ -27,6 +44,7 @@ pub(crate) fn answer_text(answer: &Answer) -> Result<String, String> {
         Answer::Error { message } => return Err(message.clone()),
         Answer::Targets { targets } => targets_table(targets),
         Answer::FrameTimes { frames } => frame_summary(frames),
+        Answer::Invariants { problems, omitted } => return invariants_text(problems, *omitted),
         Answer::Text {
             text,
             start,
@@ -158,6 +176,19 @@ pub(crate) fn frame_summary(frames: &[FrameSample]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn invariants_print_ok_or_fail_with_every_problem() {
+        let answer = |problems: &[&str], omitted| Answer::Invariants {
+            problems: problems.iter().map(|p| (*p).to_owned()).collect(),
+            omitted,
+        };
+        assert_eq!(answer_text(&answer(&[], 0)), Ok("ok".into()));
+        assert_eq!(
+            answer_text(&answer(&["a", "b"], 3)),
+            Err("5 problems\n  a\n  b\n  and 3 more".into())
+        );
+    }
 
     fn frame(frame: u64, render_us: u32, paint_us: u32) -> FrameSample {
         FrameSample {

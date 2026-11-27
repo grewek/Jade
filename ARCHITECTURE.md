@@ -100,6 +100,7 @@ Lets a tool drive and observe the live app. Code: `crates/debug-protocol`, `crat
 - **Input is real:** it goes through `Window::dispatch_event`/`dispatch_keystroke` (hit-testing, focus, bindings), and its reply comes only after the window painted the effect, so a script never acts on a stale screen. `type` errors when nothing consumed the text.
 - **Targets:** `.debug_name("x")` (last builder call) records an element's bounds and visibility each frame; a click aims at the centre of the visible part; unknown, duplicate and clipped names are errors. **Name every new interactive widget.** Not nameable: gpui-kit alert-dialog buttons (use `enter`/`escape`) and menu items (use the keyboard).
 - **Pixels need `--headless`:** `facts`, `expect` and `capture` read how an element looks, which only GPUI's headless renderer can provide (scale factor 2; needs a GPU). Coordinates are logical pixels relative to the element's visible bounds.
+- **`query invariants`** answers what is wrong right now: caret and selection, patched derived state against a rebuild, row counts claimed exact, and layout problems of the frames since the last query. A new kind of patched state gets a comparison in `text_editor/invariants.rs`. It rebuilds the whole note, so it is never asked per frame.
 - **Frame times** (`frames.rs`) are Jade's CPU work per frame in a fixed ring, not GPU submit.
 - **Tests** use `debug_server::test_client::TestClient` with `open_app_with_debug_client`, `call_on_main` and `step`; a test that talks to server threads needs `cx.executor().allow_parking()`.
 
