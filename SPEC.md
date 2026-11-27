@@ -109,6 +109,7 @@ $$
 | B-MATH-1 | **Opener:** `$$` at the start of a line, after at most 3 spaces of indentation and after a callout's `>` prefix. 4 or more spaces make it indented code (B-CODE-1). |
 | B-MATH-2 | **Closer:** the first unescaped `$$` in the next 256 lines. `$$…$$` on one line is a one-line formula block when it is the whole line, inline display math otherwise (§5). |
 | B-MATH-3 | **An opener without a closer is plain text.** A blank line, a code fence, a container tag line (`<jade-…>` or `</jade-…>`) or the 256-line limit, reached before a closer, makes the opener text, so typing `$$` never turns the rest of a note into a formula. **A blank line inside a long formula therefore breaks it.** |
+| B-MATH-4 | **A formula block wider than the space it has** (the text width, a column, a float or a callout's content) **is shown as its source**, wrapped like text, so nothing is clipped (P-4). It is not shrunk and does not scroll sideways. |
 
 ### 3.8 Tables
 
@@ -240,6 +241,7 @@ As in CommonMark and GFM: emphasis and strong emphasis (`*`, `_`), strikethrough
 | I-WIKI-1 | **Wikilinks:** `[[target]]`, `[[target#heading]]`, `[[target|alias]]`, `[[target#heading|alias]]`, on one line. A wikilink inside a code span or inline formula is text. |
 | I-WIKI-2 | A wikilink whose target does not exist is shown in the error colour. That depends only on the vault and never changes a height (§8). |
 | I-MATH-1 | **Inline math** `$…$`: the opening `$` is followed by a non-space, the closing `$` is preceded by a non-space and not followed by a digit, `\$` escapes, and the first `$` after the opener decides (if it cannot close, the opener is text). One line only. A code span wins over a `$` inside it. `$$…$$` within text is inline display math. |
+| I-MATH-2 | **An inline formula wider than the line it is on is shown as its source**, wrapped like text (P-4), in any block: paragraph, heading, list item, quote, callout. Inline display math `$$…$$` inside a line counts as inline. Table cells: B-TAB-6. |
 | I-REF-1 | **Reference links** `[text][label]`, `[label][]` and `[label]` resolve against the note's definitions (§3.10). An unresolved one is text. |
 | I-HTML-1 | **Raw HTML is text**, inline and as whole lines, and never swallows the Markdown after it (no CommonMark HTML blocks). HTML comments `<!-- … -->` are visible text. |
 | I-HTML-2 | **`<br>` is a line break in a table cell only.** Anywhere else it is text. |
