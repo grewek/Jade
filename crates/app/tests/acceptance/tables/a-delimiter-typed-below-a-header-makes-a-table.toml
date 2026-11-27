@@ -1,0 +1,31 @@
+id = "a-delimiter-typed-below-a-header-makes-a-table"
+spec = ["B-TAB-3"]
+source = "ed47bf8"
+from_stage = 5
+# The header was there first; only the delimiter is new.
+note = '''
+| a | b |
+
+below
+'''
+
+[[step]]
+click = { line = 1, col = 0 }
+
+[[step]]
+type = "|---|---|"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[expect]]
+text_contains = "| a | b |\n|---|---|\n"
+
+[[expect]]
+hidden = [1]
+
+[[expect]]
+block = { line = 0, kind = "table" }

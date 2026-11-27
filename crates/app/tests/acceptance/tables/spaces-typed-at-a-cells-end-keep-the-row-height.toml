@@ -1,0 +1,26 @@
+id = "spaces-typed-at-a-cells-end-keep-the-row-height"
+spec = ["B-TAB-3"]
+source = "63d90f7"
+from_stage = 5
+note = '''
+| a | b |
+|---|---|
+| c | de |
+
+below
+'''
+
+[[step]]
+click = { line = 2, col = 8 }
+
+[[step]]
+type = "            "
+
+[[expect]]
+line_stable = [4]
+
+[[expect]]
+caret_visible = true
+
+[[expect]]
+no_overlap = true

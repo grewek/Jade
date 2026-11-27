@@ -1,0 +1,24 @@
+id = "the-edited-cell-is-left-aligned"
+spec = ["B-TAB-7"]
+source = "5d63880"
+from_stage = 5
+# A right-aligned cell would keep the caret at its right edge while typing.
+note = '''
+| a rather wide heading |
+|--:|
+| ab |
+
+below
+'''
+
+[[step]]
+click = { line = 2, col = 4 }
+
+[[step]]
+type = "c"
+
+[[expect]]
+text_contains = "| abc |"
+
+[[expect]]
+caret_moved_right = true

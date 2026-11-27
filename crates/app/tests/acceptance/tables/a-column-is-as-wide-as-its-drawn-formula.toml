@@ -1,0 +1,20 @@
+id = "a-column-is-as-wide-as-its-drawn-formula"
+spec = ["B-TAB-4"]
+source = "e77120c"
+from_stage = 5
+size = "1100x700"
+# The formula's source is long, what it draws is short. A column sized by the
+# source would squeeze the other one into wrapping.
+note = '''
+intro
+
+| formula | text |
+|---|---|
+| $\alpha\beta\gamma\delta\epsilon\zeta\eta\theta\iota\kappa$ | lorem ipsum dolor sit |
+'''
+
+[[expect]]
+same_row = { line = 4, from = 64, to = 85 }
+
+[[expect]]
+no_overlap = true

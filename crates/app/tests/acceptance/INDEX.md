@@ -16,6 +16,22 @@ Generated from the scenario files; do not edit. After changing one, run
 | [list-gap-keeps-lines-below-in-place](lists/list-gap-keeps-lines-below-in-place.toml) | P-3, P-LP-2 | 3 | #120 |
 | [ticking-a-task-keeps-the-view](lists/ticking-a-task-keeps-the-view.toml) | – | 3 | c9d98b9 |
 | [a-closing-fence-may-end-in-a-space](code/a-closing-fence-may-end-in-a-space.toml) | B-CODE-3 | 4 | e3b27de |
+| [a-break-tag-still-breaks-the-line-in-the-edited-cell](tables/a-break-tag-still-breaks-the-line-in-the-edited-cell.toml) | B-TAB-2, P-LP-4 | 5 | 506c8ed |
+| [a-column-is-as-wide-as-its-drawn-formula](tables/a-column-is-as-wide-as-its-drawn-formula.toml) | B-TAB-4 | 5 | e77120c |
+| [a-delimiter-typed-below-a-header-makes-a-table](tables/a-delimiter-typed-below-a-header-makes-a-table.toml) | B-TAB-3 | 5 | ed47bf8 |
+| [a-tables-delimiter-line-takes-no-height](tables/a-tables-delimiter-line-takes-no-height.toml) | B-TAB-3 | 5 | 534f7ed |
+| [shrunk-columns-keep-words-whole](tables/shrunk-columns-keep-words-whole.toml) | B-TAB-5 | 5 | 089ceb9 |
+| [spaces-typed-at-a-cells-end-keep-the-row-height](tables/spaces-typed-at-a-cells-end-keep-the-row-height.toml) | B-TAB-3 | 5 | 63d90f7 |
+| [the-edited-cell-is-left-aligned](tables/the-edited-cell-is-left-aligned.toml) | B-TAB-7 | 5 | 5d63880 |
+| [a-rewritten-fold-marker-opens-the-callout](callouts/a-rewritten-fold-marker-opens-the-callout.toml) | B-CALL-4, P-VIEW-2 | 6 | f165f92 |
+| [callout-backgrounds-are-right-from-the-first-frame](callouts/callout-backgrounds-are-right-from-the-first-frame.toml) | – | 6 | 8df19a7 |
+| [callout-backgrounds-follow-a-new-width](callouts/callout-backgrounds-follow-a-new-width.toml) | – | 6 | 870f6e8 |
+| [folding-a-callout-keeps-the-view](callouts/folding-a-callout-keeps-the-view.toml) | B-CALL-4, P-VIEW-1 | 6 | 49e8aed |
+| [a-blank-line-ends-a-formula-block](math/a-blank-line-ends-a-formula-block.toml) | B-MATH-3 | 7 | 0e65772 |
+| [a-drawn-formula-stays-whole-in-a-wrapping-cell](math/a-drawn-formula-stays-whole-in-a-wrapping-cell.toml) | B-TAB-5 | 7 | 31217ac |
+| [a-formula-wider-than-its-column-is-shown-as-source](math/a-formula-wider-than-its-column-is-shown-as-source.toml) | B-TAB-6 | 7 | fa19b0b |
+| [only-the-row-with-a-tall-formula-is-tall](math/only-the-row-with-a-tall-formula-is-tall.toml) | – | 7 | 4002239 |
+| [scrolling-back-over-unmeasured-tall-formulas-does-not-jump](math/scrolling-back-over-unmeasured-tall-formulas-does-not-jump.toml) | – | 7 | 6f26122, 83537ae |
 | [arrow-up-below-aside-goes-to-the-line-above](caret/arrow-up-below-aside-goes-to-the-line-above.toml) | E-1, B-TAG-9 | 9 | #16 |
 | [a-pending-fence-in-a-float-changes-nothing-below](code/a-pending-fence-in-a-float-changes-nothing-below.toml) | P-OPEN-1, P-2 | 9 | #126 |
 | [code-in-a-column-is-a-code-block](code/code-in-a-column-is-a-code-block.toml) | B-COL-3 | 9 | #126 |

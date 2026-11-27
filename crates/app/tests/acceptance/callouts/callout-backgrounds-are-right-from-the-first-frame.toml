@@ -1,0 +1,26 @@
+id = "callout-backgrounds-are-right-from-the-first-frame"
+spec = []
+source = "8df19a7"
+from_stage = 6
+size = "800x700"
+# The wrapped lines above were estimated; their correction came after the
+# background was drawn, and the next frame hid it.
+note = '''
+Paragraph 0: lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do.
+
+Paragraph 1: ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod.
+
+Paragraph 2: dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor.
+
+> [!note] Title
+> lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+> amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit
+
+after
+'''
+
+[[expect]]
+every_frame_consistent = true
+
+[[expect]]
+no_overlap = true

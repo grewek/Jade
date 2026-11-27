@@ -1,0 +1,23 @@
+id = "a-break-tag-still-breaks-the-line-in-the-edited-cell"
+spec = ["B-TAB-2", "P-LP-4"]
+source = "506c8ed"
+from_stage = 5
+note = '''
+| a | b |
+|---|---|
+| one<br>two | x |
+
+below
+'''
+
+[[step]]
+click = { line = 2, col = 3 }
+
+[[expect]]
+other_row = { line = 2, from = 3, to = 10 }
+
+[[expect]]
+view_stable = true
+
+[[expect]]
+line_stable = [4]
