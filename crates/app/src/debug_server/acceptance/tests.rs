@@ -88,6 +88,41 @@ fn acceptance_runner_resizes_the_window() {
     assert_eq!(size(&mut session), Answer::WindowSize { width, height });
 }
 
+#[test]
+fn acceptance_runner_composes_and_drags() {
+    let outcome = run(&scenario(
+        r#"
+        [[step]]
+        click = { line = 0, col = 0 }
+        [[step]]
+        compose = { preview = "´", commit = "é" }
+        [[step]]
+        drag = { from = { line = 2, col = 0 }, dx = 400.0 }
+        [[step]]
+        type = "dragged over"
+        [[expect]]
+        text = "éalpha\n\ndragged over\n\ndelta\n"
+        [[expect]]
+        caret_visible = true
+        "#,
+    ));
+    assert_eq!(outcome.failures, Vec::<String>::new());
+    assert_eq!(outcome.status(), "pass");
+}
+
+#[test]
+fn acceptance_runner_measures_how_far_content_moved() {
+    let long = |expects: &str| {
+        let mut probe = scenario(&format!("[[step]]\nscroll = {{ dy = -200.0 }}\n{expects}"));
+        probe.note = "a line\n".repeat(200);
+        run(&probe)
+    };
+    let right = long("[[expect]]\ncontent_moved = -200.0");
+    assert_eq!(right.status(), "pass", "{right:?}");
+    let wrong = long("[[expect]]\ncontent_moved = -150.0\n[[expect]]\ncaret_visible = true");
+    assert_eq!((wrong.passed, wrong.failures.len()), (0, 2), "{wrong:?}");
+}
+
 /// Without this the catalog could report passes while checking nothing.
 #[test]
 fn acceptance_runner_drives_the_real_editor() {

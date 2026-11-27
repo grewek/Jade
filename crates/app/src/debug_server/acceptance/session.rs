@@ -10,7 +10,7 @@ use std::sync::Arc;
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
     AnyWindowHandle, AppContext, Bounds, ClipboardItem, Entity, EntityInputHandler, Focusable,
-    HeadlessAppContext, Keystroke, WindowBounds, WindowOptions, point, px, size,
+    HeadlessAppContext, Keystroke, Pixels, WindowBounds, WindowOptions, point, px, size,
 };
 use jade_debug_protocol::{Answer, Button, Command, Location, Modifiers, Point};
 use tempfile::TempDir;
@@ -24,6 +24,8 @@ use crate::text_editor::{Editor, PaintedFrame, last_painted_frame};
 const NOTE: &str = "Note";
 /// Frames drawn after a step: an edit, its repaint and any deferred notify.
 const FRAMES_PER_STEP: usize = 3;
+/// Held-button moves of a drag step.
+const DRAG_STEPS: u8 = 8;
 /// Makes the paint trace and frame clock record; no socket is bound.
 const ENV_VAR: &str = "JADE_DEBUG_SOCKET";
 
@@ -118,16 +120,18 @@ impl Session {
             _vault: vault,
             _config: config,
         };
-        session.open_note()?;
+        session.open_note(scenario.focus)?;
         Ok(session)
     }
 
-    fn open_note(&mut self) -> Result<(), String> {
+    fn open_note(&mut self, focus: bool) -> Result<(), String> {
         self.draw();
         self.input(click(Location::Target(format!("note-{NOTE}"))))?;
-        let editor = self.editor()?;
-        self.in_window(|window, cx| editor.read(cx).focus_handle(cx).focus(window, cx))?;
-        self.draw();
+        if focus {
+            let editor = self.editor()?;
+            self.in_window(|window, cx| editor.read(cx).focus_handle(cx).focus(window, cx))?;
+            self.draw();
+        }
         Ok(())
     }
 
@@ -185,12 +189,18 @@ impl Session {
 
     pub(super) fn run_step(&mut self, step: &Step) -> Result<(), StepError> {
         let result = match step {
-            Step::Click(ClickAt::Target { target }) => {
-                self.input(click(Location::Target(target.clone())))
-            }
-            Step::Click(ClickAt::Text { line, col }) => self
-                .point_of(*line, *col)
-                .and_then(|at| self.input(click(Location::Point(at)))),
+            Step::Click(at) => self.location(at).and_then(|at| self.input(click(at))),
+            Step::Drag { from, dx, dy } => self.location(from).and_then(|from| {
+                self.input(Command::Drag {
+                    from,
+                    dx: *dx,
+                    dy: *dy,
+                    steps: DRAG_STEPS,
+                    button: Button::Left,
+                    modifiers: Modifiers::default(),
+                })
+            }),
+            Step::Compose { preview, commit } => self.compose(preview, commit),
             Step::Key(chord) => self.press(chord),
             Step::Type(text) => self.input(Command::Type { text: text.clone() }),
             Step::Paste(text) => {
@@ -239,27 +249,71 @@ impl Session {
         Ok(())
     }
 
-    /// The window point where the caret would be drawn at `line`/`col`, from
-    /// the input method's caret rectangle, without moving the caret.
-    fn point_of(&mut self, line: usize, col: usize) -> Result<Point, String> {
+    fn location(&mut self, at: &ClickAt) -> Result<Location, String> {
+        Ok(match at {
+            ClickAt::Target { target } => Location::Target(target.clone()),
+            ClickAt::Text { line, col } => Location::Point(self.point_of(*line, *col)?),
+        })
+    }
+
+    /// The two calls a platform makes for a composition, with a frame between.
+    fn compose(&mut self, preview: &str, commit: &str) -> Result<(), String> {
         let editor = self.editor()?;
+        self.in_window(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_and_mark_text_in_range(None, preview, None, window, cx);
+            })
+        })?;
+        self.draw();
+        self.in_window(|window, cx| {
+            editor.update(cx, |editor, cx| {
+                editor.replace_text_in_range(None, commit, window, cx);
+            })
+        })?;
+        self.draw();
+        Ok(())
+    }
+
+    /// The window bounds of a named element in the last frame.
+    pub(super) fn target(&mut self, name: &str) -> Result<Bounds<Pixels>, String> {
         let Answer::Targets { targets } = self.command(Command::ListTargets) else {
             return Err("cannot list targets".into());
         };
         let target = targets
             .iter()
-            .find(|t| t.name == "editor")
-            .ok_or("the editor was not painted")?;
-        let bounds = Bounds {
+            .find(|t| t.name == name)
+            .ok_or_else(|| format!("{name:?} was not painted"))?;
+        Ok(Bounds {
             origin: point(px(target.x), px(target.y)),
             size: size(px(target.width), px(target.height)),
-        };
-        let caret = self.in_window(|window, cx| {
+        })
+    }
+
+    /// Where the caret would be drawn at a UTF-16 offset, from the input
+    /// method's caret rectangle; `None` when its line is not drawn.
+    fn bounds_at(
+        &mut self,
+        offset: impl FnOnce(&str) -> Option<usize>,
+    ) -> Result<Option<Bounds<Pixels>>, String> {
+        let editor = self.editor()?;
+        let bounds = self.target("editor")?;
+        self.in_window(|window, cx| {
             editor.update(cx, |editor, cx| {
-                let utf16 = utf16_offset(editor.buffer().text(), line, col)?;
+                let utf16 = offset(editor.buffer().text())?;
                 editor.bounds_for_range(utf16..utf16, bounds, window, cx)
             })
-        })?;
+        })
+    }
+
+    pub(super) fn caret_bounds(&mut self) -> Result<Option<Bounds<Pixels>>, String> {
+        let (line, col) = self.caret()?;
+        self.bounds_at(|text| utf16_offset(text, line, col))
+    }
+
+    /// The window point where the caret would be drawn at `line`/`col`, without
+    /// moving the caret.
+    fn point_of(&mut self, line: usize, col: usize) -> Result<Point, String> {
+        let caret = self.bounds_at(|text| utf16_offset(text, line, col))?;
         let caret = caret.ok_or(format!(
             "line {line} col {col} does not exist or is not on screen"
         ))?;

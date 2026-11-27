@@ -70,8 +70,10 @@ fn evaluate(expect: &Expect, before: &Before, session: &mut Session) -> Result<V
             let (_, now) = session.view()?;
             lines_stable(lines, &before.frame, &now)
         }
+        Expect::ContentMoved(by) => content_moved(*by, &before.frame, &session.view()?.1),
         Expect::NoOverlap(true) => no_overlap(&session.view()?.1),
-        Expect::ViewStable(false) | Expect::NoOverlap(false) => {
+        Expect::CaretVisible(true) => caret_visible(session)?,
+        Expect::ViewStable(false) | Expect::NoOverlap(false) | Expect::CaretVisible(false) => {
             Verdict::Failed("only `true` is meaningful; drop the expectation".into())
         }
         Expect::MaxFrameMs(limit) => max_frame(*limit, before.frame_number),
@@ -99,6 +101,41 @@ fn lines_stable(lines: &[usize], before: &PaintedFrame, now: &PaintedFrame) -> V
         }
     }
     Verdict::Passed
+}
+
+pub(super) fn content_moved(by: f32, before: &PaintedFrame, now: &PaintedFrame) -> Verdict {
+    let mut compared = 0;
+    for was in before.lines.iter().filter(|l| !l.in_region) {
+        let Some(y) = now.y_of(was.line) else {
+            continue;
+        };
+        compared += 1;
+        let moved = y - was.y;
+        if (moved - by).abs() > TOLERANCE_PX {
+            return Verdict::Failed(format!(
+                "line {} moved by {moved:.1}, expected {by:.1}",
+                was.line
+            ));
+        }
+    }
+    verdict(compared > 0, || "no line was drawn both times".into())
+}
+
+fn caret_visible(session: &mut Session) -> Result<Verdict, String> {
+    let pane = session.target("editor-pane")?;
+    let Some(caret) = session.caret_bounds()? else {
+        return Ok(Verdict::Failed("the caret's line is not drawn".into()));
+    };
+    let inside = caret.top() >= pane.top() && caret.bottom() <= pane.bottom();
+    Ok(verdict(inside, || {
+        format!(
+            "caret from y={:?} to y={:?}, pane from y={:?} to y={:?}",
+            caret.top(),
+            caret.bottom(),
+            pane.top(),
+            pane.bottom()
+        )
+    }))
 }
 
 pub(super) fn no_overlap(frame: &PaintedFrame) -> Verdict {
