@@ -319,21 +319,22 @@ Offered in the right-click menu, by where the caret is. They are the user's edit
 |---|---|---|---|
 | L-1 | on a blank line at top level | **Insert columns** | `<jade-columns>` with two empty `<jade-column>`s |
 | L-2 | same | **Insert float left / right** | an `<jade-aside side="…">` with an empty `<jade-float>` and empty flowing text |
-| L-3 | in a top-level block (not a heading, code block, formula block, callout or blockquote) | **Make columns** | the block becomes the first of two columns; the second is empty |
-| L-4 | same | **Float left / right** | the block becomes the `<jade-float>` of a new aside; the paragraphs right after it (up to three, stopping at the first block that is not a paragraph) become its flowing text |
+| L-3 | in a top-level block of plain text (not a heading, code block, formula block, table or callout) | **Make columns** | the block becomes the first of two columns; the second is empty |
+| L-4 | same | **Float left / right** | the block becomes the `<jade-float>` of a new aside; up to three following blocks of plain text become its flowing text |
 | L-5 | in a columns region | **Add column** (2–3 columns only) | an empty `<jade-column>` at the end; `ratio` is removed, so widths become equal |
 | L-6 | same | **Unwrap columns** | the tags are removed; the columns' content follows one after another, in order |
-| L-7 | in an aside | **Flip side** | `side` changes to the other side |
+| L-7 | in an aside (float or flowing text) | **Flip side** | `side` changes to the other side |
 | L-8 | same | **Unwrap float** | the tags are removed; the float's content comes first, then the flowing text |
-| L-9 | dragging a divider between columns | **Resize** | `ratio`, written **once on release**; while dragging, the columns reflow as a preview. Each column keeps at least 10 %. |
-| L-10 | dragging the inner edge of a float | **Resize** | `width`, written once on release, within 10–90 % |
+| L-9 | in an aside's float | **Move float up / down** | the `<jade-float>` moves past the paragraph before (up) or after (down) it, so it sits beside different text; not offered when there is no plain paragraph that way |
+| L-10 | dragging a divider between columns | **Resize** | `ratio`, written **once on release**; while dragging, the columns reflow as a preview. Each column keeps at least 10 %. |
+| L-11 | dragging the inner edge of a float | **Resize** | `width`, written once on release, within 10–90 % |
 
 | ID | Rule for every layout command |
 |---|---|
-| L-11 | **One undo step.** |
-| L-12 | **The caret stays with its text**: it ends at the same character of the same content, now inside or outside the container. |
-| L-13 | **Undo restores the caret** to where it was before the command. |
-| L-14 | Not offered where the nesting table (§3.1) forbids the result. |
+| L-12 | **One undo step.** |
+| L-13 | **The caret stays with its text**: it ends at the same character of the same content, now inside or outside the container. |
+| L-14 | **Undo restores the caret** to where it was before the command. |
+| L-15 | Not offered where the nesting table (§3.1) forbids the result. |
 
 ## 11. Limits
 
