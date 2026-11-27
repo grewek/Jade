@@ -23,6 +23,18 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
+  # A warning on the pull request, never a failure (CLAUDE.md, "Reviewable steps").
+  size:
+    if: github.event_name == 'pull_request' && github.base_ref == 'develop'
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - run: .github/scripts/pr-size.sh "$BASE_SHA"
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+
   fmt:
     runs-on: ubuntu-26.04
     steps:
