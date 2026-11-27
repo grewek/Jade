@@ -55,7 +55,7 @@ Performance is a standing, firm requirement, not an afterthought to clean up onc
 
 ## Commands
 
-Requires nightly Rust (`gpui-pre` uses an unstable feature) — pinned via `rust-toolchain.toml`, so plain `cargo` commands pick it up automatically; no `+nightly` needed. Edition 2024.
+Stable Rust, pinned to a minor version in `rust-toolchain.toml`, so plain `cargo` commands pick it up automatically (an installed toolchain gets that minor's patch releases through `rustup update`). The CI runner image is pinned too (`ci.yml`). Raising either version is its own PR, with CI green. Edition 2024.
 
 Workspace-wide:
 - Build: `cargo build`
