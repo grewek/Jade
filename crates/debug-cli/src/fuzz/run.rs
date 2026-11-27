@@ -160,21 +160,34 @@ impl Run<'_> {
         Ok(())
     }
 
+    fn editor_focused(&mut self) -> Result<bool, Stop> {
+        let query = Command::Query {
+            what: Query::EditorState,
+        };
+        match self.app.call(query)? {
+            Answer::EditorState(state) => Ok(state.focused),
+            other => Err(Stop::Broken(format!("no editor state: {other:?}"))),
+        }
+    }
+
+    /// Checked, because `Key` succeeds even when nothing takes the key: steps
+    /// without the focus would be lost unnoticed.
     fn focus_editor(&mut self) -> Result<(), Stop> {
-        let editor = Location::Target("editor".into());
-        self.send(click(editor, 1, Modifiers::default()))
+        self.send(Command::FocusEditor)?;
+        if self.editor_focused()? {
+            Ok(())
+        } else {
+            Err(Stop::Broken("the editor did not take the focus".into()))
+        }
     }
 
     /// Gives the editor the focus back if an earlier click took it, so that
     /// keys keep reaching it.
     fn keep_focus(&mut self) -> Result<(), Stop> {
-        let query = Command::Query {
-            what: Query::EditorState,
-        };
-        match self.app.call(query)? {
-            Answer::EditorState(state) if state.focused => Ok(()),
-            Answer::EditorState(_) => self.focus_editor(),
-            other => Err(Stop::Broken(format!("no editor state: {other:?}"))),
+        if self.editor_focused()? {
+            Ok(())
+        } else {
+            self.focus_editor()
         }
     }
 
