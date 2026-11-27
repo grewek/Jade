@@ -3,6 +3,10 @@ name: CI
 # `clippy`, `test` and `docs` cover the crates that build without GPUI's system
 # libraries (jade-core, jade-debug-protocol, jade-debug-cli). `app` covers
 # jade-app, which needs them. `fmt` covers everything.
+#
+# The image is pinned: a newer one brings another Mesa, and with it another
+# lavapipe, which the acceptance catalog runs on. Raising it is its own PR,
+# with CI green.
 
 on:
   pull_request:
@@ -20,7 +24,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       # rust-toolchain.toml selects the toolchain with rustfmt and clippy;
@@ -28,7 +32,7 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -37,14 +41,14 @@ jobs:
       - run: cargo clippy -p jade-core -p jade-debug-protocol -p jade-debug-cli --lib --bins -- -D warnings
 
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p jade-core -p jade-debug-protocol -p jade-debug-cli -- --test-threads=1
 
   docs:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -53,7 +57,7 @@ jobs:
       - run: cargo doc --no-deps -p jade-core -p jade-debug-protocol -p jade-debug-cli
 
   app:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
