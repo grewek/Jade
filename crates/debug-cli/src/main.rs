@@ -3,6 +3,7 @@
 
 mod args;
 mod client;
+mod fuzz;
 mod launch;
 mod render;
 
