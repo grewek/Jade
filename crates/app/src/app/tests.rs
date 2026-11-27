@@ -2601,6 +2601,60 @@ fn closing_a_dialog_does_not_leave_the_editor_mid_drag(cx: &mut TestAppContext) 
     );
 }
 
+/// The editor's mouse listeners are not hitbox-aware: without their own
+/// check, a press while a dialog is open also places the caret and starts a drag
+/// selection there (9c1ba19). The headless dialog backdrop swallows the press
+/// before any editor listener, so the dialog here has none: only the editor's
+/// check is left to stop it.
+#[gpui_kit::test]
+fn a_press_while_a_dialog_is_open_does_not_reach_the_editor(cx: &mut TestAppContext) {
+    use gpui_kit::{MouseButton, MouseDownEvent, PlatformInput};
+    let dir = temp_vault();
+    std::fs::write(dir.path().join("Note.md"), "hello world").unwrap();
+    let (window, app) = open_app(cx, dir.path().to_path_buf());
+    let press_end_of_first_line = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            window.render_frame(cx);
+            let editor = window.find("editor").bounds();
+            let down = MouseDownEvent {
+                button: MouseButton::Left,
+                position: editor.origin + gpui_kit::point(editor.size.width - px(2.), px(2.)),
+                modifiers: Default::default(),
+                click_count: 1,
+                first_mouse: false,
+            };
+            window.dispatch_event(PlatformInput::MouseDown(down), cx);
+        })
+        .unwrap();
+        cx.run_until_parked();
+    };
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("Note", cx);
+        window.render_frame(cx);
+        window.open_dialog(cx, |dialog, _, _| dialog.overlay(false));
+    })
+    .unwrap();
+    cx.run_until_parked();
+    let editor = app
+        .read_with(cx, |app, _| app.editor().cloned())
+        .expect("the note is open");
+    let cursor = |cx: &mut TestAppContext| editor.read_with(cx, |e, _| e.buffer().cursor());
+
+    press_end_of_first_line(cx);
+    assert_eq!(cursor(cx), 0, "the press went through the dialog");
+
+    // The same press reaches the editor once the dialog is gone.
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.close_dialog(cx);
+    })
+    .unwrap();
+    cx.run_until_parked();
+    press_end_of_first_line(cx);
+    assert_eq!(cursor(cx), "hello world".len());
+}
+
 #[gpui_kit::test]
 fn pressing_enter_in_the_rename_dialog_confirms_it(cx: &mut TestAppContext) {
     let dir = temp_vault();
