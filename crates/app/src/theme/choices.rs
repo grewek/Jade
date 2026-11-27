@@ -70,12 +70,12 @@ pub fn remember(dirs: &ConfigDirs, id: &str) -> Result<(), String> {
     remember_value(dirs, "theme", Value::String(id.to_owned()))
 }
 
-/// Writes `justify = <on>` into `config.toml`, as [`remember`] does.
+/// Writes `justify = <on>` into `config.toml`, as `remember` does.
 pub fn remember_justify(dirs: &ConfigDirs, on: bool) -> Result<(), String> {
     remember_value(dirs, "justify", Value::Boolean(on))
 }
 
-/// Writes `vault = "<path>"` into `config.toml`, as [`remember`] does.
+/// Writes `vault = "<path>"` into `config.toml`, as `remember` does.
 pub fn remember_vault(dirs: &ConfigDirs, vault: &Path) -> Result<(), String> {
     let text = vault
         .to_str()

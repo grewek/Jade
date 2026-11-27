@@ -777,6 +777,10 @@ pub(in crate::text_editor) fn line_runs(
 }
 
 /// Shapes one display line. `bold` makes every run bold (a table header).
+#[expect(
+    clippy::expect_used,
+    reason = "invariants of GPUI's shaping, not input-dependent errors"
+)]
 pub(in crate::text_editor) fn shape_entry(
     display_line: &DisplayLine,
     wrap_width: Option<Pixels>,

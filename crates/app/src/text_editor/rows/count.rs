@@ -130,6 +130,10 @@ pub(super) fn pure_row_counts(
 
 /// [`pure_row_counts`] for the lines from `first` on, as many as `counts` has
 /// (zeroed): fills their counts and returns the lines that need a window.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 fn pure_row_counts_in(
     text: &str,
     view: &DocView,

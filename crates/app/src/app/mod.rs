@@ -40,6 +40,10 @@ const APP_ID: &str = "jade";
 const IBM_PLEX_SANS: &str = "IBM Plex Sans";
 const IBM_PLEX_MONO: &str = "IBM Plex Mono";
 
+#[expect(
+    clippy::expect_used,
+    reason = "the fonts are compiled in; failing to add them is a broken build"
+)]
 fn install_fonts(cx: &mut App) {
     use std::borrow::Cow;
 
@@ -201,6 +205,10 @@ impl JadeApp {
 }
 
 impl Render for JadeApp {
+    #[expect(
+        clippy::too_many_lines,
+        reason = "predates linting jade-app in CI (#168)"
+    )]
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         debug_server::targets::begin_frame();
         let tab_bar = div()
@@ -469,6 +477,7 @@ pub fn run() {
                 crate::theme::configured_vault(config_dirs.as_ref()),
             );
             let first_start = vault_path.is_none();
+            #[expect(clippy::expect_used, reason = "without a window there is no app")]
             let (window_handle, app) =
                 gpui_kit::open_window(options, cx, move |window, cx| match vault_path {
                     Some(path) => cx.new(|cx| JadeApp::new(path, window, cx)),

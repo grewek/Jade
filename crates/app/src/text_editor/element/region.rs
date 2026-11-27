@@ -50,6 +50,10 @@ pub(in crate::text_editor) struct ShapedColumn {
     pub lines: Vec<ShapedLine>,
 }
 
+/// The floats of every aside the last frame drew, by region's first line.
+pub(in crate::text_editor) type SharedFloatSpots =
+    std::rc::Rc<std::cell::RefCell<Vec<(usize, Vec<FloatSpot>)>>>;
+
 /// Where one float of an aside was put down, from the region's top.
 #[derive(Clone, Copy)]
 pub(in crate::text_editor) struct FloatSpot {
@@ -322,6 +326,10 @@ impl Floats {
 /// is in, and where a band changes (a side's floats end) it is cut at a row
 /// boundary and the rest continues in the new band. A table or callout that
 /// starts in a band stays in it, so its box keeps one width.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 fn shape_aside(
     text: &str,
     doc: &DocumentCache,
@@ -679,6 +687,10 @@ pub(super) fn float_grips(spots: &[FloatSpot], split: &columns::Split) -> Vec<(u
 
 /// The divider grips, `+` and unwrap while the pointer is over the region, or
 /// the dragged grip and its drop line.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 fn paint_region_controls(
     env: &PaintEnv,
     shaped: &ShapedRegion,
@@ -712,13 +724,6 @@ fn paint_region_controls(
         grips: float_grips(&shaped.float_spots, &split),
     };
     let origin = point(bounds.origin.x + first.x, bounds.origin.y + top);
-    let at = |handle| {
-        let (x, y, w, h) = columns::handles::rect_of(&frame, handle);
-        Bounds {
-            origin: origin + point(px(x), px(y)),
-            size: size(px(w), px(h)),
-        }
-    };
     let colors = handle_colors(env.palette, env.text_color);
     if let Some(drag) = drag {
         // Only the dragged grip, at the divider the shares would give.
@@ -987,7 +992,7 @@ fn caret_in_shaped(
     let pieces = || column.lines.iter().filter(|sl| sl.line == line);
     let sl = pieces()
         .find(|sl| sl.raw.start <= within && within < sl.raw.end)
-        .or_else(|| pieces().last())?;
+        .or_else(|| pieces().next_back())?;
     let heights = entry_heights(
         &sl.results,
         &text[line_start..doc.line_end_byte(line)],

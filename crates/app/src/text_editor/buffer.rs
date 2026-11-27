@@ -175,7 +175,8 @@ impl EditorBuffer {
         if continues {
             self.extend_top_insert(s.len());
         } else {
-            self.push_undo(start, &self.text[start..end].to_owned(), s.len());
+            let removed = self.text[start..end].to_owned();
+            self.push_undo(start, removed, s.len());
         }
         self.preferred_column = None;
         self.reserve_for_insert(s.len());
@@ -248,7 +249,7 @@ impl EditorBuffer {
                 self.extend_top_delete(range.start, &deleted, true)
             }
             (true, _) => self.extend_top_delete(range.start, &deleted, false),
-            (false, _) => self.push_undo(range.start, &deleted, 0),
+            (false, _) => self.push_undo(range.start, deleted, 0),
         }
         self.preferred_column = None;
         self.text.replace_range(range.clone(), "");
@@ -386,13 +387,13 @@ impl EditorBuffer {
 
     /// Records a new undo entry for replacing `removed` (at `start`) with
     /// `inserted_len` bytes, and clears `redo_stack`.
-    fn push_undo(&mut self, start: usize, removed: &str, inserted_len: usize) {
+    fn push_undo(&mut self, start: usize, removed: String, inserted_len: usize) {
         if self.undo_stack.len() >= UNDO_STACK_CAP {
             self.undo_stack.remove(0);
         }
         self.undo_stack.push(UndoEntry {
             start,
-            removed: removed.to_owned(),
+            removed,
             inserted_len,
             cursor: self.cursor,
             anchor: self.anchor,
@@ -522,30 +523,16 @@ fn char_class(c: char) -> CharClass {
 /// start of whatever's immediately to the left, skipping separating
 /// whitespace first.
 fn word_boundary_backward(text: &str, pos: usize) -> usize {
+    let mut before = text[..pos].chars().rev().peekable();
     let mut offset = pos;
-    loop {
-        if offset == 0 {
-            return offset;
-        }
-        let prev = prev_char_boundary(text, offset);
-        let c = text[prev..offset].chars().next().unwrap();
-        if char_class(c) != CharClass::Whitespace {
-            break;
-        }
-        offset = prev;
+    while let Some(c) = before.next_if(|&c| char_class(c) == CharClass::Whitespace) {
+        offset -= c.len_utf8();
     }
-    let prev = prev_char_boundary(text, offset);
-    let class = char_class(text[prev..offset].chars().next().unwrap());
-    loop {
-        if offset == 0 {
-            break;
-        }
-        let prev = prev_char_boundary(text, offset);
-        let c = text[prev..offset].chars().next().unwrap();
-        if char_class(c) != class {
-            break;
-        }
-        offset = prev;
+    let Some(class) = before.peek().map(|&c| char_class(c)) else {
+        return offset;
+    };
+    while let Some(c) = before.next_if(|&c| char_class(c) == class) {
+        offset -= c.len_utf8();
     }
     offset
 }
@@ -554,25 +541,16 @@ fn word_boundary_backward(text: &str, pos: usize) -> usize {
 /// whitespace directly after it, then past the run of same-class chars after
 /// that.
 fn word_boundary_forward(text: &str, pos: usize) -> usize {
+    let mut after = text[pos..].chars().peekable();
     let mut offset = pos;
-    loop {
-        let Some(c) = text[offset..].chars().next() else {
-            return offset;
-        };
-        if char_class(c) != CharClass::Whitespace {
-            break;
-        }
-        offset = next_char_boundary(text, offset);
+    while let Some(c) = after.next_if(|&c| char_class(c) == CharClass::Whitespace) {
+        offset += c.len_utf8();
     }
-    let class = char_class(text[offset..].chars().next().unwrap());
-    loop {
-        let Some(c) = text[offset..].chars().next() else {
-            break;
-        };
-        if char_class(c) != class {
-            break;
-        }
-        offset = next_char_boundary(text, offset);
+    let Some(class) = after.peek().map(|&c| char_class(c)) else {
+        return offset;
+    };
+    while let Some(c) = after.next_if(|&c| char_class(c) == class) {
+        offset += c.len_utf8();
     }
     offset
 }

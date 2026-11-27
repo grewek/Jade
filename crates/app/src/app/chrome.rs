@@ -8,7 +8,7 @@ pub(super) fn group_digits(n: usize) -> String {
     let digits = n.to_string();
     let mut grouped = String::with_capacity(digits.len() + digits.len() / 3);
     for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
             grouped.push(',');
         }
         grouped.push(c);

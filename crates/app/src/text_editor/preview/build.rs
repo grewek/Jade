@@ -26,6 +26,10 @@ pub fn build_display_line(line: &str, active: bool) -> DisplayLine {
 }
 
 /// [`build_display_line`], its formulas expanded with the note's `macros`.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub fn build_display_line_with(line: &str, active: bool, macros: &Macros) -> DisplayLine {
     let indent = line_indent(line);
 

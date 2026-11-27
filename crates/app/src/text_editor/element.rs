@@ -49,7 +49,7 @@ use crate::theme::{Alpha, Role, ThemeEngine};
 use boxes::{BoxShape, corners_of, paint_box, paint_box_corners, paint_strip};
 #[allow(unused_imports)]
 pub(in crate::text_editor) use code_box::{block_lines, fence_language};
-pub(super) use input::*;
+use input::*;
 #[allow(unused_imports)]
 pub(super) use paint::*;
 use region::{paint_control, paint_stacked_controls, restore_pill};
@@ -552,7 +552,7 @@ pub(super) struct FrameView {
     /// The link under the pointer, for `link.underline = "hover"`.
     hover_link: Option<link_underline::HoverLink>,
     /// See `Editor::float_spots`.
-    float_spots: Rc<RefCell<Vec<(usize, Vec<region::FloatSpot>)>>>,
+    float_spots: region::SharedFloatSpots,
 }
 
 impl FrameView {

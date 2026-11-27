@@ -155,6 +155,10 @@ macro_rules! table_action {
     };
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(in crate::text_editor) fn render_editor(
     editor: &Editor,
     editor_entity: Entity<Editor>,

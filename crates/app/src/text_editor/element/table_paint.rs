@@ -317,6 +317,10 @@ pub(super) struct EditingCell<'a> {
 
 /// Marks the cell being edited: an accent outline, the part of the selection
 /// inside it and the caret, over the text `paint_table_row` drew.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn paint_editing_cell(
     cell: &EditingCell,
     columns: &TableColumns,
