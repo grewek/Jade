@@ -252,6 +252,9 @@ pub(super) fn caret_rect(
     ) {
         return Some(found);
     }
+    if offset < layout.line_range(range.start).start {
+        return None;
+    }
     let anchor = layout.screen_y(bounds.origin.y, range.start);
     let mut y_offset = px(0.);
     for i in range {

@@ -3967,3 +3967,44 @@ fn pixel_commands_on_a_window_that_cannot_render_say_how_to_get_pixels(cx: &mut 
     }
     std::fs::remove_file(&sock).unwrap();
 }
+
+/// An input method asks where the caret is (here at the front of a long note)
+/// even after the reader has scrolled it out of view. The line is not drawn,
+/// so there is no rectangle: a debug build panicked, a release build answered
+/// with a place on the first line in view.
+#[gpui_kit::test]
+fn the_caret_rectangle_of_a_caret_above_the_view_is_none(cx: &mut TestAppContext) {
+    use gpui_kit::EntityInputHandler;
+    let dir = temp_vault();
+    std::fs::write(dir.path().join("Note.md"), "a line\n".repeat(300)).unwrap();
+    let (window, app) = open_app(cx, dir.path().to_path_buf());
+    cx.update_window(window, |_, window, cx| {
+        window.render_frame(cx);
+        window.click("Note", cx);
+        window.render_frame(cx);
+    })
+    .unwrap();
+    let editor = app
+        .read_with(cx, |app, _| app.editor().cloned())
+        .expect("the note is open");
+    let rectangle = |cx: &mut TestAppContext| {
+        cx.update_window(window, |_, window, cx| {
+            let bounds = window.find("editor").bounds();
+            editor.update(cx, |editor, cx| {
+                editor.bounds_for_range(0..0, bounds, window, cx)
+            })
+        })
+        .unwrap()
+    };
+    assert!(rectangle(cx).is_some(), "the caret starts in view");
+
+    cx.update_window(window, |_, window, cx| {
+        let scroll = editor.read(cx).scroll_handle().clone();
+        scroll.set_offset(point(px(0.), -scroll.max_offset().y));
+        window.render_frame(cx);
+        window.render_frame(cx);
+        assert!(scroll.offset().y < px(-1000.), "{:?}", scroll.offset());
+    })
+    .unwrap();
+    assert_eq!(rectangle(cx), None);
+}
