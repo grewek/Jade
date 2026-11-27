@@ -517,20 +517,18 @@ impl Editor {
         cx.notify();
     }
 
-    /// Patches `document_cache` for a precisely-known edit, then patches
-    /// `row_height_cache` too — using the touched-line range `document_
-    /// cache`'s own patch just returned, and the same render parameters
-    /// (`font`/`available_width`/etc.) `render_editor` itself computes every
-    /// paint, via `element::render_params` — before emitting
-    /// `EditorEvent::Changed`. The call every text-mutating call site in
-    /// this file and `input_handler.rs` makes instead of a plain
-    /// `notify_changed(cx)`, right after the `buffer` mutation itself.
+    /// Every text change calls this right after changing `buffer`. It patches
+    /// `document_cache`, then `row_height_cache` for the lines that patch
+    /// touched (with the parameters painting uses, `element::render_params`),
+    /// and emits `EditorEvent::Changed`.
     pub(super) fn record_edit(
         &mut self,
         edit: TextEdit,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // These name table rows and columns, which the edit may have removed.
+        (self.table_hover, self.table_drag) = (None, None);
         let text = self.buffer.text();
         let patch = self.document_cache.borrow_mut().record_edit(text, edit);
         match &patch {

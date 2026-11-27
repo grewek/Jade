@@ -759,8 +759,6 @@ impl Editor {
         if let Some(cell) = self.cell_at_line(start_line + caret_row, caret_column) {
             self.buffer.set_cursor(cell.lo, false);
         }
-        // Indices and positions the controls were laid out for are stale.
-        self.table_hover = None;
         cx.notify();
         true
     }
