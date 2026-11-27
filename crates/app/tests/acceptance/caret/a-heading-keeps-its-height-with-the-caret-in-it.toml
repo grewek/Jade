@@ -1,0 +1,26 @@
+id = "a-heading-keeps-its-height-with-the-caret-in-it"
+spec = ["P-3", "P-LP-2"]
+source = "719e1e4, 225621f"
+from_stage = 2
+# Short enough not to wrap, raw or rendered (P-LP-10).
+note = """
+intro
+
+## Heading
+
+below
+
+further below
+"""
+
+[[step]]
+click = { line = 2, col = 5 }
+
+[[expect]]
+view_stable = true
+
+[[expect]]
+line_stable = [4, 6]
+
+[[expect]]
+no_overlap = true

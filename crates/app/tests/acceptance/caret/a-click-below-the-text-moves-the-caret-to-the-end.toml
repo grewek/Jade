@@ -1,0 +1,20 @@
+id = "a-click-below-the-text-moves-the-caret-to-the-end"
+spec = []
+source = "2f9218a"
+from_stage = 2
+# The middle of the pane lies far below the only line. The caret starts at
+# the front, so a click that does nothing types there.
+note = """
+short"""
+
+[[step]]
+click = { target = "editor-pane" }
+
+[[step]]
+type = "x"
+
+[[expect]]
+text = "shortx"
+
+[[expect]]
+caret = { line = 0, col = 6 }

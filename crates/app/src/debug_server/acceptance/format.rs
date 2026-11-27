@@ -24,6 +24,10 @@ pub(super) struct Scenario {
     /// `config.toml` for the run; empty means the defaults.
     #[serde(default)]
     pub config: String,
+    /// `false` leaves the opened note without keyboard focus, as before the
+    /// first click in it.
+    #[serde(default = "yes")]
+    pub focus: bool,
     pub note: String,
     #[serde(default, rename = "step")]
     pub steps: Vec<Step>,
@@ -32,6 +36,10 @@ pub(super) struct Scenario {
     /// The folder the file lies in, filled by the loader.
     #[serde(skip)]
     pub area: String,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn default_size() -> String {
@@ -46,6 +54,20 @@ pub(super) enum Step {
     Key(String),
     Type(String),
     Paste(String),
+    /// A dead key or input method: `preview` shows while composing, then
+    /// `commit` takes its place.
+    Compose {
+        preview: String,
+        commit: String,
+    },
+    /// Press at `from`, move by (`dx`, `dy`) with the button held, release.
+    Drag {
+        from: ClickAt,
+        #[serde(default)]
+        dx: f32,
+        #[serde(default)]
+        dy: f32,
+    },
     Undo {},
     Redo {},
     Scroll {
@@ -89,6 +111,11 @@ pub(super) enum Expect {
     ViewStable(bool),
     /// The last step moved none of these zero-based lines.
     LineStable(Vec<usize>),
+    /// The last step moved the content down by this many pixels (negative:
+    /// up): every top-level line drawn both before and after it.
+    ContentMoved(f32),
+    /// The caret is drawn entirely inside the editor's pane.
+    CaretVisible(bool),
     NoOverlap(bool),
     /// Slowest frame of the last step.
     MaxFrameMs(f32),

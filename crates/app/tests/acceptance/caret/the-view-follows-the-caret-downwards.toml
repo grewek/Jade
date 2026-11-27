@@ -1,0 +1,167 @@
+id = "the-view-follows-the-caret-downwards"
+spec = []
+source = "e1ce888"
+from_stage = 2
+size = "800x240"
+# A window of a few lines; the caret walks out of it.
+note = """
+line 1
+
+line 2
+
+line 3
+
+line 4
+
+line 5
+
+line 6
+
+line 7
+
+line 8
+
+line 9
+
+line 10
+
+line 11
+
+line 12
+
+line 13
+
+line 14
+
+line 15
+
+line 16
+
+line 17
+
+line 18
+
+line 19
+
+line 20
+
+line 21
+
+line 22
+
+line 23
+
+line 24
+
+line 25
+
+line 26
+
+line 27
+
+line 28
+
+line 29
+
+line 30
+
+"""
+
+[[step]]
+click = { line = 0, col = 0 }
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[step]]
+key = "down"
+
+[[expect]]
+caret = { line = 30, col = 0 }
+
+[[expect]]
+caret_visible = true

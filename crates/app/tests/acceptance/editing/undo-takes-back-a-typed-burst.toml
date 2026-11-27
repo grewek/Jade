@@ -1,0 +1,23 @@
+id = "undo-takes-back-a-typed-burst"
+spec = []
+source = "9359b29"
+from_stage = 2
+# Every keystroke was its own undo step.
+note = """
+alpha
+"""
+
+[[step]]
+click = { line = 0, col = 5 }
+
+[[step]]
+type = " beta gamma"
+
+[[step]]
+undo = {}
+
+[[expect]]
+text = "alpha\n"
+
+[[expect]]
+caret = { line = 0, col = 5 }
