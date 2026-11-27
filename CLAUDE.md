@@ -26,6 +26,8 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 - **Issues:** read the whole issue and its comments first, then do only what it asks. A new dependency needs a comment asking the user, not a guess. Reference the issue in commits (`refs #n`); the PR targets `develop`, and its body says `Closes #n`.
 - **`CHANGELOG.md`** is edited only when preparing a release, on the `release/*` branch (newest version first, one entry per user-visible change). Never touch it in feature or hotfix work.
 - **Before opening the PR**, run what CI runs (`.github/workflows/ci.yml`, all four crates): `cargo fmt --all --check`, `cargo clippy --lib --bins -- -D warnings`, `cargo test -- --test-threads=1`, and `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`. Opening the PR ends the task; merging is the user's call.
+- **PR body:** fill in `.github/pull_request_template.md`. Mark each verification [reproduced] (run or tried) or [code] (read only).
+- **Independent review:** a code PR is not merged until an agent that did not write it has reviewed it. The reviewer gets the PR, its issue and the rule files, not the author's conversation. It checks the PR against the issue, `SPEC.md`, `CLAUDE.md` and `STYLE.md`, and posts its findings as a PR comment headed `Independent review`, each finding marked like above. A PR that changes only docs needs no review.
 - **Reviewable steps:** one topic per PR, at most ~500 changed lines of production code (tests count separately), commits that each carry one reason. Cut larger work into PRs first and show the cut to the user.
 
 ## Rendering (rebuild in progress: #130)
