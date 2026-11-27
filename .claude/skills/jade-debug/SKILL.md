@@ -39,7 +39,7 @@ Coordinates are logical px relative to the element. Prefer `expect` once you kno
 
 ## Fuzzing
 
-`$J fuzz --seed 1 --runs 20 --steps 200` starts its own headless apps (build as above) and sends random input until one crashes or hangs. Each fault names the command that repeats it; `--trace` prints every step. `--bin target/debug/jade-app` also checks the debug assertions.
+`$J fuzz --seed 1 --runs 20 --steps 200` starts its own headless apps (build as above) sends random input and checks after every step. Each finding names the command that repeats it; `--trace` prints every step. Frame times count only for a `--release` app. `--bin target/debug/jade-app` also checks the debug assertions.
 
 ## Rules that save time
 

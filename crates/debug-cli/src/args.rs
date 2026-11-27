@@ -59,9 +59,11 @@ session
                                 (# comments, \"quoted words\", sleep MS)
 
 fuzz (starts its own headless apps on throwaway vaults)
-  fuzz [--seed N] [--runs N] [--steps N] [--bin PATH] [--trace]
-                                random input until the app crashes or hangs; the
-                                same seed repeats a run
+  fuzz [--seed N] [--runs N] [--steps N] [--bin PATH] [--crashes-only] [--trace]
+                                random input, checked after every step; the same
+                                seed repeats a run. Fails on any finding, with
+                                --crashes-only only on a crash or hang. Judge
+                                frame times with a --release app only
 ";
 
 pub(crate) struct Cli {

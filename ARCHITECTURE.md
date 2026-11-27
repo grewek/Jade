@@ -102,7 +102,7 @@ Lets a tool drive and observe the live app. Code: `crates/debug-protocol`, `crat
 - **Pixels need `--headless`:** `facts`, `expect` and `capture` read how an element looks, which only GPUI's headless renderer can provide (scale factor 2; needs a GPU). Coordinates are logical pixels relative to the element's visible bounds.
 - **`query invariants`** answers what is wrong right now: caret and selection, patched derived state against a rebuild, row counts claimed exact, and layout problems of the frames since the last query. A new kind of patched state gets a comparison in `text_editor/invariants.rs`. It rebuilds the whole note, so it is never asked per frame.
 - **A panic ends the headless app** (`headless.rs`): the executor would otherwise catch it and leave a process that only stops answering.
-- **`jade-debug fuzz`** (`debug-cli/src/fuzz/`) sends seeded random input to headless apps. A step is chosen from the random numbers alone, never from what the app answered, so a seed repeats a run and any part of it can be replayed.
+- **`jade-debug fuzz`** (`debug-cli/src/fuzz/`) sends seeded random input to headless apps and checks `invariants` and frame times after every step. A step is chosen from the random numbers alone, never from what the app answered, so a seed repeats a run and any part of it can be replayed.
 - **Frame times** (`frames.rs`) are Jade's CPU work per frame in a fixed ring, not GPU submit.
 - **Tests** use `debug_server::test_client::TestClient` with `open_app_with_debug_client`, `call_on_main` and `step`; a test that talks to server threads needs `cx.executor().allow_parking()`.
 
