@@ -1,0 +1,26 @@
+id = "a-list-stays-whole-with-the-caret-in-an-item"
+spec = ["P-3", "B-LIST-1"]
+source = "c398e57"
+from_stage = 3
+# The active block was cut off at its first row.
+note = """
+intro
+
+- one
+- two
+- three
+
+below
+"""
+
+[[step]]
+click = { line = 3, col = 4 }
+
+[[expect]]
+view_stable = true
+
+[[expect]]
+line_stable = [2, 3, 4, 6]
+
+[[expect]]
+no_overlap = true

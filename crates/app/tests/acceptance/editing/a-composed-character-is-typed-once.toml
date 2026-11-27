@@ -1,0 +1,19 @@
+id = "a-composed-character-is-typed-once"
+spec = []
+source = "54988fd"
+from_stage = 2
+# A dead key that did not combine left its preview beside the committed text.
+note = """
+"""
+
+[[step]]
+click = { target = "editor" }
+
+[[step]]
+compose = { preview = "^", commit = "^" }
+
+[[step]]
+type = " x"
+
+[[expect]]
+text = "^ x"

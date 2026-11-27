@@ -5,7 +5,17 @@ Generated from the scenario files; do not edit. After changing one, run
 
 | Scenario | SPEC rules | Stage | Source |
 |---|---|---|---|
+| [a-click-below-the-text-moves-the-caret-to-the-end](caret/a-click-below-the-text-moves-the-caret-to-the-end.toml) | – | 2 | 2f9218a |
+| [a-heading-keeps-its-height-with-the-caret-in-it](caret/a-heading-keeps-its-height-with-the-caret-in-it.toml) | P-3, P-LP-2 | 2 | 719e1e4, 225621f |
+| [the-view-follows-the-caret-downwards](caret/the-view-follows-the-caret-downwards.toml) | – | 2 | e1ce888 |
+| [a-composed-character-is-typed-once](editing/a-composed-character-is-typed-once.toml) | – | 2 | 54988fd |
+| [tab-types-a-tab-character](editing/tab-types-a-tab-character.toml) | – | 2 | e1ce888 |
+| [undo-takes-back-a-typed-burst](editing/undo-takes-back-a-typed-burst.toml) | – | 2 | 9359b29 |
+| [scrolling-back-over-unmeasured-paragraphs-does-not-jump](scroll/scrolling-back-over-unmeasured-paragraphs-does-not-jump.toml) | – | 2 | 6f26122, 18233f8, 59f87bc |
+| [a-list-stays-whole-with-the-caret-in-an-item](lists/a-list-stays-whole-with-the-caret-in-an-item.toml) | P-3, B-LIST-1 | 3 | c398e57 |
 | [list-gap-keeps-lines-below-in-place](lists/list-gap-keeps-lines-below-in-place.toml) | P-3, P-LP-2 | 3 | #120 |
+| [ticking-a-task-keeps-the-view](lists/ticking-a-task-keeps-the-view.toml) | – | 3 | c9d98b9 |
+| [a-closing-fence-may-end-in-a-space](code/a-closing-fence-may-end-in-a-space.toml) | B-CODE-3 | 4 | e3b27de |
 | [arrow-up-below-aside-goes-to-the-line-above](caret/arrow-up-below-aside-goes-to-the-line-above.toml) | E-1, B-TAG-9 | 9 | #16 |
 | [a-pending-fence-in-a-float-changes-nothing-below](code/a-pending-fence-in-a-float-changes-nothing-below.toml) | P-OPEN-1, P-2 | 9 | #126 |
 | [code-in-a-column-is-a-code-block](code/code-in-a-column-is-a-code-block.toml) | B-COL-3 | 9 | #126 |

@@ -1,0 +1,18 @@
+id = "a-closing-fence-may-end-in-a-space"
+spec = ["B-CODE-3"]
+source = "e3b27de"
+from_stage = 4
+# The closing fence has a trailing space.
+note = """
+```
+code
+``` 
+
+# After
+"""
+
+[[expect]]
+block = { line = 1, kind = "code" }
+
+[[expect]]
+block = { line = 4, kind = "heading" }

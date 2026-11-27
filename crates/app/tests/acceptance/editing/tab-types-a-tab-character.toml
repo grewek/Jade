@@ -1,0 +1,19 @@
+id = "tab-types-a-tab-character"
+spec = []
+source = "e1ce888"
+from_stage = 2
+# Tab moved the focus away instead.
+note = """
+hello"""
+
+[[step]]
+click = { line = 0, col = 5 }
+
+[[step]]
+key = "tab"
+
+[[step]]
+type = "x"
+
+[[expect]]
+text = "hello\tx"
