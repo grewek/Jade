@@ -2,7 +2,7 @@
 //! task sleeps on a stored `Waker` until `submit` wakes it, so an idle server
 //! costs no timer polling.
 //!
-//! Input commands are answered only after the window has painted their effect
+//! Input commands and resizes are answered only after the window has painted their effect
 //! (two `on_next_frame` hops: the first runs at the start of the next frame
 //! request, before that frame draws; the second after it). The client's reader
 //! thread does not read its next request until then, so a script can never act
@@ -140,7 +140,7 @@ fn run(job: Job, app: &WeakEntity<JadeApp>, cx: &mut App) {
         done,
     } = job;
     let quit = matches!(command, Command::Quit);
-    let wait_for_paint = input::is_input(&command);
+    let wait_for_paint = input::is_input(&command) || matches!(command, Command::Resize { .. });
     if capture::is_pixel_command(&command) {
         let (answer, follow) = capture::execute(&command, cx);
         reply.send_then(answer, follow);

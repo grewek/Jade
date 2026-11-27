@@ -8,7 +8,8 @@
 //!
 //! GPUI's headless context has no frame loop, so [`run`] is one: it lets the
 //! tasks run, and after every command it draws frames (the effect of an input
-//! is only answered once painted, which takes two frames).
+//! is only answered once painted, which takes two frames). A panic ends the
+//! process.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -27,6 +28,8 @@ use crate::assets::JadeAssets;
 const HEADLESS_VAR: &str = "JADE_DEBUG_HEADLESS";
 const SIZE_VAR: &str = "JADE_DEBUG_SIZE";
 const DEFAULT_SIZE: (f32, f32) = (1200.0, 800.0);
+/// What a panicking Rust process exits with.
+const PANIC_EXIT_CODE: i32 = 101;
 /// How long the loop sleeps when nothing happened.
 const IDLE: Duration = Duration::from_millis(2);
 /// Frames drawn after a command: enough for an input's two-frame reply.
@@ -49,8 +52,20 @@ fn window_size() -> Size<gpui_kit::Pixels> {
     size(px(w), px(h))
 }
 
+/// A panic on the main thread is caught by the executor that runs it: the
+/// process would live on and only stop answering, and later panics would bury
+/// the first one in the log. A driver needs to see it end.
+fn exit_on_panic() {
+    let report = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        report(info);
+        std::process::exit(PANIC_EXIT_CODE);
+    }));
+}
+
 /// Runs the app headlessly until a client sends `quit`.
 pub(crate) fn run(cli_vault: Option<PathBuf>) {
+    exit_on_panic();
     super::start_if_enabled();
     let text_system = gpui_kit::platform::current_platform(true).text_system();
     let mut cx = HeadlessAppContext::with_platform(text_system, Arc::new(JadeAssets), || {

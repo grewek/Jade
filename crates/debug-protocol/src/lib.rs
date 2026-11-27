@@ -158,6 +158,16 @@ pub enum Command {
         modifiers: Modifiers,
     },
     ListTargets,
+    /// Puts `text` on the clipboard, so a paste can be driven. In a live
+    /// window this is the system's clipboard.
+    SetClipboard {
+        text: String,
+    },
+    /// Resizes the window, in logical pixels.
+    Resize {
+        width: f32,
+        height: f32,
+    },
     /// Measures `facts` on the pixels of the element `target` (or `rect` of it)
     /// as last painted. Needs the headless mode (see `jade-debug launch`).
     Facts {
