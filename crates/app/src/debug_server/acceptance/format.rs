@@ -68,6 +68,16 @@ pub(super) enum Step {
         #[serde(default)]
         dy: f32,
     },
+    /// A layout command of `SPEC.md` §10.2, run where the caret is.
+    Command(LayoutCommand),
+    /// Drags the `divider`th divider (from 0) of the region opening at `line`
+    /// sideways by `dx` pixels, and releases it.
+    ResizeDivider {
+        line: usize,
+        #[serde(default)]
+        divider: usize,
+        dx: f32,
+    },
     Undo {},
     Redo {},
     Scroll {
@@ -126,6 +136,11 @@ pub(super) enum Expect {
     /// These lines are drawn with a height.
     Shown(Vec<usize>),
     /// Line `line` is at most `times` as tall as line `other`.
+    /// Line `line` starts at or below the bottom of line `of`.
+    Below {
+        line: usize,
+        of: usize,
+    },
     HeightAtMost {
         line: usize,
         other: usize,
@@ -144,6 +159,25 @@ pub(super) enum Expect {
         target: String,
         expect: String,
     },
+}
+
+/// The commands of `SPEC.md` §10.2 (L-1 to L-9), by name, so that a typo does
+/// not load.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum LayoutCommand {
+    InsertColumns,
+    InsertFloatLeft,
+    InsertFloatRight,
+    MakeColumns,
+    FloatLeft,
+    FloatRight,
+    AddColumn,
+    UnwrapColumns,
+    FlipSide,
+    UnwrapFloat,
+    MoveFloatUp,
+    MoveFloatDown,
 }
 
 /// Two character columns of a zero-based source line.
@@ -172,6 +206,38 @@ pub(super) fn parse(text: &str) -> Result<Scenario, String> {
         return Err(format!("from_stage {} is not a stage", scenario.from_stage));
     }
     Ok(scenario)
+}
+
+/// `no-scenario.toml`: the fix commits the catalog leaves out, and why.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LeftOut {
+    /// Fixes that need no scenario, grouped by reason.
+    pub without: Vec<Without>,
+    /// Scenarios a later stage of #130 still has to add.
+    pub owed: Vec<Owed>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Without {
+    pub reason: String,
+    pub commits: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Owed {
+    pub source: String,
+    pub stage: u8,
+    pub what: String,
+}
+
+pub(super) fn load_left_out() -> Result<LeftOut, String> {
+    let path = root().join("no-scenario.toml");
+    let fail = |err: String| format!("{}: {err}", path.display());
+    let text = std::fs::read_to_string(&path).map_err(|err| fail(err.to_string()))?;
+    toml::from_str(&text).map_err(|err| fail(err.to_string()))
 }
 
 pub(super) fn root() -> PathBuf {

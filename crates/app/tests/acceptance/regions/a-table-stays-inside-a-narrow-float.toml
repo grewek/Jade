@@ -1,0 +1,27 @@
+id = "a-table-stays-inside-a-narrow-float"
+spec = ["B-ASIDE-3", "B-TAB-4"]
+source = "571eab7"
+from_stage = 9
+size = "1800x900"
+# The table fits the float only if its columns shrink.
+note = '''
+<jade-aside side="right" width="20%">
+<jade-float>
+| alpha | bravo | charlie | delta | echo |
+|---|---|---|---|---|
+| one | two | three | four | five |
+</jade-float>
+lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+</jade-aside>
+
+below
+'''
+
+[[expect]]
+block = { line = 0, kind = "aside" }
+
+[[expect]]
+no_overlap = true
+
+[[expect]]
+every_frame_consistent = true

@@ -87,6 +87,7 @@ fn evaluate(expect: &Expect, before: &Before, session: &mut Session) -> Result<V
         Expect::EveryFrameConsistent(true) => every_frame_consistent(),
         Expect::Hidden(lines) => hidden(lines, &session.view()?.1),
         Expect::Shown(lines) => shown(lines, &session.view()?.1),
+        Expect::Below { line, of } => below(*line, *of, &session.view()?.1),
         Expect::HeightAtMost { line, other, times } => {
             height_at_most((*line, *other), *times, &session.view()?.1)
         }
@@ -203,6 +204,16 @@ pub(super) fn shown(lines: &[usize], frame: &PaintedFrame) -> Verdict {
         Some(line) => Verdict::Failed(format!("line {line} is not drawn")),
         None => Verdict::Passed,
     }
+}
+
+pub(super) fn below(line: usize, of: usize, frame: &PaintedFrame) -> Verdict {
+    let (Some(y), Some(top)) = (frame.y_of(line), frame.y_of(of)) else {
+        return Verdict::Failed(format!("lines {line} and {of} are not both drawn"));
+    };
+    let bottom = top + height_of(of, frame);
+    verdict(y + TOLERANCE_PX >= bottom, || {
+        format!("line {line} starts at y={y:.1}, above line {of}'s bottom at y={bottom:.1}")
+    })
 }
 
 pub(super) fn height_at_most(

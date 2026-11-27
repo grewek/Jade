@@ -1,0 +1,37 @@
+id = "the-caret-stays-with-its-text-when-a-column-is-added"
+spec = ["L-5", "L-13"]
+source = "a0e7edb"
+from_stage = 9
+# The command sent the caret to the first column, where the next key landed.
+note = '''
+intro
+
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+
+below
+'''
+
+[[step]]
+click = { line = 7, col = 5 }
+
+[[step]]
+command = "add-column"
+
+[[step]]
+type = "|"
+
+[[expect]]
+text_contains = "right|"
+
+[[expect]]
+block = { line = 2, kind = "columns" }
+
+[[expect]]
+no_overlap = true

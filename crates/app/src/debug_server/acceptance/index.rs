@@ -3,9 +3,9 @@
 
 use std::fmt::Write as _;
 
-use super::format::Scenario;
+use super::format::{LeftOut, Scenario};
 
-pub(super) fn render(scenarios: &[Scenario]) -> String {
+pub(super) fn render(scenarios: &[Scenario], left_out: &LeftOut) -> String {
     let mut sorted: Vec<&Scenario> = scenarios.iter().collect();
     sorted.sort_by_key(|s| (s.from_stage, &s.area, &s.id));
     let mut out = String::from(
@@ -29,6 +29,14 @@ pub(super) fn render(scenarios: &[Scenario]) -> String {
             stage = s.from_stage,
             source = s.source,
         );
+    }
+    out.push_str("\n## Still owed\n\n| Source | Stage | Scenario |\n|---|---|---|\n");
+    for owed in &left_out.owed {
+        let _ = writeln!(out, "| {} | {} | {} |", owed.source, owed.stage, owed.what);
+    }
+    out.push_str("\n## Fix commits without a scenario\n\n| Reason | Commits |\n|---|---|\n");
+    for group in &left_out.without {
+        let _ = writeln!(out, "| {} | {} |", group.reason, group.commits.join(", "));
     }
     out
 }

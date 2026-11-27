@@ -19,7 +19,7 @@ use super::format::{ClickAt, Scenario, Step, parse_size};
 use crate::JadeApp;
 use crate::assets::JadeAssets;
 use crate::debug_server::{capture, commands};
-use crate::text_editor::{Editor, PaintedFrame, last_painted_frame};
+use crate::text_editor::{Editor, PaintedFrame, PaintedLine, last_painted_frame};
 
 const NOTE: &str = "Note";
 /// Frames drawn after a step: an edit, its repaint and any deferred notify.
@@ -210,6 +210,17 @@ impl Session {
                 })
             }
             Step::Compose { preview, commit } => self.compose(preview, commit),
+            Step::Command(command) => {
+                return Err(StepError::Unsupported(format!(
+                    "this rendering path has no command {command:?} on `<jade-…>` regions"
+                )));
+            }
+            Step::ResizeDivider { line, divider, dx } => {
+                return Err(StepError::Unsupported(format!(
+                    "this rendering path draws no divider {divider} of a region at line {line} \
+                     to drag by {dx}"
+                )));
+            }
             Step::Key(chord) => self.press(chord),
             Step::Type(text) => self.input(Command::Type { text: text.clone() }),
             Step::Paste(text) => {
@@ -302,9 +313,11 @@ impl Session {
     /// caret rectangle; `None` when there is no such place or its line is not
     /// drawn.
     fn bounds_at(&mut self, line: usize, col: usize) -> Result<Option<Bounds<Pixels>>, String> {
-        // The editor is only asked about drawn lines: in a debug build its
-        // caret rectangle panics for a caret above the view.
-        if last_painted_frame().y_of(line).is_none() {
+        // The editor is only asked about lines drawn with a height: its caret
+        // rectangle underflows for a hidden line, such as one inside a drawn
+        // formula block, and a debug build panics.
+        let drawn = |l: &PaintedLine| l.line == line && l.height > 0.;
+        if !last_painted_frame().lines.iter().any(drawn) {
             return Ok(None);
         }
         let editor = self.editor()?;

@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use super::check::{Verdict, no_overlap};
 use super::format::{self, Scenario, Step};
 use super::session::Session;
-use super::{CURRENT_STAGE, index, report, run};
+use super::{CURRENT_STAGE, breaks_the_build, index, report, run};
 use crate::text_editor::{PaintedFrame, PaintedLine};
 
 #[test]
@@ -19,9 +19,7 @@ fn acceptance_catalog() {
         let text = report(scenario, &outcome);
         eprintln!("{text}");
         *counts.entry(outcome.status()).or_insert(0) += 1;
-        // A mandatory scenario that could check nothing has not passed.
-        let verified = matches!(outcome.status(), "pass" | "part");
-        if scenario.from_stage <= CURRENT_STAGE && !verified {
+        if breaks_the_build(scenario.from_stage, CURRENT_STAGE, &outcome) {
             broken.push(text);
         }
     }
@@ -35,7 +33,10 @@ fn acceptance_catalog() {
 
 #[test]
 fn acceptance_index_matches_the_scenario_files() {
-    let wanted = index::render(&format::load_all().unwrap());
+    let wanted = index::render(
+        &format::load_all().unwrap(),
+        &format::load_left_out().unwrap(),
+    );
     let path = format::root().join("INDEX.md");
     if std::env::var_os("JADE_UPDATE_INDEX").is_some() {
         std::fs::write(&path, &wanted).unwrap();
@@ -45,6 +46,23 @@ fn acceptance_index_matches_the_scenario_files() {
         written == wanted,
         "INDEX.md is stale; rerun with JADE_UPDATE_INDEX=1"
     );
+}
+
+#[test]
+fn acceptance_commits_left_out_have_no_scenario() {
+    let scenarios = format::load_all().unwrap();
+    for group in format::load_left_out().unwrap().without {
+        for commit in &group.commits {
+            let with = scenarios
+                .iter()
+                .find(|s| s.source.contains(commit.as_str()));
+            assert!(
+                with.is_none(),
+                "{commit} is listed as {:?} and has a scenario",
+                group.reason
+            );
+        }
+    }
 }
 
 #[test]
@@ -178,6 +196,47 @@ fn acceptance_runner_checks_rows_and_the_caret_direction() {
         (0, 6),
         "{outcome:?}"
     );
+}
+
+#[test]
+fn acceptance_runner_orders_lines_and_skips_layout_commands() {
+    let outcome = run(&scenario("[[expect]]\nbelow = { line = 4, of = 0 }"));
+    assert_eq!(outcome.status(), "pass", "{outcome:?}");
+    let outcome = run(&scenario("[[expect]]\nbelow = { line = 0, of = 4 }"));
+    assert_eq!(outcome.status(), "FAIL", "{outcome:?}");
+    for step in [
+        "command = \"add-column\"",
+        "resize_divider = { line = 0, dx = 40.0 }",
+    ] {
+        let outcome = run(&scenario(&format!(
+            "[[step]]\n{step}\n[[expect]]\ntext_contains = \"alpha\""
+        )));
+        assert_eq!(outcome.status(), "SKIP", "{outcome:?}");
+    }
+    let typo = "id = \"a\"\nspec = []\nsource = \"s\"\nfrom_stage = 2\nnote = \"\"\n\
+                [[step]]\ncommand = \"add-colum\"\n[[expect]]\nno_overlap = true\n";
+    assert!(format::parse(typo).is_err());
+}
+
+#[test]
+fn acceptance_runner_fails_a_skip_from_its_stage_on() {
+    let text = "[[expect]]\ntext_contains = \"alpha\"";
+    let block = "[[expect]]\nblock = { line = 0, kind = \"paragraph\" }";
+    let full = run(&scenario(text));
+    // A skipped check beside a passing one, a skipped step, nothing checked.
+    let skips = [
+        format!("{text}\n{block}"),
+        format!("[[step]]\ncommand = \"add-column\"\n{text}"),
+        block.to_string(),
+    ];
+    assert!(!breaks_the_build(2, 2, &full), "{full:?}");
+    for toml in &skips {
+        let outcome = run(&scenario(toml));
+        assert!(!outcome.skipped.is_empty(), "{outcome:?}");
+        assert!(breaks_the_build(2, 2, &outcome), "{outcome:?}");
+        assert!(breaks_the_build(2, 9, &outcome), "{outcome:?}");
+        assert!(!breaks_the_build(2, 1, &outcome), "{outcome:?}");
+    }
 }
 
 /// Without this the catalog could report passes while checking nothing.

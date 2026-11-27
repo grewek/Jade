@@ -1,0 +1,30 @@
+id = "a-table-does-not-paint-into-the-next-column"
+spec = ["B-COL-3", "B-TAB-4"]
+source = "c63c311"
+from_stage = 9
+size = "1800x900"
+# A table wider than its narrow column ran into the callout beside it.
+note = '''
+<jade-columns ratio="20/80">
+<jade-column>
+| alpha | bravo | charlie | delta | echo |
+|---|---|---|---|---|
+| one | two | three | four | five |
+</jade-column>
+<jade-column>
+> [!note] Beside
+> lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet
+</jade-column>
+</jade-columns>
+
+below
+'''
+
+[[expect]]
+block = { line = 0, kind = "columns" }
+
+[[expect]]
+no_overlap = true
+
+[[expect]]
+every_frame_consistent = true
