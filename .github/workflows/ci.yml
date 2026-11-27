@@ -1,8 +1,8 @@
 name: CI
 
-# Scope: only crates that build without GPUI's system libraries (jade-core,
-# jade-debug-protocol, jade-debug-cli). jade-app and its headless UI tests
-# are deliberately not covered yet.
+# `clippy`, `test` and `docs` cover the crates that build without GPUI's system
+# libraries (jade-core, jade-debug-protocol, jade-debug-cli). `app` covers
+# jade-app, which needs them. `fmt` covers everything.
 
 on:
   pull_request:
@@ -51,3 +51,27 @@ jobs:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - run: cargo doc --no-deps -p jade-core -p jade-debug-protocol -p jade-debug-cli
+
+  app:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # GPUI's libraries (as in release.yml), and Mesa's Vulkan drivers: their
+      # CPU driver, lavapipe, renders the acceptance catalog without a GPU.
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libfontconfig-dev libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libx11-xcb-dev libxcb1-dev libxcb-xkb-dev libvulkan-dev mesa-vulkan-drivers
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p jade-app
+      - run: cargo clippy -p jade-app --lib --bins -- -D warnings
+      - run: cargo test -p jade-app -- --test-threads=1 --skip acceptance
+      # Its own step, with the output: every scenario's result is in the log.
+      - name: Acceptance catalog
+        run: cargo test -p jade-app acceptance -- --test-threads=1 --nocapture
+      - run: cargo doc --no-deps -p jade-app
+        env:
+          RUSTDOCFLAGS: -D warnings

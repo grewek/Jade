@@ -549,6 +549,10 @@ fn opens(marker: Marker) -> bool {
 /// The regions the markers form, in order (see the module comment for the
 /// rules). `markers` must be sorted by line; `line_count` is the document's,
 /// where the text of a last float ends.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub fn derive(markers: &[Placed], line_count: usize) -> Vec<Columns> {
     let mut regions = Vec::new();
     let mut pending: Option<Pending> = None;

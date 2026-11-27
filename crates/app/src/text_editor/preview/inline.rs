@@ -48,6 +48,10 @@ pub(super) struct Construct {
 /// UTF-8 since none of its continuation bytes can match any of these ASCII
 /// patterns, so stepping through one at a time just finds nothing until the
 /// next real ASCII delimiter.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn find_construct(rest: &str) -> Option<Construct> {
     let bytes = rest.as_bytes();
     let mut i = 0;
@@ -238,6 +242,10 @@ pub(super) fn scan_inline(
 /// [`scan_inline`], where `math` is the macros a formula is expanded with, or
 /// `None` when a formula may not become a drawn [`InlineStyle::Math`] segment:
 /// a table cell paints its own text and cannot.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn scan_inline_in(
     line: &str,
     mut pos: usize,

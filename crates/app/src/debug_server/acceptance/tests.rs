@@ -26,7 +26,7 @@ fn acceptance_catalog() {
     eprintln!("acceptance, stage {CURRENT_STAGE}: {counts:?}");
     assert!(
         broken.is_empty(),
-        "mandatory scenarios did not pass:\n{}",
+        "mandatory or unopened scenarios did not pass:\n{}",
         broken.join("\n")
     );
 }
@@ -237,6 +237,15 @@ fn acceptance_runner_fails_a_skip_from_its_stage_on() {
         assert!(breaks_the_build(2, 9, &outcome), "{outcome:?}");
         assert!(!breaks_the_build(2, 1, &outcome), "{outcome:?}");
     }
+}
+
+#[test]
+fn acceptance_runner_fails_a_scenario_that_did_not_open_at_any_stage() {
+    let mut broken = scenario("[[expect]]\ntext_contains = \"alpha\"");
+    broken.size = "no size".into();
+    let outcome = run(&broken);
+    assert_eq!(outcome.status(), "FAIL", "{outcome:?}");
+    assert!(breaks_the_build(9, 1, &outcome), "{outcome:?}");
 }
 
 /// Without this the catalog could report passes while checking nothing.

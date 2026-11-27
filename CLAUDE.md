@@ -25,7 +25,7 @@ Jade is an Obsidian-like note-taking app, written in Rust, with these firm decis
 - **Release / hotfix** (when asked): `release/x.y.z` from `develop`, `hotfix/x.y.z` from `main`; each goes by PR into `main` (then tag `vX.Y.Z`) and by a second PR back into `develop`.
 - **Issues:** read the whole issue and its comments first, then do only what it asks. A new dependency needs a comment asking the user, not a guess. Reference the issue in commits (`refs #n`); the PR targets `develop`, and its body says `Closes #n`.
 - **`CHANGELOG.md`** is edited only when preparing a release, on the `release/*` branch (newest version first, one entry per user-visible change). Never touch it in feature or hotfix work.
-- **Before opening the PR**, run what CI runs: `cargo fmt --check`, `cargo clippy`, `cargo test`, and `cargo doc --no-deps`. Opening the PR ends the task; merging is the user's call.
+- **Before opening the PR**, run what CI runs (`.github/workflows/ci.yml`, all four crates): `cargo fmt --all --check`, `cargo clippy --lib --bins -- -D warnings`, `cargo test -- --test-threads=1`, and `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps`. Opening the PR ends the task; merging is the user's call.
 - **Reviewable steps:** one topic per PR, at most ~500 changed lines of production code (tests count separately), commits that each carry one reason. Cut larger work into PRs first and show the cut to the user.
 
 ## Rendering (rebuild in progress: #130)
@@ -66,9 +66,9 @@ Workspace-wide:
 - Test all crates: `cargo test -- --test-threads=1`
 - Test a single crate: `cargo test -p jade-core` / `cargo test -p jade-app -- --test-threads=1`
 - Run a single test: `cargo test <test_name>`
-- Acceptance catalog of the rendering core: `cargo test -p jade-app acceptance -- --test-threads=1 --nocapture` runs every scenario under `crates/app/tests/acceptance/` (needs a GPU; format in `debug_server/acceptance/`). `JADE_ACCEPTANCE=<id part>` picks scenarios; `JADE_UPDATE_INDEX=1` rewrites `INDEX.md`. Each stage's PR raises `CURRENT_STAGE`.
+- Acceptance catalog of the rendering core: `cargo test -p jade-app acceptance -- --test-threads=1 --nocapture` runs every scenario under `crates/app/tests/acceptance/` (needs a Vulkan adapter: a GPU, or Mesa's software driver lavapipe, which CI uses; format in `debug_server/acceptance/`). A scenario that cannot open fails at every stage. `JADE_ACCEPTANCE=<id part>` picks scenarios; `JADE_UPDATE_INDEX=1` rewrites `INDEX.md`. Each stage's PR raises `CURRENT_STAGE`.
 - **`jade-app`'s headless UI tests require `--test-threads=1`** — the parallel harness is non-deterministic under load (a confirmed concurrency bug in the vendored gpui/gpui-component test-support stack, not Jade's code).
-- Lint: `cargo clippy`
+- Lint: `cargo clippy --lib --bins -- -D warnings`. The `#[expect(clippy::too_many_lines)]` exemptions are for functions that were too long when CI began linting `jade-app`; don't add new ones.
 - Format: `cargo fmt`
 - **Debug harness** (drive/observe the live app: click, type, frame times, paint trace): `cargo build --release -p jade-app --features debug-socket && cargo build --release -p jade-debug-cli` (the socket is compiled out of default builds; cargo feature unification would otherwise leak `debug-socket` into a combined build), then `target/release/jade-debug help`; `launch --headless` renders without a window so `facts`/`expect`/`capture` can check how something looks. See `ARCHITECTURE.md` "Debug harness" and `.claude/skills/jade-debug`. Name every new interactive widget with `.debug_name(..)`.
 - Benchmark: `cargo bench -p jade-core` (criterion; watch for a `change:`/`Performance has regressed` line, not just the absolute time). `cargo bench -p jade-app --bench editor` (~3 min) times the window-free editor internals on the stress fixture through `text_editor::bench_api`; `cargo bench -p jade-app --features bench-support --bench layout` times whole headless frames, and `--bench allocations` asserts a per-operation heap bound. Add new hot-path logic to these. Don't pass `--all-features` (benches should run without `debug-socket`).

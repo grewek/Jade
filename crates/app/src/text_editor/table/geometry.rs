@@ -254,7 +254,7 @@ pub(in crate::text_editor) fn layout_row_in(
                 lines: wrap_ranges(line, raw.clone(), width, macros),
             },
             None => CellBox {
-                lines: vec![line.len()..line.len()],
+                lines: std::iter::once(line.len()..line.len()).collect(),
             },
         })
         .collect()

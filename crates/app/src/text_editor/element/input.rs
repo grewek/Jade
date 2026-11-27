@@ -10,6 +10,10 @@ use crate::text_editor::table;
 /// pressed inside these bounds is still down) to extend it, release to stop
 /// dragging. `window.on_mouse_event` listeners last one frame each — this
 /// runs on every paint, same as the painting itself.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn register_mouse_handling(
     editor_entity: Entity<Editor>,
     view: Rc<FrameView>,
@@ -349,6 +353,10 @@ impl Hit {
 }
 
 /// [`offset_for_position`], plus what else is under the point.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn hit_for_position(
     editor: &Editor,
     view: &FrameView,
@@ -450,6 +458,10 @@ pub(super) fn hit_for_position(
 /// Where a click at `frame.position` lands in one shaped line, whose top is
 /// `y_offset` below the editor's top; `Err` is the line's height when the click
 /// is below it (the caller moves on to the next line).
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn hit_in_line(
     doc: &DocumentCache,
     (i, line_text, line_start): (usize, &str, usize),

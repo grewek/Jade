@@ -5,6 +5,10 @@
 use super::*;
 
 #[allow(clippy::too_many_arguments)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn paint_lines(
     text: &str,
     links: &LinkTable,
@@ -415,6 +419,10 @@ pub(super) struct LineSlot<'a> {
 /// Paints one shaped line (selection, text, widgets, caret, rules, images,
 /// table cells). `columns` is the table whose widths were last worked out,
 /// kept across the lines of one frame (or one column).
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn paint_line(
     env: &PaintEnv,
     slot: &LineSlot,
@@ -534,7 +542,7 @@ pub(super) fn paint_line(
         );
     }
 
-    if let Some(embed) = image::embed(line_text, &state) {
+    if let Some(embed) = image::embed(line_text, state) {
         let area = Bounds {
             origin: point(bounds.origin.x, bounds.origin.y + y_offset),
             size: size(bounds.size.width, total_height),
@@ -801,7 +809,7 @@ pub(super) fn paint_line(
             ));
         }
         let widgets = WidgetPaint {
-            colors: &widget_colors,
+            colors: widget_colors,
             inline: &inline,
             font_size,
             entry,

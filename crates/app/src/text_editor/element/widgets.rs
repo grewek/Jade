@@ -72,6 +72,10 @@ pub(super) fn paint_icon(
 /// Draws each [`Widget`] segment of `display_line` over the blank columns it
 /// reserved: `origin` is the line's top left, `wrapped` its shaped text, which
 /// says where those columns are.
+#[expect(
+    clippy::too_many_lines,
+    reason = "predates linting jade-app in CI (#168)"
+)]
 pub(super) fn paint_widgets(
     display_line: &DisplayLine,
     wrapped: &WrappedLine,

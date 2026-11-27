@@ -154,7 +154,7 @@ pub struct Editor {
     pub(super) column_hover: Option<usize>,
     /// Where the last frame put each aside's floats, by region's first line
     /// (for placing a region's grips beside them).
-    pub(super) float_spots: Rc<RefCell<Vec<(usize, Vec<super::element::region::FloatSpot>)>>>,
+    pub(super) float_spots: super::element::region::SharedFloatSpots,
     /// A divider being dragged.
     pub(super) column_drag: Option<ColumnDrag>,
     /// The vault root and this note's id, for finding image embeds' files.
@@ -594,6 +594,10 @@ impl Editor {
     /// platform's own Services-menu/drag-drop paste plumbing on some
     /// platforms, not guaranteed to fire for a plain Ctrl/Cmd+V keystroke, so
     /// explicit is the more predictable choice here.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "predates linting jade-app in CI (#168)"
+    )]
     pub(super) fn handle_key_down(
         &mut self,
         event: &KeyDownEvent,

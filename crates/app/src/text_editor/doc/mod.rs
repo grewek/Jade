@@ -275,10 +275,9 @@ impl DocumentCache {
         let r5 = self.patch_columns(text, &span, &r1);
         let r6 = self.patch_math(text, &span, &math_pre, &r1);
 
-        let mut touched = [minimal, r1, r2, r3, r4, r5, r6]
+        let mut touched = [r1, r2, r3, r4, r5, r6]
             .into_iter()
-            .reduce(union_ranges)
-            .unwrap();
+            .fold(minimal, union_ranges);
         // A changed macro changes any formula of the note.
         if self.patch_macros(text, &span, &touched) {
             touched = 0..self.line_roles.len();

@@ -299,6 +299,10 @@ impl JadeApp {
     }
 
     /// The right sidebar's body: notes linking to `note_id`.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "predates linting jade-app in CI (#168)"
+    )]
     pub(super) fn render_backlinks_panel(&self, note_id: &str, cx: &mut Context<Self>) -> Div {
         let mut backlink_entries: Vec<(String, String)> = self
             .vault
