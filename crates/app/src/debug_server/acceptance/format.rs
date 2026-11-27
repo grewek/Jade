@@ -59,6 +59,9 @@ pub(super) enum Step {
 
 /// A named element, or the place where the caret would be drawn at a
 /// zero-based line and column (in characters) of the source.
+/// A virtual empty line (`SPEC.md` §10.1) is addressed, here and in a `caret`
+/// expectation, as the source line that typing on it would create. Above the
+/// first line that is also line 0, so only typing tells the two apart.
 #[derive(Debug, Deserialize)]
 #[serde(untagged, deny_unknown_fields)]
 pub(super) enum ClickAt {

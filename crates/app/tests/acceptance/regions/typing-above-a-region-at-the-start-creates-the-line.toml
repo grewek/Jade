@@ -1,0 +1,44 @@
+id = "typing-above-a-region-at-the-start-creates-the-line"
+spec = ["V-4"]
+source = "#119"
+from_stage = 9
+# No line before the opening tag: the line above is virtual (V-1).
+# Only this tells the virtual line from the start of the tag line.
+note = """
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+"""
+
+[[step]]
+click = { line = 2, col = 0 }
+
+[[step]]
+key = "up"
+
+[[step]]
+type = "x"
+
+[[expect]]
+text = """
+x
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+"""
+
+[[expect]]
+caret = { line = 0, col = 1 }
+
+[[expect]]
+no_overlap = true

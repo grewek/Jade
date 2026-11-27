@@ -1,5 +1,5 @@
 id = "typing-a-fence-in-a-float-closes-it-inside"
-spec = ["P-OPEN-1", "B-CODE-3", "P-2"]
+spec = ["P-OPEN-1a", "B-CODE-3", "P-2"]
 source = "#126"
 from_stage = 9
 note = """
@@ -20,11 +20,27 @@ key = "enter"
 [[step]]
 type = "```"
 
-[[expect]]
-text_contains = "float text\n```\n```\n</jade-float>\ntext beside\n"
+[[step]]
+key = "enter"
 
 [[expect]]
-block = { line = 6, kind = "paragraph" }
+text = """
+<jade-aside side="left" width="40%">
+<jade-float>
+float text
+```
+
+```
+</jade-float>
+text beside
+</jade-aside>
+"""
+
+[[expect]]
+caret = { line = 4, col = 0 }
+
+[[expect]]
+block = { line = 7, kind = "paragraph" }
 
 [[expect]]
 no_overlap = true

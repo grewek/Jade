@@ -1,0 +1,41 @@
+id = "typing-below-a-region-at-the-end-creates-the-line"
+spec = ["V-4"]
+source = "#119"
+from_stage = 9
+# No newline after the closing tag: the line below is virtual (V-1).
+note = """
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>"""
+
+[[step]]
+click = { line = 5, col = 5 }
+
+[[step]]
+key = "down"
+
+[[step]]
+type = "x"
+
+[[expect]]
+text = """
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+x"""
+
+[[expect]]
+caret = { line = 8, col = 1 }
+
+[[expect]]
+no_overlap = true
