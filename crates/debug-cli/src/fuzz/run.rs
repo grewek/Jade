@@ -1,32 +1,26 @@
-//! One run: a note and steps from a seed, until the app crashes or hangs.
+//! One run: a note and steps from a seed, each step followed by the checks.
 
 use std::collections::VecDeque;
 use std::path::Path;
 
 use jade_debug_protocol::{
-    Answer, AppState, Button, Command, Location, Modifiers, Point, Query, Target,
+    Answer, AppState, Button, Command, FRAME_BUDGET_US, FrameSample, Location, Modifiers, Point,
+    Query, Target,
 };
 
 use super::actions::{self, Spot, Step};
 use super::app::{App, Gone, NOTE};
+use super::findings::{Findings, Kind, Seen};
 use super::rng::Rng;
 
-/// Steps shown with a fault.
+/// Steps shown with a finding.
 const TRAIL: usize = 8;
+/// What the first frame after opening a note or a resize may take
+/// (`SPEC.md`'s two exceptions to the frame budget).
+const FIRST_FRAME_BUDGET_US: u32 = 33_000;
 /// What typing answers when no text field has the focus.
 const NOT_CONSUMED: &str = "nothing consumed the typed text";
 const DRAG_STEPS: u8 = 6;
-
-/// A crash or hang, and where it happened.
-#[derive(Debug)]
-pub(super) struct Fault {
-    pub gone: Gone,
-    pub seed: u64,
-    /// The step that ended the app; 0 is opening the note.
-    pub step: u32,
-    /// The last steps up to that one, oldest first.
-    pub trail: Vec<String>,
-}
 
 /// Why a run stopped before its last step.
 enum Stop {
@@ -41,11 +35,15 @@ impl From<Gone> for Stop {
     }
 }
 
-struct Run {
+struct Run<'a> {
     app: App,
     seed: u64,
     step: u32,
     trail: VecDeque<String>,
+    last_frame: u64,
+    /// The next frame is the first after opening or resizing.
+    first_frame_next: bool,
+    findings: &'a mut Findings,
 }
 
 fn click(at: Location, count: u8, modifiers: Modifiers) -> Command {
@@ -81,7 +79,39 @@ fn point_in(pane: &Target, spot: Spot) -> Point {
     }
 }
 
-impl Run {
+/// The frames newer than `last` that are over budget, the first of them judged
+/// by the larger budget when it is `first_after_a_change`.
+fn slow_frames(frames: &[FrameSample], last: u64, first_after_a_change: bool) -> Vec<FrameSample> {
+    frames
+        .iter()
+        .filter(|f| f.frame > last)
+        .enumerate()
+        .filter(|&(i, f)| {
+            let budget = if i == 0 && first_after_a_change {
+                FIRST_FRAME_BUDGET_US
+            } else {
+                FRAME_BUDGET_US
+            };
+            f.total_us() > budget
+        })
+        .map(|(_, f)| *f)
+        .collect()
+}
+
+impl Run<'_> {
+    fn record(&mut self, kind: Kind, text: &str) {
+        let (seed, step, trail) = (self.seed, self.step, &self.trail);
+        let new = self.findings.add(kind, text, || Seen {
+            seed,
+            step,
+            trail: trail.iter().cloned().collect(),
+        });
+        if new {
+            let line = text.lines().next().unwrap_or_default();
+            eprintln!("seed {seed} step {step}: new finding: {line}");
+        }
+    }
+
     /// Sends a command that has to succeed.
     fn send(&mut self, command: Command) -> Result<(), Stop> {
         match self.app.call(command.clone())? {
@@ -125,7 +155,9 @@ impl Run {
     fn open_note(&mut self) -> Result<(), Stop> {
         let note = Location::Target(format!("note-{NOTE}"));
         self.send(click(note, 1, Modifiers::default()))?;
-        self.focus_editor()
+        self.focus_editor()?;
+        self.first_frame_next = true;
+        Ok(())
     }
 
     fn focus_editor(&mut self) -> Result<(), Stop> {
@@ -200,15 +232,50 @@ impl Run {
                 dy: *dy as f32,
                 modifiers: Modifiers::default(),
             }),
-            Step::Resize(width, height) => self.send(Command::Resize {
-                width: *width as f32,
-                height: *height as f32,
-            }),
+            Step::Resize(width, height) => {
+                self.first_frame_next = true;
+                self.send(Command::Resize {
+                    width: *width as f32,
+                    height: *height as f32,
+                })
+            }
+        }
+    }
+
+    fn check(&mut self) -> Result<(), Stop> {
+        // Frames first: the next query draws frames of its own.
+        let times = Command::Query {
+            what: Query::FrameTimes,
+        };
+        let Answer::FrameTimes { frames } = self.app.call(times)? else {
+            return Err(Stop::Broken("no frame times".into()));
+        };
+        let slow = slow_frames(&frames, self.last_frame, self.first_frame_next);
+        if let Some(newest) = frames.last().filter(|f| f.frame > self.last_frame) {
+            self.last_frame = newest.frame;
+            self.first_frame_next = false;
+        }
+        if let Some(worst) = slow.iter().max_by_key(|f| f.total_us()) {
+            let text = format!("a frame took {:.1} ms", f64::from(worst.total_us()) / 1000.);
+            self.record(Kind::SlowFrame, &text);
+        }
+        let query = Command::Query {
+            what: Query::Invariants,
+        };
+        match self.app.call(query)? {
+            Answer::Invariants { problems, .. } => {
+                for problem in &problems {
+                    self.record(Kind::Invariant, problem);
+                }
+                Ok(())
+            }
+            other => Err(Stop::Broken(format!("no invariants: {other:?}"))),
         }
     }
 
     fn steps(&mut self, rng: &mut Rng, steps: u32, trace: bool) -> Result<(), Stop> {
         self.open_note()?;
+        self.check()?;
         for number in 1..=steps {
             let step = actions::step(rng);
             self.step = number;
@@ -221,18 +288,21 @@ impl Run {
             }
             self.perform(&step)?;
             self.return_to_the_note()?;
+            self.check()?;
         }
         Ok(())
     }
 }
 
-/// Runs `steps` steps of `seed` on a new app. Returns the crash or hang that
-/// ended it, if any; `Err` means the fuzzer itself failed.
+/// Runs `steps` steps of `seed` on a new app and adds what is wrong to
+/// `findings`. A crash or hang ends the run. `Err` means the fuzzer itself
+/// failed.
 pub(super) fn run(
     bin: &Path,
     (seed, steps): (u64, u32),
     trace: bool,
-) -> Result<Option<Fault>, String> {
+    findings: &mut Findings,
+) -> Result<(), String> {
     let mut rng = Rng::new(seed);
     let note = actions::note(&mut rng);
     let mut run = Run {
@@ -240,26 +310,45 @@ pub(super) fn run(
         seed,
         step: 0,
         trail: VecDeque::with_capacity(TRAIL),
+        last_frame: 0,
+        first_frame_next: true,
+        findings,
     };
-    let ended = run.steps(&mut rng, steps, trace);
-    let Run {
-        app,
-        seed,
-        step,
-        trail,
-    } = run;
-    let gone = match ended {
-        // A panic on the way out counts too.
-        Ok(()) => app.quit().err(),
-        Err(Stop::Broken(why)) => return Err(format!("seed {seed} step {step}: {why}")),
-        Err(Stop::Gone(gone)) => Some(gone),
+    let gone = match run.steps(&mut rng, steps, trace) {
+        Ok(()) => {
+            let Run {
+                app,
+                seed,
+                step,
+                trail,
+                findings,
+                ..
+            } = run;
+            if let Err(gone) = app.quit() {
+                let (kind, text) = describe(&gone);
+                findings.add(kind, text, || Seen {
+                    seed,
+                    step,
+                    trail: trail.into(),
+                });
+            }
+            return Ok(());
+        }
+        Err(Stop::Broken(why)) => {
+            return Err(format!("seed {seed} step {}: {why}", run.step));
+        }
+        Err(Stop::Gone(gone)) => gone,
     };
-    Ok(gone.map(|gone| Fault {
-        gone,
-        seed,
-        step,
-        trail: trail.into(),
-    }))
+    let (kind, text) = describe(&gone);
+    run.record(kind, text);
+    Ok(())
+}
+
+fn describe(gone: &Gone) -> (Kind, &str) {
+    match gone {
+        Gone::Crash(text) => (Kind::Crash, text),
+        Gone::Hang(text) => (Kind::Hang, text),
+    }
 }
 
 #[cfg(test)]
@@ -286,5 +375,24 @@ mod tests {
     fn text_of_only_enter_and_tab_is_told_apart() {
         assert!(only_enter_and_tab("\n\t\n"));
         assert!(!only_enter_and_tab("\na"));
+    }
+
+    #[test]
+    fn only_new_frames_are_judged_and_the_first_after_a_change_gets_more_time() {
+        let frame = |frame, render_us| FrameSample {
+            frame,
+            render_us,
+            ..Default::default()
+        };
+        let frames = [
+            frame(1, 90_000),
+            frame(2, 20_000),
+            frame(3, 20_000),
+            frame(4, 5_000),
+        ];
+        let numbers = |slow: Vec<FrameSample>| slow.iter().map(|f| f.frame).collect::<Vec<_>>();
+        assert_eq!(numbers(slow_frames(&frames, 1, false)), [2, 3]);
+        assert_eq!(numbers(slow_frames(&frames, 1, true)), [3]);
+        assert_eq!(numbers(slow_frames(&frames, 0, true)), [1, 2, 3]);
     }
 }
