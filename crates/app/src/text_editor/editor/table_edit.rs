@@ -69,6 +69,13 @@ pub(super) fn escape_for_cell(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
+/// How many cells of the row `content` can be edited: those with a box. A row
+/// can have more in its source than `table` has columns, and those are not
+/// drawn, so editing one would index past the columns.
+fn editable_cells(table: &Table, content: &str) -> usize {
+    cell_ranges(content).len().min(table.columns.len())
+}
+
 /// A new row of `columns` empty cells, `| | |`.
 fn empty_row(columns: usize) -> String {
     let mut row = String::from("|");
@@ -85,16 +92,17 @@ impl Editor {
         self.cell_at_line(column.0, column.1)
     }
 
-    /// Cell `column` (the last one if the row has fewer) of `line`.
+    /// Cell `column` of `line`, or the row's last editable cell if that is
+    /// before it.
     fn cell_at_line(&self, line: usize, column: usize) -> Option<Cell> {
         let doc = self.document_cache.borrow();
         let table = table_index_at(doc.tables(), line)?;
         let text = self.buffer.text();
         let start = doc.line_start_byte(line);
         let content = &text[start..doc.line_end_byte(line)];
-        let ranges = cell_ranges(content);
-        let column = column.min(ranges.len().checked_sub(1)?);
-        let range = edit_range(content, ranges[column].clone());
+        let count = editable_cells(&doc.tables()[table], content);
+        let column = column.min(count.checked_sub(1)?);
+        let range = edit_range(content, cell_ranges(content)[column].clone());
         Some(Cell {
             table,
             line,
@@ -356,7 +364,7 @@ impl Editor {
             let table = &doc.tables()[cell.table];
             let text = self.buffer.text();
             let content = &text[cell.line_start..doc.line_end_byte(cell.line)];
-            let count = cell_ranges(content).len();
+            let count = editable_cells(table, content);
             match (forward, cell.column) {
                 (true, c) if c + 1 < count => Some((cell.line, c + 1)),
                 (true, _) => row_after(table, cell.line).map(|line| (line, 0)),
@@ -766,3 +774,6 @@ pub(in crate::text_editor) struct TableMenuState {
     /// The table has more than one column.
     pub can_delete_column: bool,
 }
+
+#[cfg(test)]
+mod tests;
