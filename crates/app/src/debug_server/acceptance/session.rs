@@ -29,7 +29,12 @@ const DRAG_STEPS: u8 = 8;
 /// Makes the paint trace and frame clock record; no socket is bound.
 const ENV_VAR: &str = "JADE_DEBUG_SOCKET";
 
-/// Why a step did not run.
+/// The old path draws a table as a box, which the input method's caret
+/// rectangle does not follow: positions in one are not known.
+const NO_TABLE_POSITIONS: &str = "this rendering path reports no positions inside tables";
+
+/// Why a step did not run, or a position is not known.
+#[derive(Debug)]
 pub(super) enum StepError {
     /// The running path has no such input.
     Unsupported(String),
@@ -189,8 +194,12 @@ impl Session {
 
     pub(super) fn run_step(&mut self, step: &Step) -> Result<(), StepError> {
         let result = match step {
-            Step::Click(at) => self.location(at).and_then(|at| self.input(click(at))),
-            Step::Drag { from, dx, dy } => self.location(from).and_then(|from| {
+            Step::Click(at) => {
+                let at = self.location(at)?;
+                self.input(click(at))
+            }
+            Step::Drag { from, dx, dy } => {
+                let from = self.location(from)?;
                 self.input(Command::Drag {
                     from,
                     dx: *dx,
@@ -199,7 +208,7 @@ impl Session {
                     button: Button::Left,
                     modifiers: Modifiers::default(),
                 })
-            }),
+            }
             Step::Compose { preview, commit } => self.compose(preview, commit),
             Step::Key(chord) => self.press(chord),
             Step::Type(text) => self.input(Command::Type { text: text.clone() }),
@@ -249,7 +258,7 @@ impl Session {
         Ok(())
     }
 
-    fn location(&mut self, at: &ClickAt) -> Result<Location, String> {
+    fn location(&mut self, at: &ClickAt) -> Result<Location, StepError> {
         Ok(match at {
             ClickAt::Target { target } => Location::Target(target.clone()),
             ClickAt::Text { line, col } => Location::Point(self.point_of(*line, *col)?),
@@ -289,34 +298,66 @@ impl Session {
         })
     }
 
-    /// Where the caret would be drawn at a UTF-16 offset, from the input
-    /// method's caret rectangle; `None` when its line is not drawn.
-    fn bounds_at(
-        &mut self,
-        offset: impl FnOnce(&str) -> Option<usize>,
-    ) -> Result<Option<Bounds<Pixels>>, String> {
+    /// Where the caret would be drawn at `line`/`col`, from the input method's
+    /// caret rectangle; `None` when there is no such place or its line is not
+    /// drawn.
+    fn bounds_at(&mut self, line: usize, col: usize) -> Result<Option<Bounds<Pixels>>, String> {
+        // The editor is only asked about drawn lines: in a debug build its
+        // caret rectangle panics for a caret above the view.
+        if last_painted_frame().y_of(line).is_none() {
+            return Ok(None);
+        }
         let editor = self.editor()?;
         let bounds = self.target("editor")?;
         self.in_window(|window, cx| {
             editor.update(cx, |editor, cx| {
-                let utf16 = offset(editor.buffer().text())?;
+                let utf16 = utf16_offset(editor.buffer().text(), line, col)?;
                 editor.bounds_for_range(utf16..utf16, bounds, window, cx)
             })
         })
     }
 
+    pub(super) fn in_table(&mut self, line: usize) -> Result<bool, String> {
+        let editor = self.editor()?;
+        Ok(self.cx.update(|cx| {
+            let editor = editor.read(cx);
+            let start: usize = editor
+                .buffer()
+                .text()
+                .split_inclusive('\n')
+                .take(line)
+                .map(str::len)
+                .sum();
+            editor.is_table_line_at(start)
+        }))
+    }
+
     pub(super) fn caret_bounds(&mut self) -> Result<Option<Bounds<Pixels>>, String> {
         let (line, col) = self.caret()?;
-        self.bounds_at(|text| utf16_offset(text, line, col))
+        self.bounds_at(line, col)
+    }
+
+    /// `None` when it is not known.
+    pub(super) fn caret_x(&mut self) -> Result<Option<f32>, String> {
+        let (line, _) = self.caret()?;
+        if self.in_table(line)? {
+            return Ok(None);
+        }
+        Ok(self.caret_bounds()?.map(|b| b.origin.x.into()))
     }
 
     /// The window point where the caret would be drawn at `line`/`col`, without
     /// moving the caret.
-    fn point_of(&mut self, line: usize, col: usize) -> Result<Point, String> {
-        let caret = self.bounds_at(|text| utf16_offset(text, line, col))?;
-        let caret = caret.ok_or(format!(
-            "line {line} col {col} does not exist or is not on screen"
-        ))?;
+    pub(super) fn point_of(&mut self, line: usize, col: usize) -> Result<Point, StepError> {
+        if self.in_table(line).map_err(StepError::Failed)? {
+            return Err(StepError::Unsupported(NO_TABLE_POSITIONS.into()));
+        }
+        let caret = self.bounds_at(line, col).map_err(StepError::Failed)?;
+        let caret = caret.ok_or_else(|| {
+            StepError::Failed(format!(
+                "line {line} col {col} does not exist or is not on screen"
+            ))
+        })?;
         let middle = caret.origin.y + caret.size.height / 2.;
         Ok(Point {
             // Just inside the character, so the click is not on its boundary.

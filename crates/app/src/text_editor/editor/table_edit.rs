@@ -618,7 +618,7 @@ impl Editor {
     }
 
     /// Whether byte `offset` is on a line of a table.
-    pub(in crate::text_editor) fn is_table_line_at(&self, offset: usize) -> bool {
+    pub(crate) fn is_table_line_at(&self, offset: usize) -> bool {
         let doc = self.document_cache.borrow();
         table_index_at(doc.tables(), doc.line_at(offset)).is_some()
     }

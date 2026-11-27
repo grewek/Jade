@@ -390,6 +390,19 @@ impl PaintedFrame {
     }
 }
 
+/// The problems of every frame painted since the last call, since a bug that
+/// the next frame mends leaves no mark on the last one.
+#[cfg(test)]
+static PROBLEMS_SINCE: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) fn take_problems() -> Vec<String> {
+    PROBLEMS_SINCE
+        .lock()
+        .map(|mut all| std::mem::take(&mut *all))
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 pub(crate) fn last_painted_frame() -> PaintedFrame {
     LAST_FRAME.lock().map(|f| f.clone()).unwrap_or_default()
@@ -425,6 +438,10 @@ impl Drop for PaintTrace {
     fn drop(&mut self) {
         let frame = crate::debug_server::frames::current();
         let problems = self.problems();
+        #[cfg(test)]
+        if let Ok(mut all) = PROBLEMS_SINCE.lock() {
+            all.extend_from_slice(&problems);
+        }
         #[cfg(test)]
         if let Ok(mut painted) = LAST_FRAME.lock() {
             *painted = self.painted(&problems);

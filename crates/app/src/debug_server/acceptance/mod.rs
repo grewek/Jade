@@ -15,6 +15,7 @@ mod tests;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
+use crate::text_editor::take_problems;
 use check::{Before, Verdict};
 use format::Scenario;
 use session::{Session, StepError};
@@ -62,6 +63,7 @@ fn run(scenario: &Scenario) -> Outcome {
 
 fn play(scenario: &Scenario) -> Outcome {
     let mut outcome = Outcome::default();
+    take_problems();
     let mut session = match Session::open(scenario) {
         Ok(session) => session,
         Err(err) => {
@@ -81,6 +83,8 @@ fn play(scenario: &Scenario) -> Outcome {
             .map_err(StepError::Failed)
             .and_then(|view| {
                 before = view;
+                // Only the last step's frames are checked.
+                take_problems();
                 session.run_step(step)
             });
         match result {
@@ -112,6 +116,7 @@ fn snapshot(session: &mut Session) -> Result<Before, String> {
     Ok(Before {
         scroll_y,
         frame,
+        caret_x: session.caret_x()?,
         frame_number: crate::debug_server::frames::current(),
     })
 }

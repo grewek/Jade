@@ -45,5 +45,5 @@ pub use buffer::EditorBuffer;
 pub use editor::{BackTab, InsertTab};
 pub use editor::{Editor, EditorEvent, key_bindings};
 #[cfg(test)]
-pub(crate) use paint_trace::{PaintedFrame, PaintedLine, last_painted_frame};
+pub(crate) use paint_trace::{PaintedFrame, PaintedLine, last_painted_frame, take_problems};
 pub use settings::TextSettings;

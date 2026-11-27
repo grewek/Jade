@@ -116,6 +116,25 @@ pub(super) enum Expect {
     ContentMoved(f32),
     /// The caret is drawn entirely inside the editor's pane.
     CaretVisible(bool),
+    /// The last step moved the caret to the right on screen.
+    CaretMovedRight(bool),
+    /// No frame of the last step (without steps: of opening the note) drew
+    /// anything off its lines, even if a later frame mended it.
+    EveryFrameConsistent(bool),
+    /// These zero-based lines take no height on screen.
+    Hidden(Vec<usize>),
+    /// These lines are drawn with a height.
+    Shown(Vec<usize>),
+    /// Line `line` is at most `times` as tall as line `other`.
+    HeightAtMost {
+        line: usize,
+        other: usize,
+        times: f32,
+    },
+    /// Two columns of a source line are drawn on one visual row.
+    SameRow(Span),
+    /// Two columns of a source line are drawn on different visual rows.
+    OtherRow(Span),
     NoOverlap(bool),
     /// Slowest frame of the last step.
     MaxFrameMs(f32),
@@ -125,6 +144,15 @@ pub(super) enum Expect {
         target: String,
         expect: String,
     },
+}
+
+/// Two character columns of a zero-based source line.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Span {
+    pub line: usize,
+    pub from: usize,
+    pub to: usize,
 }
 
 pub(super) fn parse_size(text: &str) -> Result<(f32, f32), String> {
