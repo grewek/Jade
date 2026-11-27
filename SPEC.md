@@ -119,6 +119,10 @@ GFM tables: a header row, a delimiter row (`---`, `:--`, `--:`, `:-:`), body row
 | B-TAB-1 | The table has as many columns as its widest row. Rows with fewer cells are padded with empty cells. (GFM drops extra cells; Jade shows them, P-4.) |
 | B-TAB-2 | Cells hold inline content. `\|` is a literal pipe. **`<br>` is a line break inside a cell, and only there** (I-HTML-2). |
 | B-TAB-3 | A table never shows its source as a whole. With the caret in a cell, only that cell's text is raw (§6). |
+| B-TAB-4 | **Column widths follow the drawn content**: rendered text, drawn formulas and `<br>` breaks, never character counts. A column is as wide as its widest drawn cell, then shrunk to fit the available width. |
+| B-TAB-5 | **A shrunk column wraps at word boundaries.** A word is cut only when it alone is wider than the column. A drawn formula is never split. |
+| B-TAB-6 | **A formula wider than its column is shown as its source**, wrapped like text, so nothing is clipped (P-4). |
+| B-TAB-7 | **The cell being edited is left-aligned**, whatever the column's alignment, so the caret does not shift while typing. |
 
 ### 3.9 Image blocks
 
@@ -225,6 +229,7 @@ Text that flows beside the table and continues below it at full width.
 | B-TAG-9 | **Tag lines are hidden** and take no space. The caret skips them. |
 | B-TAG-10 | **"Show structure"** (hotkey and right-click menu) shows every tag line as an editable line. It is a view setting, not stored in the file. |
 | B-TAG-11 | While a tag line is being typed it is visible, because the caret is on it. When the caret leaves a valid tag line, the line is hidden and the container forms. |
+| B-TAG-12 | **Deleting next to a hidden tag line:** Backspace at the start of the line after a closing tag, or Delete at the end of the line before an opening tag, deletes that line if it is empty and does nothing otherwise, so text never joins a tag line. With "Show structure" on, tag lines are ordinary lines. |
 
 ## 5. Inline content
 
@@ -305,6 +310,30 @@ As in CommonMark and GFM: emphasis and strong emphasis (`*`, `_`), strikethrough
 | V-3 | Arrows, Ctrl+↓ / Ctrl+↑ (E-2) and clicks reach it like any line. |
 | V-4 | **Typing or pasting on it creates the line in the file** (with the line break it needs). **Moving onto it or away never writes.** |
 | V-5 | Virtual lines belong to the transitions between blocks, not to a block type (`ARCHITECTURE.md`, geometry). |
+
+### 10.2 Layout commands
+
+Offered in the right-click menu, by where the caret is. They are the user's edits: they write the tags below in strict form, with blank lines as B-TAG-8 recommends.
+
+| ID | Caret is … | Command | Writes |
+|---|---|---|---|
+| L-1 | on a blank line at top level | **Insert columns** | `<jade-columns>` with two empty `<jade-column>`s |
+| L-2 | same | **Insert float left / right** | an `<jade-aside side="…">` with an empty `<jade-float>` and empty flowing text |
+| L-3 | in a top-level block (not a heading, code block, formula block, callout or blockquote) | **Make columns** | the block becomes the first of two columns; the second is empty |
+| L-4 | same | **Float left / right** | the block becomes the `<jade-float>` of a new aside; the paragraphs right after it (up to three, stopping at the first block that is not a paragraph) become its flowing text |
+| L-5 | in a columns region | **Add column** (2–3 columns only) | an empty `<jade-column>` at the end; `ratio` is removed, so widths become equal |
+| L-6 | same | **Unwrap columns** | the tags are removed; the columns' content follows one after another, in order |
+| L-7 | in an aside | **Flip side** | `side` changes to the other side |
+| L-8 | same | **Unwrap float** | the tags are removed; the float's content comes first, then the flowing text |
+| L-9 | dragging a divider between columns | **Resize** | `ratio`, written **once on release**; while dragging, the columns reflow as a preview. Each column keeps at least 10 %. |
+| L-10 | dragging the inner edge of a float | **Resize** | `width`, written once on release, within 10–90 % |
+
+| ID | Rule for every layout command |
+|---|---|
+| L-11 | **One undo step.** |
+| L-12 | **The caret stays with its text**: it ends at the same character of the same content, now inside or outside the container. |
+| L-13 | **Undo restores the caret** to where it was before the command. |
+| L-14 | Not offered where the nesting table (§3.1) forbids the result. |
 
 ## 11. Limits
 
