@@ -4,7 +4,8 @@
 //!
 //! `cargo test -p jade-app acceptance -- --test-threads=1 --nocapture`
 //!
-//! It needs a GPU (the headless renderer). It lives here rather than in
+//! The headless renderer needs a Vulkan adapter: a GPU, or Mesa's software
+//! driver lavapipe, which CI uses. It lives here rather than in
 //! `tests/` because it drives the test-only debug server.
 
 mod check;
