@@ -24,7 +24,7 @@ env:
 
 jobs:
   fmt:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       # rust-toolchain.toml selects the toolchain with rustfmt and clippy;
@@ -32,7 +32,7 @@ jobs:
       - run: cargo fmt --all --check
 
   clippy:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
@@ -41,14 +41,14 @@ jobs:
       - run: cargo clippy -p jade-core -p jade-debug-protocol -p jade-debug-cli --lib --bins -- -D warnings
 
   test:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v4
       - uses: Swatinem/rust-cache@v2
       - run: cargo test -p jade-core -p jade-debug-protocol -p jade-debug-cli -- --test-threads=1
 
   docs:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     env:
       RUSTDOCFLAGS: -D warnings
     steps:
@@ -57,7 +57,7 @@ jobs:
       - run: cargo doc --no-deps -p jade-core -p jade-debug-protocol -p jade-debug-cli
 
   app:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
