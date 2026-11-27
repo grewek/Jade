@@ -9,8 +9,8 @@ use std::sync::Arc;
 
 use gpui_kit::test::TestWindowExt;
 use gpui_kit::{
-    AnyWindowHandle, AppContext, Bounds, ClipboardItem, Entity, EntityInputHandler, Focusable,
-    HeadlessAppContext, Keystroke, Pixels, WindowBounds, WindowOptions, point, px, size,
+    AnyWindowHandle, AppContext, Bounds, Entity, EntityInputHandler, Focusable, HeadlessAppContext,
+    Keystroke, Pixels, WindowBounds, WindowOptions, point, px, size,
 };
 use jade_debug_protocol::{Answer, Button, Command, Location, Modifiers, Point};
 use tempfile::TempDir;
@@ -223,11 +223,9 @@ impl Session {
             }
             Step::Key(chord) => self.press(chord),
             Step::Type(text) => self.input(Command::Type { text: text.clone() }),
-            Step::Paste(text) => {
-                let item = ClipboardItem::new_string(text.clone());
-                self.cx.update(|cx| cx.write_to_clipboard(item));
-                self.press("ctrl-v")
-            }
+            Step::Paste(text) => self
+                .input(Command::SetClipboard { text: text.clone() })
+                .and_then(|()| self.press("ctrl-v")),
             Step::Undo {} => self.press("ctrl-z"),
             Step::Redo {} => self.press("ctrl-shift-z"),
             Step::Scroll { dy } => self.input(Command::Scroll {
@@ -259,14 +257,8 @@ impl Session {
     }
 
     fn resize(&mut self, text: &str) -> Result<(), String> {
-        let (w, h) = parse_size(text)?;
-        self.in_window(|window, cx| {
-            window.resize(size(px(w), px(h)));
-            // The test platform's resize fires no callback of its own.
-            window.bounds_changed(cx);
-        })?;
-        self.draw();
-        Ok(())
+        let (width, height) = parse_size(text)?;
+        self.input(Command::Resize { width, height })
     }
 
     fn location(&mut self, at: &ClickAt) -> Result<Location, StepError> {

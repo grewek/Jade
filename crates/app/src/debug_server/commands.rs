@@ -1,7 +1,7 @@
 //! Commands that must run on the GPUI main thread, with window access.
 
 use gpui_kit::component::WindowExt;
-use gpui_kit::{App, Focusable, WeakEntity};
+use gpui_kit::{App, ClipboardItem, Focusable, WeakEntity, px, size};
 use jade_debug_protocol::{
     Answer, AppState, Command, EditorState, Event, MAX_TEXT_BYTES, Query, ThemeState, Topic,
 };
@@ -41,6 +41,11 @@ pub(super) fn execute(command: Command, app: &WeakEntity<JadeApp>, cx: &mut App)
         Command::ListTargets => Answer::Targets {
             targets: super::targets::list(),
         },
+        Command::SetClipboard { text } => {
+            cx.write_to_clipboard(ClipboardItem::new_string(text));
+            Answer::Ok
+        }
+        Command::Resize { width, height } => resize(width, height, cx),
         command if input::is_input(&command) => inject(&command, cx),
         other => error(format!("not implemented yet: {other:?}")),
     }
@@ -80,6 +85,29 @@ fn window_size(cx: &mut App) -> Answer {
             width: size.width.into(),
             height: size.height.into(),
         },
+        Err(err) => error(format!("window unavailable: {err}")),
+    }
+}
+
+/// Smallest and largest window side a `Resize` accepts.
+const WINDOW_SIDES: std::ops::RangeInclusive<f32> = 100.0..=8192.0;
+
+fn resize(width: f32, height: f32, cx: &mut App) -> Answer {
+    if !WINDOW_SIDES.contains(&width) || !WINDOW_SIDES.contains(&height) {
+        return error(format!(
+            "window sides must be within {WINDOW_SIDES:?}, got {width}x{height}"
+        ));
+    }
+    let Some(handle) = first_window(cx) else {
+        return error("no window is open");
+    };
+    let resized = handle.update(cx, |_, window, cx| {
+        window.resize(size(px(width), px(height)));
+        // The headless platform's resize fires no callback of its own.
+        window.bounds_changed(cx);
+    });
+    match resized {
+        Ok(()) => Answer::Ok,
         Err(err) => error(format!("window unavailable: {err}")),
     }
 }

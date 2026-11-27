@@ -437,3 +437,16 @@ fn the_invariants_query_and_its_answer_round_trip() {
         },
     });
 }
+
+#[test]
+fn the_clipboard_and_resize_commands_round_trip() {
+    round_trip_commands(vec![
+        Command::SetClipboard {
+            text: "two\nlines".into(),
+        },
+        Command::Resize {
+            width: 800.0,
+            height: 600.5,
+        },
+    ]);
+}
