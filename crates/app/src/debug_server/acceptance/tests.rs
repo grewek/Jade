@@ -35,7 +35,10 @@ fn acceptance_catalog() {
 
 #[test]
 fn acceptance_index_matches_the_scenario_files() {
-    let wanted = index::render(&format::load_all().unwrap());
+    let wanted = index::render(
+        &format::load_all().unwrap(),
+        &format::load_left_out().unwrap(),
+    );
     let path = format::root().join("INDEX.md");
     if std::env::var_os("JADE_UPDATE_INDEX").is_some() {
         std::fs::write(&path, &wanted).unwrap();
@@ -45,6 +48,23 @@ fn acceptance_index_matches_the_scenario_files() {
         written == wanted,
         "INDEX.md is stale; rerun with JADE_UPDATE_INDEX=1"
     );
+}
+
+#[test]
+fn acceptance_commits_left_out_have_no_scenario() {
+    let scenarios = format::load_all().unwrap();
+    for group in format::load_left_out().unwrap().without {
+        for commit in &group.commits {
+            let with = scenarios
+                .iter()
+                .find(|s| s.source.contains(commit.as_str()));
+            assert!(
+                with.is_none(),
+                "{commit} is listed as {:?} and has a scenario",
+                group.reason
+            );
+        }
+    }
 }
 
 #[test]

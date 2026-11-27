@@ -59,3 +59,24 @@ Generated from the scenario files; do not edit. After changing one, run
 | [undoing-a-layout-command-restores-the-caret](regions/undoing-a-layout-command-restores-the-caret.toml) | L-6, L-12, L-14 | 9 | 6cb7e50 |
 | [up-at-the-start-of-a-note-leaves-the-region](regions/up-at-the-start-of-a-note-leaves-the-region.toml) | V-1, V-3, V-4, P-1, E-1 | 9 | #119 |
 | [what-follows-a-tall-float-starts-below-it](regions/what-follows-a-tall-float-starts-below-it.toml) | B-ASIDE-1 | 9 | e37eb13 |
+
+## Still owed
+
+| Source | Stage | Scenario |
+|---|---|---|
+| 62bc2b0 | 5 | A table's grid lines have no gaps (pixels) |
+| 384fe02 | 6 | A rounded callout's accent bar is its left edge (pixels) |
+| 87d5c2d | 7 | A formula's thin rules are one device pixel thick (pixels) |
+| #126 | 9 | Code in a column or float has its box and language label (pixels) |
+
+## Fix commits without a scenario
+
+| Reason | Commits |
+|---|---|
+| Covered by the empty-column scenarios | 5b52ccc, 29450f6 |
+| Covered by open-fence-in-aside-stays-in-aside (discarded #126 branch) | ddd0627 |
+| Documentation or the debug harness | be8c245, 2fedb09, c4f459e, e0626ce |
+| Speed or memory only; the benchmarks guard these | c046850, 2ebbab3, 8ad94fe, 9f28011 |
+| The widget that was fixed no longer exists | 914e293 |
+| The app around the note: dialogs, tab bar, sidebars, the right-click menu | 9c1ba19, db554f3, 562d5cd, 5ea91da |
+| `f32` precision in a 105 MB note, too large to run as a scenario | 362241e, 32ccc5e |

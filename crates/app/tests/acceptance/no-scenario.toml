@@ -1,0 +1,52 @@
+# The fix commits the catalog leaves out (#138). `INDEX.md` is generated from
+# this file and the scenarios.
+
+[[without]]
+reason = "Covered by the empty-column scenarios"
+commits = ["5b52ccc", "29450f6"]
+
+[[without]]
+reason = "Covered by open-fence-in-aside-stays-in-aside (discarded #126 branch)"
+commits = ["ddd0627"]
+
+[[without]]
+reason = "Documentation or the debug harness"
+commits = ["be8c245", "2fedb09", "c4f459e", "e0626ce"]
+
+[[without]]
+reason = "Speed or memory only; the benchmarks guard these"
+commits = ["c046850", "2ebbab3", "8ad94fe", "9f28011"]
+
+[[without]]
+reason = "The widget that was fixed no longer exists"
+commits = ["914e293"]
+
+# A UI test covers the editor's part of 9c1ba19:
+# a_press_while_a_dialog_is_open_does_not_reach_the_editor.
+[[without]]
+reason = "The app around the note: dialogs, tab bar, sidebars, the right-click menu"
+commits = ["9c1ba19", "db554f3", "562d5cd", "5ea91da"]
+
+[[without]]
+reason = "`f32` precision in a 105 MB note, too large to run as a scenario"
+commits = ["362241e", "32ccc5e"]
+
+[[owed]]
+source = "62bc2b0"
+stage = 5
+what = "A table's grid lines have no gaps (pixels)"
+
+[[owed]]
+source = "384fe02"
+stage = 6
+what = "A rounded callout's accent bar is its left edge (pixels)"
+
+[[owed]]
+source = "87d5c2d"
+stage = 7
+what = "A formula's thin rules are one device pixel thick (pixels)"
+
+[[owed]]
+source = "#126"
+stage = 9
+what = "Code in a column or float has its box and language label (pixels)"

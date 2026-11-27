@@ -208,6 +208,38 @@ pub(super) fn parse(text: &str) -> Result<Scenario, String> {
     Ok(scenario)
 }
 
+/// `no-scenario.toml`: the fix commits the catalog leaves out, and why.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct LeftOut {
+    /// Fixes that need no scenario, grouped by reason.
+    pub without: Vec<Without>,
+    /// Scenarios a later stage of #130 still has to add.
+    pub owed: Vec<Owed>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Without {
+    pub reason: String,
+    pub commits: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Owed {
+    pub source: String,
+    pub stage: u8,
+    pub what: String,
+}
+
+pub(super) fn load_left_out() -> Result<LeftOut, String> {
+    let path = root().join("no-scenario.toml");
+    let fail = |err: String| format!("{}: {err}", path.display());
+    let text = std::fs::read_to_string(&path).map_err(|err| fail(err.to_string()))?;
+    toml::from_str(&text).map_err(|err| fail(err.to_string()))
+}
+
 pub(super) fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/acceptance")
 }
