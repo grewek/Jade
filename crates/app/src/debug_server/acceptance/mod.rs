@@ -30,6 +30,8 @@ struct Outcome {
     failures: Vec<String>,
     skipped: Vec<String>,
     passed: usize,
+    /// The note never opened, so nothing about the editor was looked at.
+    unopened: bool,
 }
 
 impl Outcome {
@@ -49,9 +51,11 @@ impl Outcome {
 
 /// Whether this outcome fails the build at `stage`. From a scenario's stage on,
 /// a skipped step or check counts against it: otherwise part of it could go
-/// unchecked without anyone noticing.
+/// unchecked without anyone noticing. A scenario that did not open fails at
+/// every stage: without a graphics adapter the whole catalog would report only
+/// failures that are allowed for now, and pass.
 fn breaks_the_build(from_stage: u8, stage: u8, outcome: &Outcome) -> bool {
-    from_stage <= stage && outcome.status() != "pass"
+    outcome.unopened || (from_stage <= stage && outcome.status() != "pass")
 }
 
 fn run(scenario: &Scenario) -> Outcome {
@@ -76,6 +80,7 @@ fn play(scenario: &Scenario) -> Outcome {
         Ok(session) => session,
         Err(err) => {
             outcome.failures.push(format!("cannot open: {err}"));
+            outcome.unopened = true;
             return outcome;
         }
     };
