@@ -68,6 +68,16 @@ pub(super) enum Step {
         #[serde(default)]
         dy: f32,
     },
+    /// A layout command of `SPEC.md` §10.2, run where the caret is.
+    Command(LayoutCommand),
+    /// Drags the `divider`th divider (from 0) of the region opening at `line`
+    /// sideways by `dx` pixels, and releases it.
+    ResizeDivider {
+        line: usize,
+        #[serde(default)]
+        divider: usize,
+        dx: f32,
+    },
     Undo {},
     Redo {},
     Scroll {
@@ -126,6 +136,11 @@ pub(super) enum Expect {
     /// These lines are drawn with a height.
     Shown(Vec<usize>),
     /// Line `line` is at most `times` as tall as line `other`.
+    /// Line `line` starts at or below the bottom of line `of`.
+    Below {
+        line: usize,
+        of: usize,
+    },
     HeightAtMost {
         line: usize,
         other: usize,
@@ -144,6 +159,25 @@ pub(super) enum Expect {
         target: String,
         expect: String,
     },
+}
+
+/// The commands of `SPEC.md` §10.2 (L-1 to L-9), by name, so that a typo does
+/// not load.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub(super) enum LayoutCommand {
+    InsertColumns,
+    InsertFloatLeft,
+    InsertFloatRight,
+    MakeColumns,
+    FloatLeft,
+    FloatRight,
+    AddColumn,
+    UnwrapColumns,
+    FlipSide,
+    UnwrapFloat,
+    MoveFloatUp,
+    MoveFloatDown,
 }
 
 /// Two character columns of a zero-based source line.

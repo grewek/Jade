@@ -180,6 +180,26 @@ fn acceptance_runner_checks_rows_and_the_caret_direction() {
     );
 }
 
+#[test]
+fn acceptance_runner_orders_lines_and_skips_layout_commands() {
+    let outcome = run(&scenario("[[expect]]\nbelow = { line = 4, of = 0 }"));
+    assert_eq!(outcome.status(), "pass", "{outcome:?}");
+    let outcome = run(&scenario("[[expect]]\nbelow = { line = 0, of = 4 }"));
+    assert_eq!(outcome.status(), "FAIL", "{outcome:?}");
+    for step in [
+        "command = \"add-column\"",
+        "resize_divider = { line = 0, dx = 40.0 }",
+    ] {
+        let outcome = run(&scenario(&format!(
+            "[[step]]\n{step}\n[[expect]]\ntext_contains = \"alpha\""
+        )));
+        assert_eq!(outcome.status(), "SKIP", "{outcome:?}");
+    }
+    let typo = "id = \"a\"\nspec = []\nsource = \"s\"\nfrom_stage = 2\nnote = \"\"\n\
+                [[step]]\ncommand = \"add-colum\"\n[[expect]]\nno_overlap = true\n";
+    assert!(format::parse(typo).is_err());
+}
+
 /// Without this the catalog could report passes while checking nothing.
 #[test]
 fn acceptance_runner_drives_the_real_editor() {
