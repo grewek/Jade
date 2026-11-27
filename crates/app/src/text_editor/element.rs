@@ -227,7 +227,8 @@ impl LineLayout {
 }
 
 /// Where the caret at `offset` is on screen (window coordinates): in a region's
-/// column, else in its plain line. `None` when its line is outside the viewport.
+/// column, else in its plain line. `None` when its line is outside the viewport
+/// or has no drawn rows (a hidden line).
 pub(super) fn caret_rect(
     text: &str,
     doc: &DocumentCache,
@@ -252,12 +253,15 @@ pub(super) fn caret_rect(
     ) {
         return Some(found);
     }
-    if offset < layout.line_range(range.start).start {
+    // Only the offset's own line can hold the caret. Looking no further than it
+    // keeps every `offset - line_range.start` below from underflowing.
+    let own = doc.line_at(offset);
+    if !range.contains(&own) {
         return None;
     }
     let anchor = layout.screen_y(bounds.origin.y, range.start);
     let mut y_offset = px(0.);
-    for i in range {
+    for i in range.start..=own {
         let line_range = layout.line_range(i);
         let line_text = &text[line_range.clone()];
         let state = LineState::of(doc, i, cursor, focused);
@@ -274,7 +278,7 @@ pub(super) fn caret_rect(
         let heights = entry_heights(&results, line_text, (font_size, line_height), state.macros);
         for ((wrapped, display_line), entry) in results.iter().zip(heights) {
             let (line_height, height) = (entry.row, entry.height);
-            if offset <= line_range.end {
+            if i == own {
                 let display_offset = display_line.display_offset_for_raw(offset - line_range.start);
                 let pos = justify::position_for_index(
                     (&state, wrapped, display_line),
@@ -677,6 +681,8 @@ mod math_rows_tests;
 
 #[cfg(test)]
 mod anchoring_tests;
+#[cfg(test)]
+mod caret_rect_tests;
 #[cfg(test)]
 mod code_chip_tests;
 #[cfg(test)]
