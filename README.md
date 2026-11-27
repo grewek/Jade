@@ -15,7 +15,7 @@ Jade is also a learning project. It is developed entirely with AI: I take the ac
 
 ## Building
 
-Jade needs a nightly Rust toolchain, which `rust-toolchain.toml` selects automatically.
+Jade builds with stable Rust. `rust-toolchain.toml` pins the version, and rustup selects it automatically. Raising the version is its own pull request, with CI green.
 
 ```sh
 cargo run -p jade-app --release

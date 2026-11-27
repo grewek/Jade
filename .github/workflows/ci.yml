@@ -23,8 +23,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # rust-toolchain.toml selects nightly + rustfmt/clippy; rustup installs
-      # it on first use.
+      # rust-toolchain.toml selects the toolchain with rustfmt and clippy;
+      # rustup installs it on first use.
       - run: cargo fmt --all --check
 
   clippy:
