@@ -1,0 +1,46 @@
+id = "enter-on-four-backticks-inserts-four"
+spec = ["P-OPEN-1a", "B-CODE-3", "P-2"]
+source = "#126"
+from_stage = 9
+note = """
+<jade-aside side="left" width="40%">
+<jade-float>
+float text
+</jade-float>
+text beside
+</jade-aside>
+"""
+
+[[step]]
+click = { line = 2, col = 10 }
+
+[[step]]
+key = "enter"
+
+[[step]]
+type = "````"
+
+[[step]]
+key = "enter"
+
+[[expect]]
+text = """
+<jade-aside side="left" width="40%">
+<jade-float>
+float text
+````
+
+````
+</jade-float>
+text beside
+</jade-aside>
+"""
+
+[[expect]]
+caret = { line = 4, col = 0 }
+
+[[expect]]
+block = { line = 7, kind = "paragraph" }
+
+[[expect]]
+no_overlap = true

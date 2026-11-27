@@ -1,0 +1,25 @@
+id = "code-in-a-column-is-a-code-block"
+spec = ["B-COL-3"]
+source = "#126"
+from_stage = 9
+note = """
+<jade-columns>
+<jade-column>
+```rust
+let a = 1;
+
+let b = 2;
+```
+</jade-column>
+<jade-column>
+beside
+</jade-column>
+</jade-columns>
+"""
+
+# The box itself needs a `pixels` check once the new path fixes its place.
+[[expect]]
+block = { line = 2, kind = "code" }
+
+[[expect]]
+block = { line = 9, kind = "paragraph" }

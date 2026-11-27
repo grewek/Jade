@@ -1,0 +1,44 @@
+id = "columns-without-a-line-take-a-click-on-either-side"
+spec = ["B-COL-6", "V-1", "V-4"]
+source = "#116"
+from_stage = 9
+# Each column holds only a virtual line. The right one is clicked first, while
+# it would become line 4; after that line exists the left one still would be line 2.
+note = """
+<jade-columns>
+<jade-column>
+</jade-column>
+<jade-column>
+</jade-column>
+</jade-columns>
+"""
+
+[[step]]
+click = { line = 4, col = 0 }
+
+[[step]]
+type = "R"
+
+[[step]]
+click = { line = 2, col = 0 }
+
+[[step]]
+type = "L"
+
+[[expect]]
+text = """
+<jade-columns>
+<jade-column>
+L
+</jade-column>
+<jade-column>
+R
+</jade-column>
+</jade-columns>
+"""
+
+[[expect]]
+block = { line = 0, kind = "columns" }
+
+[[expect]]
+no_overlap = true

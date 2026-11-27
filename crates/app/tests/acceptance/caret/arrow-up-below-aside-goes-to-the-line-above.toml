@@ -1,0 +1,27 @@
+id = "arrow-up-below-aside-goes-to-the-line-above"
+spec = ["E-1", "B-TAG-9"]
+source = "#16"
+from_stage = 9
+note = """
+# Repro
+
+<jade-aside side="right" width="60%">
+<jade-float>
+A floated paragraph that is long enough to wrap onto several rows inside the float, so that the float is much taller than the text flowing beside it in this aside.
+</jade-float>
+flowing one
+
+flowing last
+</jade-aside>
+tail line
+"""
+
+[[step]]
+click = { line = 10, col = 0 }
+
+[[step]]
+key = "up"
+
+# "flowing last": the visible line above in reading order.
+[[expect]]
+caret = { line = 8, col = 0 }

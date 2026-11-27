@@ -1,0 +1,41 @@
+id = "a-pending-fence-in-a-float-changes-nothing-below"
+spec = ["P-OPEN-1", "P-2"]
+source = "#126"
+from_stage = 9
+note = """
+<jade-aside side="left" width="40%">
+<jade-float>
+float text
+</jade-float>
+text beside
+</jade-aside>
+"""
+
+[[step]]
+click = { line = 2, col = 10 }
+
+[[step]]
+key = "enter"
+
+[[step]]
+type = "```"
+
+[[expect]]
+text = """
+<jade-aside side="left" width="40%">
+<jade-float>
+float text
+```
+</jade-float>
+text beside
+</jade-aside>
+"""
+
+[[expect]]
+line_stable = [4, 5, 6]
+
+[[expect]]
+block = { line = 5, kind = "paragraph" }
+
+[[expect]]
+no_overlap = true

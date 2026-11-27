@@ -354,10 +354,81 @@ fn region_problems(r: &RegionGeom, problems: &mut Vec<String>) {
     }
 }
 
+#[cfg(test)]
+static LAST_FRAME: Mutex<PaintedFrame> = Mutex::new(PaintedFrame::new());
+
+/// Where the last traced frame put its lines, for the acceptance catalog.
+#[cfg(test)]
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PaintedFrame {
+    pub problems: Vec<String>,
+    /// Top-level lines in paint order, then those of side-by-side regions.
+    pub lines: Vec<PaintedLine>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone)]
+pub(crate) struct PaintedLine {
+    pub line: usize,
+    /// Window y.
+    pub y: f32,
+    pub height: f32,
+    pub in_region: bool,
+}
+
+#[cfg(test)]
+impl PaintedFrame {
+    const fn new() -> Self {
+        Self {
+            problems: Vec::new(),
+            lines: Vec::new(),
+        }
+    }
+
+    pub(crate) fn y_of(&self, line: usize) -> Option<f32> {
+        self.lines.iter().find(|l| l.line == line).map(|l| l.y)
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn last_painted_frame() -> PaintedFrame {
+    LAST_FRAME.lock().map(|f| f.clone()).unwrap_or_default()
+}
+
+#[cfg(test)]
+impl PaintTrace {
+    fn painted(&self, problems: &[String]) -> PaintedFrame {
+        let editor_top = self.info.bounds.1;
+        let top_level = self.lines.iter().map(|l| PaintedLine {
+            line: l.index,
+            y: l.y,
+            height: l.height,
+            in_region: false,
+        });
+        let columns = self.regions.iter().flat_map(|r| &r.columns);
+        let in_regions = columns
+            .flat_map(|c| &c.lines)
+            .map(|&(line, y, _, height)| PaintedLine {
+                line,
+                y: editor_top + y,
+                height,
+                in_region: true,
+            });
+        PaintedFrame {
+            problems: problems.to_vec(),
+            lines: top_level.chain(in_regions).collect(),
+        }
+    }
+}
+
 impl Drop for PaintTrace {
     fn drop(&mut self) {
         let frame = crate::debug_server::frames::current();
         let problems = self.problems();
+        #[cfg(test)]
+        if let Ok(mut painted) = LAST_FRAME.lock() {
+            *painted = self.painted(&problems);
+        }
         let signature = self.signature(&problems);
         let Ok(mut last) = LAST_SIGNATURE.lock() else {
             return;

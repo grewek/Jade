@@ -1,0 +1,36 @@
+id = "up-at-the-start-of-a-note-leaves-the-region"
+spec = ["V-1", "V-3", "V-4", "P-1", "E-1"]
+source = "#119"
+from_stage = 9
+# No line before the opening tag: the line above is virtual (V-1).
+note = """
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+"""
+
+[[step]]
+click = { line = 2, col = 0 }
+
+[[step]]
+key = "up"
+
+[[expect]]
+caret = { line = 0, col = 0 }
+
+[[expect]]
+text = """
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+"""
