@@ -46,6 +46,7 @@ Automatic checks (#130 §10). The tests are in `crates/core/tests/repo_rules.rs`
 - **File length:** at most 800 lines per `.rs` file. Files that were already longer are listed in `OVERSIZED` and may not grow; never add one.
 - **`ARCHITECTURE.md`:** at most 16 KiB.
 - **Block types:** in the new core (`crates/layout/src`, `text_editor/v2/`), only code under `blocks/` may name one in an identifier. Comments, strings and tests may.
+- **PR size:** CI warns on a PR into `develop` above ~500 changed production lines. Locally, after committing: `.github/scripts/pr-size.sh origin/develop`.
 - **Paint is read-only:** no check yet.
 
 ## Performance
