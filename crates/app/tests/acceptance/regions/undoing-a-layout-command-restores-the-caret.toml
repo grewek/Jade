@@ -1,0 +1,50 @@
+id = "undoing-a-layout-command-restores-the-caret"
+spec = ["L-6", "L-12", "L-14"]
+source = "6cb7e50"
+from_stage = 9
+# One undo takes the whole command back, with the caret where it was.
+note = '''
+intro
+
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+
+below
+'''
+
+[[step]]
+click = { line = 7, col = 5 }
+
+[[step]]
+command = "unwrap-columns"
+
+[[step]]
+undo = {}
+
+[[step]]
+type = "|"
+
+[[expect]]
+text = """
+intro
+
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right|
+</jade-column>
+</jade-columns>
+
+below
+"""
+
+[[expect]]
+caret = { line = 7, col = 6 }

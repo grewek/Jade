@@ -1,0 +1,42 @@
+id = "a-tall-formula-grows-its-line-in-columns-and-asides"
+spec = ["B-COL-3", "B-ASIDE-2"]
+source = "d641572"
+from_stage = 9
+# A region took the editor's row height, and the formula lay over the next line.
+# So each line with a formula must be clearly taller than a plain one.
+note = '''
+<jade-columns>
+<jade-column>
+> under $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ here
+
+next line
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+
+<jade-aside side="left" width="30%">
+<jade-float>
+float
+</jade-float>
+text $\begin{pmatrix} a & b \\ c & d \end{pmatrix}$ here
+
+after the formula
+</jade-aside>
+'''
+
+[[expect]]
+height_at_most = { line = 4, other = 2, times = 0.7 }
+
+[[expect]]
+height_at_most = { line = 17, other = 15, times = 0.7 }
+
+[[expect]]
+block = { line = 0, kind = "columns" }
+
+[[expect]]
+no_overlap = true
+
+[[expect]]
+every_frame_consistent = true

@@ -1,0 +1,47 @@
+id = "deleting-at-a-tag-line-never-joins-text-to-it"
+spec = ["B-TAG-12", "P-1"]
+source = "21991dc"
+from_stage = 9
+# Delete before the region, then Backspace after it. Joining either line to
+# the tag would turn the whole region into text.
+note = '''
+top
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+end
+'''
+
+[[step]]
+click = { line = 0, col = 3 }
+
+[[step]]
+key = "delete"
+
+[[step]]
+click = { line = 9, col = 0 }
+
+[[step]]
+key = "backspace"
+
+[[expect]]
+text = """
+top
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+end
+"""
+
+[[expect]]
+block = { line = 1, kind = "columns" }

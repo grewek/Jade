@@ -1,0 +1,35 @@
+id = "what-follows-a-tall-float-starts-below-it"
+spec = ["B-ASIDE-1"]
+source = "e37eb13"
+from_stage = 9
+# The float is far taller than the text beside it; what comes after the aside
+# must not run into it.
+note = '''
+<jade-aside side="right" width="40%">
+<jade-float>
+float line 0
+
+float line 1
+
+float line 2
+
+float line 3
+
+float line 4
+
+</jade-float>
+short
+</jade-aside>
+| alpha | bravo | charlie | delta | echo |
+|---|---|---|---|---|
+| one | two | three | four | five |
+'''
+
+[[expect]]
+below = { line = 15, of = 10 }
+
+[[expect]]
+block = { line = 0, kind = "aside" }
+
+[[expect]]
+no_overlap = true

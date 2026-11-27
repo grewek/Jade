@@ -1,0 +1,112 @@
+id = "dragging-a-divider-keeps-the-view"
+spec = ["L-10", "P-3"]
+source = "3a3e6db"
+from_stage = 9
+# The drag re-estimated every line outside the view, and the content moved
+# under an unchanged scroll position.
+note = '''
+filler 0
+
+filler 1
+
+filler 2
+
+filler 3
+
+filler 4
+
+filler 5
+
+filler 6
+
+filler 7
+
+filler 8
+
+filler 9
+
+filler 10
+
+filler 11
+
+filler 12
+
+filler 13
+
+filler 14
+
+filler 15
+
+filler 16
+
+filler 17
+
+filler 18
+
+filler 19
+
+<jade-columns>
+<jade-column>
+lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore
+</jade-column>
+<jade-column>
+consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore lorem ipsum dolor sit amet
+</jade-column>
+</jade-columns>
+
+filler 0
+
+filler 1
+
+filler 2
+
+filler 3
+
+filler 4
+
+filler 5
+
+filler 6
+
+filler 7
+
+filler 8
+
+filler 9
+
+filler 10
+
+filler 11
+
+filler 12
+
+filler 13
+
+filler 14
+
+filler 15
+
+filler 16
+
+filler 17
+
+filler 18
+
+filler 19
+
+'''
+
+[[step]]
+scroll = { dy = -800.0 }
+
+[[step]]
+resize_divider = { line = 40, dx = 80.0 }
+
+[[expect]]
+text_contains = '<jade-columns ratio="'
+
+[[expect]]
+view_stable = true
+
+[[expect]]
+no_overlap = true

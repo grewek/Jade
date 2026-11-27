@@ -1,0 +1,48 @@
+id = "deleting-at-a-tag-line-removes-an-empty-line"
+spec = ["B-TAG-12"]
+source = "21991dc"
+from_stage = 9
+# The empty line after the region first, so the one before keeps its number.
+note = '''
+top
+
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+
+end
+'''
+
+[[step]]
+click = { line = 10, col = 0 }
+
+[[step]]
+key = "backspace"
+
+[[step]]
+click = { line = 1, col = 0 }
+
+[[step]]
+key = "delete"
+
+[[expect]]
+text = """
+top
+<jade-columns>
+<jade-column>
+left
+</jade-column>
+<jade-column>
+right
+</jade-column>
+</jade-columns>
+end
+"""
+
+[[expect]]
+block = { line = 1, kind = "columns" }

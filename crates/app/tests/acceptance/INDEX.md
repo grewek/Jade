@@ -30,6 +30,8 @@ Generated from the scenario files; do not edit. After changing one, run
 | [a-blank-line-ends-a-formula-block](math/a-blank-line-ends-a-formula-block.toml) | B-MATH-3 | 7 | 0e65772 |
 | [a-drawn-formula-stays-whole-in-a-wrapping-cell](math/a-drawn-formula-stays-whole-in-a-wrapping-cell.toml) | B-TAB-5 | 7 | 31217ac |
 | [a-formula-wider-than-its-column-is-shown-as-source](math/a-formula-wider-than-its-column-is-shown-as-source.toml) | B-TAB-6 | 7 | fa19b0b |
+| [a-wide-formula-block-is-shown-as-source](math/a-wide-formula-block-is-shown-as-source.toml) | B-MATH-4, P-4 | 7 | #165 |
+| [a-wide-inline-formula-is-shown-as-source-in-every-block](math/a-wide-inline-formula-is-shown-as-source-in-every-block.toml) | I-MATH-2 | 7 | fa19b0b |
 | [only-the-row-with-a-tall-formula-is-tall](math/only-the-row-with-a-tall-formula-is-tall.toml) | – | 7 | 4002239 |
 | [scrolling-back-over-unmeasured-tall-formulas-does-not-jump](math/scrolling-back-over-unmeasured-tall-formulas-does-not-jump.toml) | – | 7 | 6f26122, 83537ae |
 | [arrow-up-below-aside-goes-to-the-line-above](caret/arrow-up-below-aside-goes-to-the-line-above.toml) | E-1, B-TAG-9 | 9 | #16 |
@@ -39,11 +41,21 @@ Generated from the scenario files; do not edit. After changing one, run
 | [enter-on-four-backticks-inserts-four](code/enter-on-four-backticks-inserts-four.toml) | P-OPEN-1a, B-CODE-3, P-2 | 9 | #126 |
 | [open-fence-in-aside-stays-in-aside](code/open-fence-in-aside-stays-in-aside.toml) | B-TAG-4, B-CODE-3, P-2 | 9 | #126 |
 | [typing-a-fence-in-a-float-closes-it-inside](code/typing-a-fence-in-a-float-closes-it-inside.toml) | P-OPEN-1a, B-CODE-3, P-2 | 9 | #126 |
+| [a-table-does-not-paint-into-the-next-column](regions/a-table-does-not-paint-into-the-next-column.toml) | B-COL-3, B-TAB-4 | 9 | c63c311 |
+| [a-table-stays-inside-a-narrow-float](regions/a-table-stays-inside-a-narrow-float.toml) | B-ASIDE-3, B-TAB-4 | 9 | 571eab7 |
+| [a-tall-formula-grows-its-line-in-columns-and-asides](regions/a-tall-formula-grows-its-line-in-columns-and-asides.toml) | B-COL-3, B-ASIDE-2 | 9 | d641572 |
 | [columns-without-a-line-take-a-click-on-either-side](regions/columns-without-a-line-take-a-click-on-either-side.toml) | B-COL-6, V-1, V-4 | 9 | #116 |
 | [ctrl-down-at-the-end-of-a-note-leaves-the-region](regions/ctrl-down-at-the-end-of-a-note-leaves-the-region.toml) | E-2, V-3, V-4, P-1 | 9 | #119 |
+| [deleting-at-a-tag-line-never-joins-text-to-it](regions/deleting-at-a-tag-line-never-joins-text-to-it.toml) | B-TAG-12, P-1 | 9 | 21991dc |
+| [deleting-at-a-tag-line-removes-an-empty-line](regions/deleting-at-a-tag-line-removes-an-empty-line.toml) | B-TAG-12 | 9 | 21991dc |
 | [down-at-the-end-of-a-note-leaves-the-region](regions/down-at-the-end-of-a-note-leaves-the-region.toml) | V-1, V-3, V-4, P-1, E-1 | 9 | #119 |
+| [dragging-a-divider-keeps-the-view](regions/dragging-a-divider-keeps-the-view.toml) | L-10, P-3 | 9 | 3a3e6db |
 | [empty-columns-take-a-click-on-either-side](regions/empty-columns-take-a-click-on-either-side.toml) | B-COL-1, B-COL-3 | 9 | #116 |
+| [moving-the-caret-in-a-float-region-keeps-the-view](regions/moving-the-caret-in-a-float-region-keeps-the-view.toml) | P-3, B-ASIDE-1 | 9 | 23a04aa |
+| [the-caret-stays-with-its-text-when-a-column-is-added](regions/the-caret-stays-with-its-text-when-a-column-is-added.toml) | L-5, L-13 | 9 | a0e7edb |
 | [typing-above-a-region-at-the-start-creates-the-line](regions/typing-above-a-region-at-the-start-creates-the-line.toml) | V-4 | 9 | #119 |
 | [typing-below-a-region-at-the-end-creates-the-line](regions/typing-below-a-region-at-the-end-creates-the-line.toml) | V-4 | 9 | #119 |
 | [typing-in-a-right-float-keeps-the-caret-in-it](regions/typing-in-a-right-float-keeps-the-caret-in-it.toml) | B-ASIDE-1, B-ASIDE-2 | 9 | #117 |
+| [undoing-a-layout-command-restores-the-caret](regions/undoing-a-layout-command-restores-the-caret.toml) | L-6, L-12, L-14 | 9 | 6cb7e50 |
 | [up-at-the-start-of-a-note-leaves-the-region](regions/up-at-the-start-of-a-note-leaves-the-region.toml) | V-1, V-3, V-4, P-1, E-1 | 9 | #119 |
+| [what-follows-a-tall-float-starts-below-it](regions/what-follows-a-tall-float-starts-below-it.toml) | B-ASIDE-1 | 9 | e37eb13 |
